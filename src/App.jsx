@@ -60,8 +60,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.15.2";
+const APP_VERSION = "1.16.0";
 const CHANGELOG = [
+  { v: "1.16.0", desc: "Transacciones: agrega columnas Proyecto y Status (base de datos, importador, formulario, tabla, agrupamiento)" },
   { v: "1.15.2", desc: "Transacciones: botón para eliminar en lote las 'sin vincular' (recuperación tras un link roto)" },
   { v: "1.15.1", desc: "Fix crítico: la carga masiva ahora actualiza por folio en vez de duplicar o borrar — ya no rompe el vínculo con transacciones existentes" },
   { v: "1.15.0", desc: "Partidas: captura TODAS las columnas del Excel en 'extra' (visible en modal), aunque no se usen todavía" },
@@ -344,11 +345,13 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas) {
       dia: findExactCol(headers, ["dia", "fecha"]) !== -1 ? findExactCol(headers, ["dia", "fecha"]) : findCol(headers, ["dia"]),
       smi: findCol(headers, ["smi"]),
       solicitante: findCol(headers, ["solicitante"]),
+      proyecto: findExactCol(headers, ["proyecto"]),
       area: findExactCol(headers, ["area"]),
       proveedor: findCol(headers, ["nombre", "denominacion"], ["razon", "social"], ["proveedor"]),
       concepto: findCol(headers, ["concepto"]),
       importe: findCol(headers, ["importe"]),
       moneda: findCol(headers, ["moneda"]),
+      status: findExactCol(headers, ["status", "estatus"]),
       folio: findCol(headers, ["a partida"]) !== -1 ? findCol(headers, ["a partida"]) : findExactCol(headers, ["partida", "folio"]),
     };
 
@@ -379,11 +382,13 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas) {
         unidad_detectada: partida ? partida.unidad : unidad_detectada,
         dia: col.dia !== -1 ? toISODate(row[col.dia]) : "",
         solicitante: (col.solicitante !== -1 && row[col.solicitante]) ? String(row[col.solicitante]).trim() : "",
+        proyecto: (col.proyecto !== -1 && row[col.proyecto]) ? String(row[col.proyecto]).trim() : "",
         area: (col.area !== -1 && row[col.area]) ? String(row[col.area]).trim() : "",
         proveedor: (col.proveedor !== -1 && row[col.proveedor]) ? String(row[col.proveedor]).trim() : "",
         concepto_detallado: (col.concepto !== -1 && row[col.concepto]) ? String(row[col.concepto]).trim() : "",
         importe,
         moneda: (col.moneda !== -1 && row[col.moneda]) ? String(row[col.moneda]).trim().toUpperCase() : "MXN",
+        status: (col.status !== -1 && row[col.status]) ? String(row[col.status]).trim() : "",
       });
       count++;
     }
@@ -1560,7 +1565,7 @@ function ImportarTransaccionesPanel({ partidas, transaccionesApi }) {
 
 function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
-  const blank = { partida_id: partidasUnidad[0]?.id || "", dia: "", solicitante: "", area: "", proveedor: "", concepto_detallado: "", importe: "", moneda: "MXN" };
+  const blank = { partida_id: partidasUnidad[0]?.id || "", dia: "", solicitante: "", proyecto: "", area: "", proveedor: "", concepto_detallado: "", importe: "", moneda: "MXN", status: "" };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -1628,6 +1633,8 @@ function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi })
     { value: "", label: "Sin agrupar" },
     { value: "area", label: "Área" },
     { value: "proveedor", label: "Proveedor" },
+    { value: "proyecto", label: "Proyecto (transacción)" },
+    { value: "status", label: "Status" },
     { value: "_proyecto", label: "Proyecto (partida)" },
     { value: "_rubro", label: "Rubro (partida)" },
     { value: "_mes", label: "Mes (partida)" },
@@ -1667,9 +1674,11 @@ function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi })
       ),
     },
     { key: "proveedor", label: "Proveedor", render: (t) => t.proveedor },
+    { key: "proyecto", label: "Proyecto", render: (t) => t.proyecto || "—" },
     { key: "area", label: "Área", render: (t) => t.area || "—" },
     { key: "concepto_detallado", label: "Concepto", render: (t) => <span style={{ color: T.textDim }}>{t.concepto_detallado}</span> },
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
+    { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={/pagad/i.test(t.status) ? "teal" : "amber"}>{t.status}</Pill> : "—" },
   ];
   const columnasVisibles = COLUMNAS_TRANS.filter((c) => !groupKeys.includes(c.key));
   const renderRowTr = (t, depth = 0) => (
@@ -1900,6 +1909,9 @@ function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi })
             <Field label="Solicitante">
               <TextInput value={form.solicitante} onChange={(e) => setForm({ ...form, solicitante: e.target.value })} />
             </Field>
+            <Field label="Proyecto">
+              <TextInput value={form.proyecto} onChange={(e) => setForm({ ...form, proyecto: e.target.value })} />
+            </Field>
             <Field label="Área">
               <TextInput value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
             </Field>
@@ -1916,6 +1928,9 @@ function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi })
               <Select value={form.moneda} onChange={(e) => setForm({ ...form, moneda: e.target.value })}>
                 {MONEDAS.map((m) => <option key={m}>{m}</option>)}
               </Select>
+            </Field>
+            <Field label="Status">
+              <TextInput value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} placeholder="Ej. Pagado, No Pagado" />
             </Field>
             <div style={{ gridColumn: "span 4", display: "flex", gap: 10, marginTop: 4 }}>
               <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Registrar transacción"}</Button>

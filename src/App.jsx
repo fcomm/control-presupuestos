@@ -732,6 +732,62 @@ function sortRows(rows, sort, extractors = {}) {
   return sorted;
 }
 
+const SIN_DATO = "— Sin dato —";
+
+// Groups `rows` recursively by a list of field keys (e.g. ['mes','proyecto']).
+// Returns a tree: { type:'rows', rows } at the leaves, or { type:'group', key, entries:[{value,count,sum,child}] }.
+function agruparRows(rows, keys, montoKey = "monto_estimado") {
+  if (!keys.length) return { type: "rows", rows };
+  const [key, ...rest] = keys;
+  const buckets = new Map();
+  rows.forEach((r) => {
+    const val = (r[key] ?? "").toString().trim() || SIN_DATO;
+    if (!buckets.has(val)) buckets.set(val, []);
+    buckets.get(val).push(r);
+  });
+  let entries = [...buckets.entries()];
+  if (key === "mes") {
+    entries.sort((a, b) => MESES.indexOf(a[0]) - MESES.indexOf(b[0]));
+  } else {
+    entries.sort((a, b) => a[0].localeCompare(b[0]));
+  }
+  return {
+    type: "group",
+    key,
+    entries: entries.map(([value, groupRows]) => ({
+      value,
+      count: groupRows.length,
+      sum: groupRows.reduce((s, r) => s + (Number(r[montoKey]) || 0), 0),
+      child: agruparRows(groupRows, rest, montoKey),
+    })),
+  };
+}
+
+// Flattens a grouped tree into <tr> elements: a header row per group (collapsible,
+// with count + sum), followed by that group's leaf rows (via renderRowTr) when expanded.
+function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr) {
+  if (node.type === "rows") return node.rows.map(renderRowTr);
+  let out = [];
+  node.entries.forEach((entry) => {
+    const groupPath = `${path}/${node.key}:${entry.value}`;
+    const isCollapsed = collapsed.has(groupPath);
+    out.push(
+      <tr key={groupPath} onClick={() => toggleGroup(groupPath)} style={{ cursor: "pointer" }}>
+        <td colSpan={colSpan} style={{ ...tdStyle, background: T.panelAlt, paddingLeft: 10 + depth * 18 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <span style={{ color: T.textFaint, fontSize: 10, width: 12 }}>{isCollapsed ? "▶" : "▼"}</span>
+            <Pill tone="amber">{entry.value}</Pill>
+            <span style={{ fontSize: 11, color: T.textFaint }}>{entry.count}</span>
+            <span style={{ fontSize: 11.5, fontFamily: T.fontMono, color: T.textDim, marginLeft: "auto" }}>{money(entry.sum)}</span>
+          </div>
+        </td>
+      </tr>
+    );
+    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr));
+  });
+  return out;
+}
+
 const tableStyle = { width: "100%", borderCollapse: "collapse", fontSize: 12.5 };
 const thStyle = { textAlign: "left", padding: "8px 10px", color: T.textFaint, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", borderBottom: `1px solid ${T.border}` };
 const tdStyle = { padding: "9px 10px", borderBottom: `1px solid ${T.borderSoft}`, color: T.text };
@@ -896,6 +952,48 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
     anio: (r) => Number(r.anio) || 0,
   });
 
+  const GROUP_OPCIONES = [
+    { value: "", label: "Sin agrupar" },
+    { value: "mes", label: "Mes" },
+    { value: "rubro", label: "Rubro" },
+    { value: "categoria", label: "Categoría" },
+    { value: "proyecto", label: "Proyecto" },
+  ];
+  const [groupBy1, setGroupBy1] = useState("");
+  const [groupBy2, setGroupBy2] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = useState(new Set());
+  const toggleGroup = (path) => setCollapsedGroups((prev) => {
+    const next = new Set(prev);
+    next.has(path) ? next.delete(path) : next.add(path);
+    return next;
+  });
+  const groupKeys = [groupBy1, groupBy2].filter(Boolean);
+  const grouped = groupKeys.length ? agruparRows(partidasOrdenadas, groupKeys) : null;
+
+  const COLUMNAS_PARTIDA = [
+    { key: "mes", label: "Mes", render: (p) => p.mes },
+    { key: "anio", label: "Año", render: (p) => p.anio },
+    { key: "concepto", label: "Concepto", render: (p) => p.concepto },
+    { key: "rubro", label: "Rubro", render: (p) => <Pill>{p.rubro}</Pill> },
+    { key: "categoria", label: "Categoría", render: (p) => <span style={{ color: T.textDim }}>{p.categoria}</span> },
+    { key: "proyecto", label: "Proyecto", render: (p) => p.proyecto },
+    { key: "folio", label: "Folio", render: (p) => <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</span> },
+    { key: "monto_estimado", label: "Monto", render: (p) => <span style={{ fontFamily: T.fontMono }}>{money(p.monto_estimado, p.moneda)}</span> },
+  ];
+  const columnasVisibles = COLUMNAS_PARTIDA.filter((c) => !groupKeys.includes(c.key));
+  const renderRowTr = (p) => (
+    <tr key={p.id}>
+      {columnasVisibles.map((c) => <td key={c.key} style={tdStyle}>{c.render(p)}</td>)}
+      <td style={tdStyle}>
+        <div style={{ display: "flex", gap: 6 }}>
+          <Button variant="ghost" onClick={() => startEdit(p)}>Editar</Button>
+          <Button variant="danger" onClick={() => remove(p.id)}>Eliminar</Button>
+        </div>
+      </td>
+    </tr>
+  );
+
+
   const submit = async (e) => {
     e.preventDefault();
     if (!form.concepto || !form.monto_estimado) return;
@@ -963,47 +1061,42 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
             </Select>
           </Field>
           {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
+          <div style={{ width: 1, alignSelf: "stretch", background: T.borderSoft, margin: "0 4px" }} />
+          <Field label="Agrupar por">
+            <Select
+              value={groupBy1}
+              onChange={(e) => { setGroupBy1(e.target.value); setGroupBy2(""); setCollapsedGroups(new Set()); }}
+              style={{ width: 150 }}
+            >
+              {GROUP_OPCIONES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </Select>
+          </Field>
+          {groupBy1 && (
+            <Field label="Luego por">
+              <Select value={groupBy2} onChange={(e) => { setGroupBy2(e.target.value); setCollapsedGroups(new Set()); }} style={{ width: 150 }}>
+                {GROUP_OPCIONES.filter((o) => !o.value || o.value !== groupBy1).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </Select>
+            </Field>
+          )}
         </div>
 
         <div style={{ overflowX: "auto" }}>
           <table style={tableStyle}>
             <thead>
               <tr>
-                <SortableTh label="Mes" sortKey="mes" sort={sort} setSort={setSort} />
-                <SortableTh label="Año" sortKey="anio" sort={sort} setSort={setSort} />
-                <SortableTh label="Concepto" sortKey="concepto" sort={sort} setSort={setSort} />
-                <SortableTh label="Rubro" sortKey="rubro" sort={sort} setSort={setSort} />
-                <SortableTh label="Categoría" sortKey="categoria" sort={sort} setSort={setSort} />
-                <SortableTh label="Proyecto" sortKey="proyecto" sort={sort} setSort={setSort} />
-                <SortableTh label="Folio" sortKey="folio" sort={sort} setSort={setSort} />
-                <SortableTh label="Monto" sortKey="monto_estimado" sort={sort} setSort={setSort} />
+                {columnasVisibles.map((c) => <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort} />)}
                 <th style={thStyle}></th>
               </tr>
             </thead>
             <tbody>
-              {partidasOrdenadas.map((p) => (
-                <tr key={p.id}>
-                  <td style={tdStyle}>{p.mes}</td>
-                  <td style={tdStyle}>{p.anio}</td>
-                  <td style={tdStyle}>{p.concepto}</td>
-                  <td style={tdStyle}><Pill>{p.rubro}</Pill></td>
-                  <td style={{ ...tdStyle, color: T.textDim }}>{p.categoria}</td>
-                  <td style={tdStyle}>{p.proyecto}</td>
-                  <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</td>
-                  <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{money(p.monto_estimado, p.moneda)}</td>
-                  <td style={tdStyle}>
-                    <div style={{ display: "flex", gap: 6 }}>
-                      <Button variant="ghost" onClick={() => startEdit(p)}>Editar</Button>
-                      <Button variant="danger" onClick={() => remove(p.id)}>Eliminar</Button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+              {groupKeys.length
+                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 1, 0, renderRowTr)
+                : partidasOrdenadas.map(renderRowTr)}
               {!partidasUnidad.length && (
-                <tr><td colSpan={9} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
+                <tr><td colSpan={columnasVisibles.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
               )}
               {partidasUnidad.length > 0 && !partidasFiltradas.length && (
-                <tr><td colSpan={9} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna partida coincide con estos filtros</td></tr>
+                <tr><td colSpan={columnasVisibles.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna partida coincide con estos filtros</td></tr>
               )}
             </tbody>
           </table>

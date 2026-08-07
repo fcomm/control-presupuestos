@@ -96,18 +96,21 @@ function resolverProrrateo(marcador, proyectosUnidad) {
   if (directo) return [{ proyecto: directo.nombre, fraccion: 1 }];
 
   if (marcador === "Todos") {
-    const total = proyectosUnidad.reduce((s, p) => s + Number(p.pct || 0), 0) || 1;
-    return proyectosUnidad.map((p) => ({ proyecto: p.nombre, fraccion: Number(p.pct || 0) / total }));
+    const total = proyectosUnidad.reduce((s, p) => s + Number(p.pct || 0), 0);
+    if (total > 0) return proyectosUnidad.map((p) => ({ proyecto: p.nombre, fraccion: Number(p.pct || 0) / total }));
   }
   // "<Grupo> Gral" e.g. "Desh Gral" -> group = "Desh"
   const m = /^(.*) Gral$/.exec(marcador);
   if (m) {
     const grupo = m[1];
     const miembros = proyectosUnidad.filter((p) => p.grupo === grupo);
-    const total = miembros.reduce((s, p) => s + Number(p.pct || 0), 0) || 1;
-    return miembros.map((p) => ({ proyecto: p.nombre, fraccion: Number(p.pct || 0) / total }));
+    const total = miembros.reduce((s, p) => s + Number(p.pct || 0), 0);
+    if (total > 0) return miembros.map((p) => ({ proyecto: p.nombre, fraccion: Number(p.pct || 0) / total }));
   }
-  return [];
+  // Fallback: el proyecto/marcador no está dado de alta en el Catálogo (falta % o
+  // aún no se ha configurado esa unidad). En vez de perder el monto en silencio,
+  // se muestra tal cual bajo su propio nombre, sin prorratear.
+  return [{ proyecto: marcador, fraccion: 1 }];
 }
 
 function marcadoresDisponibles(proyectosUnidad) {
@@ -660,6 +663,44 @@ function EmptyState({ title, body }) {
   );
 }
 
+function Modal({ title, subtitle, onClose, children, width = 720 }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div
+      style={{
+        position: "fixed", inset: 0, background: "rgba(6,9,10,0.72)", zIndex: 1000,
+        display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 20px", overflowY: "auto",
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{ ...panelStyle, width: "100%", maxWidth: width, position: "relative" }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: T.text }}>{title}</div>
+            {subtitle && <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>{subtitle}</div>}
+          </div>
+          <button
+            onClick={onClose}
+            aria-label="Cerrar"
+            style={{ background: "transparent", border: `1px solid ${T.border}`, borderRadius: 6, color: T.textDim, cursor: "pointer", width: 28, height: 28, fontSize: 14, lineHeight: 1 }}
+          >
+            ✕
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
 const panelStyle = { background: T.panel, border: `1px solid ${T.border}`, borderRadius: 10, padding: 18 };
 
 // Sortable table header + generic multi-type comparator (used by Partidas & Transacciones tables)
@@ -824,6 +865,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
 
   const categoriasDisponibles = RUBROS.find((r) => r.rubro === form.rubro)?.categorias || [];
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
@@ -873,6 +915,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
         await partidasApi.insert({ ...record, id: uid() });
       }
       setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" });
+      setModalOpen(false);
     } catch (err) {
       alert("No se pudo guardar la partida: " + (err.message || err));
     } finally {
@@ -880,69 +923,17 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
     }
   };
 
-  const startEdit = (p) => { setForm(p); setEditId(p.id); };
+  const openNew = () => { setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" }); setEditId(null); setModalOpen(true); };
+  const startEdit = (p) => { setForm(p); setEditId(p.id); setModalOpen(true); };
+  const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" }); };
   const remove = (id) => partidasApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <ImportarExcelPanel partidas={partidas} partidasApi={partidasApi} />
-
-      <Panel title={editId ? "Editar partida" : "Nueva partida presupuestal"} subtitle="Una fila por partida — puede recibir varias transacciones reales">
-        <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-          <Field label="Mes">
-            <Select value={form.mes} onChange={(e) => setForm({ ...form, mes: e.target.value })}>
-              {MESES.map((m) => <option key={m}>{m}</option>)}
-            </Select>
-          </Field>
-          <Field label="Año">
-            <TextInput type="number" value={form.anio} onChange={(e) => setForm({ ...form, anio: Number(e.target.value) })} style={{ width: 90 }} />
-          </Field>
-          <Field label="SMI">
-            <TextInput value={form.smi} onChange={(e) => setForm({ ...form, smi: e.target.value })} placeholder="Opcional" />
-          </Field>
-          <Field label="Folio de partida (liga a transacciones)">
-            <TextInput value={form.folio} onChange={(e) => setForm({ ...form, folio: e.target.value })} placeholder="Vacío = se asigna automático" />
-          </Field>
-          <Field label="Rubro">
-            <Select value={form.rubro} onChange={(e) => setForm({ ...form, rubro: e.target.value, categoria: RUBROS.find(r=>r.rubro===e.target.value).categorias[0] })}>
-              {RUBROS.map((r) => <option key={r.rubro}>{r.rubro}</option>)}
-            </Select>
-          </Field>
-          <Field label="Categoría">
-            <Select value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })}>
-              {categoriasDisponibles.map((c) => <option key={c}>{c}</option>)}
-            </Select>
-          </Field>
-          <Field label="Concepto">
-            <TextInput style={{ gridColumn: "span 2" }} value={form.concepto} onChange={(e) => setForm({ ...form, concepto: e.target.value })} placeholder="Ej. Servicio energía eléctrica base admtva" />
-          </Field>
-          <Field label="Proyecto / marcador de prorrateo">
-            <Select value={form.proyecto} onChange={(e) => setForm({ ...form, proyecto: e.target.value })}>
-              {marcadores.length === 0 && <option value="">Sin proyectos configurados — ve a Catálogo</option>}
-              {marcadores.map((m) => <option key={m}>{m}</option>)}
-            </Select>
-          </Field>
-          <Field label="Monto estimado">
-            <TextInput type="number" step="0.01" value={form.monto_estimado} onChange={(e) => setForm({ ...form, monto_estimado: e.target.value })} placeholder="0.00" />
-          </Field>
-          <Field label="Moneda">
-            <Select value={form.moneda} onChange={(e) => setForm({ ...form, moneda: e.target.value })}>
-              {MONEDAS.map((m) => <option key={m}>{m}</option>)}
-            </Select>
-          </Field>
-          <div style={{ gridColumn: "span 4", fontSize: 10.5, color: T.textFaint, marginTop: -6 }}>
-            Formato automático del folio: UNIDAD-MESAÑO-### (ej. {unidad}-{(MES_ABR[form.mes]||"MES")}{String(form.anio).slice(-2)}-045)
-          </div>
-          <div style={{ gridColumn: "span 4", display: "flex", gap: 10, marginTop: 4 }}>
-            <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Agregar partida"}</Button>
-            {editId && <Button type="button" variant="ghost" onClick={() => { setEditId(null); setForm(blank); }}>Cancelar</Button>}
-          </div>
-        </form>
-      </Panel>
-
       <Panel
         title={`Partidas de ${unidad}`}
         subtitle={filtrosActivos ? `${partidasFiltradas.length} de ${partidasUnidad.length} registradas` : `${partidasUnidad.length} registradas`}
+        right={<Button onClick={openNew}>+ Nueva partida</Button>}
       >
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
           <Field label="Buscar">
@@ -1018,6 +1009,67 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
           </table>
         </div>
       </Panel>
+
+      <ImportarExcelPanel partidas={partidas} partidasApi={partidasApi} />
+
+      {modalOpen && (
+        <Modal
+          title={editId ? "Editar partida" : "Nueva partida presupuestal"}
+          subtitle="Una fila por partida — puede recibir varias transacciones reales"
+          onClose={closeModal}
+        >
+          <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+            <Field label="Mes">
+              <Select value={form.mes} onChange={(e) => setForm({ ...form, mes: e.target.value })}>
+                {MESES.map((m) => <option key={m}>{m}</option>)}
+              </Select>
+            </Field>
+            <Field label="Año">
+              <TextInput type="number" value={form.anio} onChange={(e) => setForm({ ...form, anio: Number(e.target.value) })} style={{ width: 90 }} />
+            </Field>
+            <Field label="SMI">
+              <TextInput value={form.smi} onChange={(e) => setForm({ ...form, smi: e.target.value })} placeholder="Opcional" />
+            </Field>
+            <Field label="Folio de partida (liga a transacciones)">
+              <TextInput value={form.folio} onChange={(e) => setForm({ ...form, folio: e.target.value })} placeholder="Vacío = se asigna automático" />
+            </Field>
+            <Field label="Rubro">
+              <Select value={form.rubro} onChange={(e) => setForm({ ...form, rubro: e.target.value, categoria: RUBROS.find(r=>r.rubro===e.target.value).categorias[0] })}>
+                {RUBROS.map((r) => <option key={r.rubro}>{r.rubro}</option>)}
+              </Select>
+            </Field>
+            <Field label="Categoría">
+              <Select value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })}>
+                {categoriasDisponibles.map((c) => <option key={c}>{c}</option>)}
+              </Select>
+            </Field>
+            <Field label="Concepto">
+              <TextInput style={{ gridColumn: "span 2" }} value={form.concepto} onChange={(e) => setForm({ ...form, concepto: e.target.value })} placeholder="Ej. Servicio energía eléctrica base admtva" />
+            </Field>
+            <Field label="Proyecto / marcador de prorrateo">
+              <Select value={form.proyecto} onChange={(e) => setForm({ ...form, proyecto: e.target.value })}>
+                {marcadores.length === 0 && <option value="">Sin proyectos configurados — ve a Catálogo</option>}
+                {marcadores.map((m) => <option key={m}>{m}</option>)}
+              </Select>
+            </Field>
+            <Field label="Monto estimado">
+              <TextInput type="number" step="0.01" value={form.monto_estimado} onChange={(e) => setForm({ ...form, monto_estimado: e.target.value })} placeholder="0.00" />
+            </Field>
+            <Field label="Moneda">
+              <Select value={form.moneda} onChange={(e) => setForm({ ...form, moneda: e.target.value })}>
+                {MONEDAS.map((m) => <option key={m}>{m}</option>)}
+              </Select>
+            </Field>
+            <div style={{ gridColumn: "span 4", fontSize: 10.5, color: T.textFaint, marginTop: -6 }}>
+              Formato automático del folio: UNIDAD-MESAÑO-### (ej. {unidad}-{(MES_ABR[form.mes]||"MES")}{String(form.anio).slice(-2)}-045)
+            </div>
+            <div style={{ gridColumn: "span 4", display: "flex", gap: 10, marginTop: 4 }}>
+              <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Agregar partida"}</Button>
+              <Button type="button" variant="ghost" onClick={closeModal}>Cancelar</Button>
+            </div>
+          </form>
+        </Modal>
+      )}
     </div>
   );
 }

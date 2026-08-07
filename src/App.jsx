@@ -60,8 +60,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.15.1";
+const APP_VERSION = "1.15.2";
 const CHANGELOG = [
+  { v: "1.15.2", desc: "Transacciones: botón para eliminar en lote las 'sin vincular' (recuperación tras un link roto)" },
   { v: "1.15.1", desc: "Fix crítico: la carga masiva ahora actualiza por folio en vez de duplicar o borrar — ya no rompe el vínculo con transacciones existentes" },
   { v: "1.15.0", desc: "Partidas: captura TODAS las columnas del Excel en 'extra' (visible en modal), aunque no se usen todavía" },
   { v: "1.14.1", desc: "Partidas: reordena filtros a Mes → Proyecto → Rubro" },
@@ -1810,7 +1811,23 @@ function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi })
       </Panel>
 
       {sinVincular.length > 0 && (
-        <Panel title="Transacciones importadas sin partida vinculada" subtitle={`${sinVincular.length} en ${unidad} — su folio no coincidió con ninguna partida`}>
+        <Panel
+          title="Transacciones importadas sin partida vinculada"
+          subtitle={`${sinVincular.length} en ${unidad} — su folio no coincidió con ninguna partida`}
+          right={
+            <Button
+              variant="danger"
+              onClick={async () => {
+                if (!confirm(`¿Eliminar las ${sinVincular.length} transacciones sin vincular de ${unidad}? Esto no se puede deshacer.`)) return;
+                for (const t of sinVincular) {
+                  await transaccionesApi.remove(t.id).catch(() => {});
+                }
+              }}
+            >
+              Eliminar las {sinVincular.length} sin vincular
+            </Button>
+          }
+        >
           <div style={{ overflowX: "auto" }}>
             <table style={tableStyle}>
               <thead>

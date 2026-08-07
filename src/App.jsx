@@ -661,6 +661,36 @@ function EmptyState({ title, body }) {
 }
 
 const panelStyle = { background: T.panel, border: `1px solid ${T.border}`, borderRadius: 10, padding: 18 };
+
+// Sortable table header + generic multi-type comparator (used by Partidas & Transacciones tables)
+function SortableTh({ label, sortKey, sort, setSort, width }) {
+  const active = sort.key === sortKey;
+  return (
+    <th
+      style={{ ...thStyle, cursor: "pointer", userSelect: "none", width, color: active ? T.amber : thStyle.color }}
+      onClick={() => setSort((s) => (s.key === sortKey ? { key: sortKey, dir: s.dir === "asc" ? "desc" : "asc" } : { key: sortKey, dir: "asc" }))}
+    >
+      {label}{active ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
+    </th>
+  );
+}
+
+function sortRows(rows, sort, extractors = {}) {
+  if (!sort.key) return rows;
+  const get = extractors[sort.key] || ((r) => r[sort.key]);
+  const sorted = [...rows].sort((a, b) => {
+    let va = get(a), vb = get(b);
+    if (va == null) va = "";
+    if (vb == null) vb = "";
+    if (typeof va === "string") va = va.toLowerCase();
+    if (typeof vb === "string") vb = vb.toLowerCase();
+    if (va < vb) return sort.dir === "asc" ? -1 : 1;
+    if (va > vb) return sort.dir === "asc" ? 1 : -1;
+    return 0;
+  });
+  return sorted;
+}
+
 const tableStyle = { width: "100%", borderCollapse: "collapse", fontSize: 12.5 };
 const thStyle = { textAlign: "left", padding: "8px 10px", color: T.textFaint, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", borderBottom: `1px solid ${T.border}` };
 const tdStyle = { padding: "9px 10px", borderBottom: `1px solid ${T.borderSoft}`, color: T.text };
@@ -798,6 +828,32 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
   const categoriasDisponibles = RUBROS.find((r) => r.rubro === form.rubro)?.categorias || [];
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
 
+  const [filtros, setFiltros] = useState({ texto: "", mes: "Todos", rubro: "Todos", proyecto: "Todos" });
+  const rubrosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.rubro).filter(Boolean))].sort();
+  const proyectosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.proyecto).filter(Boolean))].sort();
+  const mesesDisponiblesFiltro = MESES.filter((m) => partidasUnidad.some((p) => p.mes === m));
+
+  const partidasFiltradas = partidasUnidad.filter((p) => {
+    if (filtros.texto.trim()) {
+      const q = filtros.texto.trim().toLowerCase();
+      const enTexto = [p.concepto, p.folio, p.smi, p.categoria].some((v) => (v || "").toLowerCase().includes(q));
+      if (!enTexto) return false;
+    }
+    if (filtros.mes !== "Todos" && p.mes !== filtros.mes) return false;
+    if (filtros.rubro !== "Todos" && p.rubro !== filtros.rubro) return false;
+    if (filtros.proyecto !== "Todos" && p.proyecto !== filtros.proyecto) return false;
+    return true;
+  });
+  const filtrosActivos = filtros.texto.trim() || filtros.mes !== "Todos" || filtros.rubro !== "Todos" || filtros.proyecto !== "Todos";
+  const limpiarFiltros = () => setFiltros({ texto: "", mes: "Todos", rubro: "Todos", proyecto: "Todos" });
+
+  const [sort, setSort] = useState({ key: null, dir: "asc" });
+  const partidasOrdenadas = sortRows(partidasFiltradas, sort, {
+    mes: (r) => MESES.indexOf(r.mes),
+    monto_estimado: (r) => Number(r.monto_estimado) || 0,
+    anio: (r) => Number(r.anio) || 0,
+  });
+
   const submit = async (e) => {
     e.preventDefault();
     if (!form.concepto || !form.monto_estimado) return;
@@ -884,16 +940,57 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
         </form>
       </Panel>
 
-      <Panel title={`Partidas de ${unidad}`} subtitle={`${partidasUnidad.length} registradas`}>
+      <Panel
+        title={`Partidas de ${unidad}`}
+        subtitle={filtrosActivos ? `${partidasFiltradas.length} de ${partidasUnidad.length} registradas` : `${partidasUnidad.length} registradas`}
+      >
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
+          <Field label="Buscar">
+            <TextInput
+              value={filtros.texto}
+              onChange={(e) => setFiltros({ ...filtros, texto: e.target.value })}
+              placeholder="Concepto, folio, SMI, categoría…"
+              style={{ width: 220 }}
+            />
+          </Field>
+          <Field label="Mes">
+            <Select value={filtros.mes} onChange={(e) => setFiltros({ ...filtros, mes: e.target.value })} style={{ width: 130 }}>
+              <option>Todos</option>
+              {mesesDisponiblesFiltro.map((m) => <option key={m}>{m}</option>)}
+            </Select>
+          </Field>
+          <Field label="Rubro">
+            <Select value={filtros.rubro} onChange={(e) => setFiltros({ ...filtros, rubro: e.target.value })} style={{ width: 200 }}>
+              <option>Todos</option>
+              {rubrosDisponiblesFiltro.map((r) => <option key={r}>{r}</option>)}
+            </Select>
+          </Field>
+          <Field label="Proyecto">
+            <Select value={filtros.proyecto} onChange={(e) => setFiltros({ ...filtros, proyecto: e.target.value })} style={{ width: 180 }}>
+              <option>Todos</option>
+              {proyectosDisponiblesFiltro.map((p) => <option key={p}>{p}</option>)}
+            </Select>
+          </Field>
+          {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
+        </div>
+
         <div style={{ overflowX: "auto" }}>
           <table style={tableStyle}>
             <thead>
               <tr>
-                {["Mes","Año","Concepto","Rubro","Categoría","Proyecto","Folio","Monto",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}
+                <SortableTh label="Mes" sortKey="mes" sort={sort} setSort={setSort} />
+                <SortableTh label="Año" sortKey="anio" sort={sort} setSort={setSort} />
+                <SortableTh label="Concepto" sortKey="concepto" sort={sort} setSort={setSort} />
+                <SortableTh label="Rubro" sortKey="rubro" sort={sort} setSort={setSort} />
+                <SortableTh label="Categoría" sortKey="categoria" sort={sort} setSort={setSort} />
+                <SortableTh label="Proyecto" sortKey="proyecto" sort={sort} setSort={setSort} />
+                <SortableTh label="Folio" sortKey="folio" sort={sort} setSort={setSort} />
+                <SortableTh label="Monto" sortKey="monto_estimado" sort={sort} setSort={setSort} />
+                <th style={thStyle}></th>
               </tr>
             </thead>
             <tbody>
-              {partidasUnidad.map((p) => (
+              {partidasOrdenadas.map((p) => (
                 <tr key={p.id}>
                   <td style={tdStyle}>{p.mes}</td>
                   <td style={tdStyle}>{p.anio}</td>
@@ -913,6 +1010,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
               ))}
               {!partidasUnidad.length && (
                 <tr><td colSpan={9} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
+              )}
+              {partidasUnidad.length > 0 && !partidasFiltradas.length && (
+                <tr><td colSpan={9} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna partida coincide con estos filtros</td></tr>
               )}
             </tbody>
           </table>
@@ -1046,6 +1146,35 @@ function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi })
   const transUnidad = transacciones.filter((t) => partidasUnidad.some((p) => p.id === t.partida_id));
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
+  const [filtros, setFiltros] = useState({ texto: "", area: "Todas", vinculo: "Todas" });
+  const [sort, setSort] = useState({ key: "dia", dir: "desc" });
+
+  const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
+  const areasDisponibles = [...new Set(transUnidad.map((t) => t.area).filter(Boolean))].sort();
+
+  const transFiltradas = transUnidad.filter((t) => {
+    if (filtros.texto.trim()) {
+      const q = filtros.texto.trim().toLowerCase();
+      const partida = partidaDe(t);
+      const enTexto = [t.proveedor, t.concepto_detallado, t.solicitante, t.area, partida?.folio, partida?.concepto]
+        .some((v) => (v || "").toLowerCase().includes(q));
+      if (!enTexto) return false;
+    }
+    if (filtros.area !== "Todas" && t.area !== filtros.area) return false;
+    if (filtros.vinculo === "Vinculadas" && !t.partida_id) return false;
+    if (filtros.vinculo === "Sin vincular" && t.partida_id) return false;
+    return true;
+  });
+  const filtrosActivos = filtros.texto.trim() || filtros.area !== "Todas" || filtros.vinculo !== "Todas";
+  const limpiarFiltros = () => setFiltros({ texto: "", area: "Todas", vinculo: "Todas" });
+
+  const transOrdenadas = sortRows(transFiltradas, sort, {
+    importe: (r) => Number(r.importe) || 0,
+    proveedor: (r) => (r.proveedor || "").toLowerCase(),
+    dia: (r) => r.dia || "",
+    partida: (r) => (partidaDe(r)?.concepto || "").toLowerCase(),
+  });
+
   const submit = async (e) => {
     e.preventDefault();
     if (!form.partida_id || !form.importe) return;
@@ -1113,17 +1242,50 @@ function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi })
         </form>
       </Panel>
 
-      <Panel title={`Transacciones de ${unidad}`} subtitle={`${transUnidad.length} registradas`}>
+      <Panel
+        title={`Transacciones de ${unidad}`}
+        subtitle={filtrosActivos ? `${transFiltradas.length} de ${transUnidad.length} registradas` : `${transUnidad.length} registradas`}
+      >
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
+          <Field label="Buscar">
+            <TextInput
+              value={filtros.texto}
+              onChange={(e) => setFiltros({ ...filtros, texto: e.target.value })}
+              placeholder="Proveedor, concepto, folio, área…"
+              style={{ width: 220 }}
+            />
+          </Field>
+          <Field label="Área">
+            <Select value={filtros.area} onChange={(e) => setFiltros({ ...filtros, area: e.target.value })} style={{ width: 170 }}>
+              <option>Todas</option>
+              {areasDisponibles.map((a) => <option key={a}>{a}</option>)}
+            </Select>
+          </Field>
+          <Field label="Vínculo">
+            <Select value={filtros.vinculo} onChange={(e) => setFiltros({ ...filtros, vinculo: e.target.value })} style={{ width: 150 }}>
+              <option>Todas</option>
+              <option>Vinculadas</option>
+              <option>Sin vincular</option>
+            </Select>
+          </Field>
+          {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
+        </div>
+
         <div style={{ overflowX: "auto" }}>
           <table style={tableStyle}>
             <thead>
               <tr>
-                {["Día","Partida","Proveedor","Concepto","Importe",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}
+                <SortableTh label="Día" sortKey="dia" sort={sort} setSort={setSort} />
+                <SortableTh label="Partida" sortKey="partida" sort={sort} setSort={setSort} />
+                <SortableTh label="Proveedor" sortKey="proveedor" sort={sort} setSort={setSort} />
+                <th style={thStyle}>Concepto</th>
+                <SortableTh label="Importe" sortKey="importe" sort={sort} setSort={setSort} />
+                <th style={thStyle}></th>
               </tr>
             </thead>
             <tbody>
-              {transUnidad.slice().sort((a,b) => (b.dia||"").localeCompare(a.dia||"")).map((t) => {
-                const partida = partidasUnidad.find((p) => p.id === t.partida_id);
+              {transOrdenadas.map((t) => {
+                const partida = partidaDe(t);
                 return (
                   <tr key={t.id}>
                     <td style={tdStyle}>{t.dia || "—"}</td>
@@ -1142,6 +1304,9 @@ function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi })
               })}
               {!transUnidad.length && (
                 <tr><td colSpan={6} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones aún</td></tr>
+              )}
+              {transUnidad.length > 0 && !transFiltradas.length && (
+                <tr><td colSpan={6} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna transacción coincide con estos filtros</td></tr>
               )}
             </tbody>
           </table>

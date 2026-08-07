@@ -52,6 +52,24 @@ const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto"
 
 const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10));
 
+// ----------------------------------------------------------------------
+// VERSIÓN — súbela cada vez que cambies este archivo. Formato MAJOR.MINOR.PATCH:
+// MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
+// la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
+// ----------------------------------------------------------------------
+const APP_VERSION = "1.6.0";
+const CHANGELOG = [
+  { v: "1.6.0", desc: "Tercer nivel de agrupamiento + sangría con color por nivel" },
+  { v: "1.5.0", desc: "Código de versión visible en la interfaz" },
+  { v: "1.4.0", desc: "Agrupamiento tipo Airtable en tabla de Partidas" },
+  { v: "1.3.0", desc: "Tabla de Partidas arriba + popup para nueva/editar" },
+  { v: "1.2.1", desc: "Fix: prorrateo ya no pierde montos sin proyecto en Catálogo" },
+  { v: "1.2.0", desc: "Filtros y ordenamiento en Partidas y Transacciones" },
+  { v: "1.1.0", desc: "Filtros en tabla de Partidas" },
+  { v: "1.0.1", desc: "Configuración de Wrangler (Cloudflare Workers Static Assets)" },
+  { v: "1.0.0", desc: "Setup inicial: Vite + React + Supabase" },
+];
+
 const MES_ABR = {
   Enero: "ENE", Febrero: "FEB", Marzo: "MAR", Abril: "ABR", Mayo: "MAY", Junio: "JUN",
   Julio: "JUL", Agosto: "AGO", Septiembre: "SEP", Octubre: "OCT", Noviembre: "NOV", Diciembre: "DIC",
@@ -765,15 +783,24 @@ function agruparRows(rows, keys, montoKey = "monto_estimado") {
 
 // Flattens a grouped tree into <tr> elements: a header row per group (collapsible,
 // with count + sum), followed by that group's leaf rows (via renderRowTr) when expanded.
+const GROUP_LEVEL_COLORS = [T.amber, T.teal, T.blue];
 function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr) {
-  if (node.type === "rows") return node.rows.map(renderRowTr);
+  if (node.type === "rows") return node.rows.map((r) => renderRowTr(r, depth));
   let out = [];
+  const levelColor = GROUP_LEVEL_COLORS[depth % GROUP_LEVEL_COLORS.length];
   node.entries.forEach((entry) => {
     const groupPath = `${path}/${node.key}:${entry.value}`;
     const isCollapsed = collapsed.has(groupPath);
     out.push(
       <tr key={groupPath} onClick={() => toggleGroup(groupPath)} style={{ cursor: "pointer" }}>
-        <td colSpan={colSpan} style={{ ...tdStyle, background: T.panelAlt, paddingLeft: 10 + depth * 18 }}>
+        <td
+          colSpan={colSpan}
+          style={{
+            ...tdStyle, background: T.panelAlt,
+            paddingLeft: 14 + depth * 26,
+            borderLeft: `3px solid ${levelColor}`,
+          }}
+        >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ color: T.textFaint, fontSize: 10, width: 12 }}>{isCollapsed ? "▶" : "▼"}</span>
             <Pill tone="amber">{entry.value}</Pill>
@@ -961,13 +988,14 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
   ];
   const [groupBy1, setGroupBy1] = useState("");
   const [groupBy2, setGroupBy2] = useState("");
+  const [groupBy3, setGroupBy3] = useState("");
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
   const toggleGroup = (path) => setCollapsedGroups((prev) => {
     const next = new Set(prev);
     next.has(path) ? next.delete(path) : next.add(path);
     return next;
   });
-  const groupKeys = [groupBy1, groupBy2].filter(Boolean);
+  const groupKeys = [groupBy1, groupBy2, groupBy3].filter(Boolean);
   const grouped = groupKeys.length ? agruparRows(partidasOrdenadas, groupKeys) : null;
 
   const COLUMNAS_PARTIDA = [
@@ -981,9 +1009,11 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
     { key: "monto_estimado", label: "Monto", render: (p) => <span style={{ fontFamily: T.fontMono }}>{money(p.monto_estimado, p.moneda)}</span> },
   ];
   const columnasVisibles = COLUMNAS_PARTIDA.filter((c) => !groupKeys.includes(c.key));
-  const renderRowTr = (p) => (
+  const renderRowTr = (p, depth = 0) => (
     <tr key={p.id}>
-      {columnasVisibles.map((c) => <td key={c.key} style={tdStyle}>{c.render(p)}</td>)}
+      {columnasVisibles.map((c, i) => (
+        <td key={c.key} style={i === 0 && depth ? { ...tdStyle, paddingLeft: 14 + depth * 26 } : tdStyle}>{c.render(p)}</td>
+      ))}
       <td style={tdStyle}>
         <div style={{ display: "flex", gap: 6 }}>
           <Button variant="ghost" onClick={() => startEdit(p)}>Editar</Button>
@@ -1073,8 +1103,19 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
           </Field>
           {groupBy1 && (
             <Field label="Luego por">
-              <Select value={groupBy2} onChange={(e) => { setGroupBy2(e.target.value); setCollapsedGroups(new Set()); }} style={{ width: 150 }}>
+              <Select
+                value={groupBy2}
+                onChange={(e) => { setGroupBy2(e.target.value); setGroupBy3(""); setCollapsedGroups(new Set()); }}
+                style={{ width: 150 }}
+              >
                 {GROUP_OPCIONES.filter((o) => !o.value || o.value !== groupBy1).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </Select>
+            </Field>
+          )}
+          {groupBy1 && groupBy2 && (
+            <Field label="Y luego por">
+              <Select value={groupBy3} onChange={(e) => { setGroupBy3(e.target.value); setCollapsedGroups(new Set()); }} style={{ width: 150 }}>
+                {GROUP_OPCIONES.filter((o) => !o.value || (o.value !== groupBy1 && o.value !== groupBy2)).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
               </Select>
             </Field>
           )}
@@ -1091,7 +1132,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
             <tbody>
               {groupKeys.length
                 ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 1, 0, renderRowTr)
-                : partidasOrdenadas.map(renderRowTr)}
+                : partidasOrdenadas.map((p) => renderRowTr(p))}
               {!partidasUnidad.length && (
                 <tr><td colSpan={columnasVisibles.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
               )}
@@ -1623,7 +1664,27 @@ export default function App() {
           <div style={{ fontSize: 10.5, color: T.amber, letterSpacing: "0.14em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>
             Control de presupuestos · prototipo
           </div>
-          <div style={{ fontSize: 24, fontWeight: 700 }}>Panel de gasto</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
+            <div style={{ fontSize: 24, fontWeight: 700 }}>Panel de gasto</div>
+            <details style={{ position: "relative" }}>
+              <summary style={{ display: "inline-flex" }}>
+                <Pill tone="dim">v{APP_VERSION}</Pill>
+              </summary>
+              <div style={{
+                position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 50,
+                background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8,
+                padding: 12, minWidth: 280, boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+              }}>
+                <div style={{ fontSize: 10.5, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Historial de versiones</div>
+                {CHANGELOG.map((c) => (
+                  <div key={c.v} style={{ display: "flex", gap: 8, fontSize: 11.5, marginBottom: 5 }}>
+                    <span style={{ fontFamily: T.fontMono, color: T.amber, minWidth: 44 }}>v{c.v}</span>
+                    <span style={{ color: T.textDim }}>{c.desc}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          </div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <span style={{ fontSize: 11, color: T.textDim }}>Unidad de negocio</span>

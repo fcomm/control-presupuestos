@@ -92,8 +92,11 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.31.0";
+const APP_VERSION = "1.32.1";
 const CHANGELOG = [
+  { v: "1.32.1", desc: "Filas alternadas (cebra) en todas las tablas de la app, para facilitar la lectura" },
+  { v: "1.32.0", desc: "Tabla 'sin vincular' de Transacciones: agrega filtro Desde/Hasta, Agrupar por, y control de columnas — mismo patrón que las demás tablas" },
+  { v: "1.31.1", desc: "Fix: 'Proyecto' en el popup de nueva partida rápida ahora es un selector del catálogo, no texto libre" },
   { v: "1.31.0", desc: "Selector de Partida: botón '+ Nueva partida' para crear una al vuelo sin salir del formulario de transacción" },
   { v: "1.30.0", desc: "Control 'Columnas' (mostrar/ocultar con checkboxes) en Partidas, Transacciones, Reporte de Pagos y Reporte Pagos Dirección" },
   { v: "1.29.1", desc: "Selector de Partida: cada fila muestra Total y Usado (con color según % consumido)" },
@@ -254,7 +257,7 @@ function opcionesPartidaPorMes(lista) {
 
 // Botón que abre un popup con buscador para elegir una partida — más cómodo
 // que un <select> plano cuando hay muchas. Agrupa por mes, en orden cronológico.
-function PartidaPickerButton({ partidas, transacciones = [], value, onChange, placeholder = "Elegir partida…", allowClear = false, partidasApi, unidad }) {
+function PartidaPickerButton({ partidas, transacciones = [], value, onChange, placeholder = "Elegir partida…", allowClear = false, partidasApi, unidad, proyectosOpciones = [] }) {
   const [open, setOpen] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const seleccionada = partidas.find((p) => p.id === value);
@@ -271,7 +274,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
 
   const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
-  const nuevaPartidaBlank = { mes: MESES[0], concepto: "", rubro: RUBROS[0]?.rubro || "", proyecto: "", monto_estimado: "", moneda: "MXN" };
+  const nuevaPartidaBlank = { mes: MESES[0], concepto: "", rubro: RUBROS[0]?.rubro || "", proyecto: proyectosOpciones[0] || "", monto_estimado: "", moneda: "MXN" };
   const [creando, setCreando] = useState(false);
   const [nuevaPartida, setNuevaPartida] = useState(nuevaPartidaBlank);
   const [guardandoPartida, setGuardandoPartida] = useState(false);
@@ -365,7 +368,10 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
                   </Select>
                 </Field>
                 <Field label="Proyecto">
-                  <TextInput value={nuevaPartida.proyecto} onChange={(e) => setNuevaPartida({ ...nuevaPartida, proyecto: e.target.value })} placeholder="Ej. Todos, Desh Gral…" />
+                  <Select value={nuevaPartida.proyecto} onChange={(e) => setNuevaPartida({ ...nuevaPartida, proyecto: e.target.value })}>
+                    {proyectosOpciones.length === 0 && <option value="">Sin proyectos configurados — ve a Catálogo</option>}
+                    {proyectosOpciones.map((m) => <option key={m}>{m}</option>)}
+                  </Select>
                 </Field>
                 <Field label="Monto estimado">
                   <TextInput type="number" step="0.01" value={nuevaPartida.monto_estimado} onChange={(e) => setNuevaPartida({ ...nuevaPartida, monto_estimado: e.target.value })} placeholder="0.00" />
@@ -2250,6 +2256,73 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const groupKeys = groupBys.map((g) => g.field);
   const grouped = groupKeys.length ? agruparRows(transEnriquecidas, groupBys, "importe") : null;
 
+  // --- Tabla "sin vincular": mismos controles que la tabla principal (fechas, agrupar, columnas) ---
+  const COLUMNAS_SINVINC = [
+    { key: "dia", label: "Día", render: (t) => t.dia || "—" },
+    { key: "folio_original", label: "Folio", render: (t) => <span style={{ fontFamily: T.fontMono, color: T.red }}>{t.folio_original || "(sin folio)"}</span> },
+    { key: "proveedor", label: "Proveedor", render: (t) => t.proveedor || "—" },
+    { key: "zona", label: "Zona", render: (t) => t.zona || "—" },
+    { key: "area", label: "Área", render: (t) => t.area || "—" },
+    { key: "proyecto", label: "Proyecto", render: (t) => t.proyecto || "—" },
+    { key: "concepto_detallado", label: "Concepto", render: (t) => <span style={{ color: T.textDim }}>{t.concepto_detallado}</span> },
+    { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
+    { key: "status", label: "Status", render: (t) => t.status || "—" },
+  ];
+  const GROUP_OPCIONES_SINVINC = [
+    { value: "zona", label: "Zona" },
+    { value: "area", label: "Área" },
+    { value: "proveedor", label: "Proveedor" },
+    { value: "proyecto", label: "Proyecto" },
+    { value: "status", label: "Status" },
+  ];
+  const [filtrosSV, setFiltrosSV] = useState({ fechaDesde: "", fechaHasta: "" });
+  const [groupBysSV, setGroupBysSV] = useState([]);
+  const [collapsedGroupsSV, setCollapsedGroupsSV] = useState(new Set());
+  const toggleGroupSV = (path) => setCollapsedGroupsSV((prev) => {
+    const next = new Set(prev);
+    next.has(path) ? next.delete(path) : next.add(path);
+    return next;
+  });
+  const sinVincularFiltrado = sinVincular.filter((t) => {
+    if (filtrosSV.fechaDesde && (!t.dia || t.dia < filtrosSV.fechaDesde)) return false;
+    if (filtrosSV.fechaHasta && (!t.dia || t.dia > filtrosSV.fechaHasta)) return false;
+    return true;
+  });
+  const filtrosSVActivos = filtrosSV.fechaDesde || filtrosSV.fechaHasta;
+  const limpiarFiltrosSV = () => setFiltrosSV({ fechaDesde: "", fechaHasta: "" });
+  const groupKeysSV = groupBysSV.map((g) => g.field);
+  const groupedSV = groupKeysSV.length ? agruparRows(sinVincularFiltrado, groupBysSV, "importe") : null;
+  const colVisibilitySV = useColumnVisibility("colv-sinvinc", COLUMNAS_SINVINC);
+  const columnasVisiblesSVBase = COLUMNAS_SINVINC.filter((c) => !groupKeysSV.includes(c.key) && !colVisibilitySV.hidden.has(c.key));
+  const colWidthsSV = useColumnWidths("colw-sinvinc");
+  const { ordered: columnasSV, moveColumn: moveColumnSV } = useColumnOrder("colo-sinvinc", columnasVisiblesSVBase);
+  const dragKeyRefSV = useRef(null);
+  const onColDragStartSV = (e, key) => { dragKeyRefSV.current = key; e.dataTransfer.effectAllowed = "move"; };
+  const onColDragOverSV = (e) => e.preventDefault();
+  const onColDropSV = (e, targetKey) => { e.preventDefault(); if (dragKeyRefSV.current) { moveColumnSV(dragKeyRefSV.current, targetKey); dragKeyRefSV.current = null; } };
+  const renderRowSinVinc = (t, depth = 0) => (
+    <tr key={t.id}>
+      {columnasSV.map((c) => <td key={c.key} style={{ ...tdStyle, paddingLeft: depth ? 14 + depth * 26 : undefined }}>{c.render(t)}</td>)}
+      <td style={tdStyle}>
+        <PartidaPickerButton
+          partidas={partidasUnidad}
+          transacciones={transUnidad}
+          partidasApi={partidasApi}
+          unidad={unidad}
+          proyectosOpciones={marcadoresProyecto}
+          value=""
+          placeholder="Elegir partida…"
+          onChange={(nuevoId) => {
+            const nuevaPartida = partidasUnidad.find((p) => p.id === nuevoId);
+            transaccionesApi
+              .update(t.id, { partida_id: nuevoId, unidad_detectada: nuevaPartida ? nuevaPartida.unidad : t.unidad_detectada })
+              .catch((err) => alert("No se pudo vincular: " + (err.message || err)));
+          }}
+        />
+      </td>
+    </tr>
+  );
+
   const COLUMNAS_TRANS = [
     { key: "dia", label: "Día", render: (t) => t.dia || "—" },
     {
@@ -2269,6 +2342,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           transacciones={transUnidad}
           partidasApi={partidasApi}
           unidad={unidad}
+          proyectosOpciones={marcadoresProyecto}
           value={t.partida_id || ""}
           allowClear
           onChange={(nuevoId) => {
@@ -2444,7 +2518,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       {sinVincular.length > 0 && (
         <Panel
           title="Transacciones importadas sin partida vinculada"
-          subtitle={`${sinVincular.length} en ${unidad} — su folio no coincidió con ninguna partida`}
+          subtitle={`${sinVincularFiltrado.length} de ${sinVincular.length} en ${unidad} — su folio no coincidió con ninguna partida`}
           right={
             <Button
               variant="danger"
@@ -2459,37 +2533,56 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </Button>
           }
         >
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
+            <Field label="Desde">
+              <TextInput type="date" value={filtrosSV.fechaDesde} onChange={(e) => setFiltrosSV({ ...filtrosSV, fechaDesde: e.target.value })} />
+            </Field>
+            <Field label="Hasta">
+              <TextInput type="date" value={filtrosSV.fechaHasta} onChange={(e) => setFiltrosSV({ ...filtrosSV, fechaHasta: e.target.value })} />
+            </Field>
+            {filtrosSVActivos && <Button variant="ghost" onClick={limpiarFiltrosSV}>Limpiar filtros</Button>}
+            <div style={{ width: 1, alignSelf: "stretch", background: T.borderSoft, margin: "0 4px" }} />
+            <GroupByControl
+              options={GROUP_OPCIONES_SINVINC}
+              value={groupBysSV}
+              onChange={(v) => { setGroupBysSV(v); setCollapsedGroupsSV(new Set()); }}
+              maxLevels={3}
+              groupedTree={groupedSV}
+              collapsed={collapsedGroupsSV}
+              setCollapsed={setCollapsedGroupsSV}
+            />
+            <ColumnVisibilityControl
+              columns={COLUMNAS_SINVINC}
+              hidden={colVisibilitySV.hidden}
+              onToggle={colVisibilitySV.toggle}
+              onShowAll={colVisibilitySV.showAll}
+            />
+          </div>
           <div style={{ overflowX: "auto" }}>
-            <table style={tableStyle}>
+            <table style={{ ...tableStyle, tableLayout: "fixed" }}>
+              <colgroup>
+                {columnasSV.map((c) => <col key={c.key} style={{ width: colWidthsSV.getWidth(c.key) }} />)}
+                <col style={{ width: 230 }} />
+              </colgroup>
               <thead>
-                <tr>{["Día","Folio","Proveedor","Concepto","Importe","Vincular a partida"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+                <tr>
+                  {columnasSV.map((c) => (
+                    <SortableTh
+                      key={c.key} label={c.label} sortKey={c.key} sort={{ key: "", dir: "asc" }} setSort={() => {}}
+                      width={colWidthsSV.getWidth(c.key)} onResizeStart={(e) => colWidthsSV.startResize(c.key, e)}
+                      onDragStart={(e) => onColDragStartSV(e, c.key)} onDragOver={onColDragOverSV} onDrop={(e) => onColDropSV(e, c.key)}
+                    />
+                  ))}
+                  <th style={thStyle}>Vincular a partida</th>
+                </tr>
               </thead>
               <tbody>
-                {sinVincular.map((t) => (
-                  <tr key={t.id}>
-                    <td style={tdStyle}>{t.dia || "—"}</td>
-                    <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.red }}>{t.folio_original || "(sin folio)"}</td>
-                    <td style={tdStyle}>{t.proveedor}</td>
-                    <td style={{ ...tdStyle, color: T.textDim }}>{t.concepto_detallado}</td>
-                    <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</td>
-                    <td style={tdStyle}>
-                      <PartidaPickerButton
-                        partidas={partidasUnidad}
-                        transacciones={transUnidad}
-                        partidasApi={partidasApi}
-                        unidad={unidad}
-                        value=""
-                        placeholder="Elegir partida…"
-                        onChange={(nuevoId) => {
-                          const nuevaPartida = partidasUnidad.find((p) => p.id === nuevoId);
-                          transaccionesApi
-                            .update(t.id, { partida_id: nuevoId, unidad_detectada: nuevaPartida ? nuevaPartida.unidad : t.unidad_detectada })
-                            .catch((err) => alert("No se pudo vincular: " + (err.message || err)));
-                        }}
-                      />
-                    </td>
-                  </tr>
-                ))}
+                {groupKeysSV.length
+                  ? buildGroupedTrs(groupedSV, "", collapsedGroupsSV, toggleGroupSV, columnasSV.length + 1, 0, renderRowSinVinc, Object.fromEntries(GROUP_OPCIONES_SINVINC.map((o) => [o.value, o.label])))
+                  : sinVincularFiltrado.map((t) => renderRowSinVinc(t))}
+                {!sinVincularFiltrado.length && (
+                  <tr><td colSpan={columnasSV.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna coincide con estos filtros</td></tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -2514,6 +2607,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 transacciones={transUnidad}
                 partidasApi={partidasApi}
                 unidad={unidad}
+                proyectosOpciones={marcadoresProyecto}
                 value={form.partida_id}
                 onChange={(id) => setForm({ ...form, partida_id: id })}
               />
@@ -3405,6 +3499,7 @@ export default function App() {
         details[open] > summary:before { content: '▾ '; }
         select, input { color-scheme: light; }
         ::selection { background: ${T.accentBg}; }
+        table tbody tr:nth-child(even) > td { background-color: ${T.bg}; }
       `}</style>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 22, flexWrap: "wrap", gap: 14 }}>

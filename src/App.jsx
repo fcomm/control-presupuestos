@@ -92,8 +92,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.29.1";
+const APP_VERSION = "1.31.0";
 const CHANGELOG = [
+  { v: "1.31.0", desc: "Selector de Partida: botón '+ Nueva partida' para crear una al vuelo sin salir del formulario de transacción" },
+  { v: "1.30.0", desc: "Control 'Columnas' (mostrar/ocultar con checkboxes) en Partidas, Transacciones, Reporte de Pagos y Reporte Pagos Dirección" },
   { v: "1.29.1", desc: "Selector de Partida: cada fila muestra Total y Usado (con color según % consumido)" },
   { v: "1.29.0", desc: "Selector de Partida rediseñado: popup con buscador y agrupado por mes (en modal, columna inline, y panel de sin vincular) — confirmado que ya filtraba solo por la compañía activa" },
   { v: "1.28.0", desc: "Proveedores: agrega Sucursal y SWIFT a las cuentas; la carga masiva ahora agrupa filas repetidas del mismo proveedor (varias cuentas) aunque sea nuevo en el mismo archivo" },
@@ -252,7 +254,7 @@ function opcionesPartidaPorMes(lista) {
 
 // Botón que abre un popup con buscador para elegir una partida — más cómodo
 // que un <select> plano cuando hay muchas. Agrupa por mes, en orden cronológico.
-function PartidaPickerButton({ partidas, transacciones = [], value, onChange, placeholder = "Elegir partida…", allowClear = false }) {
+function PartidaPickerButton({ partidas, transacciones = [], value, onChange, placeholder = "Elegir partida…", allowClear = false, partidasApi, unidad }) {
   const [open, setOpen] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const seleccionada = partidas.find((p) => p.id === value);
@@ -265,9 +267,36 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
   const meses = MESES.filter((m) => filtradas.some((p) => p.mes === m));
   const sinMes = filtradas.filter((p) => !p.mes);
 
-  const elegir = (id) => { onChange(id); setOpen(false); setBusqueda(""); };
+  const elegir = (id) => { onChange(id); setOpen(false); setBusqueda(""); setCreando(false); };
 
   const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
+
+  const nuevaPartidaBlank = { mes: MESES[0], concepto: "", rubro: RUBROS[0]?.rubro || "", proyecto: "", monto_estimado: "", moneda: "MXN" };
+  const [creando, setCreando] = useState(false);
+  const [nuevaPartida, setNuevaPartida] = useState(nuevaPartidaBlank);
+  const [guardandoPartida, setGuardandoPartida] = useState(false);
+
+  const crearPartida = async () => {
+    if (!nuevaPartida.concepto.trim() || !nuevaPartida.monto_estimado) return;
+    setGuardandoPartida(true);
+    try {
+      const anio = new Date().getFullYear();
+      const existingFolios = partidas.filter((p) => p.unidad === unidad).map((p) => p.folio);
+      const folio = autoFolio(unidad, nuevaPartida.mes, anio, existingFolios);
+      const categoriaDefault = RUBROS.find((r) => r.rubro === nuevaPartida.rubro)?.categorias?.[0] || "Diversos";
+      const creada = await partidasApi.insert({
+        id: uid(), unidad, mes: nuevaPartida.mes, anio, smi: "", concepto: nuevaPartida.concepto.trim(),
+        rubro: nuevaPartida.rubro, categoria: categoriaDefault, proyecto: nuevaPartida.proyecto.trim(),
+        monto_estimado: Number(nuevaPartida.monto_estimado) || 0, moneda: nuevaPartida.moneda, folio,
+      });
+      setNuevaPartida(nuevaPartidaBlank);
+      elegir(creada.id);
+    } catch (err) {
+      alert("No se pudo crear la partida: " + (err.message || err));
+    } finally {
+      setGuardandoPartida(false);
+    }
+  };
 
   const FilaPartida = (p) => {
     const total = Number(p.monto_estimado) || 0;
@@ -311,36 +340,80 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
       </button>
 
       {open && (
-        <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto — Total y Usado por partida" onClose={() => setOpen(false)} width={620}>
-          <TextInput
-            autoFocus
-            value={busqueda}
-            onChange={(e) => setBusqueda(e.target.value)}
-            placeholder="Buscar…"
-            style={{ width: "100%", marginBottom: 12 }}
-          />
-          <div style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
-            {allowClear && (
-              <div
-                onClick={() => elegir("")}
-                style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12.5, color: T.textFaint, borderBottom: `1px solid ${T.borderSoft}` }}
-              >
-                — Sin vincular —
+        <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto — Total y Usado por partida" onClose={() => { setOpen(false); setCreando(false); }} width={620}>
+          {partidasApi && !creando && (
+            <Button type="button" variant="ghost" onClick={() => setCreando(true)} style={{ marginBottom: 10 }}>
+              + Nueva partida
+            </Button>
+          )}
+
+          {creando ? (
+            <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 6, padding: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>Nueva partida — {unidad}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
+                <Field label="Concepto" style={{ gridColumn: "span 2" }}>
+                  <TextInput autoFocus value={nuevaPartida.concepto} onChange={(e) => setNuevaPartida({ ...nuevaPartida, concepto: e.target.value })} />
+                </Field>
+                <Field label="Mes">
+                  <Select value={nuevaPartida.mes} onChange={(e) => setNuevaPartida({ ...nuevaPartida, mes: e.target.value })}>
+                    {MESES.map((m) => <option key={m}>{m}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Rubro">
+                  <Select value={nuevaPartida.rubro} onChange={(e) => setNuevaPartida({ ...nuevaPartida, rubro: e.target.value })}>
+                    {RUBROS.map((r) => <option key={r.rubro}>{r.rubro}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Proyecto">
+                  <TextInput value={nuevaPartida.proyecto} onChange={(e) => setNuevaPartida({ ...nuevaPartida, proyecto: e.target.value })} placeholder="Ej. Todos, Desh Gral…" />
+                </Field>
+                <Field label="Monto estimado">
+                  <TextInput type="number" step="0.01" value={nuevaPartida.monto_estimado} onChange={(e) => setNuevaPartida({ ...nuevaPartida, monto_estimado: e.target.value })} placeholder="0.00" />
+                </Field>
+                <Field label="Moneda">
+                  <Select value={nuevaPartida.moneda} onChange={(e) => setNuevaPartida({ ...nuevaPartida, moneda: e.target.value })}>
+                    {MONEDAS.map((m) => <option key={m}>{m}</option>)}
+                  </Select>
+                </Field>
               </div>
-            )}
-            {meses.map((mes) => (
-              <div key={mes}>
-                <div style={{ padding: "6px 12px", fontSize: 10.5, fontWeight: 700, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.05em", background: T.panelAlt }}>
-                  {mes}
-                </div>
-                {filtradas.filter((p) => p.mes === mes).map((p) => FilaPartida(p))}
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <Button type="button" onClick={crearPartida} disabled={guardandoPartida}>{guardandoPartida ? "Creando…" : "Crear y usar esta partida"}</Button>
+                <Button type="button" variant="ghost" onClick={() => { setCreando(false); setNuevaPartida(nuevaPartidaBlank); }}>Cancelar</Button>
               </div>
-            ))}
-            {sinMes.map((p) => FilaPartida(p))}
-            {!filtradas.length && (
-              <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>Sin resultados</div>
-            )}
-          </div>
+            </div>
+          ) : (
+            <>
+              <TextInput
+                autoFocus
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder="Buscar…"
+                style={{ width: "100%", marginBottom: 12 }}
+              />
+              <div style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
+                {allowClear && (
+                  <div
+                    onClick={() => elegir("")}
+                    style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12.5, color: T.textFaint, borderBottom: `1px solid ${T.borderSoft}` }}
+                  >
+                    — Sin vincular —
+                  </div>
+                )}
+                {meses.map((mes) => (
+                  <div key={mes}>
+                    <div style={{ padding: "6px 12px", fontSize: 10.5, fontWeight: 700, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.05em", background: T.panelAlt }}>
+                      {mes}
+                    </div>
+                    {filtradas.filter((p) => p.mes === mes).map((p) => FilaPartida(p))}
+                  </div>
+                ))}
+                {sinMes.map((p) => FilaPartida(p))}
+                {!filtradas.length && (
+                  <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>Sin resultados</div>
+                )}
+              </div>
+            </>
+          )}
         </Modal>
       )}
     </>
@@ -1075,6 +1148,74 @@ function EmptyState({ title, body }) {
   );
 }
 
+// Recuerda qué columnas están ocultas (por tabla, via localStorage).
+function useColumnVisibility(storageKey, columns) {
+  const [hidden, setHidden] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(storageKey) || "[]")); } catch { return new Set(); }
+  });
+  const toggle = (key) => {
+    setHidden((h) => {
+      const next = new Set(h);
+      next.has(key) ? next.delete(key) : next.add(key);
+      try { localStorage.setItem(storageKey, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
+  const showAll = () => {
+    setHidden(new Set());
+    try { localStorage.setItem(storageKey, JSON.stringify([])); } catch {}
+  };
+  const visible = columns.filter((c) => !hidden.has(c.key));
+  return { visible, hidden, toggle, showAll };
+}
+
+// Botón "Columnas" con un panel de checkboxes para mostrar/ocultar cada una.
+function ColumnVisibilityControl({ columns, hidden, onToggle, onShowAll }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const onClickFuera = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onClickFuera);
+    return () => document.removeEventListener("mousedown", onClickFuera);
+  }, []);
+  const ocultas = columns.filter((c) => hidden.has(c.key)).length;
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <Button variant={ocultas ? "primary" : "ghost"} onClick={() => setOpen((o) => !o)}>
+        Columnas{ocultas ? ` (${columns.length - ocultas}/${columns.length})` : ""}
+      </Button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 50,
+          background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8,
+          padding: 14, minWidth: 220, maxHeight: 360, overflowY: "auto",
+          boxShadow: "0 8px 24px rgba(35,42,49,0.14)",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>Columnas visibles</span>
+            {ocultas > 0 && (
+              <button
+                type="button"
+                onClick={onShowAll}
+                style={{ background: "none", border: "none", color: T.accent, fontSize: 11, cursor: "pointer", padding: 0 }}
+              >
+                Mostrar todas
+              </button>
+            )}
+          </div>
+          {columns.map((c) => (
+            <label key={c.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12.5, color: T.text, cursor: "pointer" }}>
+              <input type="checkbox" checked={!hidden.has(c.key)} onChange={() => onToggle(c.key)} />
+              {c.label}
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Panel desplegable de agrupamiento estilo Airtable: botón "Agrupar por" que abre
 // un panel con un renglón por nivel (campo + dirección + quitar), botón para agregar
 // subgrupo, y accesos para contraer/expandir todo. `options` = [{value,label}].
@@ -1701,7 +1842,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
     { key: "folio", label: "Folio", render: (p) => <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</span> },
     { key: "monto_estimado", label: "Monto", render: (p) => <span style={{ fontFamily: T.fontMono }}>{money(p.monto_estimado, p.moneda)}</span> },
   ];
-  const columnasVisiblesBase = COLUMNAS_PARTIDA.filter((c) => c.key === "proyecto" || !groupKeys.includes(c.key));
+  const colVisibility = useColumnVisibility("colv-partidas", COLUMNAS_PARTIDA);
+  const columnasVisiblesBase = COLUMNAS_PARTIDA.filter((c) => (c.key === "proyecto" || !groupKeys.includes(c.key)) && !colVisibility.hidden.has(c.key));
   const colWidths = useColumnWidths("colw-partidas");
   const { ordered: columnasVisibles, moveColumn } = useColumnOrder("colo-partidas", columnasVisiblesBase);
   const dragKeyRef = useRef(null);
@@ -1799,6 +1941,12 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
             groupedTree={grouped}
             collapsed={collapsedGroups}
             setCollapsed={setCollapsedGroups}
+          />
+          <ColumnVisibilityControl
+            columns={COLUMNAS_PARTIDA}
+            hidden={colVisibility.hidden}
+            onToggle={colVisibility.toggle}
+            onShowAll={colVisibility.showAll}
           />
         </div>
 
@@ -2029,7 +2177,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, transaccionesApi })
   );
 }
 
-function TransaccionesTab({ unidad, unidades, partidas, transacciones, transaccionesApi, proveedoresApi, cuentasApi }) {
+function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
@@ -2119,6 +2267,8 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
         <PartidaPickerButton
           partidas={partidasUnidad}
           transacciones={transUnidad}
+          partidasApi={partidasApi}
+          unidad={unidad}
           value={t.partida_id || ""}
           allowClear
           onChange={(nuevoId) => {
@@ -2138,7 +2288,8 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
     { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={/pagad/i.test(t.status) ? "teal" : "amber"}>{t.status}</Pill> : "—" },
   ];
-  const columnasVisiblesBase = COLUMNAS_TRANS.filter((c) => !groupKeys.includes(c.key));
+  const colVisibility = useColumnVisibility("colv-transacciones", COLUMNAS_TRANS);
+  const columnasVisiblesBase = COLUMNAS_TRANS.filter((c) => !groupKeys.includes(c.key) && !colVisibility.hidden.has(c.key));
   const colWidths = useColumnWidths("colw-transacciones");
   const { ordered: columnasVisibles, moveColumn } = useColumnOrder("colo-transacciones", columnasVisiblesBase);
   const dragKeyRef = useRef(null);
@@ -2249,6 +2400,12 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
             collapsed={collapsedGroups}
             setCollapsed={setCollapsedGroups}
           />
+          <ColumnVisibilityControl
+            columns={COLUMNAS_TRANS}
+            hidden={colVisibility.hidden}
+            onToggle={colVisibility.toggle}
+            onShowAll={colVisibility.showAll}
+          />
         </div>
 
         <div style={{ overflowX: "auto" }}>
@@ -2319,6 +2476,8 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
                       <PartidaPickerButton
                         partidas={partidasUnidad}
                         transacciones={transUnidad}
+                        partidasApi={partidasApi}
+                        unidad={unidad}
                         value=""
                         placeholder="Elegir partida…"
                         onChange={(nuevoId) => {
@@ -2353,6 +2512,8 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
               <PartidaPickerButton
                 partidas={partidasUnidad}
                 transacciones={transUnidad}
+                partidasApi={partidasApi}
+                unidad={unidad}
                 value={form.partida_id}
                 onChange={(id) => setForm({ ...form, partida_id: id })}
               />
@@ -2521,8 +2682,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
   const limpiarFechas = () => { setFechaDesde(""); setFechaHasta(""); };
   const filasOrdenadas = sortRows(filasFiltradas, sort, { importe: (r) => r.importe });
 
+  const colVisibility = useColumnVisibility("colv-reporte", COLUMNAS_REPORTE);
   const colWidths = useColumnWidths("colw-reporte");
-  const { ordered: columnas, moveColumn } = useColumnOrder("colo-reporte", COLUMNAS_REPORTE);
+  const { ordered: columnas, moveColumn } = useColumnOrder("colo-reporte", colVisibility.visible);
   const dragKeyRef = useRef(null);
   const onColDragStart = (e, key) => { dragKeyRef.current = key; e.dataTransfer.effectAllowed = "move"; };
   const onColDragOver = (e) => e.preventDefault();
@@ -2572,7 +2734,17 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
       <Panel
         title={`Reporte de pagos — ${unidad}`}
         subtitle={`${filasOrdenadas.length} de ${filas.length} transacciones`}
-        right={<Button onClick={exportarExcel}>Exportar a Excel</Button>}
+        right={
+          <div style={{ display: "flex", gap: 8 }}>
+            <ColumnVisibilityControl
+              columns={COLUMNAS_REPORTE}
+              hidden={colVisibility.hidden}
+              onToggle={colVisibility.toggle}
+              onShowAll={colVisibility.showAll}
+            />
+            <Button onClick={exportarExcel}>Exportar a Excel</Button>
+          </div>
+        }
       >
         <div style={{ marginBottom: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
           <Field label="Buscar">
@@ -2685,8 +2857,9 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
   const limpiarFechas = () => { setFechaDesde(""); setFechaHasta(""); };
   const filasOrdenadas = sortRows(filasFiltradas, sort, { importe: (r) => r.importe });
 
+  const colVisibility = useColumnVisibility("colv-reporte-direccion", COLUMNAS_REPORTE_DIRECCION);
   const colWidths = useColumnWidths("colw-reporte-direccion");
-  const { ordered: columnas, moveColumn } = useColumnOrder("colo-reporte-direccion", COLUMNAS_REPORTE_DIRECCION);
+  const { ordered: columnas, moveColumn } = useColumnOrder("colo-reporte-direccion", colVisibility.visible);
   const dragKeyRef = useRef(null);
   const onColDragStart = (e, key) => { dragKeyRef.current = key; e.dataTransfer.effectAllowed = "move"; };
   const onColDragOver = (e) => e.preventDefault();
@@ -2721,7 +2894,17 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
       <Panel
         title={`Reporte de Pagos Dirección — ${unidad}`}
         subtitle={`${filasOrdenadas.length} de ${filas.length} transacciones`}
-        right={<Button onClick={exportarExcel}>Exportar a Excel</Button>}
+        right={
+          <div style={{ display: "flex", gap: 8 }}>
+            <ColumnVisibilityControl
+              columns={COLUMNAS_REPORTE_DIRECCION}
+              hidden={colVisibility.hidden}
+              onToggle={colVisibility.toggle}
+              onShowAll={colVisibility.showAll}
+            />
+            <Button onClick={exportarExcel}>Exportar a Excel</Button>
+          </div>
+        }
       >
         <div style={{ marginBottom: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
           <Field label="Buscar">
@@ -3296,7 +3479,7 @@ export default function App() {
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
           {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} />}
-          {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} />}
           {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}

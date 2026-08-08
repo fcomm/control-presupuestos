@@ -92,8 +92,11 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.26.0";
+const APP_VERSION = "1.27.2";
 const CHANGELOG = [
+  { v: "1.27.2", desc: "Fix: editar una transacción agrupada fallaba porque colaban campos internos (_mes, _rubro, etc.) al guardar" },
+  { v: "1.27.1", desc: "Transacciones: simplifica filtros a solo Buscar + rango de fechas (quita Zona/Vínculo/Mes/Proyecto)" },
+  { v: "1.27.0", desc: "Nueva pestaña 'Reporte Pagos Dirección' — versión resumida (Día, Solicitante, Proyecto, Zona, Proveedor, Concepto, Importe, Moneda, A Partida, Status), mismo filtro de fechas" },
   { v: "1.26.0", desc: "Reporte de Pagos: agrega columna Día y filtro por rango de fechas (Desde/Hasta) — sirve para un solo día o un rango" },
   { v: "1.25.2", desc: "Quita el campo 'Días de crédito' por completo (formulario, tabla, carga masiva, Reporte de Pagos)" },
   { v: "1.25.1", desc: "Carga de proveedores reconoce columna 'Compañía' (OSB/CTM/ISE) para decidir a quién pertenece cada fila, sin depender del nombre de la hoja" },
@@ -1904,7 +1907,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
   const transUnidad = transacciones.filter((t) => partidasUnidad.some((p) => p.id === t.partida_id));
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
-  const [filtros, setFiltros] = useState({ texto: "", zona: "Todas", vinculo: "Todas", mes: "Todos", proyecto: "Todos" });
+  const [filtros, setFiltros] = useState({ texto: "", fechaDesde: "", fechaHasta: "" });
   const [sort, setSort] = useState({ key: "dia", dir: "desc" });
 
   // Filtros solo para ubicar la partida correcta dentro del selector del modal —
@@ -1924,11 +1927,10 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
     : partidasParaSelect;
 
   const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
-  const zonasDisponibles = [...new Set(transUnidad.map((t) => t.zona).filter(Boolean))].sort();
-  const mesesFiltroTrans = MESES.filter((m) => transUnidad.some((t) => partidaDe(t)?.mes === m));
-  const proyectosFiltroTrans = [...new Set(transUnidad.map((t) => partidaDe(t)?.proyecto).filter(Boolean))].sort();
 
   const transFiltradas = transUnidad.filter((t) => {
+    if (filtros.fechaDesde && (!t.dia || t.dia < filtros.fechaDesde)) return false;
+    if (filtros.fechaHasta && (!t.dia || t.dia > filtros.fechaHasta)) return false;
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const partida = partidaDe(t);
@@ -1936,15 +1938,10 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
         .some((v) => (v || "").toLowerCase().includes(q));
       if (!enTexto) return false;
     }
-    if (filtros.zona !== "Todas" && t.zona !== filtros.zona) return false;
-    if (filtros.vinculo === "Vinculadas" && !t.partida_id) return false;
-    if (filtros.vinculo === "Sin vincular" && t.partida_id) return false;
-    if (filtros.mes !== "Todos" && partidaDe(t)?.mes !== filtros.mes) return false;
-    if (filtros.proyecto !== "Todos" && partidaDe(t)?.proyecto !== filtros.proyecto) return false;
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.zona !== "Todas" || filtros.vinculo !== "Todas" || filtros.mes !== "Todos" || filtros.proyecto !== "Todos";
-  const limpiarFiltros = () => setFiltros({ texto: "", zona: "Todas", vinculo: "Todas", mes: "Todos", proyecto: "Todos" });
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta;
+  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "" });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
@@ -2043,7 +2040,8 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
   const submit = async (e) => {
     e.preventDefault();
     if (!form.partida_id || !form.importe) return;
-    const { id, ...rest } = form;
+    const { id, ...restRaw } = form;
+    const rest = Object.fromEntries(Object.entries(restRaw).filter(([k]) => !k.startsWith("_")));
     rest.proveedor_id = rest.proveedor_id || null;
     rest.cuenta_id = rest.cuenta_id || null;
     setSaving(true);
@@ -2063,7 +2061,14 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
     }
   };
   const openNew = () => { setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" }); setEditId(null); setModalOpen(true); };
-  const startEdit = (t) => { setForm(t); setEditId(t.id); setModalOpen(true); };
+  const startEdit = (t) => {
+    // Quita campos internos (_proyecto, _rubro, _mes, _vinculo) que se agregan
+    // solo para el agrupamiento — no existen como columnas reales en Supabase.
+    const limpio = Object.fromEntries(Object.entries(t).filter(([k]) => !k.startsWith("_")));
+    setForm(limpio);
+    setEditId(t.id);
+    setModalOpen(true);
+  };
   const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" }); };
   const remove = (id) => transaccionesApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
 
@@ -2105,30 +2110,11 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
               style={{ width: 220 }}
             />
           </Field>
-          <Field label="Zona">
-            <Select value={filtros.zona} onChange={(e) => setFiltros({ ...filtros, zona: e.target.value })} style={{ width: 170 }}>
-              <option>Todas</option>
-              {zonasDisponibles.map((z) => <option key={z}>{z}</option>)}
-            </Select>
+          <Field label="Desde">
+            <TextInput type="date" value={filtros.fechaDesde} onChange={(e) => setFiltros({ ...filtros, fechaDesde: e.target.value })} />
           </Field>
-          <Field label="Vínculo">
-            <Select value={filtros.vinculo} onChange={(e) => setFiltros({ ...filtros, vinculo: e.target.value })} style={{ width: 150 }}>
-              <option>Todas</option>
-              <option>Vinculadas</option>
-              <option>Sin vincular</option>
-            </Select>
-          </Field>
-          <Field label="Mes (de la partida)">
-            <Select value={filtros.mes} onChange={(e) => setFiltros({ ...filtros, mes: e.target.value })} style={{ width: 150 }}>
-              <option>Todos</option>
-              {mesesFiltroTrans.map((m) => <option key={m}>{m}</option>)}
-            </Select>
-          </Field>
-          <Field label="Proyecto (de la partida)">
-            <Select value={filtros.proyecto} onChange={(e) => setFiltros({ ...filtros, proyecto: e.target.value })} style={{ width: 170 }}>
-              <option>Todos</option>
-              {proyectosFiltroTrans.map((p) => <option key={p}>{p}</option>)}
-            </Select>
+          <Field label="Hasta">
+            <TextInput type="date" value={filtros.fechaHasta} onChange={(e) => setFiltros({ ...filtros, fechaHasta: e.target.value })} />
           </Field>
           {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
           <div style={{ width: 1, alignSelf: "stretch", background: T.borderSoft, margin: "0 4px" }} />
@@ -2474,6 +2460,155 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
 
       <Panel
         title={`Reporte de pagos — ${unidad}`}
+        subtitle={`${filasOrdenadas.length} de ${filas.length} transacciones`}
+        right={<Button onClick={exportarExcel}>Exportar a Excel</Button>}
+      >
+        <div style={{ marginBottom: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+          <Field label="Buscar">
+            <TextInput
+              value={buscar}
+              onChange={(e) => setBuscar(e.target.value)}
+              placeholder="Solicitante, proveedor, concepto, folio…"
+              style={{ width: 280 }}
+            />
+          </Field>
+          <Field label="Desde">
+            <TextInput type="date" value={fechaDesde} onChange={(e) => setFechaDesde(e.target.value)} />
+          </Field>
+          <Field label="Hasta">
+            <TextInput type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)} />
+          </Field>
+          {filtrosFechaActivos && <Button variant="ghost" onClick={limpiarFechas}>Limpiar fechas</Button>}
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ ...tableStyle, tableLayout: "fixed" }}>
+            <colgroup>
+              {columnas.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
+            </colgroup>
+            <thead>
+              <tr>
+                {columnas.map((c) => (
+                  <SortableTh
+                    key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
+                    width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
+                    onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={onColDragOver} onDrop={(e) => onColDrop(e, c.key)}
+                  />
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filasOrdenadas.map((f) => (
+                <tr key={f.id}>
+                  {columnas.map((c) => (
+                    <td key={c.key} style={c.key === "importe" ? { ...tdStyle, fontFamily: T.fontMono } : tdStyle}>
+                      {c.key === "importe" ? money(f.importe, f.moneda) : (f[c.key] || "—")}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {!filasOrdenadas.length && (
+                <tr><td colSpan={columnas.length} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna transacción coincide con la búsqueda</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+/* ----------------------------------------------------------------------
+   TAB: REPORTE DE PAGOS DIRECCIÓN
+---------------------------------------------------------------------- */
+const COLUMNAS_REPORTE_DIRECCION = [
+  { key: "dia", label: "Día" },
+  { key: "solicitante", label: "Solicitante" },
+  { key: "proyecto", label: "Proyecto" },
+  { key: "zona", label: "Zona" },
+  { key: "proveedor", label: "Proveedor" },
+  { key: "concepto", label: "Concepto" },
+  { key: "importe", label: "Importe" },
+  { key: "moneda", label: "Moneda" },
+  { key: "a_partida", label: "A Partida" },
+  { key: "status", label: "Status" },
+];
+
+function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedoresApi }) {
+  const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
+  const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
+  const transUnidad = transacciones.filter(
+    (t) => partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad
+  );
+
+  const filas = transUnidad.map((t) => {
+    const partida = partidasUnidad.find((p) => p.id === t.partida_id);
+    const proveedor = t.proveedor_id ? proveedoresUnidad.find((p) => p.id === t.proveedor_id) : null;
+    return {
+      id: t.id,
+      dia: t.dia || "",
+      solicitante: t.solicitante || "",
+      proyecto: t.proyecto || "",
+      zona: t.zona || "",
+      proveedor: proveedor?.nombre || t.proveedor || "",
+      concepto: t.concepto_detallado || "",
+      importe: Number(t.importe) || 0,
+      moneda: t.moneda || "MXN",
+      a_partida: partida?.folio || "",
+      status: t.status || "",
+    };
+  });
+
+  const [buscar, setBuscar] = useState("");
+  const [fechaDesde, setFechaDesde] = useState("");
+  const [fechaHasta, setFechaHasta] = useState("");
+  const [sort, setSort] = useState({ key: "dia", dir: "desc" });
+  const filasFiltradas = filas.filter((f) => {
+    if (fechaDesde && (!f.dia || f.dia < fechaDesde)) return false;
+    if (fechaHasta && (!f.dia || f.dia > fechaHasta)) return false;
+    if (!buscar.trim()) return true;
+    const q = buscar.trim().toLowerCase();
+    return [f.solicitante, f.proveedor, f.concepto, f.a_partida, f.proyecto, f.zona]
+      .some((v) => (v || "").toString().toLowerCase().includes(q));
+  });
+  const filtrosFechaActivos = fechaDesde || fechaHasta;
+  const limpiarFechas = () => { setFechaDesde(""); setFechaHasta(""); };
+  const filasOrdenadas = sortRows(filasFiltradas, sort, { importe: (r) => r.importe });
+
+  const colWidths = useColumnWidths("colw-reporte-direccion");
+  const { ordered: columnas, moveColumn } = useColumnOrder("colo-reporte-direccion", COLUMNAS_REPORTE_DIRECCION);
+  const dragKeyRef = useRef(null);
+  const onColDragStart = (e, key) => { dragKeyRef.current = key; e.dataTransfer.effectAllowed = "move"; };
+  const onColDragOver = (e) => e.preventDefault();
+  const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
+
+  const exportarExcel = () => {
+    const data = filasOrdenadas.map((f) => Object.fromEntries(columnas.map((c) => [c.label, f[c.key]])));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wbx = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wbx, ws, "Reporte pagos direccion");
+    XLSX.writeFile(wbx, `reporte-pagos-direccion-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const totalImporte = filasOrdenadas.reduce((s, f) => s + f.importe, 0);
+
+  if (!transUnidad.length) {
+    return (
+      <EmptyState
+        title="Sin transacciones para reportar"
+        body={`Todavía no hay transacciones registradas para ${unidad}. Captúralas o impórtalas desde la pestaña Transacciones.`}
+      />
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        <KpiCard label="Transacciones" value={String(filasOrdenadas.length)} />
+        <KpiCard label="Importe total (filtrado)" value={money(totalImporte)} />
+      </div>
+
+      <Panel
+        title={`Reporte de Pagos Dirección — ${unidad}`}
         subtitle={`${filasOrdenadas.length} de ${filas.length} transacciones`}
         right={<Button onClick={exportarExcel}>Exportar a Excel</Button>}
       >
@@ -2949,6 +3084,7 @@ export default function App() {
     { id: "partidas", label: "Partidas" },
     { id: "transacciones", label: "Transacciones" },
     { id: "reporte", label: "Reporte de Pagos" },
+    { id: "reporte-direccion", label: "Reporte Pagos Dirección" },
     { id: "catalogo", label: "Catálogo" },
   ];
 
@@ -3039,6 +3175,7 @@ export default function App() {
           {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} />}
           {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} />}
           {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
         </>
       )}

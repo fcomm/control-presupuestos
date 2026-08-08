@@ -60,8 +60,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.16.0";
+const APP_VERSION = "1.16.1";
 const CHANGELOG = [
+  { v: "1.16.1", desc: "Transacciones: Proyecto ahora selecciona del catálogo (mismos marcadores que Partidas); Status es Pagado/No Pagado" },
   { v: "1.16.0", desc: "Transacciones: agrega columnas Proyecto y Status (base de datos, importador, formulario, tabla, agrupamiento)" },
   { v: "1.15.2", desc: "Transacciones: botón para eliminar en lote las 'sin vincular' (recuperación tras un link roto)" },
   { v: "1.15.1", desc: "Fix crítico: la carga masiva ahora actualiza por folio en vez de duplicar o borrar — ya no rompe el vínculo con transacciones existentes" },
@@ -1563,8 +1564,10 @@ function ImportarTransaccionesPanel({ partidas, transaccionesApi }) {
   );
 }
 
-function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi }) {
+function TransaccionesTab({ unidad, unidades, partidas, transacciones, transaccionesApi }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
+  const proyectosUnidad = unidades[unidad]?.proyectos || [];
+  const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
   const blank = { partida_id: partidasUnidad[0]?.id || "", dia: "", solicitante: "", proyecto: "", area: "", proveedor: "", concepto_detallado: "", importe: "", moneda: "MXN", status: "" };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
@@ -1910,7 +1913,10 @@ function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi })
               <TextInput value={form.solicitante} onChange={(e) => setForm({ ...form, solicitante: e.target.value })} />
             </Field>
             <Field label="Proyecto">
-              <TextInput value={form.proyecto} onChange={(e) => setForm({ ...form, proyecto: e.target.value })} />
+              <Select value={form.proyecto} onChange={(e) => setForm({ ...form, proyecto: e.target.value })}>
+                <option value="">— Sin especificar —</option>
+                {marcadoresProyecto.map((m) => <option key={m}>{m}</option>)}
+              </Select>
             </Field>
             <Field label="Área">
               <TextInput value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
@@ -1930,7 +1936,11 @@ function TransaccionesTab({ unidad, partidas, transacciones, transaccionesApi })
               </Select>
             </Field>
             <Field label="Status">
-              <TextInput value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })} placeholder="Ej. Pagado, No Pagado" />
+              <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+                <option value="">— Sin especificar —</option>
+                <option>Pagado</option>
+                <option>No Pagado</option>
+              </Select>
             </Field>
             <div style={{ gridColumn: "span 4", display: "flex", gap: 10, marginTop: 4 }}>
               <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Registrar transacción"}</Button>
@@ -2143,7 +2153,7 @@ export default function App() {
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
           {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} />}
-          {tab === "transacciones" && <TransaccionesTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} />}
+          {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} />}
           {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} />}
         </>
       )}

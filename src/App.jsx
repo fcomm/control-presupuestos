@@ -50,7 +50,7 @@ const RUBROS = [
 
 const UNIDADES_BASE = ["OSB", "CTM", "ISE"];
 
-const MONEDAS = ["MXN", "USD"];
+const MONEDAS = ["MXP", "USD"];
 const ZONAS = ["Queretaro", "Poza Rica", "Paraiso", "Altamira", "Cerro Azul", "CDMX", "Guaymas", "Torreon", "Rosarito", "Agua Dulce", "Cotaxtla"];
 
 // Catálogos oficiales del SAT (CFDI)
@@ -92,8 +92,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.32.2";
+const APP_VERSION = "1.33.0";
 const CHANGELOG = [
+  { v: "1.33.0", desc: "Homologa 'MXN' a 'MXP' en todo el código (defaults, catálogo de monedas, importadores, reportes) — corre homologar-mxn-a-mxp.sql para actualizar los datos ya guardados" },
+  { v: "1.32.3", desc: "Fix global: texto largo sin espacios (CLABE, RFC, folios) ya no se sale de su columna y se encima con la siguiente — aplica a todas las tablas" },
   { v: "1.32.2", desc: "Reporte de Pagos y Reporte Pagos Dirección: separa el KPI de Importe total en Total MXN y Total USD (antes se sumaban las dos divisas juntas)" },
   { v: "1.32.1", desc: "Filas alternadas (cebra) en todas las tablas de la app, para facilitar la lectura" },
   { v: "1.32.0", desc: "Tabla 'sin vincular' de Transacciones: agrega filtro Desde/Hasta, Agrupar por, y control de columnas — mismo patrón que las demás tablas" },
@@ -194,7 +196,7 @@ function buildExtra(row, headers, promotedIdx) {
   return extra;
 }
 
-const money = (n, moneda = "MXN") =>
+const money = (n, moneda = "MXP") =>
   (moneda === "USD" ? "$" : "$") +
   (Number(n) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) +
   (moneda === "USD" ? " USD" : "");
@@ -275,7 +277,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
 
   const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
-  const nuevaPartidaBlank = { mes: MESES[0], concepto: "", rubro: RUBROS[0]?.rubro || "", proyecto: proyectosOpciones[0] || "", monto_estimado: "", moneda: "MXN" };
+  const nuevaPartidaBlank = { mes: MESES[0], concepto: "", rubro: RUBROS[0]?.rubro || "", proyecto: proyectosOpciones[0] || "", monto_estimado: "", moneda: "MXP" };
   const [creando, setCreando] = useState(false);
   const [nuevaPartida, setNuevaPartida] = useState(nuevaPartidaBlank);
   const [guardandoPartida, setGuardandoPartida] = useState(false);
@@ -515,7 +517,7 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
       const concepto = col.concepto !== -1 ? row[col.concepto] : null;
       if (concepto === null || concepto === undefined || String(concepto).trim() === "") continue;
 
-      const moneda = col.moneda !== -1 && row[col.moneda] ? String(row[col.moneda]).trim().toUpperCase() : "MXN";
+      const moneda = col.moneda !== -1 && row[col.moneda] ? String(row[col.moneda]).trim().toUpperCase() : "MXP";
       let monto = 0;
       if (moneda === "USD" && col.subtotalUSD !== -1 && typeof row[col.subtotalUSD] === "number") {
         monto = row[col.subtotalUSD];
@@ -631,7 +633,7 @@ function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
         swift: (col.swift !== -1 && row[col.swift]) ? String(row[col.swift]).trim() : "",
         clabe: (col.clabe !== -1 && row[col.clabe]) ? String(row[col.clabe]).trim() : "",
         numero_cuenta: (col.cuenta !== -1 && row[col.cuenta]) ? String(row[col.cuenta]).trim() : "",
-        divisa: (col.divisa !== -1 && row[col.divisa]) ? String(row[col.divisa]).trim().toUpperCase() : "MXN",
+        divisa: (col.divisa !== -1 && row[col.divisa]) ? String(row[col.divisa]).trim().toUpperCase() : "MXP",
       };
       const tieneCuenta = cuenta.banco || cuenta.clabe || cuenta.numero_cuenta || cuenta.sucursal || cuenta.swift;
 
@@ -749,7 +751,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = []) {
         proveedor_id: proveedorMatch ? proveedorMatch.id : "",
         concepto_detallado: (col.concepto !== -1 && row[col.concepto]) ? String(row[col.concepto]).trim() : "",
         importe,
-        moneda: (col.moneda !== -1 && row[col.moneda]) ? String(row[col.moneda]).trim().toUpperCase() : "MXN",
+        moneda: (col.moneda !== -1 && row[col.moneda]) ? String(row[col.moneda]).trim().toUpperCase() : "MXP",
         status: (col.status !== -1 && row[col.status]) ? String(row[col.status]).trim() : "",
         folio_compra_sae: (col.folioCompraSae !== -1 && row[col.folioCompraSae]) ? String(row[col.folioCompraSae]).trim() : "",
         folio_factura: (col.folioFactura !== -1 && row[col.folioFactura]) ? String(row[col.folioFactura]).trim() : "",
@@ -1060,7 +1062,7 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 }
 
 function ResumenPivotPanel({ partidasUnidad }) {
-  const partidasMXN = partidasUnidad.filter((p) => (p.moneda || "MXN") === "MXN");
+  const partidasMXN = partidasUnidad.filter((p) => (p.moneda || "MXP") === "MXP");
   const meses = MESES.filter((m) => partidasMXN.some((p) => p.mes === m));
   const [collapsed, setCollapsed] = useState(new Set());
   const toggle = (path) => setCollapsed((prev) => {
@@ -1081,7 +1083,7 @@ function ResumenPivotPanel({ partidasUnidad }) {
   });
 
   return (
-    <Panel title="Resumen presupuestado por proyecto y rubro" subtitle="Solo montos en MXN — clic en una fila para expandir/colapsar">
+    <Panel title="Resumen presupuestado por proyecto y rubro" subtitle="Solo montos en MXP — clic en una fila para expandir/colapsar">
       <div style={{ overflowX: "auto" }}>
         <table style={tableStyle}>
           <thead>
@@ -1652,7 +1654,7 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
 
 const tableStyle = { width: "100%", borderCollapse: "collapse", fontSize: 12.5 };
 const thStyle = { textAlign: "left", padding: "8px 10px", color: T.textFaint, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", borderBottom: `1px solid ${T.border}` };
-const tdStyle = { padding: "9px 10px", borderBottom: `1px solid ${T.borderSoft}`, color: T.text };
+const tdStyle = { padding: "9px 10px", borderBottom: `1px solid ${T.borderSoft}`, color: T.text, overflowWrap: "break-word", wordBreak: "break-word" };
 
 /* ----------------------------------------------------------------------
    TABS: PARTIDAS
@@ -1788,7 +1790,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
     const anios = partidas.filter((p) => p.unidad === unidad).map((p) => p.anio).filter(Boolean);
     return anios.length ? Math.max(...anios) : new Date().getFullYear();
   })();
-  const blank = { unidad, mes: "Agosto", anio: anioDefault, smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: RUBROS[0].categorias[0], proyecto: marcadores[0] || "", monto_estimado: "", moneda: "MXN", folio: "" };
+  const blank = { unidad, mes: "Agosto", anio: anioDefault, smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: RUBROS[0].categorias[0], proyecto: marcadores[0] || "", monto_estimado: "", moneda: "MXP", folio: "" };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -2191,7 +2193,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const blank = {
     partida_id: partidasUnidad[0]?.id || "", dia: "", solicitante: "", proyecto: "", zona: "", area: "",
-    proveedor: "", proveedor_id: "", cuenta_id: "", concepto_detallado: "", importe: "", moneda: "MXN", status: "",
+    proveedor: "", proveedor_id: "", cuenta_id: "", concepto_detallado: "", importe: "", moneda: "MXP", status: "",
     folio_compra_sae: "", folio_factura: "", forma_pago: "", metodo_pago: "",
   };
   const [form, setForm] = useState(blank);
@@ -2755,7 +2757,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
       banco: cuenta?.banco || "",
       clabe: cuenta?.clabe || "",
       importe: Number(t.importe) || 0,
-      moneda: t.moneda || "MXN",
+      moneda: t.moneda || "MXP",
       _vinculadoProveedor: !!proveedor,
       _vinculadoCuenta: !!cuenta,
     };
@@ -2793,7 +2795,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
     XLSX.writeFile(wbx, `reporte-pagos-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  const totalMXN = filasOrdenadas.filter((f) => f.moneda === "MXN").reduce((s, f) => s + f.importe, 0);
+  const totalMXN = filasOrdenadas.filter((f) => f.moneda === "MXP").reduce((s, f) => s + f.importe, 0);
   const totalUSD = filasOrdenadas.filter((f) => f.moneda === "USD").reduce((s, f) => s + f.importe, 0);
   const sinProveedorVinculado = filas.filter((f) => !f._vinculadoProveedor && f.proveedor).length;
   const sinCuentaVinculada = filas.filter((f) => f._vinculadoProveedor && !f._vinculadoCuenta).length;
@@ -2811,7 +2813,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <KpiCard label="Transacciones" value={String(filasOrdenadas.length)} />
-        <KpiCard label="Total MXN (filtrado)" value={money(totalMXN, "MXN")} />
+        <KpiCard label="Total MXP (filtrado)" value={money(totalMXN, "MXP")} />
         <KpiCard label="Total USD (filtrado)" value={money(totalUSD, "USD")} />
       </div>
 
@@ -2932,7 +2934,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
       proveedor: proveedor?.nombre || t.proveedor || "",
       concepto: t.concepto_detallado || "",
       importe: Number(t.importe) || 0,
-      moneda: t.moneda || "MXN",
+      moneda: t.moneda || "MXP",
       a_partida: partida?.folio || "",
       status: t.status || "",
     };
@@ -2970,7 +2972,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
     XLSX.writeFile(wbx, `reporte-pagos-direccion-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  const totalMXN = filasOrdenadas.filter((f) => f.moneda === "MXN").reduce((s, f) => s + f.importe, 0);
+  const totalMXN = filasOrdenadas.filter((f) => f.moneda === "MXP").reduce((s, f) => s + f.importe, 0);
   const totalUSD = filasOrdenadas.filter((f) => f.moneda === "USD").reduce((s, f) => s + f.importe, 0);
 
   if (!transUnidad.length) {
@@ -2986,7 +2988,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <KpiCard label="Transacciones" value={String(filasOrdenadas.length)} />
-        <KpiCard label="Total MXN (filtrado)" value={money(totalMXN, "MXN")} />
+        <KpiCard label="Total MXP (filtrado)" value={money(totalMXN, "MXP")} />
         <KpiCard label="Total USD (filtrado)" value={money(totalUSD, "USD")} />
       </div>
 
@@ -3283,7 +3285,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
   const [saving, setSaving] = useState(false);
   const [buscar, setBuscar] = useState("");
 
-  const cuentaBlank = { banco: "", sucursal: "", swift: "", clabe: "", numero_cuenta: "", divisa: "MXN" };
+  const cuentaBlank = { banco: "", sucursal: "", swift: "", clabe: "", numero_cuenta: "", divisa: "MXP" };
   const [nuevaCuenta, setNuevaCuenta] = useState(cuentaBlank);
   const cuentasDelProveedor = editId ? cuentasApi.rows.filter((c) => c.proveedor_id === editId) : [];
 
@@ -3411,7 +3413,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
                         <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.swift || "—"}</td>
                         <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.clabe || "—"}</td>
                         <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.numero_cuenta || "—"}</td>
-                        <td style={tdStyle}><Pill>{c.divisa || "MXN"}</Pill></td>
+                        <td style={tdStyle}><Pill>{c.divisa || "MXP"}</Pill></td>
                         <td style={tdStyle}><Button variant="danger" onClick={() => eliminarCuenta(c.id)}>Eliminar</Button></td>
                       </tr>
                     ))}

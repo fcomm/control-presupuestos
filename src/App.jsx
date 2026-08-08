@@ -60,8 +60,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.16.1";
+const APP_VERSION = "1.17.0";
 const CHANGELOG = [
+  { v: "1.17.0", desc: "Transacciones: agrega Zona (reemplaza a Área en captura/tabla/filtro/agrupamiento; Área queda en la BD sin usarse)" },
   { v: "1.16.1", desc: "Transacciones: Proyecto ahora selecciona del catálogo (mismos marcadores que Partidas); Status es Pagado/No Pagado" },
   { v: "1.16.0", desc: "Transacciones: agrega columnas Proyecto y Status (base de datos, importador, formulario, tabla, agrupamiento)" },
   { v: "1.15.2", desc: "Transacciones: botón para eliminar en lote las 'sin vincular' (recuperación tras un link roto)" },
@@ -347,7 +348,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas) {
       smi: findCol(headers, ["smi"]),
       solicitante: findCol(headers, ["solicitante"]),
       proyecto: findExactCol(headers, ["proyecto"]),
-      area: findExactCol(headers, ["area"]),
+      zona: findExactCol(headers, ["zona"]),
       proveedor: findCol(headers, ["nombre", "denominacion"], ["razon", "social"], ["proveedor"]),
       concepto: findCol(headers, ["concepto"]),
       importe: findCol(headers, ["importe"]),
@@ -384,7 +385,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas) {
         dia: col.dia !== -1 ? toISODate(row[col.dia]) : "",
         solicitante: (col.solicitante !== -1 && row[col.solicitante]) ? String(row[col.solicitante]).trim() : "",
         proyecto: (col.proyecto !== -1 && row[col.proyecto]) ? String(row[col.proyecto]).trim() : "",
-        area: (col.area !== -1 && row[col.area]) ? String(row[col.area]).trim() : "",
+        zona: (col.zona !== -1 && row[col.zona]) ? String(row[col.zona]).trim() : "",
         proveedor: (col.proveedor !== -1 && row[col.proveedor]) ? String(row[col.proveedor]).trim() : "",
         concepto_detallado: (col.concepto !== -1 && row[col.concepto]) ? String(row[col.concepto]).trim() : "",
         importe,
@@ -1568,7 +1569,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
-  const blank = { partida_id: partidasUnidad[0]?.id || "", dia: "", solicitante: "", proyecto: "", area: "", proveedor: "", concepto_detallado: "", importe: "", moneda: "MXN", status: "" };
+  const blank = { partida_id: partidasUnidad[0]?.id || "", dia: "", solicitante: "", proyecto: "", zona: "", proveedor: "", concepto_detallado: "", importe: "", moneda: "MXN", status: "" };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -1576,7 +1577,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
   const transUnidad = transacciones.filter((t) => partidasUnidad.some((p) => p.id === t.partida_id));
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
-  const [filtros, setFiltros] = useState({ texto: "", area: "Todas", vinculo: "Todas", mes: "Todos", proyecto: "Todos" });
+  const [filtros, setFiltros] = useState({ texto: "", zona: "Todas", vinculo: "Todas", mes: "Todos", proyecto: "Todos" });
   const [sort, setSort] = useState({ key: "dia", dir: "desc" });
 
   // Filtros solo para ubicar la partida correcta dentro del selector del modal —
@@ -1596,7 +1597,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
     : partidasParaSelect;
 
   const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
-  const areasDisponibles = [...new Set(transUnidad.map((t) => t.area).filter(Boolean))].sort();
+  const zonasDisponibles = [...new Set(transUnidad.map((t) => t.zona).filter(Boolean))].sort();
   const mesesFiltroTrans = MESES.filter((m) => transUnidad.some((t) => partidaDe(t)?.mes === m));
   const proyectosFiltroTrans = [...new Set(transUnidad.map((t) => partidaDe(t)?.proyecto).filter(Boolean))].sort();
 
@@ -1604,19 +1605,19 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const partida = partidaDe(t);
-      const enTexto = [t.proveedor, t.concepto_detallado, t.solicitante, t.area, partida?.folio, partida?.concepto]
+      const enTexto = [t.proveedor, t.concepto_detallado, t.solicitante, t.zona, partida?.folio, partida?.concepto]
         .some((v) => (v || "").toLowerCase().includes(q));
       if (!enTexto) return false;
     }
-    if (filtros.area !== "Todas" && t.area !== filtros.area) return false;
+    if (filtros.zona !== "Todas" && t.zona !== filtros.zona) return false;
     if (filtros.vinculo === "Vinculadas" && !t.partida_id) return false;
     if (filtros.vinculo === "Sin vincular" && t.partida_id) return false;
     if (filtros.mes !== "Todos" && partidaDe(t)?.mes !== filtros.mes) return false;
     if (filtros.proyecto !== "Todos" && partidaDe(t)?.proyecto !== filtros.proyecto) return false;
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.area !== "Todas" || filtros.vinculo !== "Todas" || filtros.mes !== "Todos" || filtros.proyecto !== "Todos";
-  const limpiarFiltros = () => setFiltros({ texto: "", area: "Todas", vinculo: "Todas", mes: "Todos", proyecto: "Todos" });
+  const filtrosActivos = filtros.texto.trim() || filtros.zona !== "Todas" || filtros.vinculo !== "Todas" || filtros.mes !== "Todos" || filtros.proyecto !== "Todos";
+  const limpiarFiltros = () => setFiltros({ texto: "", zona: "Todas", vinculo: "Todas", mes: "Todos", proyecto: "Todos" });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
@@ -1634,7 +1635,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
 
   const GROUP_OPCIONES_TRANS = [
     { value: "", label: "Sin agrupar" },
-    { value: "area", label: "Área" },
+    { value: "zona", label: "Zona" },
     { value: "proveedor", label: "Proveedor" },
     { value: "proyecto", label: "Proyecto (transacción)" },
     { value: "status", label: "Status" },
@@ -1678,7 +1679,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
     },
     { key: "proveedor", label: "Proveedor", render: (t) => t.proveedor },
     { key: "proyecto", label: "Proyecto", render: (t) => t.proyecto || "—" },
-    { key: "area", label: "Área", render: (t) => t.area || "—" },
+    { key: "zona", label: "Zona", render: (t) => t.zona || "—" },
     { key: "concepto_detallado", label: "Concepto", render: (t) => <span style={{ color: T.textDim }}>{t.concepto_detallado}</span> },
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
     { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={/pagad/i.test(t.status) ? "teal" : "amber"}>{t.status}</Pill> : "—" },
@@ -1743,10 +1744,10 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
               style={{ width: 220 }}
             />
           </Field>
-          <Field label="Área">
-            <Select value={filtros.area} onChange={(e) => setFiltros({ ...filtros, area: e.target.value })} style={{ width: 170 }}>
+          <Field label="Zona">
+            <Select value={filtros.zona} onChange={(e) => setFiltros({ ...filtros, zona: e.target.value })} style={{ width: 170 }}>
               <option>Todas</option>
-              {areasDisponibles.map((a) => <option key={a}>{a}</option>)}
+              {zonasDisponibles.map((z) => <option key={z}>{z}</option>)}
             </Select>
           </Field>
           <Field label="Vínculo">
@@ -1918,8 +1919,8 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
                 {marcadoresProyecto.map((m) => <option key={m}>{m}</option>)}
               </Select>
             </Field>
-            <Field label="Área">
-              <TextInput value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
+            <Field label="Zona">
+              <TextInput value={form.zona} onChange={(e) => setForm({ ...form, zona: e.target.value })} />
             </Field>
             <Field label="Proveedor / razón social">
               <TextInput value={form.proveedor} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} />

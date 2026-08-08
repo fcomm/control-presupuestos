@@ -52,6 +52,37 @@ const UNIDADES_BASE = ["OSB", "CTM", "ISE"];
 
 const MONEDAS = ["MXN", "USD"];
 const ZONAS = ["Queretaro", "Poza Rica", "Paraiso", "Altamira", "Cerro Azul", "CDMX", "Guaymas", "Torreon", "Rosarito", "Agua Dulce", "Cotaxtla"];
+
+// Catálogos oficiales del SAT (CFDI)
+const FORMAS_PAGO = [
+  { value: "01", label: "01 - Efectivo" },
+  { value: "02", label: "02 - Cheque nominativo" },
+  { value: "03", label: "03 - Transferencia electrónica de fondos" },
+  { value: "04", label: "04 - Tarjeta de crédito" },
+  { value: "05", label: "05 - Monedero electrónico" },
+  { value: "06", label: "06 - Dinero electrónico" },
+  { value: "08", label: "08 - Vales de despensa" },
+  { value: "12", label: "12 - Dación en pago" },
+  { value: "13", label: "13 - Pago por subrogación" },
+  { value: "14", label: "14 - Pago por consignación" },
+  { value: "15", label: "15 - Condonación" },
+  { value: "17", label: "17 - Compensación" },
+  { value: "23", label: "23 - Novación" },
+  { value: "24", label: "24 - Confusión" },
+  { value: "25", label: "25 - Remisión de deuda" },
+  { value: "26", label: "26 - Prescripción o caducidad" },
+  { value: "27", label: "27 - A satisfacción del acreedor" },
+  { value: "28", label: "28 - Tarjeta de débito" },
+  { value: "29", label: "29 - Tarjeta de servicios" },
+  { value: "30", label: "30 - Aplicación de anticipos" },
+  { value: "31", label: "31 - Intermediario pagos" },
+  { value: "99", label: "99 - Por definir" },
+];
+const METODOS_PAGO = [
+  { value: "PUE", label: "PUE - Pago en una sola exhibición" },
+  { value: "PPD", label: "PPD - Pago en parcialidades o diferido" },
+];
+
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
 const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10));
@@ -61,8 +92,12 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.22.0";
+const APP_VERSION = "1.25.1";
 const CHANGELOG = [
+  { v: "1.25.1", desc: "Carga de proveedores reconoce columna 'Compañía' (OSB/CTM/ISE) para decidir a quién pertenece cada fila, sin depender del nombre de la hoja" },
+  { v: "1.25.0", desc: "Cambio de modelo: un proveedor puede tener varias cuentas bancarias (tabla separada); Transacciones ahora liga a la cuenta específica usada" },
+  { v: "1.24.0", desc: "Carga masiva de Proveedores (hojas OSB/CTM/ISE), actualiza por RFC o Nombre si ya existe" },
+  { v: "1.23.0", desc: "Nueva pestaña Reporte de Pagos; Proveedor ahora liga al catálogo real; agrega Área, Folio Compra SAE, Folio Factura, Forma/Método de Pago (catálogos SAT) y Días de Crédito" },
   { v: "1.22.0", desc: "Nuevo catálogo de Proveedores por compañía (Nombre, RFC, Id SAE, Banco, CLABE, No. Cuenta, Divisa) en la pestaña Catálogo" },
   { v: "1.21.1", desc: "Fix crítico: el agrupamiento agrupaba todo como 'Sin dato'; ahora el encabezado de cada grupo también muestra el nombre del campo" },
   { v: "1.21.0", desc: "Columnas de Partidas y Transacciones se pueden reordenar arrastrando el encabezado — se recuerda entre visitas" },
@@ -336,7 +371,83 @@ function toISODate(val) {
 // Parses a workbook looking for a "transacciones reales" sheet — identified by
 // having Día + Importe + A Partida columns, regardless of sheet name.
 // Matches each row to a partida via its `folio` field (and unit prefix of the folio).
-function parseTransaccionesWorkbook(arrayBuffer, partidas) {
+// Lee un libro de Excel buscando hojas literalmente llamadas OSB/CTM/ISE con
+// columnas de proveedores (Nombre, RFC, Id SAE, Banco, CLABE, No. Cuenta, Divisa,
+// Días de crédito). Marca cada fila como actualización (mismo RFC, o mismo
+// Nombre si no hay RFC, dentro de esa unidad) o alta nueva.
+function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
+  const wb = XLSX.read(arrayBuffer, { type: "array" });
+  const rows = [];
+  const sheetsFound = [];
+  let actualizaciones = 0, nuevas = 0, sinCompania = 0;
+
+  wb.SheetNames.forEach((sheetName) => {
+    const ws = wb.Sheets[sheetName];
+    const aoa = XLSX.utils.sheet_to_json(ws, { header: 1, defval: null, raw: true });
+    if (!aoa.length) return;
+    const headers = aoa[0];
+
+    const col = {
+      compania: findCol(headers, ["compania"], ["compañia"], ["unidad"]),
+      nombre: findCol(headers, ["nombre"]),
+      rfc: findExactCol(headers, ["rfc"]),
+      idSae: findCol(headers, ["id", "sae"]),
+      banco: findExactCol(headers, ["banco"]),
+      clabe: findExactCol(headers, ["clabe"]),
+      cuenta: findCol(headers, ["numero", "cuenta"], ["no.", "cuenta"], ["cuenta"]),
+      divisa: findExactCol(headers, ["divisa"]),
+      diasCredito: findCol(headers, ["dias", "credito"]),
+    };
+    if (col.nombre === -1) return;
+
+    // Si la hoja se llama literalmente OSB/CTM/ISE, sirve de respaldo cuando
+    // una fila no trae (o no reconoce) la columna Compañía.
+    const sheetUnidad = UNIDAD_KEYS.includes(sheetName.trim().toUpperCase()) ? sheetName.trim().toUpperCase() : null;
+
+    let count = 0;
+    for (let r = 1; r < aoa.length; r++) {
+      const row = aoa[r];
+      if (!row) continue;
+      const nombre = row[col.nombre] ? String(row[col.nombre]).trim() : "";
+      if (!nombre) continue;
+
+      const companiaRaw = (col.compania !== -1 && row[col.compania]) ? String(row[col.compania]).trim().toUpperCase() : "";
+      const unidad = UNIDAD_KEYS.includes(companiaRaw) ? companiaRaw : sheetUnidad;
+      if (!unidad) { sinCompania++; continue; }
+
+      const rfc = (col.rfc !== -1 && row[col.rfc]) ? String(row[col.rfc]).trim().toUpperCase() : "";
+      const existente = existingProveedores.find((p) => {
+        if (p.unidad !== unidad) return false;
+        if (rfc && p.rfc) return p.rfc.trim().toUpperCase() === rfc;
+        if (!rfc && !p.rfc) return (p.nombre || "").trim().toUpperCase() === nombre.toUpperCase();
+        return false;
+      });
+      if (existente) actualizaciones++; else nuevas++;
+
+      rows.push({
+        id: uid(),
+        unidad,
+        nombre,
+        rfc,
+        id_sae: (col.idSae !== -1 && row[col.idSae]) ? String(row[col.idSae]).trim() : "",
+        dias_credito: (col.diasCredito !== -1 && row[col.diasCredito] !== null) ? Number(row[col.diasCredito]) || 0 : 0,
+        _existenteId: existente ? existente.id : null,
+        _cuenta: {
+          banco: (col.banco !== -1 && row[col.banco]) ? String(row[col.banco]).trim() : "",
+          clabe: (col.clabe !== -1 && row[col.clabe]) ? String(row[col.clabe]).trim() : "",
+          numero_cuenta: (col.cuenta !== -1 && row[col.cuenta]) ? String(row[col.cuenta]).trim() : "",
+          divisa: (col.divisa !== -1 && row[col.divisa]) ? String(row[col.divisa]).trim().toUpperCase() : "MXN",
+        },
+      });
+      count++;
+    }
+    if (count) sheetsFound.push({ sheetName, count });
+  });
+
+  return { rows, sheetsFound, nuevas, actualizaciones, sinCompania };
+}
+
+function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = []) {
   const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
   const rows = [];
   const sheetsFound = [];
@@ -359,11 +470,16 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas) {
       solicitante: findCol(headers, ["solicitante"]),
       proyecto: findExactCol(headers, ["proyecto"]),
       zona: findExactCol(headers, ["zona"]),
+      area: findExactCol(headers, ["area"]),
       proveedor: findCol(headers, ["nombre", "denominacion"], ["razon", "social"], ["proveedor"]),
       concepto: findCol(headers, ["concepto"]),
       importe: findCol(headers, ["importe"]),
       moneda: findCol(headers, ["moneda"]),
       status: findExactCol(headers, ["status", "estatus"]),
+      folioCompraSae: findCol(headers, ["folio", "compra"]),
+      folioFactura: findCol(headers, ["folio", "factura"]),
+      formaPago: findExactCol(headers, ["forma de pago", "forma pago"]),
+      metodoPago: findExactCol(headers, ["metodo de pago", "metodo pago"]),
       folio: findCol(headers, ["a partida"]) !== -1 ? findCol(headers, ["a partida"]) : findExactCol(headers, ["partida", "folio"]),
     };
 
@@ -390,6 +506,12 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas) {
       ) : null;
       if (partida) matched++; else unmatched++;
 
+      const proveedorNombre = (col.proveedor !== -1 && row[col.proveedor]) ? String(row[col.proveedor]).trim() : "";
+      const proveedorMatch = proveedorNombre ? proveedores.find(
+        (pv) => pv.nombre && pv.nombre.trim().toUpperCase() === proveedorNombre.toUpperCase() &&
+                (!unidad_detectada || pv.unidad === unidad_detectada)
+      ) : null;
+
       rows.push({
         id: uid(),
         partida_id: partida ? partida.id : "",
@@ -399,11 +521,17 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas) {
         solicitante: (col.solicitante !== -1 && row[col.solicitante]) ? String(row[col.solicitante]).trim() : "",
         proyecto: (col.proyecto !== -1 && row[col.proyecto]) ? String(row[col.proyecto]).trim() : "",
         zona: (col.zona !== -1 && row[col.zona]) ? String(row[col.zona]).trim() : "",
-        proveedor: (col.proveedor !== -1 && row[col.proveedor]) ? String(row[col.proveedor]).trim() : "",
+        area: (col.area !== -1 && row[col.area]) ? String(row[col.area]).trim() : "",
+        proveedor: proveedorNombre,
+        proveedor_id: proveedorMatch ? proveedorMatch.id : "",
         concepto_detallado: (col.concepto !== -1 && row[col.concepto]) ? String(row[col.concepto]).trim() : "",
         importe,
         moneda: (col.moneda !== -1 && row[col.moneda]) ? String(row[col.moneda]).trim().toUpperCase() : "MXN",
         status: (col.status !== -1 && row[col.status]) ? String(row[col.status]).trim() : "",
+        folio_compra_sae: (col.folioCompraSae !== -1 && row[col.folioCompraSae]) ? String(row[col.folioCompraSae]).trim() : "",
+        folio_factura: (col.folioFactura !== -1 && row[col.folioFactura]) ? String(row[col.folioFactura]).trim() : "",
+        forma_pago: (col.formaPago !== -1 && row[col.formaPago]) ? String(row[col.formaPago]).trim() : "",
+        metodo_pago: (col.metodoPago !== -1 && row[col.metodoPago]) ? String(row[col.metodoPago]).trim() : "",
       });
       count++;
     }
@@ -1646,7 +1774,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
 /* ----------------------------------------------------------------------
    TABS: TRANSACCIONES
 ---------------------------------------------------------------------- */
-function ImportarTransaccionesPanel({ partidas, transaccionesApi }) {
+function ImportarTransaccionesPanel({ partidas, proveedores, transaccionesApi }) {
   const inputRef = useRef(null);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
@@ -1659,7 +1787,7 @@ function ImportarTransaccionesPanel({ partidas, transaccionesApi }) {
     setError(""); setStatus(""); setPreview(null);
     try {
       const buf = await file.arrayBuffer();
-      const { rows, sheetsFound, matched, unmatched } = parseTransaccionesWorkbook(buf, partidas);
+      const { rows, sheetsFound, matched, unmatched } = parseTransaccionesWorkbook(buf, partidas, proveedores);
       if (!rows.length) {
         setError('No encontré una hoja con columnas "Día", "Importe" y "A Partida" en este archivo.');
         return;
@@ -1676,7 +1804,7 @@ function ImportarTransaccionesPanel({ partidas, transaccionesApi }) {
     if (!preview) return;
     setImporting(true);
     try {
-      const toInsert = preview.rows.map((r) => ({ ...r, partida_id: r.partida_id || null }));
+      const toInsert = preview.rows.map((r) => ({ ...r, partida_id: r.partida_id || null, proveedor_id: r.proveedor_id || null }));
       await transaccionesApi.bulkInsert(toInsert);
       const vinculadas = preview.rows.filter((r) => r.partida_id).length;
       setStatus(`Importadas ${preview.rows.length} transacciones (${vinculadas} vinculadas, ${preview.rows.length - vinculadas} sin partida).`);
@@ -1758,15 +1886,21 @@ function ImportarTransaccionesPanel({ partidas, transaccionesApi }) {
   );
 }
 
-function TransaccionesTab({ unidad, unidades, partidas, transacciones, transaccionesApi }) {
+function TransaccionesTab({ unidad, unidades, partidas, transacciones, transaccionesApi, proveedoresApi, cuentasApi }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
-  const blank = { partida_id: partidasUnidad[0]?.id || "", dia: "", solicitante: "", proyecto: "", zona: "", proveedor: "", concepto_detallado: "", importe: "", moneda: "MXN", status: "" };
+  const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
+  const blank = {
+    partida_id: partidasUnidad[0]?.id || "", dia: "", solicitante: "", proyecto: "", zona: "", area: "",
+    proveedor: "", proveedor_id: "", cuenta_id: "", concepto_detallado: "", importe: "", moneda: "MXN", status: "",
+    folio_compra_sae: "", folio_factura: "", forma_pago: "", metodo_pago: "",
+  };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const cuentasDelProveedorSeleccionado = form.proveedor_id ? cuentasApi.rows.filter((c) => c.proveedor_id === form.proveedor_id) : [];
   const transUnidad = transacciones.filter((t) => partidasUnidad.some((p) => p.id === t.partida_id));
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
@@ -1828,6 +1962,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
 
   const GROUP_OPCIONES_TRANS = [
     { value: "zona", label: "Zona" },
+    { value: "area", label: "Área" },
     { value: "proveedor", label: "Proveedor" },
     { value: "proyecto", label: "Proyecto (transacción)" },
     { value: "status", label: "Status" },
@@ -1879,6 +2014,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
     { key: "proveedor", label: "Proveedor", render: (t) => t.proveedor },
     { key: "proyecto", label: "Proyecto", render: (t) => t.proyecto || "—" },
     { key: "zona", label: "Zona", render: (t) => t.zona || "—" },
+    { key: "area", label: "Área", render: (t) => t.area || "—" },
     { key: "concepto_detallado", label: "Concepto", render: (t) => <span style={{ color: T.textDim }}>{t.concepto_detallado}</span> },
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
     { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={/pagad/i.test(t.status) ? "teal" : "amber"}>{t.status}</Pill> : "—" },
@@ -1908,6 +2044,8 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
     e.preventDefault();
     if (!form.partida_id || !form.importe) return;
     const { id, ...rest } = form;
+    rest.proveedor_id = rest.proveedor_id || null;
+    rest.cuenta_id = rest.cuenta_id || null;
     setSaving(true);
     try {
       if (editId) {
@@ -2095,7 +2233,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
         </Panel>
       )}
 
-      <ImportarTransaccionesPanel partidas={partidas} transaccionesApi={transaccionesApi} />
+      <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} transaccionesApi={transaccionesApi} />
 
       {modalOpen && (
         <Modal
@@ -2128,6 +2266,9 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
             <Field label="Solicitante">
               <TextInput value={form.solicitante} onChange={(e) => setForm({ ...form, solicitante: e.target.value })} />
             </Field>
+            <Field label="Área">
+              <TextInput value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
+            </Field>
             <Field label="Proyecto">
               <Select value={form.proyecto} onChange={(e) => setForm({ ...form, proyecto: e.target.value })}>
                 <option value="">— Sin especificar —</option>
@@ -2140,11 +2281,49 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
                 {ZONAS.map((z) => <option key={z}>{z}</option>)}
               </Select>
             </Field>
-            <Field label="Proveedor / razón social">
-              <TextInput value={form.proveedor} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} />
+            <Field label="Proveedor (catálogo)">
+              <Select
+                value={form.proveedor_id}
+                onChange={(e) => {
+                  const p = proveedoresUnidad.find((pr) => pr.id === e.target.value);
+                  setForm({ ...form, proveedor_id: e.target.value, proveedor: p ? p.nombre : form.proveedor, cuenta_id: "" });
+                }}
+              >
+                <option value="">— No catalogado —</option>
+                {proveedoresUnidad.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+              </Select>
+            </Field>
+            <Field label="Cuenta bancaria">
+              <Select value={form.cuenta_id} onChange={(e) => setForm({ ...form, cuenta_id: e.target.value })} disabled={!form.proveedor_id}>
+                <option value="">{form.proveedor_id ? "— Elegir cuenta —" : "— Elige un proveedor primero —"}</option>
+                {cuentasDelProveedorSeleccionado.map((c) => (
+                  <option key={c.id} value={c.id}>{c.banco || "Banco N/D"} · {c.clabe || c.numero_cuenta || "—"} ({c.divisa})</option>
+                ))}
+              </Select>
+            </Field>
+            <Field label="Proveedor / razón social (texto)" style={{ gridColumn: "span 2" }}>
+              <TextInput value={form.proveedor} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} placeholder="Se llena solo al elegir del catálogo, o captúralo si no está dado de alta" />
             </Field>
             <Field label="Concepto de pago (detallado)" style={{ gridColumn: "span 2" }}>
               <TextInput value={form.concepto_detallado} onChange={(e) => setForm({ ...form, concepto_detallado: e.target.value })} />
+            </Field>
+            <Field label="Folio Compra SAE">
+              <TextInput value={form.folio_compra_sae} onChange={(e) => setForm({ ...form, folio_compra_sae: e.target.value })} />
+            </Field>
+            <Field label="Folio Factura">
+              <TextInput value={form.folio_factura} onChange={(e) => setForm({ ...form, folio_factura: e.target.value })} />
+            </Field>
+            <Field label="Forma de Pago">
+              <Select value={form.forma_pago} onChange={(e) => setForm({ ...form, forma_pago: e.target.value })}>
+                <option value="">— Sin especificar —</option>
+                {FORMAS_PAGO.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+              </Select>
+            </Field>
+            <Field label="Método de Pago">
+              <Select value={form.metodo_pago} onChange={(e) => setForm({ ...form, metodo_pago: e.target.value })}>
+                <option value="">— Sin especificar —</option>
+                {METODOS_PAGO.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+              </Select>
             </Field>
             <Field label="Importe">
               <TextInput type="number" step="0.01" value={form.importe} onChange={(e) => setForm({ ...form, importe: e.target.value })} placeholder="0.00" />
@@ -2175,7 +2354,171 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
 /* ----------------------------------------------------------------------
    TABS: CATALOGO
 ---------------------------------------------------------------------- */
-function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi }) {
+/* ----------------------------------------------------------------------
+   TAB: REPORTE DE PAGOS
+---------------------------------------------------------------------- */
+const COLUMNAS_REPORTE = [
+  { key: "solicitante", label: "Solicitante" },
+  { key: "area", label: "Área" },
+  { key: "numero_solicitud", label: "No. Solicitud (SMI)" },
+  { key: "no_sae", label: "No. SAE" },
+  { key: "folio_compra_sae", label: "Folio Compra SAE" },
+  { key: "folio_factura", label: "Folio Factura" },
+  { key: "forma_pago", label: "Forma de Pago" },
+  { key: "metodo_pago", label: "Método de Pago" },
+  { key: "dias_credito", label: "Días de Crédito" },
+  { key: "proveedor", label: "Proveedor" },
+  { key: "concepto", label: "Concepto de pago" },
+  { key: "banco", label: "Banco" },
+  { key: "clabe", label: "Cuenta CLABE" },
+  { key: "importe", label: "Importe" },
+  { key: "moneda", label: "Moneda" },
+];
+
+function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuentasApi }) {
+  const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
+  const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
+  const transUnidad = transacciones.filter(
+    (t) => partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad
+  );
+
+  const filas = transUnidad.map((t) => {
+    const partida = partidasUnidad.find((p) => p.id === t.partida_id);
+    const proveedor = t.proveedor_id ? proveedoresUnidad.find((p) => p.id === t.proveedor_id) : null;
+    const cuenta = t.cuenta_id ? cuentasApi.rows.find((c) => c.id === t.cuenta_id) : null;
+    return {
+      id: t.id,
+      solicitante: t.solicitante || "",
+      area: t.area || "",
+      numero_solicitud: partida?.smi || "",
+      no_sae: proveedor?.id_sae || "",
+      folio_compra_sae: t.folio_compra_sae || "",
+      folio_factura: t.folio_factura || "",
+      forma_pago: FORMAS_PAGO.find((f) => f.value === t.forma_pago)?.label || t.forma_pago || "",
+      metodo_pago: METODOS_PAGO.find((m) => m.value === t.metodo_pago)?.label || t.metodo_pago || "",
+      dias_credito: proveedor ? (proveedor.dias_credito ?? 0) : "",
+      proveedor: proveedor?.nombre || t.proveedor || "",
+      concepto: t.concepto_detallado || "",
+      banco: cuenta?.banco || "",
+      clabe: cuenta?.clabe || "",
+      importe: Number(t.importe) || 0,
+      moneda: t.moneda || "MXN",
+      _vinculadoProveedor: !!proveedor,
+      _vinculadoCuenta: !!cuenta,
+    };
+  });
+
+  const [buscar, setBuscar] = useState("");
+  const [sort, setSort] = useState({ key: "solicitante", dir: "asc" });
+  const filasFiltradas = filas.filter((f) => {
+    if (!buscar.trim()) return true;
+    const q = buscar.trim().toLowerCase();
+    return [f.solicitante, f.proveedor, f.concepto, f.folio_factura, f.folio_compra_sae, f.no_sae]
+      .some((v) => (v || "").toString().toLowerCase().includes(q));
+  });
+  const filasOrdenadas = sortRows(filasFiltradas, sort, { importe: (r) => r.importe });
+
+  const colWidths = useColumnWidths("colw-reporte");
+  const { ordered: columnas, moveColumn } = useColumnOrder("colo-reporte", COLUMNAS_REPORTE);
+  const dragKeyRef = useRef(null);
+  const onColDragStart = (e, key) => { dragKeyRef.current = key; e.dataTransfer.effectAllowed = "move"; };
+  const onColDragOver = (e) => e.preventDefault();
+  const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
+
+  const exportarExcel = () => {
+    const data = filasOrdenadas.map((f) => Object.fromEntries(columnas.map((c) => [c.label, f[c.key]])));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wbx = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wbx, ws, "Reporte de pagos");
+    XLSX.writeFile(wbx, `reporte-pagos-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const totalImporte = filasOrdenadas.reduce((s, f) => s + f.importe, 0);
+  const sinProveedorVinculado = filas.filter((f) => !f._vinculadoProveedor && f.proveedor).length;
+  const sinCuentaVinculada = filas.filter((f) => f._vinculadoProveedor && !f._vinculadoCuenta).length;
+
+  if (!transUnidad.length) {
+    return (
+      <EmptyState
+        title="Sin transacciones para reportar"
+        body={`Todavía no hay transacciones registradas para ${unidad}. Captúralas o impórtalas desde la pestaña Transacciones.`}
+      />
+    );
+  }
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        <KpiCard label="Transacciones" value={String(filasOrdenadas.length)} />
+        <KpiCard label="Importe total (filtrado)" value={money(totalImporte)} />
+      </div>
+
+      {sinProveedorVinculado > 0 && (
+        <div style={{ fontSize: 11.5, color: T.amber }}>
+          {sinProveedorVinculado} transacción(es) tienen proveedor en texto pero no están ligadas al Catálogo de proveedores —
+          No. SAE, Banco, CLABE y Días de crédito saldrán vacíos para esas filas hasta que se vinculen (edítalas en Transacciones y elige el proveedor del catálogo).
+        </div>
+      )}
+      {sinCuentaVinculada > 0 && (
+        <div style={{ fontSize: 11.5, color: T.amber }}>
+          {sinCuentaVinculada} transacción(es) tienen proveedor vinculado pero no una cuenta bancaria específica —
+          Banco y CLABE saldrán vacíos hasta que elijas la cuenta (edítalas en Transacciones).
+        </div>
+      )}
+
+      <Panel
+        title={`Reporte de pagos — ${unidad}`}
+        subtitle={`${filasOrdenadas.length} de ${filas.length} transacciones`}
+        right={<Button onClick={exportarExcel}>Exportar a Excel</Button>}
+      >
+        <div style={{ marginBottom: 14 }}>
+          <Field label="Buscar">
+            <TextInput
+              value={buscar}
+              onChange={(e) => setBuscar(e.target.value)}
+              placeholder="Solicitante, proveedor, concepto, folio…"
+              style={{ width: 280 }}
+            />
+          </Field>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ ...tableStyle, tableLayout: "fixed" }}>
+            <colgroup>
+              {columnas.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
+            </colgroup>
+            <thead>
+              <tr>
+                {columnas.map((c) => (
+                  <SortableTh
+                    key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
+                    width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
+                    onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={onColDragOver} onDrop={(e) => onColDrop(e, c.key)}
+                  />
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filasOrdenadas.map((f) => (
+                <tr key={f.id}>
+                  {columnas.map((c) => (
+                    <td key={c.key} style={c.key === "importe" ? { ...tdStyle, fontFamily: T.fontMono } : tdStyle}>
+                      {c.key === "importe" ? money(f.importe, f.moneda) : (f[c.key] || "—")}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+              {!filasOrdenadas.length && (
+                <tr><td colSpan={columnas.length} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna transacción coincide con la búsqueda</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi, cuentasApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "" });
   const [drafts, setDrafts] = useState({}); // id -> { field: value } — edición local antes de confirmar en blur
@@ -2259,29 +2602,159 @@ function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi }) {
         </div>
       </Panel>
 
-      <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} />
+      <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
     </div>
   );
 }
 
-function ProveedoresPanel({ unidad, proveedoresApi }) {
+function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
+  const inputRef = useRef(null);
+  const [preview, setPreview] = useState(null);
+  const [error, setError] = useState("");
+  const [status, setStatus] = useState("");
+  const [importing, setImporting] = useState(false);
+
+  const onFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setError(""); setStatus(""); setPreview(null);
+    try {
+      const buf = await file.arrayBuffer();
+      const { rows, sheetsFound, nuevas, actualizaciones, sinCompania } = parseProveedoresWorkbook(buf, proveedoresApi.rows);
+      if (!rows.length) {
+        setError('No encontré filas con Nombre y Compañía (OSB/CTM/ISE) reconocible en este archivo.');
+        return;
+      }
+      setPreview({ rows, sheetsFound, nuevas, actualizaciones, sinCompania, fileName: file.name });
+    } catch (err) {
+      setError("No pude leer el archivo. Verifica que sea un .xlsx válido.");
+    } finally {
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const confirmar = async () => {
+    if (!preview) return;
+    setImporting(true);
+    try {
+      const cuentasAInsertar = []; // { proveedor_id, ...cuenta } — se llena después de saber el id real de cada proveedor
+
+      const nuevasFilas = preview.rows.filter((r) => !r._existenteId);
+      const actualizacionesFilas = preview.rows.filter((r) => r._existenteId);
+
+      if (nuevasFilas.length) {
+        const payload = nuevasFilas.map(({ _existenteId, _cuenta, ...rest }) => rest);
+        const creados = await proveedoresApi.bulkInsert(payload);
+        creados.forEach((c, i) => {
+          const cuenta = nuevasFilas[i]._cuenta;
+          if (cuenta && (cuenta.banco || cuenta.clabe || cuenta.numero_cuenta)) {
+            cuentasAInsertar.push({ id: uid(), proveedor_id: c.id, ...cuenta });
+          }
+        });
+      }
+      for (const r of actualizacionesFilas) {
+        const { id, _existenteId, _cuenta, ...patch } = r;
+        await proveedoresApi.update(_existenteId, patch);
+        if (_cuenta && (_cuenta.banco || _cuenta.clabe || _cuenta.numero_cuenta)) {
+          cuentasAInsertar.push({ id: uid(), proveedor_id: _existenteId, ..._cuenta });
+        }
+      }
+      if (cuentasAInsertar.length) await cuentasApi.bulkInsert(cuentasAInsertar);
+
+      setStatus(`${nuevasFilas.length} nuevos, ${actualizacionesFilas.length} actualizados, ${cuentasAInsertar.length} cuenta(s) agregadas.`);
+      setPreview(null);
+    } catch (err) {
+      setError("Ocurrió un error al importar en Supabase: " + (err.message || err));
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <Panel title="Carga masiva de proveedores" subtitle='Una fila por proveedor, con una columna "Compañía" (OSB/CTM/ISE) que dice a cuál pertenece — o usa hojas llamadas OSB/CTM/ISE como respaldo'>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <input ref={inputRef} type="file" accept=".xlsx" onChange={onFile} style={{ fontSize: 12, color: T.textDim }} />
+        {status && <Pill tone="teal">{status}</Pill>}
+      </div>
+      {error && <div style={{ marginTop: 10, fontSize: 12, color: T.red }}>{error}</div>}
+
+      {preview && (
+        <div style={{ marginTop: 16, borderTop: `1px solid ${T.borderSoft}`, paddingTop: 14 }}>
+          <div style={{ fontSize: 12.5, color: T.text, marginBottom: 8 }}>
+            <strong>{preview.fileName}</strong> — {preview.rows.length} proveedores detectados
+          </div>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+            {preview.sheetsFound.map((s) => (
+              <Pill key={s.sheetName} tone="accent">{s.sheetName}: {s.count} filas</Pill>
+            ))}
+            <Pill tone="teal">{preview.nuevas} nuevos</Pill>
+            {preview.actualizaciones > 0 && <Pill tone="amber">{preview.actualizaciones} actualizan uno existente</Pill>}
+            {preview.sinCompania > 0 && <Pill tone="red">{preview.sinCompania} ignoradas — sin Compañía reconocible</Pill>}
+          </div>
+          {preview.sinCompania > 0 && (
+            <div style={{ fontSize: 11.5, color: T.amber, marginBottom: 12 }}>
+              {preview.sinCompania} fila(s) no se van a importar porque la columna "Compañía" viene vacía o con un valor distinto a OSB/CTM/ISE,
+              y la hoja tampoco se llama así. Corrígelo en el Excel y vuelve a subirlo.
+            </div>
+          )}
+
+          <div style={{ overflowX: "auto", maxHeight: 260, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
+            <table style={tableStyle}>
+              <thead>
+                <tr>{["","Unidad","Nombre","RFC","Banco","Divisa"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+              </thead>
+              <tbody>
+                {preview.rows.slice(0, 15).map((r) => (
+                  <tr key={r.id}>
+                    <td style={tdStyle}>{r._existenteId ? <Pill tone="amber">Actualiza</Pill> : <Pill tone="teal">Nuevo</Pill>}</td>
+                    <td style={tdStyle}>{r.unidad}</td>
+                    <td style={tdStyle}>{r.nombre}</td>
+                    <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{r.rfc || "—"}</td>
+                    <td style={tdStyle}>{r._cuenta.banco || "—"}</td>
+                    <td style={tdStyle}>{r._cuenta.banco || r._cuenta.clabe ? r._cuenta.divisa : "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          {preview.rows.length > 15 && (
+            <div style={{ fontSize: 11, color: T.textFaint, marginTop: 6 }}>… y {preview.rows.length - 15} más</div>
+          )}
+
+          <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+            <Button onClick={confirmar} disabled={importing}>{importing ? "Importando…" : "Confirmar importación"}</Button>
+            <Button variant="ghost" onClick={() => setPreview(null)}>Cancelar</Button>
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
-  const blank = { nombre: "", rfc: "", id_sae: "", banco: "", clabe: "", numero_cuenta: "", divisa: "MXN" };
+  const blank = { nombre: "", rfc: "", id_sae: "", dias_credito: "" };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [buscar, setBuscar] = useState("");
 
+  const cuentaBlank = { banco: "", clabe: "", numero_cuenta: "", divisa: "MXN" };
+  const [nuevaCuenta, setNuevaCuenta] = useState(cuentaBlank);
+  const cuentasDelProveedor = editId ? cuentasApi.rows.filter((c) => c.proveedor_id === editId) : [];
+
+  const contarCuentas = (proveedorId) => cuentasApi.rows.filter((c) => c.proveedor_id === proveedorId).length;
+
   const filtrados = proveedoresUnidad.filter((p) => {
     if (!buscar.trim()) return true;
     const q = buscar.trim().toLowerCase();
-    return [p.nombre, p.rfc, p.id_sae, p.banco].some((v) => (v || "").toLowerCase().includes(q));
+    return [p.nombre, p.rfc, p.id_sae].some((v) => (v || "").toLowerCase().includes(q));
   });
 
-  const openNew = () => { setForm(blank); setEditId(null); setModalOpen(true); };
-  const startEdit = (p) => { setForm(p); setEditId(p.id); setModalOpen(true); };
-  const closeModal = () => { setModalOpen(false); setEditId(null); setForm(blank); };
+  const openNew = () => { setForm(blank); setEditId(null); setNuevaCuenta(cuentaBlank); setModalOpen(true); };
+  const startEdit = (p) => { setForm(p); setEditId(p.id); setNuevaCuenta(cuentaBlank); setModalOpen(true); };
+  const closeModal = () => { setModalOpen(false); setEditId(null); setForm(blank); setNuevaCuenta(cuentaBlank); };
   const remove = (id) => proveedoresApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
 
   const submit = async (e) => {
@@ -2293,7 +2766,9 @@ function ProveedoresPanel({ unidad, proveedoresApi }) {
       if (editId) {
         await proveedoresApi.update(editId, rest);
       } else {
-        await proveedoresApi.insert({ ...rest, id: uid(), unidad });
+        const nuevo = await proveedoresApi.insert({ ...rest, id: uid(), unidad });
+        setEditId(nuevo.id); // dejamos el modal abierto para poder agregar cuentas al que se acaba de crear
+        return;
       }
       closeModal();
     } catch (err) {
@@ -2303,21 +2778,34 @@ function ProveedoresPanel({ unidad, proveedoresApi }) {
     }
   };
 
+  const agregarCuenta = async () => {
+    if (!editId) return;
+    if (!nuevaCuenta.banco.trim() && !nuevaCuenta.clabe.trim() && !nuevaCuenta.numero_cuenta.trim()) return;
+    try {
+      await cuentasApi.insert({ id: uid(), proveedor_id: editId, ...nuevaCuenta });
+      setNuevaCuenta(cuentaBlank);
+    } catch (err) {
+      alert("No se pudo agregar la cuenta: " + (err.message || err));
+    }
+  };
+  const eliminarCuenta = (id) => cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
+
   return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
     <Panel
       title={`Catálogo de proveedores — ${unidad}`}
-      subtitle={`${proveedoresUnidad.length} registrados — cada compañía tiene el suyo`}
+      subtitle={`${proveedoresUnidad.length} registrados — cada compañía tiene el suyo. Un proveedor puede tener varias cuentas bancarias`}
       right={<Button onClick={openNew}>+ Nuevo proveedor</Button>}
     >
       <div style={{ marginBottom: 14 }}>
         <Field label="Buscar">
-          <TextInput value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Nombre, RFC, Id SAE, Banco…" style={{ width: 280 }} />
+          <TextInput value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Nombre, RFC, Id SAE…" style={{ width: 280 }} />
         </Field>
       </div>
       <div style={{ overflowX: "auto" }}>
         <table style={tableStyle}>
           <thead>
-            <tr>{["Nombre","RFC","Id SAE","Banco","CLABE","No. Cuenta","Divisa",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+            <tr>{["Nombre","RFC","Id SAE","Días crédito","Cuentas",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
           </thead>
           <tbody>
             {filtrados.map((p) => (
@@ -2325,10 +2813,8 @@ function ProveedoresPanel({ unidad, proveedoresApi }) {
                 <td style={tdStyle}>{p.nombre}</td>
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.rfc || "—"}</td>
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.id_sae || "—"}</td>
-                <td style={tdStyle}>{p.banco || "—"}</td>
-                <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.clabe || "—"}</td>
-                <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.numero_cuenta || "—"}</td>
-                <td style={tdStyle}><Pill>{p.divisa || "MXN"}</Pill></td>
+                <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{p.dias_credito ?? 0}</td>
+                <td style={tdStyle}><Pill tone={contarCuentas(p.id) ? "teal" : "dim"}>{contarCuentas(p.id)} cuenta(s)</Pill></td>
                 <td style={tdStyle}>
                   <div style={{ display: "flex", gap: 6 }}>
                     <Button variant="ghost" onClick={() => startEdit(p)}>Editar</Button>
@@ -2338,19 +2824,19 @@ function ProveedoresPanel({ unidad, proveedoresApi }) {
               </tr>
             ))}
             {!proveedoresUnidad.length && (
-              <tr><td colSpan={8} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin proveedores aún</td></tr>
+              <tr><td colSpan={6} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin proveedores aún</td></tr>
             )}
             {proveedoresUnidad.length > 0 && !filtrados.length && (
-              <tr><td colSpan={8} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ningún proveedor coincide con la búsqueda</td></tr>
+              <tr><td colSpan={6} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ningún proveedor coincide con la búsqueda</td></tr>
             )}
           </tbody>
         </table>
       </div>
 
       {modalOpen && (
-        <Modal title={editId ? "Editar proveedor" : "Nuevo proveedor"} subtitle={`Catálogo de ${unidad}`} onClose={closeModal}>
-          <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
-            <Field label="Nombre" style={{ gridColumn: "span 2" }}>
+        <Modal title={editId ? "Editar proveedor" : "Nuevo proveedor"} subtitle={`Catálogo de ${unidad}`} onClose={closeModal} width={820}>
+          <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
+            <Field label="Nombre" style={{ gridColumn: "span 3" }}>
               <TextInput value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} />
             </Field>
             <Field label="RFC">
@@ -2359,28 +2845,67 @@ function ProveedoresPanel({ unidad, proveedoresApi }) {
             <Field label="Id SAE">
               <TextInput value={form.id_sae} onChange={(e) => setForm({ ...form, id_sae: e.target.value })} />
             </Field>
-            <Field label="Banco">
-              <TextInput value={form.banco} onChange={(e) => setForm({ ...form, banco: e.target.value })} />
+            <Field label="Días de crédito">
+              <TextInput type="number" value={form.dias_credito} onChange={(e) => setForm({ ...form, dias_credito: e.target.value })} />
             </Field>
-            <Field label="Divisa">
-              <Select value={form.divisa} onChange={(e) => setForm({ ...form, divisa: e.target.value })}>
-                {MONEDAS.map((m) => <option key={m}>{m}</option>)}
-              </Select>
-            </Field>
-            <Field label="CLABE">
-              <TextInput value={form.clabe} onChange={(e) => setForm({ ...form, clabe: e.target.value })} placeholder="18 dígitos" />
-            </Field>
-            <Field label="Número de Cuenta">
-              <TextInput value={form.numero_cuenta} onChange={(e) => setForm({ ...form, numero_cuenta: e.target.value })} />
-            </Field>
-            <div style={{ gridColumn: "span 2", display: "flex", gap: 10, marginTop: 4 }}>
-              <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Agregar proveedor"}</Button>
-              <Button type="button" variant="ghost" onClick={closeModal}>Cancelar</Button>
+            <div style={{ gridColumn: "span 3", display: "flex", gap: 10, marginTop: 4 }}>
+              <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Crear y agregar cuentas"}</Button>
+              <Button type="button" variant="ghost" onClick={closeModal}>Cerrar</Button>
             </div>
           </form>
+
+          {editId ? (
+            <div style={{ borderTop: `1px solid ${T.borderSoft}`, paddingTop: 16 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: T.text, marginBottom: 10 }}>
+                Cuentas bancarias ({cuentasDelProveedor.length})
+              </div>
+              {cuentasDelProveedor.length > 0 && (
+                <table style={{ ...tableStyle, marginBottom: 12 }}>
+                  <thead>
+                    <tr>{["Banco","CLABE","No. Cuenta","Divisa",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+                  </thead>
+                  <tbody>
+                    {cuentasDelProveedor.map((c) => (
+                      <tr key={c.id}>
+                        <td style={tdStyle}>{c.banco || "—"}</td>
+                        <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.clabe || "—"}</td>
+                        <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.numero_cuenta || "—"}</td>
+                        <td style={tdStyle}><Pill>{c.divisa || "MXN"}</Pill></td>
+                        <td style={tdStyle}><Button variant="danger" onClick={() => eliminarCuenta(c.id)}>Eliminar</Button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, alignItems: "end" }}>
+                <Field label="Banco">
+                  <TextInput value={nuevaCuenta.banco} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, banco: e.target.value })} />
+                </Field>
+                <Field label="CLABE">
+                  <TextInput value={nuevaCuenta.clabe} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, clabe: e.target.value })} placeholder="18 dígitos" />
+                </Field>
+                <Field label="No. Cuenta">
+                  <TextInput value={nuevaCuenta.numero_cuenta} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, numero_cuenta: e.target.value })} />
+                </Field>
+                <Field label="Divisa">
+                  <Select value={nuevaCuenta.divisa} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, divisa: e.target.value })}>
+                    {MONEDAS.map((m) => <option key={m}>{m}</option>)}
+                  </Select>
+                </Field>
+                <Button type="button" onClick={agregarCuenta}>+ Agregar cuenta</Button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ fontSize: 11.5, color: T.textFaint, borderTop: `1px solid ${T.borderSoft}`, paddingTop: 16 }}>
+              Guarda el proveedor primero (botón "Crear y agregar cuentas") para poder capturarle sus cuentas bancarias.
+            </div>
+          )}
         </Modal>
       )}
     </Panel>
+
+    <ImportarProveedoresPanel proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
+    </div>
   );
 }
 
@@ -2392,6 +2917,7 @@ export default function App() {
   const partidasApi = useCollection("partidas");
   const transaccionesApi = useCollection("transacciones");
   const proveedoresApi = useCollection("proveedores");
+  const cuentasApi = useCollection("proveedor_cuentas");
   const [unidad, setUnidad] = useState("CTM");
   const [tab, setTab] = useState("dashboard");
 
@@ -2413,6 +2939,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard" },
     { id: "partidas", label: "Partidas" },
     { id: "transacciones", label: "Transacciones" },
+    { id: "reporte", label: "Reporte de Pagos" },
     { id: "catalogo", label: "Catálogo" },
   ];
 
@@ -2501,8 +3028,9 @@ export default function App() {
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
           {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} />}
-          {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} />}
-          {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} />}
+          {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
         </>
       )}
     </div>

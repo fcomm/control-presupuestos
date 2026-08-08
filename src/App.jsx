@@ -92,8 +92,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.33.0";
+const APP_VERSION = "1.34.0";
 const CHANGELOG = [
+  { v: "1.34.0", desc: "Selector de Proveedor rediseñado: popup con buscador (nombre/RFC/Id SAE) y '+ Nuevo proveedor' al vuelo, igual que el selector de Partida" },
   { v: "1.33.0", desc: "Homologa 'MXN' a 'MXP' en todo el código (defaults, catálogo de monedas, importadores, reportes) — corre homologar-mxn-a-mxp.sql para actualizar los datos ya guardados" },
   { v: "1.32.3", desc: "Fix global: texto largo sin espacios (CLABE, RFC, folios) ya no se sale de su columna y se encima con la siguiente — aplica a todas las tablas" },
   { v: "1.32.2", desc: "Reporte de Pagos y Reporte Pagos Dirección: separa el KPI de Importe total en Total MXN y Total USD (antes se sumaban las dos divisas juntas)" },
@@ -418,6 +419,124 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
                 ))}
                 {sinMes.map((p) => FilaPartida(p))}
                 {!filtradas.length && (
+                  <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>Sin resultados</div>
+                )}
+              </div>
+            </>
+          )}
+        </Modal>
+      )}
+    </>
+  );
+}
+
+// Botón que abre un popup con buscador para elegir un proveedor del catálogo —
+// mismo patrón que PartidaPickerButton. Incluye "+ Nuevo proveedor" al vuelo.
+function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "Elegir proveedor…", proveedoresApi, unidad }) {
+  const [open, setOpen] = useState(false);
+  const [busqueda, setBusqueda] = useState("");
+  const seleccionado = proveedores.find((p) => p.id === value);
+
+  const filtrados = proveedores.filter((p) => {
+    if (!busqueda.trim()) return true;
+    const q = busqueda.trim().toLowerCase();
+    return [p.nombre, p.rfc, p.id_sae].some((v) => (v || "").toLowerCase().includes(q));
+  });
+
+  const elegir = (id, p) => { onChange(id, p); setOpen(false); setBusqueda(""); setCreando(false); };
+
+  const nuevoBlank = { nombre: "", rfc: "", id_sae: "" };
+  const [creando, setCreando] = useState(false);
+  const [nuevo, setNuevo] = useState(nuevoBlank);
+  const [guardando, setGuardando] = useState(false);
+
+  const crearProveedor = async () => {
+    if (!nuevo.nombre.trim()) return;
+    setGuardando(true);
+    try {
+      const creado = await proveedoresApi.insert({ id: uid(), unidad, nombre: nuevo.nombre.trim(), rfc: nuevo.rfc.trim().toUpperCase(), id_sae: nuevo.id_sae.trim() });
+      setNuevo(nuevoBlank);
+      elegir(creado.id, creado);
+    } catch (err) {
+      alert("No se pudo crear el proveedor: " + (err.message || err));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        style={{
+          ...inputStyle, width: "100%", textAlign: "left", cursor: "pointer",
+          display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {seleccionado ? seleccionado.nombre : placeholder}
+        </span>
+        <span style={{ color: T.textFaint, fontSize: 10, flexShrink: 0 }}>▾</span>
+      </button>
+
+      {open && (
+        <Modal title="Elegir proveedor" subtitle="Busca por nombre, RFC o Id SAE" onClose={() => { setOpen(false); setCreando(false); }} width={520}>
+          {proveedoresApi && !creando && (
+            <Button type="button" variant="ghost" onClick={() => setCreando(true)} style={{ marginBottom: 10 }}>
+              + Nuevo proveedor
+            </Button>
+          )}
+
+          {creando ? (
+            <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 6, padding: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>Nuevo proveedor — {unidad}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
+                <Field label="Nombre" style={{ gridColumn: "span 2" }}>
+                  <TextInput autoFocus value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} />
+                </Field>
+                <Field label="RFC">
+                  <TextInput value={nuevo.rfc} onChange={(e) => setNuevo({ ...nuevo, rfc: e.target.value.toUpperCase() })} />
+                </Field>
+                <Field label="Id SAE">
+                  <TextInput value={nuevo.id_sae} onChange={(e) => setNuevo({ ...nuevo, id_sae: e.target.value })} />
+                </Field>
+              </div>
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <Button type="button" onClick={crearProveedor} disabled={guardando}>{guardando ? "Creando…" : "Crear y usar este proveedor"}</Button>
+                <Button type="button" variant="ghost" onClick={() => { setCreando(false); setNuevo(nuevoBlank); }}>Cancelar</Button>
+              </div>
+              <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10 }}>
+                Sin cuenta bancaria por ahora — agrégasela después desde Catálogo si la necesitas.
+              </div>
+            </div>
+          ) : (
+            <>
+              <TextInput
+                autoFocus
+                value={busqueda}
+                onChange={(e) => setBusqueda(e.target.value)}
+                placeholder="Buscar…"
+                style={{ width: "100%", marginBottom: 12 }}
+              />
+              <div style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
+                <div
+                  onClick={() => elegir("", null)}
+                  style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12.5, color: T.textFaint, borderBottom: `1px solid ${T.borderSoft}` }}
+                >
+                  — No catalogado —
+                </div>
+                {filtrados.map((p) => (
+                  <div
+                    key={p.id}
+                    onClick={() => elegir(p.id, p)}
+                    style={{ padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === value ? T.accentBg : "transparent" }}
+                  >
+                    <div style={{ fontSize: 12.5, color: T.text }}>{p.nombre}</div>
+                    <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>{p.rfc || "—"}{p.id_sae ? ` · SAE ${p.id_sae}` : ""}</div>
+                  </div>
+                ))}
+                {!filtrados.length && (
                   <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>Sin resultados</div>
                 )}
               </div>
@@ -2637,16 +2756,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               </Select>
             </Field>
             <Field label="Proveedor (catálogo)">
-              <Select
+              <ProveedorPickerButton
+                proveedores={proveedoresUnidad}
+                proveedoresApi={proveedoresApi}
+                unidad={unidad}
                 value={form.proveedor_id}
-                onChange={(e) => {
-                  const p = proveedoresUnidad.find((pr) => pr.id === e.target.value);
-                  setForm({ ...form, proveedor_id: e.target.value, proveedor: p ? p.nombre : form.proveedor, cuenta_id: "" });
+                onChange={(id, p) => {
+                  const proveedor = p !== undefined ? p : (proveedoresUnidad.find((pr) => pr.id === id) || null);
+                  setForm({ ...form, proveedor_id: id, proveedor: proveedor ? proveedor.nombre : form.proveedor, cuenta_id: "" });
                 }}
-              >
-                <option value="">— No catalogado —</option>
-                {proveedoresUnidad.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
-              </Select>
+              />
             </Field>
             <Field label="Cuenta bancaria">
               <Select value={form.cuenta_id} onChange={(e) => setForm({ ...form, cuenta_id: e.target.value })} disabled={!form.proveedor_id}>

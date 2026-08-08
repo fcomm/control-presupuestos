@@ -92,8 +92,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.29.0";
+const APP_VERSION = "1.29.1";
 const CHANGELOG = [
+  { v: "1.29.1", desc: "Selector de Partida: cada fila muestra Total y Usado (con color según % consumido)" },
   { v: "1.29.0", desc: "Selector de Partida rediseñado: popup con buscador y agrupado por mes (en modal, columna inline, y panel de sin vincular) — confirmado que ya filtraba solo por la compañía activa" },
   { v: "1.28.0", desc: "Proveedores: agrega Sucursal y SWIFT a las cuentas; la carga masiva ahora agrupa filas repetidas del mismo proveedor (varias cuentas) aunque sea nuevo en el mismo archivo" },
   { v: "1.27.2", desc: "Fix: editar una transacción agrupada fallaba porque colaban campos internos (_mes, _rubro, etc.) al guardar" },
@@ -251,7 +252,7 @@ function opcionesPartidaPorMes(lista) {
 
 // Botón que abre un popup con buscador para elegir una partida — más cómodo
 // que un <select> plano cuando hay muchas. Agrupa por mes, en orden cronológico.
-function PartidaPickerButton({ partidas, value, onChange, placeholder = "Elegir partida…", allowClear = false }) {
+function PartidaPickerButton({ partidas, transacciones = [], value, onChange, placeholder = "Elegir partida…", allowClear = false }) {
   const [open, setOpen] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const seleccionada = partidas.find((p) => p.id === value);
@@ -265,6 +266,33 @@ function PartidaPickerButton({ partidas, value, onChange, placeholder = "Elegir 
   const sinMes = filtradas.filter((p) => !p.mes);
 
   const elegir = (id) => { onChange(id); setOpen(false); setBusqueda(""); };
+
+  const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
+
+  const FilaPartida = (p) => {
+    const total = Number(p.monto_estimado) || 0;
+    const usado = usadoDe(p);
+    const pct = total ? (usado / total) * 100 : 0;
+    const tone = pct > 100 ? T.red : pct > 85 ? T.amber : T.teal;
+    return (
+      <div
+        key={p.id}
+        onClick={() => elegir(p.id)}
+        style={{ padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === value ? T.accentBg : "transparent" }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 12.5, color: T.text }}>{p.concepto}</div>
+            <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>{p.proyecto || "—"}{p.folio ? ` · ${p.folio}` : ""}</div>
+          </div>
+          <div style={{ textAlign: "right", fontSize: 10.5, fontFamily: T.fontMono, flexShrink: 0, whiteSpace: "nowrap" }}>
+            <div style={{ color: T.textDim }}>Total {money(total, p.moneda)}</div>
+            <div style={{ color: tone }}>Usado {money(usado, p.moneda)}</div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
     <>
@@ -283,7 +311,7 @@ function PartidaPickerButton({ partidas, value, onChange, placeholder = "Elegir 
       </button>
 
       {open && (
-        <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto" onClose={() => setOpen(false)} width={620}>
+        <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto — Total y Usado por partida" onClose={() => setOpen(false)} width={620}>
           <TextInput
             autoFocus
             value={busqueda}
@@ -305,28 +333,10 @@ function PartidaPickerButton({ partidas, value, onChange, placeholder = "Elegir 
                 <div style={{ padding: "6px 12px", fontSize: 10.5, fontWeight: 700, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.05em", background: T.panelAlt }}>
                   {mes}
                 </div>
-                {filtradas.filter((p) => p.mes === mes).map((p) => (
-                  <div
-                    key={p.id}
-                    onClick={() => elegir(p.id)}
-                    style={{ padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === value ? T.accentBg : "transparent" }}
-                  >
-                    <div style={{ fontSize: 12.5, color: T.text }}>{p.concepto}</div>
-                    <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>{p.proyecto || "—"}{p.folio ? ` · ${p.folio}` : ""}</div>
-                  </div>
-                ))}
+                {filtradas.filter((p) => p.mes === mes).map((p) => FilaPartida(p))}
               </div>
             ))}
-            {sinMes.map((p) => (
-              <div
-                key={p.id}
-                onClick={() => elegir(p.id)}
-                style={{ padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === value ? T.accentBg : "transparent" }}
-              >
-                <div style={{ fontSize: 12.5, color: T.text }}>{p.concepto}</div>
-                <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>{p.proyecto || "—"}{p.folio ? ` · ${p.folio}` : ""}</div>
-              </div>
-            ))}
+            {sinMes.map((p) => FilaPartida(p))}
             {!filtradas.length && (
               <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>Sin resultados</div>
             )}
@@ -2108,6 +2118,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
       render: (t) => (
         <PartidaPickerButton
           partidas={partidasUnidad}
+          transacciones={transUnidad}
           value={t.partida_id || ""}
           allowClear
           onChange={(nuevoId) => {
@@ -2307,6 +2318,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
                     <td style={tdStyle}>
                       <PartidaPickerButton
                         partidas={partidasUnidad}
+                        transacciones={transUnidad}
                         value=""
                         placeholder="Elegir partida…"
                         onChange={(nuevoId) => {
@@ -2340,6 +2352,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
             <Field label="Partida" style={{ gridColumn: "span 4" }}>
               <PartidaPickerButton
                 partidas={partidasUnidad}
+                transacciones={transUnidad}
                 value={form.partida_id}
                 onChange={(id) => setForm({ ...form, partida_id: id })}
               />

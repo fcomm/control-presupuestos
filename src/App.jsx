@@ -51,6 +51,7 @@ const RUBROS = [
 const UNIDADES_BASE = ["OSB", "CTM", "ISE"];
 
 const MONEDAS = ["MXN", "USD"];
+const ZONAS = ["Queretaro", "Poza Rica", "Paraiso", "Altamira", "Cerro Azul", "CDMX", "Guaymas", "Torreon", "Rosarito", "Agua Dulce", "Cotaxtla"];
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
 const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10));
@@ -60,8 +61,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.17.0";
+const APP_VERSION = "1.17.1";
 const CHANGELOG = [
+  { v: "1.17.1", desc: "Catálogo de Zonas (11 zonas) — el campo Zona en Transacciones ya es un selector" },
   { v: "1.17.0", desc: "Transacciones: agrega Zona (reemplaza a Área en captura/tabla/filtro/agrupamiento; Área queda en la BD sin usarse)" },
   { v: "1.16.1", desc: "Transacciones: Proyecto ahora selecciona del catálogo (mismos marcadores que Partidas); Status es Pagado/No Pagado" },
   { v: "1.16.0", desc: "Transacciones: agrega columnas Proyecto y Status (base de datos, importador, formulario, tabla, agrupamiento)" },
@@ -1920,7 +1922,10 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
               </Select>
             </Field>
             <Field label="Zona">
-              <TextInput value={form.zona} onChange={(e) => setForm({ ...form, zona: e.target.value })} />
+              <Select value={form.zona} onChange={(e) => setForm({ ...form, zona: e.target.value })}>
+                <option value="">— Sin especificar —</option>
+                {ZONAS.map((z) => <option key={z}>{z}</option>)}
+              </Select>
             </Field>
             <Field label="Proveedor / razón social">
               <TextInput value={form.proveedor} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} />
@@ -2032,6 +2037,12 @@ function CatalogoTab({ unidad, unidades, proyectosApi }) {
               </div>
             </details>
           ))}
+        </div>
+      </Panel>
+
+      <Panel title="Catálogo de zonas" subtitle="Usadas en el selector de Zona al capturar transacciones">
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {ZONAS.map((z) => <Pill key={z}>{z}</Pill>)}
         </div>
       </Panel>
     </div>

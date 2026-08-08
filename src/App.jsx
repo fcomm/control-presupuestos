@@ -92,8 +92,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.25.1";
+const APP_VERSION = "1.26.0";
 const CHANGELOG = [
+  { v: "1.26.0", desc: "Reporte de Pagos: agrega columna Día y filtro por rango de fechas (Desde/Hasta) — sirve para un solo día o un rango" },
+  { v: "1.25.2", desc: "Quita el campo 'Días de crédito' por completo (formulario, tabla, carga masiva, Reporte de Pagos)" },
   { v: "1.25.1", desc: "Carga de proveedores reconoce columna 'Compañía' (OSB/CTM/ISE) para decidir a quién pertenece cada fila, sin depender del nombre de la hoja" },
   { v: "1.25.0", desc: "Cambio de modelo: un proveedor puede tener varias cuentas bancarias (tabla separada); Transacciones ahora liga a la cuenta específica usada" },
   { v: "1.24.0", desc: "Carga masiva de Proveedores (hojas OSB/CTM/ISE), actualiza por RFC o Nombre si ya existe" },
@@ -396,7 +398,6 @@ function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
       clabe: findExactCol(headers, ["clabe"]),
       cuenta: findCol(headers, ["numero", "cuenta"], ["no.", "cuenta"], ["cuenta"]),
       divisa: findExactCol(headers, ["divisa"]),
-      diasCredito: findCol(headers, ["dias", "credito"]),
     };
     if (col.nombre === -1) return;
 
@@ -430,7 +431,6 @@ function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
         nombre,
         rfc,
         id_sae: (col.idSae !== -1 && row[col.idSae]) ? String(row[col.idSae]).trim() : "",
-        dias_credito: (col.diasCredito !== -1 && row[col.diasCredito] !== null) ? Number(row[col.diasCredito]) || 0 : 0,
         _existenteId: existente ? existente.id : null,
         _cuenta: {
           banco: (col.banco !== -1 && row[col.banco]) ? String(row[col.banco]).trim() : "",
@@ -2358,6 +2358,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
    TAB: REPORTE DE PAGOS
 ---------------------------------------------------------------------- */
 const COLUMNAS_REPORTE = [
+  { key: "dia", label: "Día" },
   { key: "solicitante", label: "Solicitante" },
   { key: "area", label: "Área" },
   { key: "numero_solicitud", label: "No. Solicitud (SMI)" },
@@ -2366,7 +2367,6 @@ const COLUMNAS_REPORTE = [
   { key: "folio_factura", label: "Folio Factura" },
   { key: "forma_pago", label: "Forma de Pago" },
   { key: "metodo_pago", label: "Método de Pago" },
-  { key: "dias_credito", label: "Días de Crédito" },
   { key: "proveedor", label: "Proveedor" },
   { key: "concepto", label: "Concepto de pago" },
   { key: "banco", label: "Banco" },
@@ -2388,6 +2388,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
     const cuenta = t.cuenta_id ? cuentasApi.rows.find((c) => c.id === t.cuenta_id) : null;
     return {
       id: t.id,
+      dia: t.dia || "",
       solicitante: t.solicitante || "",
       area: t.area || "",
       numero_solicitud: partida?.smi || "",
@@ -2396,7 +2397,6 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
       folio_factura: t.folio_factura || "",
       forma_pago: FORMAS_PAGO.find((f) => f.value === t.forma_pago)?.label || t.forma_pago || "",
       metodo_pago: METODOS_PAGO.find((m) => m.value === t.metodo_pago)?.label || t.metodo_pago || "",
-      dias_credito: proveedor ? (proveedor.dias_credito ?? 0) : "",
       proveedor: proveedor?.nombre || t.proveedor || "",
       concepto: t.concepto_detallado || "",
       banco: cuenta?.banco || "",
@@ -2409,13 +2409,19 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
   });
 
   const [buscar, setBuscar] = useState("");
-  const [sort, setSort] = useState({ key: "solicitante", dir: "asc" });
+  const [fechaDesde, setFechaDesde] = useState("");
+  const [fechaHasta, setFechaHasta] = useState("");
+  const [sort, setSort] = useState({ key: "dia", dir: "desc" });
   const filasFiltradas = filas.filter((f) => {
+    if (fechaDesde && (!f.dia || f.dia < fechaDesde)) return false;
+    if (fechaHasta && (!f.dia || f.dia > fechaHasta)) return false;
     if (!buscar.trim()) return true;
     const q = buscar.trim().toLowerCase();
     return [f.solicitante, f.proveedor, f.concepto, f.folio_factura, f.folio_compra_sae, f.no_sae]
       .some((v) => (v || "").toString().toLowerCase().includes(q));
   });
+  const filtrosFechaActivos = fechaDesde || fechaHasta;
+  const limpiarFechas = () => { setFechaDesde(""); setFechaHasta(""); };
   const filasOrdenadas = sortRows(filasFiltradas, sort, { importe: (r) => r.importe });
 
   const colWidths = useColumnWidths("colw-reporte");
@@ -2456,7 +2462,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
       {sinProveedorVinculado > 0 && (
         <div style={{ fontSize: 11.5, color: T.amber }}>
           {sinProveedorVinculado} transacción(es) tienen proveedor en texto pero no están ligadas al Catálogo de proveedores —
-          No. SAE, Banco, CLABE y Días de crédito saldrán vacíos para esas filas hasta que se vinculen (edítalas en Transacciones y elige el proveedor del catálogo).
+          No. SAE, Banco y CLABE saldrán vacíos para esas filas hasta que se vinculen (edítalas en Transacciones y elige el proveedor del catálogo).
         </div>
       )}
       {sinCuentaVinculada > 0 && (
@@ -2471,7 +2477,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
         subtitle={`${filasOrdenadas.length} de ${filas.length} transacciones`}
         right={<Button onClick={exportarExcel}>Exportar a Excel</Button>}
       >
-        <div style={{ marginBottom: 14 }}>
+        <div style={{ marginBottom: 14, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
           <Field label="Buscar">
             <TextInput
               value={buscar}
@@ -2480,6 +2486,13 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
               style={{ width: 280 }}
             />
           </Field>
+          <Field label="Desde">
+            <TextInput type="date" value={fechaDesde} onChange={(e) => setFechaDesde(e.target.value)} />
+          </Field>
+          <Field label="Hasta">
+            <TextInput type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)} />
+          </Field>
+          {filtrosFechaActivos && <Button variant="ghost" onClick={limpiarFechas}>Limpiar fechas</Button>}
         </div>
         <div style={{ overflowX: "auto" }}>
           <table style={{ ...tableStyle, tableLayout: "fixed" }}>
@@ -2733,7 +2746,7 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
 
 function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
-  const blank = { nombre: "", rfc: "", id_sae: "", dias_credito: "" };
+  const blank = { nombre: "", rfc: "", id_sae: "" };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -2805,7 +2818,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
       <div style={{ overflowX: "auto" }}>
         <table style={tableStyle}>
           <thead>
-            <tr>{["Nombre","RFC","Id SAE","Días crédito","Cuentas",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+            <tr>{["Nombre","RFC","Id SAE","Cuentas",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
           </thead>
           <tbody>
             {filtrados.map((p) => (
@@ -2813,7 +2826,6 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
                 <td style={tdStyle}>{p.nombre}</td>
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.rfc || "—"}</td>
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.id_sae || "—"}</td>
-                <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{p.dias_credito ?? 0}</td>
                 <td style={tdStyle}><Pill tone={contarCuentas(p.id) ? "teal" : "dim"}>{contarCuentas(p.id)} cuenta(s)</Pill></td>
                 <td style={tdStyle}>
                   <div style={{ display: "flex", gap: 6 }}>
@@ -2824,10 +2836,10 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
               </tr>
             ))}
             {!proveedoresUnidad.length && (
-              <tr><td colSpan={6} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin proveedores aún</td></tr>
+              <tr><td colSpan={5} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin proveedores aún</td></tr>
             )}
             {proveedoresUnidad.length > 0 && !filtrados.length && (
-              <tr><td colSpan={6} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ningún proveedor coincide con la búsqueda</td></tr>
+              <tr><td colSpan={5} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ningún proveedor coincide con la búsqueda</td></tr>
             )}
           </tbody>
         </table>
@@ -2844,9 +2856,6 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
             </Field>
             <Field label="Id SAE">
               <TextInput value={form.id_sae} onChange={(e) => setForm({ ...form, id_sae: e.target.value })} />
-            </Field>
-            <Field label="Días de crédito">
-              <TextInput type="number" value={form.dias_credito} onChange={(e) => setForm({ ...form, dias_credito: e.target.value })} />
             </Field>
             <div style={{ gridColumn: "span 3", display: "flex", gap: 10, marginTop: 4 }}>
               <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Crear y agregar cuentas"}</Button>

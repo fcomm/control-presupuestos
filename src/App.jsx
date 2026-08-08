@@ -92,8 +92,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.28.0";
+const APP_VERSION = "1.29.0";
 const CHANGELOG = [
+  { v: "1.29.0", desc: "Selector de Partida rediseñado: popup con buscador y agrupado por mes (en modal, columna inline, y panel de sin vincular) — confirmado que ya filtraba solo por la compañía activa" },
   { v: "1.28.0", desc: "Proveedores: agrega Sucursal y SWIFT a las cuentas; la carga masiva ahora agrupa filas repetidas del mismo proveedor (varias cuentas) aunque sea nuevo en el mismo archivo" },
   { v: "1.27.2", desc: "Fix: editar una transacción agrupada fallaba porque colaban campos internos (_mes, _rubro, etc.) al guardar" },
   { v: "1.27.1", desc: "Transacciones: simplifica filtros a solo Buscar + rango de fechas (quita Zona/Vínculo/Mes/Proyecto)" },
@@ -223,6 +224,117 @@ function marcadoresDisponibles(proyectosUnidad) {
   const grupos = [...new Set(proyectosUnidad.map((p) => p.grupo))].filter(Boolean);
   const marcadores = grupos.filter((g) => proyectosUnidad.filter((p) => p.grupo === g).length > 1).map((g) => `${g} Gral`);
   return [...proyectosUnidad.map((p) => p.nombre), ...marcadores, "Todos"];
+}
+
+// Renderiza las <option> de un selector de Partida agrupadas por Mes (<optgroup>),
+// en orden cronológico — para no tener que buscar entre una lista plana larga.
+function opcionesPartidaPorMes(lista) {
+  const meses = MESES.filter((m) => lista.some((p) => p.mes === m));
+  const sinMes = lista.filter((p) => !p.mes);
+  return (
+    <>
+      {meses.map((mes) => (
+        <optgroup key={mes} label={mes}>
+          {lista.filter((p) => p.mes === mes).map((p) => (
+            <option key={p.id} value={p.id}>{p.concepto} ({p.proyecto || "—"})</option>
+          ))}
+        </optgroup>
+      ))}
+      {sinMes.length > 0 && (
+        <optgroup label="Sin mes">
+          {sinMes.map((p) => <option key={p.id} value={p.id}>{p.concepto} ({p.proyecto || "—"})</option>)}
+        </optgroup>
+      )}
+    </>
+  );
+}
+
+// Botón que abre un popup con buscador para elegir una partida — más cómodo
+// que un <select> plano cuando hay muchas. Agrupa por mes, en orden cronológico.
+function PartidaPickerButton({ partidas, value, onChange, placeholder = "Elegir partida…", allowClear = false }) {
+  const [open, setOpen] = useState(false);
+  const [busqueda, setBusqueda] = useState("");
+  const seleccionada = partidas.find((p) => p.id === value);
+
+  const filtradas = partidas.filter((p) => {
+    if (!busqueda.trim()) return true;
+    const q = busqueda.trim().toLowerCase();
+    return [p.concepto, p.folio, p.proyecto, p.rubro].some((v) => (v || "").toLowerCase().includes(q));
+  });
+  const meses = MESES.filter((m) => filtradas.some((p) => p.mes === m));
+  const sinMes = filtradas.filter((p) => !p.mes);
+
+  const elegir = (id) => { onChange(id); setOpen(false); setBusqueda(""); };
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        style={{
+          ...inputStyle, width: "100%", textAlign: "left", cursor: "pointer",
+          display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+          {seleccionada ? `${seleccionada.mes} · ${seleccionada.concepto}` : placeholder}
+        </span>
+        <span style={{ color: T.textFaint, fontSize: 10, flexShrink: 0 }}>▾</span>
+      </button>
+
+      {open && (
+        <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto" onClose={() => setOpen(false)} width={620}>
+          <TextInput
+            autoFocus
+            value={busqueda}
+            onChange={(e) => setBusqueda(e.target.value)}
+            placeholder="Buscar…"
+            style={{ width: "100%", marginBottom: 12 }}
+          />
+          <div style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
+            {allowClear && (
+              <div
+                onClick={() => elegir("")}
+                style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12.5, color: T.textFaint, borderBottom: `1px solid ${T.borderSoft}` }}
+              >
+                — Sin vincular —
+              </div>
+            )}
+            {meses.map((mes) => (
+              <div key={mes}>
+                <div style={{ padding: "6px 12px", fontSize: 10.5, fontWeight: 700, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.05em", background: T.panelAlt }}>
+                  {mes}
+                </div>
+                {filtradas.filter((p) => p.mes === mes).map((p) => (
+                  <div
+                    key={p.id}
+                    onClick={() => elegir(p.id)}
+                    style={{ padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === value ? T.accentBg : "transparent" }}
+                  >
+                    <div style={{ fontSize: 12.5, color: T.text }}>{p.concepto}</div>
+                    <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>{p.proyecto || "—"}{p.folio ? ` · ${p.folio}` : ""}</div>
+                  </div>
+                ))}
+              </div>
+            ))}
+            {sinMes.map((p) => (
+              <div
+                key={p.id}
+                onClick={() => elegir(p.id)}
+                style={{ padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === value ? T.accentBg : "transparent" }}
+              >
+                <div style={{ fontSize: 12.5, color: T.text }}>{p.concepto}</div>
+                <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>{p.proyecto || "—"}{p.folio ? ` · ${p.folio}` : ""}</div>
+              </div>
+            ))}
+            {!filtradas.length && (
+              <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>Sin resultados</div>
+            )}
+          </div>
+        </Modal>
+      )}
+    </>
+  );
 }
 
 /* ----------------------------------------------------------------------
@@ -1928,22 +2040,6 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
   const [filtros, setFiltros] = useState({ texto: "", fechaDesde: "", fechaHasta: "" });
   const [sort, setSort] = useState({ key: "dia", dir: "desc" });
 
-  // Filtros solo para ubicar la partida correcta dentro del selector del modal —
-  // no afectan la tabla ni los datos guardados.
-  const [filtroPartidaMes, setFiltroPartidaMes] = useState("Todos");
-  const [filtroPartidaProyecto, setFiltroPartidaProyecto] = useState("Todos");
-  const mesesPartida = MESES.filter((m) => partidasUnidad.some((p) => p.mes === m));
-  const proyectosPartida = [...new Set(partidasUnidad.map((p) => p.proyecto).filter(Boolean))].sort();
-  const partidasParaSelect = partidasUnidad.filter((p) => {
-    if (filtroPartidaMes !== "Todos" && p.mes !== filtroPartidaMes) return false;
-    if (filtroPartidaProyecto !== "Todos" && p.proyecto !== filtroPartidaProyecto) return false;
-    return true;
-  });
-  const partidaSeleccionada = partidasUnidad.find((p) => p.id === form.partida_id);
-  const opcionesPartida = partidaSeleccionada && !partidasParaSelect.some((p) => p.id === partidaSeleccionada.id)
-    ? [partidaSeleccionada, ...partidasParaSelect]
-    : partidasParaSelect;
-
   const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
 
   const transFiltradas = transUnidad.filter((t) => {
@@ -2010,20 +2106,17 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
     {
       key: "partida", label: "Partida",
       render: (t) => (
-        <Select
+        <PartidaPickerButton
+          partidas={partidasUnidad}
           value={t.partida_id || ""}
-          onChange={(e) => {
-            const nuevoId = e.target.value || null;
+          allowClear
+          onChange={(nuevoId) => {
             const nuevaPartida = partidasUnidad.find((p) => p.id === nuevoId);
             transaccionesApi
-              .update(t.id, { partida_id: nuevoId, unidad_detectada: nuevaPartida ? nuevaPartida.unidad : t.unidad_detectada })
+              .update(t.id, { partida_id: nuevoId || null, unidad_detectada: nuevaPartida ? nuevaPartida.unidad : t.unidad_detectada })
               .catch((err) => alert("No se pudo vincular: " + (err.message || err)));
           }}
-          style={{ minWidth: 230 }}
-        >
-          <option value="">— Sin vincular —</option>
-          {partidasUnidad.map((p) => <option key={p.id} value={p.id}>{p.mes} · {p.concepto} ({p.proyecto})</option>)}
-        </Select>
+        />
       ),
     },
     { key: "proveedor", label: "Proveedor", render: (t) => t.proveedor },
@@ -2212,19 +2305,17 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
                     <td style={{ ...tdStyle, color: T.textDim }}>{t.concepto_detallado}</td>
                     <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</td>
                     <td style={tdStyle}>
-                      <Select
+                      <PartidaPickerButton
+                        partidas={partidasUnidad}
                         value=""
-                        onChange={(e) => {
-                          const nuevaPartida = partidasUnidad.find((p) => p.id === e.target.value);
+                        placeholder="Elegir partida…"
+                        onChange={(nuevoId) => {
+                          const nuevaPartida = partidasUnidad.find((p) => p.id === nuevoId);
                           transaccionesApi
-                            .update(t.id, { partida_id: e.target.value, unidad_detectada: nuevaPartida ? nuevaPartida.unidad : t.unidad_detectada })
+                            .update(t.id, { partida_id: nuevoId, unidad_detectada: nuevaPartida ? nuevaPartida.unidad : t.unidad_detectada })
                             .catch((err) => alert("No se pudo vincular: " + (err.message || err)));
                         }}
-                        style={{ minWidth: 230 }}
-                      >
-                        <option value="">Elegir partida…</option>
-                        {partidasUnidad.map((p) => <option key={p.id} value={p.id}>{p.mes} · {p.concepto} ({p.proyecto})</option>)}
-                      </Select>
+                      />
                     </td>
                   </tr>
                 ))}
@@ -2246,23 +2337,12 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
           onClose={closeModal}
         >
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-            <Field label="Filtrar por mes (para buscar la partida)">
-              <Select value={filtroPartidaMes} onChange={(e) => setFiltroPartidaMes(e.target.value)}>
-                <option>Todos</option>
-                {mesesPartida.map((m) => <option key={m}>{m}</option>)}
-              </Select>
-            </Field>
-            <Field label="Filtrar por proyecto">
-              <Select value={filtroPartidaProyecto} onChange={(e) => setFiltroPartidaProyecto(e.target.value)}>
-                <option>Todos</option>
-                {proyectosPartida.map((p) => <option key={p}>{p}</option>)}
-              </Select>
-            </Field>
             <Field label="Partida" style={{ gridColumn: "span 4" }}>
-              <Select value={form.partida_id} onChange={(e) => setForm({ ...form, partida_id: e.target.value })}>
-                {!opcionesPartida.length && <option value="">Ningún resultado con este filtro</option>}
-                {opcionesPartida.map((p) => <option key={p.id} value={p.id}>{p.mes} · {p.concepto} ({p.proyecto})</option>)}
-              </Select>
+              <PartidaPickerButton
+                partidas={partidasUnidad}
+                value={form.partida_id}
+                onChange={(id) => setForm({ ...form, partida_id: id })}
+              />
             </Field>
             <Field label="Día">
               <TextInput type="date" value={form.dia} onChange={(e) => setForm({ ...form, dia: e.target.value })} />

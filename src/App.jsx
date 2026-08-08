@@ -61,8 +61,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.19.0";
+const APP_VERSION = "1.21.0";
 const CHANGELOG = [
+  { v: "1.21.0", desc: "Columnas de Partidas y Transacciones se pueden reordenar arrastrando el encabezado — se recuerda entre visitas" },
+  { v: "1.20.0", desc: "Columnas de Partidas y Transacciones ahora se pueden ajustar de ancho arrastrando el borde — se recuerda entre visitas" },
   { v: "1.19.0", desc: "Agrupamiento rediseñado estilo Airtable: panel desplegable con campo+dirección+quitar por nivel, añadir subgrupo, contraer/expandir todo" },
   { v: "1.18.0", desc: "Partidas: columna Proyecto siempre visible aunque agrupes por ella; Transacciones: nueva columna Folio (código de la partida vinculada)" },
   { v: "1.17.3", desc: "Transacciones: botón 'Borrar todas' de una unidad (vinculadas + sin vincular), para reimportar limpio sin duplicar" },
@@ -986,14 +988,84 @@ function Modal({ title, subtitle, onClose, children, width = 720 }) {
 const panelStyle = { background: T.panel, border: `1px solid ${T.border}`, borderRadius: 10, padding: 18 };
 
 // Sortable table header + generic multi-type comparator (used by Partidas & Transacciones tables)
-function SortableTh({ label, sortKey, sort, setSort, width }) {
+// Recuerda el ancho de cada columna (por tabla, via localStorage) y expone el
+// manejador para arrastrar el borde derecho de un encabezado y redimensionarlo.
+function useColumnWidths(storageKey, defaultWidth = 160) {
+  const [widths, setWidths] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(storageKey) || "{}"); } catch { return {}; }
+  });
+  const getWidth = (key) => widths[key] || defaultWidth;
+  const startResize = (key, e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const startX = e.clientX;
+    const startWidth = getWidth(key);
+    const onMove = (ev) => {
+      const next = Math.max(70, startWidth + (ev.clientX - startX));
+      setWidths((w) => ({ ...w, [key]: next }));
+    };
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      setWidths((w) => {
+        try { localStorage.setItem(storageKey, JSON.stringify(w)); } catch {}
+        return w;
+      });
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+  };
+  return { getWidth, startResize };
+}
+
+// Recuerda el ORDEN de las columnas (por tabla, via localStorage) y reordena la
+// lista de columnas visibles según esa preferencia — las que aparecen nuevas
+// (por ejemplo, al cambiar el agrupamiento) se agregan al final.
+function useColumnOrder(storageKey, columns) {
+  const [order, setOrder] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(storageKey) || "[]"); } catch { return []; }
+  });
+  const byKey = new Map(columns.map((c) => [c.key, c]));
+  const fromStored = order.filter((k) => byKey.has(k)).map((k) => byKey.get(k));
+  const missing = columns.filter((c) => !order.includes(c.key));
+  const ordered = [...fromStored, ...missing];
+
+  const moveColumn = (draggedKey, targetKey) => {
+    if (draggedKey === targetKey) return;
+    const keys = ordered.map((c) => c.key);
+    const from = keys.indexOf(draggedKey);
+    const to = keys.indexOf(targetKey);
+    if (from === -1 || to === -1) return;
+    const next = [...keys];
+    next.splice(from, 1);
+    next.splice(to, 0, draggedKey);
+    setOrder(next);
+    try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch {}
+  };
+
+  return { ordered, moveColumn };
+}
+
+function SortableTh({ label, sortKey, sort, setSort, width, onResizeStart, onDragStart, onDragOver, onDrop }) {
   const active = sort.key === sortKey;
   return (
     <th
-      style={{ ...thStyle, cursor: "pointer", userSelect: "none", width, color: active ? T.accent : thStyle.color }}
+      draggable={!!onDragStart}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      style={{ ...thStyle, position: "relative", cursor: "pointer", userSelect: "none", width, color: active ? T.accent : thStyle.color }}
       onClick={() => setSort((s) => (s.key === sortKey ? { key: sortKey, dir: s.dir === "asc" ? "desc" : "asc" } : { key: sortKey, dir: "asc" }))}
     >
       {label}{active ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
+      {onResizeStart && (
+        <span
+          draggable={false}
+          onMouseDown={(e) => onResizeStart(e)}
+          onClick={(e) => e.stopPropagation()}
+          style={{ position: "absolute", right: -3, top: 0, bottom: 0, width: 7, cursor: "col-resize", zIndex: 2 }}
+        />
+      )}
     </th>
   );
 }
@@ -1355,7 +1427,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
     { key: "folio", label: "Folio", render: (p) => <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</span> },
     { key: "monto_estimado", label: "Monto", render: (p) => <span style={{ fontFamily: T.fontMono }}>{money(p.monto_estimado, p.moneda)}</span> },
   ];
-  const columnasVisibles = COLUMNAS_PARTIDA.filter((c) => c.key === "proyecto" || !groupKeys.includes(c.key));
+  const columnasVisiblesBase = COLUMNAS_PARTIDA.filter((c) => c.key === "proyecto" || !groupKeys.includes(c.key));
+  const colWidths = useColumnWidths("colw-partidas");
+  const { ordered: columnasVisibles, moveColumn } = useColumnOrder("colo-partidas", columnasVisiblesBase);
+  const dragKeyRef = useRef(null);
+  const onColDragStart = (e, key) => { dragKeyRef.current = key; e.dataTransfer.effectAllowed = "move"; };
+  const onColDragOver = (e) => e.preventDefault();
+  const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
   const renderRowTr = (p, depth = 0) => (
     <tr key={p.id}>
       {columnasVisibles.map((c, i) => (
@@ -1451,10 +1529,20 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
         </div>
 
         <div style={{ overflowX: "auto" }}>
-          <table style={tableStyle}>
+          <table style={{ ...tableStyle, tableLayout: "fixed" }}>
+            <colgroup>
+              {columnasVisibles.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
+              <col style={{ width: 140 }} />
+            </colgroup>
             <thead>
               <tr>
-                {columnasVisibles.map((c) => <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort} />)}
+                {columnasVisibles.map((c) => (
+                  <SortableTh
+                    key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
+                    width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
+                    onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={onColDragOver} onDrop={(e) => onColDrop(e, c.key)}
+                  />
+                ))}
                 <th style={thStyle}></th>
               </tr>
             </thead>
@@ -1792,7 +1880,13 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
     { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={/pagad/i.test(t.status) ? "teal" : "amber"}>{t.status}</Pill> : "—" },
   ];
-  const columnasVisibles = COLUMNAS_TRANS.filter((c) => !groupKeys.includes(c.key));
+  const columnasVisiblesBase = COLUMNAS_TRANS.filter((c) => !groupKeys.includes(c.key));
+  const colWidths = useColumnWidths("colw-transacciones");
+  const { ordered: columnasVisibles, moveColumn } = useColumnOrder("colo-transacciones", columnasVisiblesBase);
+  const dragKeyRef = useRef(null);
+  const onColDragStart = (e, key) => { dragKeyRef.current = key; e.dataTransfer.effectAllowed = "move"; };
+  const onColDragOver = (e) => e.preventDefault();
+  const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
   const renderRowTr = (t, depth = 0) => (
     <tr key={t.id}>
       {columnasVisibles.map((c, i) => (
@@ -1909,10 +2003,20 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
         </div>
 
         <div style={{ overflowX: "auto" }}>
-          <table style={tableStyle}>
+          <table style={{ ...tableStyle, tableLayout: "fixed" }}>
+            <colgroup>
+              {columnasVisibles.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
+              <col style={{ width: 140 }} />
+            </colgroup>
             <thead>
               <tr>
-                {columnasVisibles.map((c) => <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort} />)}
+                {columnasVisibles.map((c) => (
+                  <SortableTh
+                    key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
+                    width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
+                    onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={onColDragOver} onDrop={(e) => onColDrop(e, c.key)}
+                  />
+                ))}
                 <th style={thStyle}></th>
               </tr>
             </thead>

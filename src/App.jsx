@@ -61,8 +61,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.21.1";
+const APP_VERSION = "1.22.0";
 const CHANGELOG = [
+  { v: "1.22.0", desc: "Nuevo catálogo de Proveedores por compañía (Nombre, RFC, Id SAE, Banco, CLABE, No. Cuenta, Divisa) en la pestaña Catálogo" },
   { v: "1.21.1", desc: "Fix crítico: el agrupamiento agrupaba todo como 'Sin dato'; ahora el encabezado de cada grupo también muestra el nombre del campo" },
   { v: "1.21.0", desc: "Columnas de Partidas y Transacciones se pueden reordenar arrastrando el encabezado — se recuerda entre visitas" },
   { v: "1.20.0", desc: "Columnas de Partidas y Transacciones ahora se pueden ajustar de ancho arrastrando el borde — se recuerda entre visitas" },
@@ -2174,7 +2175,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
 /* ----------------------------------------------------------------------
    TABS: CATALOGO
 ---------------------------------------------------------------------- */
-function CatalogoTab({ unidad, unidades, proyectosApi }) {
+function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "" });
   const [drafts, setDrafts] = useState({}); // id -> { field: value } — edición local antes de confirmar en blur
@@ -2257,7 +2258,129 @@ function CatalogoTab({ unidad, unidades, proyectosApi }) {
           {ZONAS.map((z) => <Pill key={z}>{z}</Pill>)}
         </div>
       </Panel>
+
+      <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} />
     </div>
+  );
+}
+
+function ProveedoresPanel({ unidad, proveedoresApi }) {
+  const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
+  const blank = { nombre: "", rfc: "", id_sae: "", banco: "", clabe: "", numero_cuenta: "", divisa: "MXN" };
+  const [form, setForm] = useState(blank);
+  const [editId, setEditId] = useState(null);
+  const [modalOpen, setModalOpen] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [buscar, setBuscar] = useState("");
+
+  const filtrados = proveedoresUnidad.filter((p) => {
+    if (!buscar.trim()) return true;
+    const q = buscar.trim().toLowerCase();
+    return [p.nombre, p.rfc, p.id_sae, p.banco].some((v) => (v || "").toLowerCase().includes(q));
+  });
+
+  const openNew = () => { setForm(blank); setEditId(null); setModalOpen(true); };
+  const startEdit = (p) => { setForm(p); setEditId(p.id); setModalOpen(true); };
+  const closeModal = () => { setModalOpen(false); setEditId(null); setForm(blank); };
+  const remove = (id) => proveedoresApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (!form.nombre.trim()) return;
+    const { id, ...rest } = form;
+    setSaving(true);
+    try {
+      if (editId) {
+        await proveedoresApi.update(editId, rest);
+      } else {
+        await proveedoresApi.insert({ ...rest, id: uid(), unidad });
+      }
+      closeModal();
+    } catch (err) {
+      alert("No se pudo guardar: " + (err.message || err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Panel
+      title={`Catálogo de proveedores — ${unidad}`}
+      subtitle={`${proveedoresUnidad.length} registrados — cada compañía tiene el suyo`}
+      right={<Button onClick={openNew}>+ Nuevo proveedor</Button>}
+    >
+      <div style={{ marginBottom: 14 }}>
+        <Field label="Buscar">
+          <TextInput value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Nombre, RFC, Id SAE, Banco…" style={{ width: 280 }} />
+        </Field>
+      </div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={tableStyle}>
+          <thead>
+            <tr>{["Nombre","RFC","Id SAE","Banco","CLABE","No. Cuenta","Divisa",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+          </thead>
+          <tbody>
+            {filtrados.map((p) => (
+              <tr key={p.id}>
+                <td style={tdStyle}>{p.nombre}</td>
+                <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.rfc || "—"}</td>
+                <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.id_sae || "—"}</td>
+                <td style={tdStyle}>{p.banco || "—"}</td>
+                <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.clabe || "—"}</td>
+                <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.numero_cuenta || "—"}</td>
+                <td style={tdStyle}><Pill>{p.divisa || "MXN"}</Pill></td>
+                <td style={tdStyle}>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    <Button variant="ghost" onClick={() => startEdit(p)}>Editar</Button>
+                    <Button variant="danger" onClick={() => remove(p.id)}>Eliminar</Button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+            {!proveedoresUnidad.length && (
+              <tr><td colSpan={8} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin proveedores aún</td></tr>
+            )}
+            {proveedoresUnidad.length > 0 && !filtrados.length && (
+              <tr><td colSpan={8} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ningún proveedor coincide con la búsqueda</td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {modalOpen && (
+        <Modal title={editId ? "Editar proveedor" : "Nuevo proveedor"} subtitle={`Catálogo de ${unidad}`} onClose={closeModal}>
+          <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12 }}>
+            <Field label="Nombre" style={{ gridColumn: "span 2" }}>
+              <TextInput value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} />
+            </Field>
+            <Field label="RFC">
+              <TextInput value={form.rfc} onChange={(e) => setForm({ ...form, rfc: e.target.value.toUpperCase() })} />
+            </Field>
+            <Field label="Id SAE">
+              <TextInput value={form.id_sae} onChange={(e) => setForm({ ...form, id_sae: e.target.value })} />
+            </Field>
+            <Field label="Banco">
+              <TextInput value={form.banco} onChange={(e) => setForm({ ...form, banco: e.target.value })} />
+            </Field>
+            <Field label="Divisa">
+              <Select value={form.divisa} onChange={(e) => setForm({ ...form, divisa: e.target.value })}>
+                {MONEDAS.map((m) => <option key={m}>{m}</option>)}
+              </Select>
+            </Field>
+            <Field label="CLABE">
+              <TextInput value={form.clabe} onChange={(e) => setForm({ ...form, clabe: e.target.value })} placeholder="18 dígitos" />
+            </Field>
+            <Field label="Número de Cuenta">
+              <TextInput value={form.numero_cuenta} onChange={(e) => setForm({ ...form, numero_cuenta: e.target.value })} />
+            </Field>
+            <div style={{ gridColumn: "span 2", display: "flex", gap: 10, marginTop: 4 }}>
+              <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Agregar proveedor"}</Button>
+              <Button type="button" variant="ghost" onClick={closeModal}>Cancelar</Button>
+            </div>
+          </form>
+        </Modal>
+      )}
+    </Panel>
   );
 }
 
@@ -2268,6 +2391,7 @@ export default function App() {
   const proyectosApi = useCollection("proyectos");
   const partidasApi = useCollection("partidas");
   const transaccionesApi = useCollection("transacciones");
+  const proveedoresApi = useCollection("proveedores");
   const [unidad, setUnidad] = useState("CTM");
   const [tab, setTab] = useState("dashboard");
 
@@ -2378,7 +2502,7 @@ export default function App() {
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
           {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} />}
           {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} />}
-          {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} />}
+          {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} />}
         </>
       )}
     </div>

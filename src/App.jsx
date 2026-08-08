@@ -61,8 +61,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.21.0";
+const APP_VERSION = "1.21.1";
 const CHANGELOG = [
+  { v: "1.21.1", desc: "Fix crítico: el agrupamiento agrupaba todo como 'Sin dato'; ahora el encabezado de cada grupo también muestra el nombre del campo" },
   { v: "1.21.0", desc: "Columnas de Partidas y Transacciones se pueden reordenar arrastrando el encabezado — se recuerda entre visitas" },
   { v: "1.20.0", desc: "Columnas de Partidas y Transacciones ahora se pueden ajustar de ancho arrastrando el borde — se recuerda entre visitas" },
   { v: "1.19.0", desc: "Agrupamiento rediseñado estilo Airtable: panel desplegable con campo+dirección+quitar por nivel, añadir subgrupo, contraer/expandir todo" },
@@ -1093,7 +1094,7 @@ const SIN_DATO = "— Sin dato —";
 // `levels` = [{ key, dir }] — dir "asc" | "desc" controla el orden alfabético del grupo.
 function agruparRows(rows, levels, montoKey = "monto_estimado") {
   if (!levels.length) return { type: "rows", rows };
-  const [{ key, dir = "asc" }, ...rest] = levels;
+  const [{ field: key, dir = "asc" }, ...rest] = levels;
   const buckets = new Map();
   rows.forEach((r) => {
     const val = (r[key] ?? "").toString().trim() || SIN_DATO;
@@ -1197,7 +1198,7 @@ function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth) {
 // Flattens a grouped tree into <tr> elements: a header row per group (collapsible,
 // with count + sum), followed by that group's leaf rows (via renderRowTr) when expanded.
 const GROUP_LEVEL_COLORS = [T.accent, T.teal, T.blue];
-function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr) {
+function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}) {
   if (node.type === "rows") return node.rows.map((r) => renderRowTr(r, depth));
   let out = [];
   const levelColor = GROUP_LEVEL_COLORS[depth % GROUP_LEVEL_COLORS.length];
@@ -1216,6 +1217,7 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <span style={{ color: T.textFaint, fontSize: 10, width: 12 }}>{isCollapsed ? "▶" : "▼"}</span>
+            <span style={{ fontSize: 10.5, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.04em" }}>{fieldLabels[node.key] || node.key}:</span>
             <Pill tone="accent">{entry.value}</Pill>
             <span style={{ fontSize: 11, color: T.textFaint }}>{entry.count}</span>
             <span style={{ fontSize: 11.5, fontFamily: T.fontMono, color: T.textDim, marginLeft: "auto" }}>{money(entry.sum)}</span>
@@ -1223,7 +1225,7 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
         </td>
       </tr>
     );
-    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr));
+    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels));
   });
   return out;
 }
@@ -1548,7 +1550,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
             </thead>
             <tbody>
               {groupKeys.length
-                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 1, 0, renderRowTr)
+                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 1, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])))
                 : partidasOrdenadas.map((p) => renderRowTr(p))}
               {!partidasUnidad.length && (
                 <tr><td colSpan={columnasVisibles.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
@@ -2022,7 +2024,7 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
             </thead>
             <tbody>
               {groupKeys.length
-                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 1, 0, renderRowTr)
+                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 1, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES_TRANS.map((o) => [o.value, o.label])))
                 : transEnriquecidas.map((t) => renderRowTr(t))}
               {!transUnidad.length && (
                 <tr><td colSpan={columnasVisibles.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones aún</td></tr>

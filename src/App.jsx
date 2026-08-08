@@ -61,8 +61,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.17.3";
+const APP_VERSION = "1.18.0";
 const CHANGELOG = [
+  { v: "1.18.0", desc: "Partidas: columna Proyecto siempre visible aunque agrupes por ella; Transacciones: nueva columna Folio (código de la partida vinculada)" },
   { v: "1.17.3", desc: "Transacciones: botón 'Borrar todas' de una unidad (vinculadas + sin vincular), para reimportar limpio sin duplicar" },
   { v: "1.17.2", desc: "Fix: filas de transacciones sin folio ya no se pierden al importar — entran como 'sin vincular'; detecta unidad por nombre de hoja como respaldo" },
   { v: "1.17.1", desc: "Catálogo de Zonas (11 zonas) — el campo Zona en Transacciones ya es un selector" },
@@ -1242,7 +1243,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
     { key: "folio", label: "Folio", render: (p) => <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</span> },
     { key: "monto_estimado", label: "Monto", render: (p) => <span style={{ fontFamily: T.fontMono }}>{money(p.monto_estimado, p.moneda)}</span> },
   ];
-  const columnasVisibles = COLUMNAS_PARTIDA.filter((c) => !groupKeys.includes(c.key));
+  const columnasVisibles = COLUMNAS_PARTIDA.filter((c) => c.key === "proyecto" || !groupKeys.includes(c.key));
   const renderRowTr = (p, depth = 0) => (
     <tr key={p.id}>
       {columnasVisibles.map((c, i) => (
@@ -1665,6 +1666,15 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
 
   const COLUMNAS_TRANS = [
     { key: "dia", label: "Día", render: (t) => t.dia || "—" },
+    {
+      key: "folio", label: "Folio",
+      render: (t) => {
+        const p = partidaDe(t);
+        return p?.folio
+          ? <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio}</span>
+          : (t.folio_original ? <span style={{ fontFamily: T.fontMono, color: T.red }}>{t.folio_original} (sin match)</span> : "—");
+      },
+    },
     {
       key: "partida", label: "Partida",
       render: (t) => (

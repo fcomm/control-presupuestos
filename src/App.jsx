@@ -61,8 +61,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.18.0";
+const APP_VERSION = "1.19.0";
 const CHANGELOG = [
+  { v: "1.19.0", desc: "Agrupamiento rediseñado estilo Airtable: panel desplegable con campo+dirección+quitar por nivel, añadir subgrupo, contraer/expandir todo" },
   { v: "1.18.0", desc: "Partidas: columna Proyecto siempre visible aunque agrupes por ella; Transacciones: nueva columna Folio (código de la partida vinculada)" },
   { v: "1.17.3", desc: "Transacciones: botón 'Borrar todas' de una unidad (vinculadas + sin vincular), para reimportar limpio sin duplicar" },
   { v: "1.17.2", desc: "Fix: filas de transacciones sin folio ya no se pierden al importar — entran como 'sin vincular'; detecta unidad por nombre de hoja como respaldo" },
@@ -799,6 +800,105 @@ function EmptyState({ title, body }) {
   );
 }
 
+// Panel desplegable de agrupamiento estilo Airtable: botón "Agrupar por" que abre
+// un panel con un renglón por nivel (campo + dirección + quitar), botón para agregar
+// subgrupo, y accesos para contraer/expandir todo. `options` = [{value,label}].
+// `value` = [{field, dir}]. `groupedTree` (opcional) habilita Contraer/Expandir todo.
+function GroupByControl({ options, value, onChange, maxLevels = 3, groupedTree, collapsed, setCollapsed }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    const onClickFuera = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", onClickFuera);
+    return () => document.removeEventListener("mousedown", onClickFuera);
+  }, []);
+
+  const usedFields = value.map((v) => v.field);
+  const opcionesPara = (fieldActual) => options.filter((o) => o.value && (o.value === fieldActual || !usedFields.includes(o.value)));
+  const primeraDisponible = () => options.find((o) => o.value && !usedFields.includes(o.value));
+
+  const setLevel = (i, patch) => onChange(value.map((v, idx) => (idx === i ? { ...v, ...patch } : v)));
+  const removeLevel = (i) => onChange(value.filter((_, idx) => idx !== i));
+  const addLevel = () => {
+    const next = primeraDisponible();
+    if (next) onChange([...value, { field: next.value, dir: "asc" }]);
+  };
+
+  const label = value.length === 0
+    ? "Agrupar por"
+    : `Agrupado por ${options.find((o) => o.value === value[0].field)?.label || value[0].field}${value.length > 1 ? ` +${value.length - 1}` : ""}`;
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <Button variant={value.length ? "primary" : "ghost"} onClick={() => setOpen((o) => !o)}>{label}</Button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 50,
+          background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8,
+          padding: 14, minWidth: 340, boxShadow: "0 8px 24px rgba(35,42,49,0.14)",
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+            <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>Agrupar por</span>
+            {groupedTree && value.length > 0 && (
+              <div style={{ display: "flex", gap: 10 }}>
+                <button
+                  type="button"
+                  onClick={() => setCollapsed(new Set(collectGroupPaths(groupedTree)))}
+                  style={{ background: "none", border: "none", color: T.accent, fontSize: 11, cursor: "pointer", padding: 0 }}
+                >
+                  Contraer todo
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCollapsed(new Set())}
+                  style={{ background: "none", border: "none", color: T.accent, fontSize: 11, cursor: "pointer", padding: 0 }}
+                >
+                  Expandir todos
+                </button>
+              </div>
+            )}
+          </div>
+
+          {value.length === 0 && (
+            <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 10 }}>Sin agrupar todavía.</div>
+          )}
+
+          {value.map((lvl, i) => (
+            <div key={i} style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 8 }}>
+              <Select value={lvl.field} onChange={(e) => setLevel(i, { field: e.target.value })} style={{ flex: 1 }}>
+                {opcionesPara(lvl.field).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </Select>
+              <Select value={lvl.dir} onChange={(e) => setLevel(i, { dir: e.target.value })} style={{ width: 90 }}>
+                <option value="asc">A → Z</option>
+                <option value="desc">Z → A</option>
+              </Select>
+              <button
+                type="button"
+                onClick={() => removeLevel(i)}
+                title="Quitar nivel"
+                style={{ background: "none", border: `1px solid ${T.border}`, borderRadius: 6, color: T.textFaint, cursor: "pointer", width: 30, height: 30, fontSize: 13 }}
+              >
+                🗑
+              </button>
+            </div>
+          ))}
+
+          {value.length < maxLevels && primeraDisponible() && (
+            <button
+              type="button"
+              onClick={addLevel}
+              style={{ background: "none", border: "none", color: T.accent, fontSize: 12, cursor: "pointer", padding: "4px 0", fontWeight: 600 }}
+            >
+              + Añadir subgrupo
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+
 function MesMultiSelect({ mesesDisponibles, seleccionados, onChange }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
@@ -918,9 +1018,10 @@ const SIN_DATO = "— Sin dato —";
 
 // Groups `rows` recursively by a list of field keys (e.g. ['mes','proyecto']).
 // Returns a tree: { type:'rows', rows } at the leaves, or { type:'group', key, entries:[{value,count,sum,child}] }.
-function agruparRows(rows, keys, montoKey = "monto_estimado") {
-  if (!keys.length) return { type: "rows", rows };
-  const [key, ...rest] = keys;
+// `levels` = [{ key, dir }] — dir "asc" | "desc" controla el orden alfabético del grupo.
+function agruparRows(rows, levels, montoKey = "monto_estimado") {
+  if (!levels.length) return { type: "rows", rows };
+  const [{ key, dir = "asc" }, ...rest] = levels;
   const buckets = new Map();
   rows.forEach((r) => {
     const val = (r[key] ?? "").toString().trim() || SIN_DATO;
@@ -933,6 +1034,7 @@ function agruparRows(rows, keys, montoKey = "monto_estimado") {
   } else {
     entries.sort((a, b) => a[0].localeCompare(b[0]));
   }
+  if (dir === "desc") entries.reverse();
   return {
     type: "group",
     key,
@@ -943,6 +1045,19 @@ function agruparRows(rows, keys, montoKey = "monto_estimado") {
       child: agruparRows(groupRows, rest, montoKey),
     })),
   };
+}
+
+// Recorre el árbol agrupado y regresa todas las rutas de nivel-grupo (no las hojas) —
+// se usa para "Contraer todo" (marcarlas todas como colapsadas de un jalón).
+function collectGroupPaths(node, path = "") {
+  if (node.type !== "group") return [];
+  let paths = [];
+  node.entries.forEach((entry) => {
+    const groupPath = `${path}/${node.key}:${entry.value}`;
+    paths.push(groupPath);
+    paths = paths.concat(collectGroupPaths(entry.child, groupPath));
+  });
+  return paths;
 }
 
 // Groups rows by a fixed key path (e.g. ['proyecto','rubro','concepto']) and, at every
@@ -1215,23 +1330,20 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
   });
 
   const GROUP_OPCIONES = [
-    { value: "", label: "Sin agrupar" },
     { value: "mes", label: "Mes" },
     { value: "rubro", label: "Rubro" },
     { value: "categoria", label: "Categoría" },
     { value: "proyecto", label: "Proyecto" },
   ];
-  const [groupBy1, setGroupBy1] = useState("");
-  const [groupBy2, setGroupBy2] = useState("");
-  const [groupBy3, setGroupBy3] = useState("");
+  const [groupBys, setGroupBys] = useState([]);
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
   const toggleGroup = (path) => setCollapsedGroups((prev) => {
     const next = new Set(prev);
     next.has(path) ? next.delete(path) : next.add(path);
     return next;
   });
-  const groupKeys = [groupBy1, groupBy2, groupBy3].filter(Boolean);
-  const grouped = groupKeys.length ? agruparRows(partidasOrdenadas, groupKeys) : null;
+  const groupKeys = groupBys.map((g) => g.field);
+  const grouped = groupKeys.length ? agruparRows(partidasOrdenadas, groupBys) : null;
 
   const COLUMNAS_PARTIDA = [
     { key: "mes", label: "Mes", render: (p) => p.mes },
@@ -1327,33 +1439,15 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
           </Field>
           {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
           <div style={{ width: 1, alignSelf: "stretch", background: T.borderSoft, margin: "0 4px" }} />
-          <Field label="Agrupar por">
-            <Select
-              value={groupBy1}
-              onChange={(e) => { setGroupBy1(e.target.value); setGroupBy2(""); setCollapsedGroups(new Set()); }}
-              style={{ width: 150 }}
-            >
-              {GROUP_OPCIONES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </Select>
-          </Field>
-          {groupBy1 && (
-            <Field label="Luego por">
-              <Select
-                value={groupBy2}
-                onChange={(e) => { setGroupBy2(e.target.value); setGroupBy3(""); setCollapsedGroups(new Set()); }}
-                style={{ width: 150 }}
-              >
-                {GROUP_OPCIONES.filter((o) => !o.value || o.value !== groupBy1).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </Select>
-            </Field>
-          )}
-          {groupBy1 && groupBy2 && (
-            <Field label="Y luego por">
-              <Select value={groupBy3} onChange={(e) => { setGroupBy3(e.target.value); setCollapsedGroups(new Set()); }} style={{ width: 150 }}>
-                {GROUP_OPCIONES.filter((o) => !o.value || (o.value !== groupBy1 && o.value !== groupBy2)).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </Select>
-            </Field>
-          )}
+          <GroupByControl
+            options={GROUP_OPCIONES}
+            value={groupBys}
+            onChange={(v) => { setGroupBys(v); setCollapsedGroups(new Set()); }}
+            maxLevels={3}
+            groupedTree={grouped}
+            collapsed={collapsedGroups}
+            setCollapsed={setCollapsedGroups}
+          />
         </div>
 
         <div style={{ overflowX: "auto" }}>
@@ -1642,7 +1736,6 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
   });
 
   const GROUP_OPCIONES_TRANS = [
-    { value: "", label: "Sin agrupar" },
     { value: "zona", label: "Zona" },
     { value: "proveedor", label: "Proveedor" },
     { value: "proyecto", label: "Proyecto (transacción)" },
@@ -1652,17 +1745,15 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
     { value: "_mes", label: "Mes (partida)" },
     { value: "_vinculo", label: "Vínculo" },
   ];
-  const [groupBy1, setGroupBy1] = useState("");
-  const [groupBy2, setGroupBy2] = useState("");
-  const [groupBy3, setGroupBy3] = useState("");
+  const [groupBys, setGroupBys] = useState([]);
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
   const toggleGroup = (path) => setCollapsedGroups((prev) => {
     const next = new Set(prev);
     next.has(path) ? next.delete(path) : next.add(path);
     return next;
   });
-  const groupKeys = [groupBy1, groupBy2, groupBy3].filter(Boolean);
-  const grouped = groupKeys.length ? agruparRows(transEnriquecidas, groupKeys, "importe") : null;
+  const groupKeys = groupBys.map((g) => g.field);
+  const grouped = groupKeys.length ? agruparRows(transEnriquecidas, groupBys, "importe") : null;
 
   const COLUMNAS_TRANS = [
     { key: "dia", label: "Día", render: (t) => t.dia || "—" },
@@ -1806,33 +1897,15 @@ function TransaccionesTab({ unidad, unidades, partidas, transacciones, transacci
           </Field>
           {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
           <div style={{ width: 1, alignSelf: "stretch", background: T.borderSoft, margin: "0 4px" }} />
-          <Field label="Agrupar por">
-            <Select
-              value={groupBy1}
-              onChange={(e) => { setGroupBy1(e.target.value); setGroupBy2(""); setGroupBy3(""); setCollapsedGroups(new Set()); }}
-              style={{ width: 160 }}
-            >
-              {GROUP_OPCIONES_TRANS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </Select>
-          </Field>
-          {groupBy1 && (
-            <Field label="Luego por">
-              <Select
-                value={groupBy2}
-                onChange={(e) => { setGroupBy2(e.target.value); setGroupBy3(""); setCollapsedGroups(new Set()); }}
-                style={{ width: 160 }}
-              >
-                {GROUP_OPCIONES_TRANS.filter((o) => !o.value || o.value !== groupBy1).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </Select>
-            </Field>
-          )}
-          {groupBy1 && groupBy2 && (
-            <Field label="Y luego por">
-              <Select value={groupBy3} onChange={(e) => { setGroupBy3(e.target.value); setCollapsedGroups(new Set()); }} style={{ width: 160 }}>
-                {GROUP_OPCIONES_TRANS.filter((o) => !o.value || (o.value !== groupBy1 && o.value !== groupBy2)).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-              </Select>
-            </Field>
-          )}
+          <GroupByControl
+            options={GROUP_OPCIONES_TRANS}
+            value={groupBys}
+            onChange={(v) => { setGroupBys(v); setCollapsedGroups(new Set()); }}
+            maxLevels={3}
+            groupedTree={grouped}
+            collapsed={collapsedGroups}
+            setCollapsed={setCollapsedGroups}
+          />
         </div>
 
         <div style={{ overflowX: "auto" }}>

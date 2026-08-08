@@ -92,8 +92,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.32.1";
+const APP_VERSION = "1.32.2";
 const CHANGELOG = [
+  { v: "1.32.2", desc: "Reporte de Pagos y Reporte Pagos Dirección: separa el KPI de Importe total en Total MXN y Total USD (antes se sumaban las dos divisas juntas)" },
   { v: "1.32.1", desc: "Filas alternadas (cebra) en todas las tablas de la app, para facilitar la lectura" },
   { v: "1.32.0", desc: "Tabla 'sin vincular' de Transacciones: agrega filtro Desde/Hasta, Agrupar por, y control de columnas — mismo patrón que las demás tablas" },
   { v: "1.31.1", desc: "Fix: 'Proyecto' en el popup de nueva partida rápida ahora es un selector del catálogo, no texto libre" },
@@ -2792,7 +2793,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
     XLSX.writeFile(wbx, `reporte-pagos-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  const totalImporte = filasOrdenadas.reduce((s, f) => s + f.importe, 0);
+  const totalMXN = filasOrdenadas.filter((f) => f.moneda === "MXN").reduce((s, f) => s + f.importe, 0);
+  const totalUSD = filasOrdenadas.filter((f) => f.moneda === "USD").reduce((s, f) => s + f.importe, 0);
   const sinProveedorVinculado = filas.filter((f) => !f._vinculadoProveedor && f.proveedor).length;
   const sinCuentaVinculada = filas.filter((f) => f._vinculadoProveedor && !f._vinculadoCuenta).length;
 
@@ -2809,7 +2811,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <KpiCard label="Transacciones" value={String(filasOrdenadas.length)} />
-        <KpiCard label="Importe total (filtrado)" value={money(totalImporte)} />
+        <KpiCard label="Total MXN (filtrado)" value={money(totalMXN, "MXN")} />
+        <KpiCard label="Total USD (filtrado)" value={money(totalUSD, "USD")} />
       </div>
 
       {sinProveedorVinculado > 0 && (
@@ -2967,7 +2970,8 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
     XLSX.writeFile(wbx, `reporte-pagos-direccion-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`);
   };
 
-  const totalImporte = filasOrdenadas.reduce((s, f) => s + f.importe, 0);
+  const totalMXN = filasOrdenadas.filter((f) => f.moneda === "MXN").reduce((s, f) => s + f.importe, 0);
+  const totalUSD = filasOrdenadas.filter((f) => f.moneda === "USD").reduce((s, f) => s + f.importe, 0);
 
   if (!transUnidad.length) {
     return (
@@ -2982,7 +2986,8 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <KpiCard label="Transacciones" value={String(filasOrdenadas.length)} />
-        <KpiCard label="Importe total (filtrado)" value={money(totalImporte)} />
+        <KpiCard label="Total MXN (filtrado)" value={money(totalMXN, "MXN")} />
+        <KpiCard label="Total USD (filtrado)" value={money(totalUSD, "USD")} />
       </div>
 
       <Panel

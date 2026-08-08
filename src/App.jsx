@@ -92,8 +92,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.27.2";
+const APP_VERSION = "1.28.0";
 const CHANGELOG = [
+  { v: "1.28.0", desc: "Proveedores: agrega Sucursal y SWIFT a las cuentas; la carga masiva ahora agrupa filas repetidas del mismo proveedor (varias cuentas) aunque sea nuevo en el mismo archivo" },
   { v: "1.27.2", desc: "Fix: editar una transacción agrupada fallaba porque colaban campos internos (_mes, _rubro, etc.) al guardar" },
   { v: "1.27.1", desc: "Transacciones: simplifica filtros a solo Buscar + rango de fechas (quita Zona/Vínculo/Mes/Proyecto)" },
   { v: "1.27.0", desc: "Nueva pestaña 'Reporte Pagos Dirección' — versión resumida (Día, Solicitante, Proyecto, Zona, Proveedor, Concepto, Importe, Moneda, A Partida, Status), mismo filtro de fechas" },
@@ -382,9 +383,9 @@ function toISODate(val) {
 // Nombre si no hay RFC, dentro de esa unidad) o alta nueva.
 function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
   const wb = XLSX.read(arrayBuffer, { type: "array" });
-  const rows = [];
+  const porClave = new Map(); // "unidad|rfcOnombre" -> fila agregada (para agrupar varias cuentas del mismo proveedor en un solo archivo)
   const sheetsFound = [];
-  let actualizaciones = 0, nuevas = 0, sinCompania = 0;
+  let sinCompania = 0;
 
   wb.SheetNames.forEach((sheetName) => {
     const ws = wb.Sheets[sheetName];
@@ -398,6 +399,8 @@ function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
       rfc: findExactCol(headers, ["rfc"]),
       idSae: findCol(headers, ["id", "sae"]),
       banco: findExactCol(headers, ["banco"]),
+      sucursal: findExactCol(headers, ["sucursal"]),
+      swift: findExactCol(headers, ["swift"]),
       clabe: findExactCol(headers, ["clabe"]),
       cuenta: findCol(headers, ["numero", "cuenta"], ["no.", "cuenta"], ["cuenta"]),
       divisa: findExactCol(headers, ["divisa"]),
@@ -420,32 +423,47 @@ function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
       if (!unidad) { sinCompania++; continue; }
 
       const rfc = (col.rfc !== -1 && row[col.rfc]) ? String(row[col.rfc]).trim().toUpperCase() : "";
-      const existente = existingProveedores.find((p) => {
-        if (p.unidad !== unidad) return false;
-        if (rfc && p.rfc) return p.rfc.trim().toUpperCase() === rfc;
-        if (!rfc && !p.rfc) return (p.nombre || "").trim().toUpperCase() === nombre.toUpperCase();
-        return false;
-      });
-      if (existente) actualizaciones++; else nuevas++;
+      const cuenta = {
+        banco: (col.banco !== -1 && row[col.banco]) ? String(row[col.banco]).trim() : "",
+        sucursal: (col.sucursal !== -1 && row[col.sucursal]) ? String(row[col.sucursal]).trim() : "",
+        swift: (col.swift !== -1 && row[col.swift]) ? String(row[col.swift]).trim() : "",
+        clabe: (col.clabe !== -1 && row[col.clabe]) ? String(row[col.clabe]).trim() : "",
+        numero_cuenta: (col.cuenta !== -1 && row[col.cuenta]) ? String(row[col.cuenta]).trim() : "",
+        divisa: (col.divisa !== -1 && row[col.divisa]) ? String(row[col.divisa]).trim().toUpperCase() : "MXN",
+      };
+      const tieneCuenta = cuenta.banco || cuenta.clabe || cuenta.numero_cuenta || cuenta.sucursal || cuenta.swift;
 
-      rows.push({
-        id: uid(),
-        unidad,
-        nombre,
-        rfc,
-        id_sae: (col.idSae !== -1 && row[col.idSae]) ? String(row[col.idSae]).trim() : "",
-        _existenteId: existente ? existente.id : null,
-        _cuenta: {
-          banco: (col.banco !== -1 && row[col.banco]) ? String(row[col.banco]).trim() : "",
-          clabe: (col.clabe !== -1 && row[col.clabe]) ? String(row[col.clabe]).trim() : "",
-          numero_cuenta: (col.cuenta !== -1 && row[col.cuenta]) ? String(row[col.cuenta]).trim() : "",
-          divisa: (col.divisa !== -1 && row[col.divisa]) ? String(row[col.divisa]).trim().toUpperCase() : "MXN",
-        },
-      });
+      // Clave para agrupar varias filas del MISMO archivo que representan al
+      // mismo proveedor (varias cuentas) — por RFC si lo trae, si no por Nombre.
+      const clave = `${unidad}|${rfc || nombre.toUpperCase()}`;
+
+      if (porClave.has(clave)) {
+        if (tieneCuenta) porClave.get(clave)._cuentas.push(cuenta);
+      } else {
+        const existente = existingProveedores.find((p) => {
+          if (p.unidad !== unidad) return false;
+          if (rfc && p.rfc) return p.rfc.trim().toUpperCase() === rfc;
+          if (!rfc && !p.rfc) return (p.nombre || "").trim().toUpperCase() === nombre.toUpperCase();
+          return false;
+        });
+        porClave.set(clave, {
+          id: uid(),
+          unidad,
+          nombre,
+          rfc,
+          id_sae: (col.idSae !== -1 && row[col.idSae]) ? String(row[col.idSae]).trim() : "",
+          _existenteId: existente ? existente.id : null,
+          _cuentas: tieneCuenta ? [cuenta] : [],
+        });
+      }
       count++;
     }
     if (count) sheetsFound.push({ sheetName, count });
   });
+
+  const rows = [...porClave.values()];
+  const nuevas = rows.filter((r) => !r._existenteId).length;
+  const actualizaciones = rows.filter((r) => r._existenteId).length;
 
   return { rows, sheetsFound, nuevas, actualizaciones, sinCompania };
 }
@@ -2791,21 +2809,20 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
       const actualizacionesFilas = preview.rows.filter((r) => r._existenteId);
 
       if (nuevasFilas.length) {
-        const payload = nuevasFilas.map(({ _existenteId, _cuenta, ...rest }) => rest);
+        const payload = nuevasFilas.map(({ _existenteId, _cuentas, ...rest }) => rest);
         const creados = await proveedoresApi.bulkInsert(payload);
         creados.forEach((c, i) => {
-          const cuenta = nuevasFilas[i]._cuenta;
-          if (cuenta && (cuenta.banco || cuenta.clabe || cuenta.numero_cuenta)) {
+          (nuevasFilas[i]._cuentas || []).forEach((cuenta) => {
             cuentasAInsertar.push({ id: uid(), proveedor_id: c.id, ...cuenta });
-          }
+          });
         });
       }
       for (const r of actualizacionesFilas) {
-        const { id, _existenteId, _cuenta, ...patch } = r;
+        const { id, _existenteId, _cuentas, ...patch } = r;
         await proveedoresApi.update(_existenteId, patch);
-        if (_cuenta && (_cuenta.banco || _cuenta.clabe || _cuenta.numero_cuenta)) {
-          cuentasAInsertar.push({ id: uid(), proveedor_id: _existenteId, ..._cuenta });
-        }
+        (_cuentas || []).forEach((cuenta) => {
+          cuentasAInsertar.push({ id: uid(), proveedor_id: _existenteId, ...cuenta });
+        });
       }
       if (cuentasAInsertar.length) await cuentasApi.bulkInsert(cuentasAInsertar);
 
@@ -2849,7 +2866,7 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
           <div style={{ overflowX: "auto", maxHeight: 260, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
             <table style={tableStyle}>
               <thead>
-                <tr>{["","Unidad","Nombre","RFC","Banco","Divisa"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+                <tr>{["","Unidad","Nombre","RFC","Cuentas"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
               </thead>
               <tbody>
                 {preview.rows.slice(0, 15).map((r) => (
@@ -2858,8 +2875,11 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
                     <td style={tdStyle}>{r.unidad}</td>
                     <td style={tdStyle}>{r.nombre}</td>
                     <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{r.rfc || "—"}</td>
-                    <td style={tdStyle}>{r._cuenta.banco || "—"}</td>
-                    <td style={tdStyle}>{r._cuenta.banco || r._cuenta.clabe ? r._cuenta.divisa : "—"}</td>
+                    <td style={tdStyle}>
+                      {r._cuentas.length
+                        ? r._cuentas.map((c) => c.banco || c.divisa).filter(Boolean).join(", ")
+                        : "—"}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -2888,7 +2908,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
   const [saving, setSaving] = useState(false);
   const [buscar, setBuscar] = useState("");
 
-  const cuentaBlank = { banco: "", clabe: "", numero_cuenta: "", divisa: "MXN" };
+  const cuentaBlank = { banco: "", sucursal: "", swift: "", clabe: "", numero_cuenta: "", divisa: "MXN" };
   const [nuevaCuenta, setNuevaCuenta] = useState(cuentaBlank);
   const cuentasDelProveedor = editId ? cuentasApi.rows.filter((c) => c.proveedor_id === editId) : [];
 
@@ -3006,12 +3026,14 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
               {cuentasDelProveedor.length > 0 && (
                 <table style={{ ...tableStyle, marginBottom: 12 }}>
                   <thead>
-                    <tr>{["Banco","CLABE","No. Cuenta","Divisa",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+                    <tr>{["Banco","Sucursal","SWIFT","CLABE","No. Cuenta","Divisa",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
                   </thead>
                   <tbody>
                     {cuentasDelProveedor.map((c) => (
                       <tr key={c.id}>
                         <td style={tdStyle}>{c.banco || "—"}</td>
+                        <td style={tdStyle}>{c.sucursal || "—"}</td>
+                        <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.swift || "—"}</td>
                         <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.clabe || "—"}</td>
                         <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.numero_cuenta || "—"}</td>
                         <td style={tdStyle}><Pill>{c.divisa || "MXN"}</Pill></td>
@@ -3021,10 +3043,18 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
                   </tbody>
                 </table>
               )}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 8, alignItems: "end" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8 }}>
                 <Field label="Banco">
                   <TextInput value={nuevaCuenta.banco} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, banco: e.target.value })} />
                 </Field>
+                <Field label="Sucursal">
+                  <TextInput value={nuevaCuenta.sucursal} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, sucursal: e.target.value })} />
+                </Field>
+                <Field label="SWIFT">
+                  <TextInput value={nuevaCuenta.swift} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, swift: e.target.value })} />
+                </Field>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, alignItems: "end" }}>
                 <Field label="CLABE">
                   <TextInput value={nuevaCuenta.clabe} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, clabe: e.target.value })} placeholder="18 dígitos" />
                 </Field>

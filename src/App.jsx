@@ -92,8 +92,11 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.34.0";
+const APP_VERSION = "1.36.0";
 const CHANGELOG = [
+  { v: "1.36.0", desc: "Tabla de Transacciones: la columna Proveedor muestra si está vinculado al catálogo y si tiene cuenta bancaria (Sin catálogo / Sin cuenta / Con cuenta)" },
+  { v: "1.35.0", desc: "'+ Nuevo proveedor' ahora incluye un segundo paso para agregar cuenta(s) bancaria(s) antes de usarlo, sin salir de la transacción" },
+  { v: "1.34.1", desc: "Fix: el popup de elegir Partida/Proveedor ahora se cierra de forma confiable al hacer clic (se cierra primero, luego procesa la selección)" },
   { v: "1.34.0", desc: "Selector de Proveedor rediseñado: popup con buscador (nombre/RFC/Id SAE) y '+ Nuevo proveedor' al vuelo, igual que el selector de Partida" },
   { v: "1.33.0", desc: "Homologa 'MXN' a 'MXP' en todo el código (defaults, catálogo de monedas, importadores, reportes) — corre homologar-mxn-a-mxp.sql para actualizar los datos ya guardados" },
   { v: "1.32.3", desc: "Fix global: texto largo sin espacios (CLABE, RFC, folios) ya no se sale de su columna y se encima con la siguiente — aplica a todas las tablas" },
@@ -274,7 +277,10 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
   const meses = MESES.filter((m) => filtradas.some((p) => p.mes === m));
   const sinMes = filtradas.filter((p) => !p.mes);
 
-  const elegir = (id) => { onChange(id); setOpen(false); setBusqueda(""); setCreando(false); };
+  const elegir = (id) => {
+    setOpen(false); setBusqueda(""); setCreando(false);
+    try { onChange(id); } catch (err) { console.error("Error al elegir partida:", err); }
+  };
 
   const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
@@ -432,7 +438,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
 
 // Botón que abre un popup con buscador para elegir un proveedor del catálogo —
 // mismo patrón que PartidaPickerButton. Incluye "+ Nuevo proveedor" al vuelo.
-function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "Elegir proveedor…", proveedoresApi, unidad }) {
+function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "Elegir proveedor…", proveedoresApi, cuentasApi, unidad }) {
   const [open, setOpen] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const seleccionado = proveedores.find((p) => p.id === value);
@@ -443,26 +449,48 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
     return [p.nombre, p.rfc, p.id_sae].some((v) => (v || "").toLowerCase().includes(q));
   });
 
-  const elegir = (id, p) => { onChange(id, p); setOpen(false); setBusqueda(""); setCreando(false); };
+  const elegir = (id, p) => {
+    setOpen(false); setBusqueda(""); setCreando(false); setProveedorCreado(null); setNuevo(nuevoBlank); setNuevaCuenta(cuentaBlank);
+    try { onChange(id, p); } catch (err) { console.error("Error al elegir proveedor:", err); }
+  };
 
   const nuevoBlank = { nombre: "", rfc: "", id_sae: "" };
+  const cuentaBlank = { banco: "", sucursal: "", swift: "", clabe: "", numero_cuenta: "", divisa: "MXP" };
   const [creando, setCreando] = useState(false);
   const [nuevo, setNuevo] = useState(nuevoBlank);
   const [guardando, setGuardando] = useState(false);
+  const [proveedorCreado, setProveedorCreado] = useState(null); // una vez creada la identidad, se pasa a capturar cuentas
+  const [nuevaCuenta, setNuevaCuenta] = useState(cuentaBlank);
+  const cuentasDelNuevo = (proveedorCreado && cuentasApi) ? cuentasApi.rows.filter((c) => c.proveedor_id === proveedorCreado.id) : [];
 
   const crearProveedor = async () => {
     if (!nuevo.nombre.trim()) return;
     setGuardando(true);
     try {
       const creado = await proveedoresApi.insert({ id: uid(), unidad, nombre: nuevo.nombre.trim(), rfc: nuevo.rfc.trim().toUpperCase(), id_sae: nuevo.id_sae.trim() });
-      setNuevo(nuevoBlank);
-      elegir(creado.id, creado);
+      if (cuentasApi) {
+        setProveedorCreado(creado); // pasa al paso de cuentas bancarias
+      } else {
+        elegir(creado.id, creado);
+      }
     } catch (err) {
       alert("No se pudo crear el proveedor: " + (err.message || err));
     } finally {
       setGuardando(false);
     }
   };
+
+  const agregarCuentaNuevo = async () => {
+    if (!proveedorCreado) return;
+    if (!nuevaCuenta.banco.trim() && !nuevaCuenta.clabe.trim() && !nuevaCuenta.numero_cuenta.trim()) return;
+    try {
+      await cuentasApi.insert({ id: uid(), proveedor_id: proveedorCreado.id, ...nuevaCuenta });
+      setNuevaCuenta(cuentaBlank);
+    } catch (err) {
+      alert("No se pudo agregar la cuenta: " + (err.message || err));
+    }
+  };
+  const eliminarCuentaNuevo = (id) => cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
 
   return (
     <>
@@ -481,7 +509,7 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
       </button>
 
       {open && (
-        <Modal title="Elegir proveedor" subtitle="Busca por nombre, RFC o Id SAE" onClose={() => { setOpen(false); setCreando(false); }} width={520}>
+        <Modal title="Elegir proveedor" subtitle="Busca por nombre, RFC o Id SAE" onClose={() => { setOpen(false); setCreando(false); setProveedorCreado(null); }} width={560}>
           {proveedoresApi && !creando && (
             <Button type="button" variant="ghost" onClick={() => setCreando(true)} style={{ marginBottom: 10 }}>
               + Nuevo proveedor
@@ -489,27 +517,78 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
           )}
 
           {creando ? (
-            <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 6, padding: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>Nuevo proveedor — {unidad}</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
-                <Field label="Nombre" style={{ gridColumn: "span 2" }}>
-                  <TextInput autoFocus value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} />
-                </Field>
-                <Field label="RFC">
-                  <TextInput value={nuevo.rfc} onChange={(e) => setNuevo({ ...nuevo, rfc: e.target.value.toUpperCase() })} />
-                </Field>
-                <Field label="Id SAE">
-                  <TextInput value={nuevo.id_sae} onChange={(e) => setNuevo({ ...nuevo, id_sae: e.target.value })} />
-                </Field>
+            proveedorCreado ? (
+              <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 6, padding: 14 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 4 }}>{proveedorCreado.nombre} — creado</div>
+                <div style={{ fontSize: 11, color: T.textFaint, marginBottom: 10 }}>Agrégale cuenta(s) bancaria(s) (opcional), o dale "Listo" para usarlo sin cuenta.</div>
+
+                {cuentasDelNuevo.length > 0 && (
+                  <table style={{ ...tableStyle, marginBottom: 10 }}>
+                    <thead>
+                      <tr>{["Banco","CLABE","No. Cuenta","Divisa",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+                    </thead>
+                    <tbody>
+                      {cuentasDelNuevo.map((c) => (
+                        <tr key={c.id}>
+                          <td style={tdStyle}>{c.banco || "—"}</td>
+                          <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.clabe || "—"}</td>
+                          <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.numero_cuenta || "—"}</td>
+                          <td style={tdStyle}><Pill>{c.divisa || "MXP"}</Pill></td>
+                          <td style={tdStyle}><Button type="button" variant="danger" onClick={() => eliminarCuentaNuevo(c.id)}>Eliminar</Button></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8 }}>
+                  <Field label="Banco">
+                    <TextInput autoFocus value={nuevaCuenta.banco} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, banco: e.target.value })} />
+                  </Field>
+                  <Field label="Sucursal">
+                    <TextInput value={nuevaCuenta.sucursal} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, sucursal: e.target.value })} />
+                  </Field>
+                  <Field label="SWIFT">
+                    <TextInput value={nuevaCuenta.swift} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, swift: e.target.value })} />
+                  </Field>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, alignItems: "end", marginBottom: 12 }}>
+                  <Field label="CLABE">
+                    <TextInput value={nuevaCuenta.clabe} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, clabe: e.target.value })} placeholder="18 dígitos" />
+                  </Field>
+                  <Field label="No. Cuenta">
+                    <TextInput value={nuevaCuenta.numero_cuenta} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, numero_cuenta: e.target.value })} />
+                  </Field>
+                  <Field label="Divisa">
+                    <Select value={nuevaCuenta.divisa} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, divisa: e.target.value })}>
+                      {MONEDAS.map((m) => <option key={m}>{m}</option>)}
+                    </Select>
+                  </Field>
+                  <Button type="button" variant="ghost" onClick={agregarCuentaNuevo}>+ Agregar cuenta</Button>
+                </div>
+
+                <Button type="button" onClick={() => elegir(proveedorCreado.id, proveedorCreado)}>Listo, usar este proveedor</Button>
               </div>
-              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                <Button type="button" onClick={crearProveedor} disabled={guardando}>{guardando ? "Creando…" : "Crear y usar este proveedor"}</Button>
-                <Button type="button" variant="ghost" onClick={() => { setCreando(false); setNuevo(nuevoBlank); }}>Cancelar</Button>
+            ) : (
+              <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 6, padding: 14 }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>Nuevo proveedor — {unidad}</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
+                  <Field label="Nombre" style={{ gridColumn: "span 2" }}>
+                    <TextInput autoFocus value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} />
+                  </Field>
+                  <Field label="RFC">
+                    <TextInput value={nuevo.rfc} onChange={(e) => setNuevo({ ...nuevo, rfc: e.target.value.toUpperCase() })} />
+                  </Field>
+                  <Field label="Id SAE">
+                    <TextInput value={nuevo.id_sae} onChange={(e) => setNuevo({ ...nuevo, id_sae: e.target.value })} />
+                  </Field>
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                  <Button type="button" onClick={crearProveedor} disabled={guardando}>{guardando ? "Creando…" : "Siguiente: cuentas bancarias"}</Button>
+                  <Button type="button" variant="ghost" onClick={() => { setCreando(false); setNuevo(nuevoBlank); }}>Cancelar</Button>
+                </div>
               </div>
-              <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10 }}>
-                Sin cuenta bancaria por ahora — agrégasela después desde Catálogo si la necesitas.
-              </div>
-            </div>
+            )
           ) : (
             <>
               <TextInput
@@ -2379,10 +2458,27 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const grouped = groupKeys.length ? agruparRows(transEnriquecidas, groupBys, "importe") : null;
 
   // --- Tabla "sin vincular": mismos controles que la tabla principal (fechas, agrupar, columnas) ---
+  // Indicador de vínculo del proveedor: sin catálogo / con catálogo sin cuenta / con cuenta bancaria.
+  const renderProveedorConIndicador = (t) => {
+    if (!t.proveedor && !t.proveedor_id) return "—";
+    let tone = "red", texto = "Sin catálogo";
+    if (t.proveedor_id) {
+      const tieneCuenta = cuentasApi.rows.some((c) => c.proveedor_id === t.proveedor_id);
+      tone = tieneCuenta ? "teal" : "amber";
+      texto = tieneCuenta ? "Con cuenta" : "Sin cuenta";
+    }
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+        <span>{t.proveedor || "—"}</span>
+        <Pill tone={tone}>{texto}</Pill>
+      </div>
+    );
+  };
+
   const COLUMNAS_SINVINC = [
     { key: "dia", label: "Día", render: (t) => t.dia || "—" },
     { key: "folio_original", label: "Folio", render: (t) => <span style={{ fontFamily: T.fontMono, color: T.red }}>{t.folio_original || "(sin folio)"}</span> },
-    { key: "proveedor", label: "Proveedor", render: (t) => t.proveedor || "—" },
+    { key: "proveedor", label: "Proveedor", render: renderProveedorConIndicador },
     { key: "zona", label: "Zona", render: (t) => t.zona || "—" },
     { key: "area", label: "Área", render: (t) => t.area || "—" },
     { key: "proyecto", label: "Proyecto", render: (t) => t.proyecto || "—" },
@@ -2476,7 +2572,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         />
       ),
     },
-    { key: "proveedor", label: "Proveedor", render: (t) => t.proveedor },
+    { key: "proveedor", label: "Proveedor", render: renderProveedorConIndicador },
     { key: "proyecto", label: "Proyecto", render: (t) => t.proyecto || "—" },
     { key: "zona", label: "Zona", render: (t) => t.zona || "—" },
     { key: "area", label: "Área", render: (t) => t.area || "—" },
@@ -2759,6 +2855,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               <ProveedorPickerButton
                 proveedores={proveedoresUnidad}
                 proveedoresApi={proveedoresApi}
+                cuentasApi={cuentasApi}
                 unidad={unidad}
                 value={form.proveedor_id}
                 onChange={(id, p) => {

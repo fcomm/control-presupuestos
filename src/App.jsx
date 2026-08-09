@@ -4,6 +4,7 @@ import {
   PieChart, Pie, Cell, LineChart, Line, Legend
 } from "recharts";
 import * as XLSX from "xlsx";
+import ExcelJS from "exceljs";
 import { useCollection } from "./useCollection";
 
 /* ----------------------------------------------------------------------
@@ -92,8 +93,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.38.1";
+const APP_VERSION = "1.39.0";
 const CHANGELOG = [
+  { v: "1.39.0", desc: "Reporte Pagos Dirección: exportación a Excel con el formato exacto solicitado (título con fechas/compañía, totales MXP/USD arriba, encabezados centrados, moneda formateada) — cambia de xlsx a exceljs para soportar estilos" },
   { v: "1.38.1", desc: "Reporte de Pagos: agrega columnas No. Cuenta y SWIFT (de la cuenta bancaria vinculada), visibles en tabla y exportación a Excel" },
   { v: "1.38.0", desc: "Agrega Referencia y Notas al catálogo de Proveedores — visibles en el formulario, la tabla, la carga masiva, y el Reporte de Pagos (con exportación a Excel)" },
   { v: "1.37.1", desc: "Fix de robustez: los popups de Partida/Proveedor (anidados dentro del modal de transacción) usan z-index más alto y filas como <button> real, para que el clic siempre registre" },
@@ -3218,12 +3220,68 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
   const onColDragOver = (e) => e.preventDefault();
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
 
-  const exportarExcel = () => {
-    const data = filasOrdenadas.map((f) => Object.fromEntries(columnas.map((c) => [c.label, f[c.key]])));
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wbx = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wbx, ws, "Reporte pagos direccion");
-    XLSX.writeFile(wbx, `reporte-pagos-direccion-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  const exportarExcel = async () => {
+    const wbx = new ExcelJS.Workbook();
+    const ws = wbx.addWorksheet("Reporte pagos direccion");
+
+    ws.columns = [
+      { width: 8.875 }, { width: 17.125 }, { width: 11.375 }, { width: 8.625 }, { width: 23.25 },
+      { width: 41.125 }, { width: 11.125 }, { width: 11.375 }, { width: 11.875 }, { width: 9.625 },
+    ];
+
+    const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
+    const inicio = fechaDesde || diasOrdenados[0] || "";
+    const fin = fechaHasta || diasOrdenados[diasOrdenados.length - 1] || "";
+
+    const tituloCell = ws.getCell("B1");
+    tituloCell.value = `Reporte de pagos a realizar del dia "${inicio}" al dia "${fin}" Compañía "${unidad}"`;
+    tituloCell.font = { bold: true, size: 16, name: "Calibri" };
+
+    ws.getCell("F3").value = "Total a pagar MXP";
+    ws.getCell("F3").font = { bold: true, name: "Calibri", size: 11 };
+    ws.getCell("F3").alignment = { horizontal: "right" };
+    ws.getCell("G3").value = totalMXN;
+    ws.getCell("G3").numFmt = '"$"#,##0.00';
+    ws.getCell("G3").font = { name: "Calibri", size: 11 };
+
+    ws.getCell("F4").value = "Total a pagar USD";
+    ws.getCell("F4").font = { bold: true, name: "Calibri", size: 11 };
+    ws.getCell("F4").alignment = { horizontal: "right" };
+    ws.getCell("G4").value = totalUSD;
+    ws.getCell("G4").numFmt = '"$"#,##0.00';
+    ws.getCell("G4").font = { name: "Calibri", size: 11 };
+
+    const headers = ["Día", "Solicitante", "Proyecto", "Zona", "Proveedor", "Concepto", "Importe", "Moneda", "A Partida", "Status"];
+    const headerRow = ws.getRow(6);
+    headers.forEach((h, i) => {
+      const cell = headerRow.getCell(i + 1);
+      cell.value = h;
+      cell.alignment = { horizontal: "center" };
+      cell.font = { name: "Calibri", size: 11 };
+    });
+
+    filasOrdenadas.forEach((f, i) => {
+      const row = ws.getRow(7 + i);
+      const valores = [f.dia, f.solicitante, f.proyecto, f.zona, f.proveedor, f.concepto, f.importe, f.moneda, f.a_partida, f.status];
+      valores.forEach((v, ci) => {
+        const cell = row.getCell(ci + 1);
+        cell.value = v;
+        cell.alignment = { horizontal: "center" };
+        cell.font = { name: "Calibri", size: 11 };
+        if (ci === 6) cell.numFmt = '"$"#,##0.00'; // columna Importe
+      });
+    });
+
+    const buffer = await wbx.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `reporte-pagos-direccion-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const totalMXN = filasOrdenadas.filter((f) => f.moneda === "MXP").reduce((s, f) => s + f.importe, 0);

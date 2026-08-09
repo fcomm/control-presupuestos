@@ -93,8 +93,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.40.0";
+const APP_VERSION = "1.41.0";
 const CHANGELOG = [
+  { v: "1.41.0", desc: "Los avisos de Reporte de Pagos (proveedor/cuenta sin vincular) ahora son una barra fija abajo del navegador, visible aunque hagas scroll" },
+  { v: "1.40.1", desc: "Quita las comillas alrededor de los valores dinámicos (fechas, compañía, moneda, zona) en los títulos de ambos reportes exportados" },
   { v: "1.40.0", desc: "Reporte de Pagos: exportación a Excel agrupada por Zona y Moneda (bloque por cada combinación con datos, formato de la plantilla) — reemplaza la exportación plana anterior" },
   { v: "1.39.0", desc: "Reporte Pagos Dirección: exportación a Excel con el formato exacto solicitado (título con fechas/compañía, totales MXP/USD arriba, encabezados centrados, moneda formateada) — cambia de xlsx a exceljs para soportar estilos" },
   { v: "1.38.1", desc: "Reporte de Pagos: agrega columnas No. Cuenta y SWIFT (de la cuenta bancaria vinculada), visibles en tabla y exportación a Excel" },
@@ -1375,6 +1377,28 @@ function Panel({ title, subtitle, children, right }) {
         {right}
       </div>
       {children}
+    </div>
+  );
+}
+
+// Barra de avisos fija en la parte inferior del navegador — se queda visible
+// aunque se haga scroll. `avisos` = [{ tone, texto }].
+function AvisosFlotantes({ avisos }) {
+  const activos = avisos.filter((a) => a.texto);
+  if (!activos.length) return null;
+  const toneColor = { amber: T.amberDim, red: T.red, accent: T.accent, teal: T.teal };
+  return (
+    <div style={{
+      position: "fixed", bottom: 0, left: 0, right: 0, zIndex: 900,
+      background: T.panel, borderTop: `3px solid ${toneColor[activos[0].tone] || T.amberDim}`,
+      boxShadow: "0 -6px 18px rgba(35,42,49,0.14)", padding: "10px 20px",
+      display: "flex", flexDirection: "column", gap: 4, maxHeight: 140, overflowY: "auto",
+    }}>
+      {activos.map((a, i) => (
+        <div key={i} style={{ fontSize: 11.5, color: toneColor[a.tone] || T.amberDim }}>
+          {a.texto}
+        </div>
+      ))}
     </div>
   );
 }
@@ -3077,12 +3101,12 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
         if (!filasGrupo.length) return;
 
         const tituloCell = ws.getCell(`B${fila}`);
-        tituloCell.value = `Solicitud de Pagos del dia "${inicio}" al dia "${fin}" Compañía "${unidad}" - "${moneda}"`;
+        tituloCell.value = `Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad} - ${moneda}`;
         tituloCell.font = { bold: true, size: 14, name: "Calibri" };
         fila += 1;
 
         const zonaCell = ws.getCell(`D${fila}`);
-        zonaCell.value = `Zona: "${zona}"`;
+        zonaCell.value = `Zona: ${zona}`;
         zonaCell.font = { bold: true, size: 12, name: "Calibri" };
         fila += 2; // una fila en blanco, como en la plantilla
 
@@ -3142,26 +3166,32 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
     );
   }
 
+  const hayAvisos = sinProveedorVinculado > 0 || sinCuentaVinculada > 0;
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 20, paddingBottom: hayAvisos ? 70 : 0 }}>
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <KpiCard label="Transacciones" value={String(filasOrdenadas.length)} />
         <KpiCard label="Total MXP (filtrado)" value={money(totalMXN, "MXP")} />
         <KpiCard label="Total USD (filtrado)" value={money(totalUSD, "USD")} />
       </div>
 
-      {sinProveedorVinculado > 0 && (
-        <div style={{ fontSize: 11.5, color: T.amber }}>
-          {sinProveedorVinculado} transacción(es) tienen proveedor en texto pero no están ligadas al Catálogo de proveedores —
-          No. SAE, Banco y CLABE saldrán vacíos para esas filas hasta que se vinculen (edítalas en Transacciones y elige el proveedor del catálogo).
-        </div>
-      )}
-      {sinCuentaVinculada > 0 && (
-        <div style={{ fontSize: 11.5, color: T.amber }}>
-          {sinCuentaVinculada} transacción(es) tienen proveedor vinculado pero no una cuenta bancaria específica —
-          Banco y CLABE saldrán vacíos hasta que elijas la cuenta (edítalas en Transacciones).
-        </div>
-      )}
+      <AvisosFlotantes
+        avisos={[
+          {
+            tone: "amber",
+            texto: sinProveedorVinculado > 0
+              ? `${sinProveedorVinculado} transacción(es) tienen proveedor en texto pero no están ligadas al Catálogo de proveedores — No. SAE, Banco y CLABE saldrán vacíos para esas filas hasta que se vinculen (edítalas en Transacciones y elige el proveedor del catálogo).`
+              : "",
+          },
+          {
+            tone: "amber",
+            texto: sinCuentaVinculada > 0
+              ? `${sinCuentaVinculada} transacción(es) tienen proveedor vinculado pero no una cuenta bancaria específica — Banco y CLABE saldrán vacíos hasta que elijas la cuenta (edítalas en Transacciones).`
+              : "",
+          },
+        ]}
+      />
 
       <Panel
         title={`Reporte de pagos — ${unidad}`}
@@ -3311,7 +3341,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
     const fin = fechaHasta || diasOrdenados[diasOrdenados.length - 1] || "";
 
     const tituloCell = ws.getCell("B1");
-    tituloCell.value = `Reporte de pagos a realizar del dia "${inicio}" al dia "${fin}" Compañía "${unidad}"`;
+    tituloCell.value = `Reporte de pagos a realizar del dia ${inicio} al dia ${fin} Compañía ${unidad}`;
     tituloCell.font = { bold: true, size: 16, name: "Calibri" };
 
     ws.getCell("F3").value = "Total a pagar MXP";

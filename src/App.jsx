@@ -92,8 +92,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.37.1";
+const APP_VERSION = "1.38.1";
 const CHANGELOG = [
+  { v: "1.38.1", desc: "Reporte de Pagos: agrega columnas No. Cuenta y SWIFT (de la cuenta bancaria vinculada), visibles en tabla y exportación a Excel" },
+  { v: "1.38.0", desc: "Agrega Referencia y Notas al catálogo de Proveedores — visibles en el formulario, la tabla, la carga masiva, y el Reporte de Pagos (con exportación a Excel)" },
   { v: "1.37.1", desc: "Fix de robustez: los popups de Partida/Proveedor (anidados dentro del modal de transacción) usan z-index más alto y filas como <button> real, para que el clic siempre registre" },
   { v: "1.37.0", desc: "Selector de Proveedor rediseñado: clic resalta (no cierra), botón 'Seleccionar' confirma y cierra, botón 'Editar proveedor' para el resaltado (identidad + cuentas bancarias)" },
   { v: "1.36.0", desc: "Tabla de Transacciones: la columna Proveedor muestra si está vinculado al catálogo y si tiene cuenta bancaria (Sin catálogo / Sin cuenta / Con cuenta)" },
@@ -451,7 +453,7 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
   const filtrados = proveedores.filter((p) => {
     if (!busqueda.trim()) return true;
     const q = busqueda.trim().toLowerCase();
-    return [p.nombre, p.rfc, p.id_sae].some((v) => (v || "").toLowerCase().includes(q));
+    return [p.nombre, p.rfc, p.id_sae, p.referencia, p.notas].some((v) => (v || "").toLowerCase().includes(q));
   });
 
   const cuentaBlank = { banco: "", sucursal: "", swift: "", clabe: "", numero_cuenta: "", divisa: "MXP" };
@@ -824,6 +826,8 @@ function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
       nombre: findCol(headers, ["nombre"]),
       rfc: findExactCol(headers, ["rfc"]),
       idSae: findCol(headers, ["id", "sae"]),
+      referencia: findExactCol(headers, ["referencia"]),
+      notas: findExactCol(headers, ["notas"]),
       banco: findExactCol(headers, ["banco"]),
       sucursal: findExactCol(headers, ["sucursal"]),
       swift: findExactCol(headers, ["swift"]),
@@ -878,6 +882,8 @@ function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
           nombre,
           rfc,
           id_sae: (col.idSae !== -1 && row[col.idSae]) ? String(row[col.idSae]).trim() : "",
+          referencia: (col.referencia !== -1 && row[col.referencia]) ? String(row[col.referencia]).trim() : "",
+          notas: (col.notas !== -1 && row[col.notas]) ? String(row[col.notas]).trim() : "",
           _existenteId: existente ? existente.id : null,
           _cuentas: tieneCuenta ? [cuenta] : [],
         });
@@ -2963,11 +2969,15 @@ const COLUMNAS_REPORTE = [
   { key: "forma_pago", label: "Forma de Pago" },
   { key: "metodo_pago", label: "Método de Pago" },
   { key: "proveedor", label: "Proveedor" },
+  { key: "referencia", label: "Referencia" },
   { key: "concepto", label: "Concepto de pago" },
   { key: "banco", label: "Banco" },
   { key: "clabe", label: "Cuenta CLABE" },
+  { key: "numero_cuenta", label: "No. Cuenta" },
+  { key: "swift", label: "SWIFT" },
   { key: "importe", label: "Importe" },
   { key: "moneda", label: "Moneda" },
+  { key: "notas", label: "Notas" },
 ];
 
 function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuentasApi }) {
@@ -2993,9 +3003,13 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
       forma_pago: FORMAS_PAGO.find((f) => f.value === t.forma_pago)?.label || t.forma_pago || "",
       metodo_pago: METODOS_PAGO.find((m) => m.value === t.metodo_pago)?.label || t.metodo_pago || "",
       proveedor: proveedor?.nombre || t.proveedor || "",
+      referencia: proveedor?.referencia || "",
+      notas: proveedor?.notas || "",
       concepto: t.concepto_detallado || "",
       banco: cuenta?.banco || "",
       clabe: cuenta?.clabe || "",
+      numero_cuenta: cuenta?.numero_cuenta || "",
+      swift: cuenta?.swift || "",
       importe: Number(t.importe) || 0,
       moneda: t.moneda || "MXP",
       _vinculadoProveedor: !!proveedor,
@@ -3518,7 +3532,7 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
 
 function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
-  const blank = { nombre: "", rfc: "", id_sae: "" };
+  const blank = { nombre: "", rfc: "", id_sae: "", referencia: "", notas: "" };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -3534,7 +3548,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
   const filtrados = proveedoresUnidad.filter((p) => {
     if (!buscar.trim()) return true;
     const q = buscar.trim().toLowerCase();
-    return [p.nombre, p.rfc, p.id_sae].some((v) => (v || "").toLowerCase().includes(q));
+    return [p.nombre, p.rfc, p.id_sae, p.referencia, p.notas].some((v) => (v || "").toLowerCase().includes(q));
   });
 
   const openNew = () => { setForm(blank); setEditId(null); setNuevaCuenta(cuentaBlank); setModalOpen(true); };
@@ -3590,7 +3604,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
       <div style={{ overflowX: "auto" }}>
         <table style={tableStyle}>
           <thead>
-            <tr>{["Nombre","RFC","Id SAE","Cuentas",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+            <tr>{["Nombre","RFC","Id SAE","Referencia","Notas","Cuentas",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
           </thead>
           <tbody>
             {filtrados.map((p) => (
@@ -3598,6 +3612,8 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
                 <td style={tdStyle}>{p.nombre}</td>
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.rfc || "—"}</td>
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.id_sae || "—"}</td>
+                <td style={tdStyle}>{p.referencia || "—"}</td>
+                <td style={{ ...tdStyle, color: T.textDim }}>{p.notas || "—"}</td>
                 <td style={tdStyle}><Pill tone={contarCuentas(p.id) ? "teal" : "dim"}>{contarCuentas(p.id)} cuenta(s)</Pill></td>
                 <td style={tdStyle}>
                   <div style={{ display: "flex", gap: 6 }}>
@@ -3608,10 +3624,10 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
               </tr>
             ))}
             {!proveedoresUnidad.length && (
-              <tr><td colSpan={5} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin proveedores aún</td></tr>
+              <tr><td colSpan={7} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin proveedores aún</td></tr>
             )}
             {proveedoresUnidad.length > 0 && !filtrados.length && (
-              <tr><td colSpan={5} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ningún proveedor coincide con la búsqueda</td></tr>
+              <tr><td colSpan={7} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ningún proveedor coincide con la búsqueda</td></tr>
             )}
           </tbody>
         </table>
@@ -3628,6 +3644,12 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
             </Field>
             <Field label="Id SAE">
               <TextInput value={form.id_sae} onChange={(e) => setForm({ ...form, id_sae: e.target.value })} />
+            </Field>
+            <Field label="Referencia">
+              <TextInput value={form.referencia} onChange={(e) => setForm({ ...form, referencia: e.target.value })} />
+            </Field>
+            <Field label="Notas" style={{ gridColumn: "span 3" }}>
+              <TextInput value={form.notas} onChange={(e) => setForm({ ...form, notas: e.target.value })} />
             </Field>
             <div style={{ gridColumn: "span 3", display: "flex", gap: 10, marginTop: 4 }}>
               <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Crear y agregar cuentas"}</Button>

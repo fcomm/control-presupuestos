@@ -93,8 +93,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.39.0";
+const APP_VERSION = "1.40.0";
 const CHANGELOG = [
+  { v: "1.40.0", desc: "Reporte de Pagos: exportación a Excel agrupada por Zona y Moneda (bloque por cada combinación con datos, formato de la plantilla) — reemplaza la exportación plana anterior" },
   { v: "1.39.0", desc: "Reporte Pagos Dirección: exportación a Excel con el formato exacto solicitado (título con fechas/compañía, totales MXP/USD arriba, encabezados centrados, moneda formateada) — cambia de xlsx a exceljs para soportar estilos" },
   { v: "1.38.1", desc: "Reporte de Pagos: agrega columnas No. Cuenta y SWIFT (de la cuenta bancaria vinculada), visibles en tabla y exportación a Excel" },
   { v: "1.38.0", desc: "Agrega Referencia y Notas al catálogo de Proveedores — visibles en el formulario, la tabla, la carga masiva, y el Reporte de Pagos (con exportación a Excel)" },
@@ -2998,6 +2999,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
       dia: t.dia || "",
       solicitante: t.solicitante || "",
       area: t.area || "",
+      zona: t.zona || "",
       numero_solicitud: partida?.smi || "",
       no_sae: proveedor?.id_sae || "",
       folio_compra_sae: t.folio_compra_sae || "",
@@ -3043,12 +3045,87 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
   const onColDragOver = (e) => e.preventDefault();
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
 
-  const exportarExcel = () => {
-    const data = filasOrdenadas.map((f) => Object.fromEntries(columnas.map((c) => [c.label, f[c.key]])));
-    const ws = XLSX.utils.json_to_sheet(data);
-    const wbx = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wbx, ws, "Reporte de pagos");
-    XLSX.writeFile(wbx, `reporte-pagos-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  const exportarExcel = async () => {
+    const wbx = new ExcelJS.Workbook();
+    const ws = wbx.addWorksheet("Reporte de pagos");
+    ws.columns = [
+      { width: 8.875 }, { width: 10 }, { width: 8.125 }, { width: 10.125 }, { width: 10.125 },
+      { width: 8.625 }, { width: 8.25 }, { width: 15 }, { width: 12 }, { width: 17.625 },
+      { width: 11.25 }, { width: 13.625 }, { width: 15.5 }, { width: 18 }, { width: 12.5 },
+      { width: 9 }, { width: 10.5 }, { width: 10.5 }, { width: 8.875 },
+    ];
+
+    const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
+    const inicio = fechaDesde || diasOrdenados[0] || "";
+    const fin = fechaHasta || diasOrdenados[diasOrdenados.length - 1] || "";
+
+    const zonas = [...new Set(filasOrdenadas.map((f) => f.zona).filter(Boolean))].sort();
+    const ordenMoneda = (m) => (m === "MXP" ? 0 : m === "USD" ? 1 : 2);
+    const headers = [
+      "Día", "Solicitante", "Área", "No. Solicitud (SMI)", "No. SAE", "Folio Compra SAE", "Folio Factura",
+      "Forma de Pago", "Método de Pago", "Proveedor", "Referencia", "Concepto de pago", "Banco",
+      "Cuenta CLABE", "No. Cuenta", "SWIFT", "Importe", "Moneda", "Notas",
+    ];
+
+    let fila = 1;
+    zonas.forEach((zona) => {
+      const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
+        .sort((a, b) => ordenMoneda(a) - ordenMoneda(b));
+
+      monedasEnZona.forEach((moneda) => {
+        const filasGrupo = filasOrdenadas.filter((f) => f.zona === zona && f.moneda === moneda);
+        if (!filasGrupo.length) return;
+
+        const tituloCell = ws.getCell(`B${fila}`);
+        tituloCell.value = `Solicitud de Pagos del dia "${inicio}" al dia "${fin}" Compañía "${unidad}" - "${moneda}"`;
+        tituloCell.font = { bold: true, size: 14, name: "Calibri" };
+        fila += 1;
+
+        const zonaCell = ws.getCell(`D${fila}`);
+        zonaCell.value = `Zona: "${zona}"`;
+        zonaCell.font = { bold: true, size: 12, name: "Calibri" };
+        fila += 2; // una fila en blanco, como en la plantilla
+
+        const headerRow = ws.getRow(fila);
+        headers.forEach((h, i) => {
+          const cell = headerRow.getCell(i + 1);
+          cell.value = h;
+          cell.alignment = { horizontal: "center" };
+          cell.font = { name: "Calibri", size: 11 };
+        });
+        fila += 1;
+
+        filasGrupo.forEach((f) => {
+          const row = ws.getRow(fila);
+          const valores = [
+            f.dia, f.solicitante, f.area, f.numero_solicitud, f.no_sae, f.folio_compra_sae, f.folio_factura,
+            f.forma_pago, f.metodo_pago, f.proveedor, f.referencia, f.concepto, f.banco,
+            f.clabe, f.numero_cuenta, f.swift, f.importe, f.moneda, f.notas,
+          ];
+          valores.forEach((v, ci) => {
+            const cell = row.getCell(ci + 1);
+            cell.value = v;
+            cell.alignment = { horizontal: "center" };
+            cell.font = { name: "Calibri", size: 11 };
+            if (ci === 16) cell.numFmt = '"$"#,##0.00'; // columna Importe
+          });
+          fila += 1;
+        });
+
+        fila += 2; // espacio antes de la siguiente sección
+      });
+    });
+
+    const buffer = await wbx.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `reporte-pagos-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
   };
 
   const totalMXN = filasOrdenadas.filter((f) => f.moneda === "MXP").reduce((s, f) => s + f.importe, 0);

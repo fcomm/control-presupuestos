@@ -92,8 +92,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.37.0";
+const APP_VERSION = "1.37.1";
 const CHANGELOG = [
+  { v: "1.37.1", desc: "Fix de robustez: los popups de Partida/Proveedor (anidados dentro del modal de transacción) usan z-index más alto y filas como <button> real, para que el clic siempre registre" },
   { v: "1.37.0", desc: "Selector de Proveedor rediseñado: clic resalta (no cierra), botón 'Seleccionar' confirma y cierra, botón 'Editar proveedor' para el resaltado (identidad + cuentas bancarias)" },
   { v: "1.36.0", desc: "Tabla de Transacciones: la columna Proveedor muestra si está vinculado al catálogo y si tiene cuenta bancaria (Sin catálogo / Sin cuenta / Con cuenta)" },
   { v: "1.35.0", desc: "'+ Nuevo proveedor' ahora incluye un segundo paso para agregar cuenta(s) bancaria(s) antes de usarlo, sin salir de la transacción" },
@@ -318,10 +319,11 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
     const pct = total ? (usado / total) * 100 : 0;
     const tone = pct > 100 ? T.red : pct > 85 ? T.amber : T.teal;
     return (
-      <div
+      <button
+        type="button"
         key={p.id}
         onClick={() => elegir(p.id)}
-        style={{ padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === value ? T.accentBg : "transparent" }}
+        style={{ display: "block", width: "100%", textAlign: "left", border: "none", padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === value ? T.accentBg : "transparent" }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
           <div style={{ minWidth: 0 }}>
@@ -333,7 +335,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
             <div style={{ color: tone }}>Usado {money(usado, p.moneda)}</div>
           </div>
         </div>
-      </div>
+      </button>
     );
   };
 
@@ -354,7 +356,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
       </button>
 
       {open && (
-        <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto — Total y Usado por partida" onClose={() => { setOpen(false); setCreando(false); }} width={620}>
+        <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto — Total y Usado por partida" onClose={() => { setOpen(false); setCreando(false); }} width={620} zIndex={1100}>
           {partidasApi && !creando && (
             <Button type="button" variant="ghost" onClick={() => setCreando(true)} style={{ marginBottom: 10 }}>
               + Nueva partida
@@ -409,12 +411,13 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
               />
               <div style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
                 {allowClear && (
-                  <div
+                  <button
+                    type="button"
                     onClick={() => elegir("")}
-                    style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12.5, color: T.textFaint, borderBottom: `1px solid ${T.borderSoft}` }}
+                    style={{ display: "block", width: "100%", textAlign: "left", border: "none", padding: "9px 12px", cursor: "pointer", fontSize: 12.5, color: T.textFaint, borderBottom: `1px solid ${T.borderSoft}` }}
                   >
                     — Sin vincular —
-                  </div>
+                  </button>
                 )}
                 {meses.map((mes) => (
                   <div key={mes}>
@@ -519,7 +522,7 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
       </button>
 
       {open && (
-        <Modal title="Elegir proveedor" subtitle="Busca por nombre, RFC o Id SAE" onClose={cerrar} width={560}>
+        <Modal title="Elegir proveedor" subtitle="Busca por nombre, RFC o Id SAE" onClose={cerrar} width={560} zIndex={1100}>
           {editando ? (
             <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 6, padding: 14 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>
@@ -613,22 +616,24 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
                 style={{ width: "100%", marginBottom: 12 }}
               />
               <div style={{ maxHeight: 380, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6, marginBottom: 12 }}>
-                <div
+                <button
+                  type="button"
                   onClick={() => setResaltadoId("")}
-                  style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12.5, color: T.textFaint, borderBottom: `1px solid ${T.borderSoft}`, background: resaltadoId === "" ? T.accentBg : "transparent" }}
+                  style={{ display: "block", width: "100%", textAlign: "left", border: "none", padding: "9px 12px", cursor: "pointer", fontSize: 12.5, color: T.textFaint, borderBottom: `1px solid ${T.borderSoft}`, background: resaltadoId === "" ? T.accentBg : "transparent" }}
                 >
                   — No catalogado —
-                </div>
+                </button>
                 {filtrados.map((p) => (
-                  <div
+                  <button
+                    type="button"
                     key={p.id}
                     onClick={() => setResaltadoId(p.id)}
                     onDoubleClick={confirmar}
-                    style={{ padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === resaltadoId ? T.accentBg : "transparent" }}
+                    style={{ display: "block", width: "100%", textAlign: "left", border: "none", padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === resaltadoId ? T.accentBg : "transparent" }}
                   >
                     <div style={{ fontSize: 12.5, color: T.text }}>{p.nombre}</div>
                     <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>{p.rfc || "—"}{p.id_sae ? ` · SAE ${p.id_sae}` : ""}</div>
-                  </div>
+                  </button>
                 ))}
                 {!filtrados.length && (
                   <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>Sin resultados</div>
@@ -1587,7 +1592,7 @@ function MesMultiSelect({ mesesDisponibles, seleccionados, onChange }) {
 }
 
 
-function Modal({ title, subtitle, onClose, children, width = 720 }) {
+function Modal({ title, subtitle, onClose, children, width = 720, zIndex = 1000 }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -1597,7 +1602,7 @@ function Modal({ title, subtitle, onClose, children, width = 720 }) {
   return (
     <div
       style={{
-        position: "fixed", inset: 0, background: "rgba(6,9,10,0.72)", zIndex: 1000,
+        position: "fixed", inset: 0, background: "rgba(6,9,10,0.72)", zIndex,
         display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 20px", overflowY: "auto",
       }}
       onClick={onClose}

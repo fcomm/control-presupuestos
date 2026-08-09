@@ -92,8 +92,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.36.0";
+const APP_VERSION = "1.37.0";
 const CHANGELOG = [
+  { v: "1.37.0", desc: "Selector de Proveedor rediseñado: clic resalta (no cierra), botón 'Seleccionar' confirma y cierra, botón 'Editar proveedor' para el resaltado (identidad + cuentas bancarias)" },
   { v: "1.36.0", desc: "Tabla de Transacciones: la columna Proveedor muestra si está vinculado al catálogo y si tiene cuenta bancaria (Sin catálogo / Sin cuenta / Con cuenta)" },
   { v: "1.35.0", desc: "'+ Nuevo proveedor' ahora incluye un segundo paso para agregar cuenta(s) bancaria(s) antes de usarlo, sin salir de la transacción" },
   { v: "1.34.1", desc: "Fix: el popup de elegir Partida/Proveedor ahora se cierra de forma confiable al hacer clic (se cierra primero, luego procesa la selección)" },
@@ -441,6 +442,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
 function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "Elegir proveedor…", proveedoresApi, cuentasApi, unidad }) {
   const [open, setOpen] = useState(false);
   const [busqueda, setBusqueda] = useState("");
+  const [resaltadoId, setResaltadoId] = useState(value || "");
   const seleccionado = proveedores.find((p) => p.id === value);
 
   const filtrados = proveedores.filter((p) => {
@@ -449,54 +451,62 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
     return [p.nombre, p.rfc, p.id_sae].some((v) => (v || "").toLowerCase().includes(q));
   });
 
-  const elegir = (id, p) => {
-    setOpen(false); setBusqueda(""); setCreando(false); setProveedorCreado(null); setNuevo(nuevoBlank); setNuevaCuenta(cuentaBlank);
-    try { onChange(id, p); } catch (err) { console.error("Error al elegir proveedor:", err); }
+  const cuentaBlank = { banco: "", sucursal: "", swift: "", clabe: "", numero_cuenta: "", divisa: "MXP" };
+  const [editando, setEditando] = useState(null); // null = lista; {id:null,...} = creando; {id:"x",...} = editando existente
+  const [guardando, setGuardando] = useState(false);
+  const [nuevaCuenta, setNuevaCuenta] = useState(cuentaBlank);
+  const cuentasDeEditando = (editando?.id && cuentasApi) ? cuentasApi.rows.filter((c) => c.proveedor_id === editando.id) : [];
+
+  const abrir = () => { setResaltadoId(value || ""); setEditando(null); setBusqueda(""); setOpen(true); };
+  const cerrar = () => { setOpen(false); setBusqueda(""); setEditando(null); };
+
+  const confirmar = () => {
+    const p = proveedores.find((pr) => pr.id === resaltadoId) || (editando?.id === resaltadoId ? editando : null);
+    cerrar();
+    try { onChange(resaltadoId, p); } catch (err) { console.error("Error al elegir proveedor:", err); }
   };
 
-  const nuevoBlank = { nombre: "", rfc: "", id_sae: "" };
-  const cuentaBlank = { banco: "", sucursal: "", swift: "", clabe: "", numero_cuenta: "", divisa: "MXP" };
-  const [creando, setCreando] = useState(false);
-  const [nuevo, setNuevo] = useState(nuevoBlank);
-  const [guardando, setGuardando] = useState(false);
-  const [proveedorCreado, setProveedorCreado] = useState(null); // una vez creada la identidad, se pasa a capturar cuentas
-  const [nuevaCuenta, setNuevaCuenta] = useState(cuentaBlank);
-  const cuentasDelNuevo = (proveedorCreado && cuentasApi) ? cuentasApi.rows.filter((c) => c.proveedor_id === proveedorCreado.id) : [];
+  const iniciarCrear = () => setEditando({ id: null, nombre: "", rfc: "", id_sae: "" });
+  const iniciarEditar = () => {
+    const p = proveedores.find((pr) => pr.id === resaltadoId);
+    if (p) setEditando({ id: p.id, nombre: p.nombre || "", rfc: p.rfc || "", id_sae: p.id_sae || "" });
+  };
 
-  const crearProveedor = async () => {
-    if (!nuevo.nombre.trim()) return;
+  const guardarIdentidad = async () => {
+    if (!editando.nombre.trim()) return;
     setGuardando(true);
     try {
-      const creado = await proveedoresApi.insert({ id: uid(), unidad, nombre: nuevo.nombre.trim(), rfc: nuevo.rfc.trim().toUpperCase(), id_sae: nuevo.id_sae.trim() });
-      if (cuentasApi) {
-        setProveedorCreado(creado); // pasa al paso de cuentas bancarias
+      if (editando.id) {
+        await proveedoresApi.update(editando.id, { nombre: editando.nombre.trim(), rfc: editando.rfc.trim().toUpperCase(), id_sae: editando.id_sae.trim() });
       } else {
-        elegir(creado.id, creado);
+        const creado = await proveedoresApi.insert({ id: uid(), unidad, nombre: editando.nombre.trim(), rfc: editando.rfc.trim().toUpperCase(), id_sae: editando.id_sae.trim() });
+        setEditando({ ...editando, id: creado.id });
+        setResaltadoId(creado.id);
       }
     } catch (err) {
-      alert("No se pudo crear el proveedor: " + (err.message || err));
+      alert("No se pudo guardar: " + (err.message || err));
     } finally {
       setGuardando(false);
     }
   };
 
-  const agregarCuentaNuevo = async () => {
-    if (!proveedorCreado) return;
+  const agregarCuentaEditando = async () => {
+    if (!editando?.id) return;
     if (!nuevaCuenta.banco.trim() && !nuevaCuenta.clabe.trim() && !nuevaCuenta.numero_cuenta.trim()) return;
     try {
-      await cuentasApi.insert({ id: uid(), proveedor_id: proveedorCreado.id, ...nuevaCuenta });
+      await cuentasApi.insert({ id: uid(), proveedor_id: editando.id, ...nuevaCuenta });
       setNuevaCuenta(cuentaBlank);
     } catch (err) {
       alert("No se pudo agregar la cuenta: " + (err.message || err));
     }
   };
-  const eliminarCuentaNuevo = (id) => cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
+  const eliminarCuentaEditando = (id) => cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
 
   return (
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={abrir}
         style={{
           ...inputStyle, width: "100%", textAlign: "left", cursor: "pointer",
           display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
@@ -509,88 +519,92 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
       </button>
 
       {open && (
-        <Modal title="Elegir proveedor" subtitle="Busca por nombre, RFC o Id SAE" onClose={() => { setOpen(false); setCreando(false); setProveedorCreado(null); }} width={560}>
-          {proveedoresApi && !creando && (
-            <Button type="button" variant="ghost" onClick={() => setCreando(true)} style={{ marginBottom: 10 }}>
-              + Nuevo proveedor
-            </Button>
-          )}
-
-          {creando ? (
-            proveedorCreado ? (
-              <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 6, padding: 14 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 4 }}>{proveedorCreado.nombre} — creado</div>
-                <div style={{ fontSize: 11, color: T.textFaint, marginBottom: 10 }}>Agrégale cuenta(s) bancaria(s) (opcional), o dale "Listo" para usarlo sin cuenta.</div>
-
-                {cuentasDelNuevo.length > 0 && (
-                  <table style={{ ...tableStyle, marginBottom: 10 }}>
-                    <thead>
-                      <tr>{["Banco","CLABE","No. Cuenta","Divisa",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
-                    </thead>
-                    <tbody>
-                      {cuentasDelNuevo.map((c) => (
-                        <tr key={c.id}>
-                          <td style={tdStyle}>{c.banco || "—"}</td>
-                          <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.clabe || "—"}</td>
-                          <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.numero_cuenta || "—"}</td>
-                          <td style={tdStyle}><Pill>{c.divisa || "MXP"}</Pill></td>
-                          <td style={tdStyle}><Button type="button" variant="danger" onClick={() => eliminarCuentaNuevo(c.id)}>Eliminar</Button></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                )}
-
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8 }}>
-                  <Field label="Banco">
-                    <TextInput autoFocus value={nuevaCuenta.banco} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, banco: e.target.value })} />
-                  </Field>
-                  <Field label="Sucursal">
-                    <TextInput value={nuevaCuenta.sucursal} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, sucursal: e.target.value })} />
-                  </Field>
-                  <Field label="SWIFT">
-                    <TextInput value={nuevaCuenta.swift} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, swift: e.target.value })} />
-                  </Field>
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, alignItems: "end", marginBottom: 12 }}>
-                  <Field label="CLABE">
-                    <TextInput value={nuevaCuenta.clabe} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, clabe: e.target.value })} placeholder="18 dígitos" />
-                  </Field>
-                  <Field label="No. Cuenta">
-                    <TextInput value={nuevaCuenta.numero_cuenta} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, numero_cuenta: e.target.value })} />
-                  </Field>
-                  <Field label="Divisa">
-                    <Select value={nuevaCuenta.divisa} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, divisa: e.target.value })}>
-                      {MONEDAS.map((m) => <option key={m}>{m}</option>)}
-                    </Select>
-                  </Field>
-                  <Button type="button" variant="ghost" onClick={agregarCuentaNuevo}>+ Agregar cuenta</Button>
-                </div>
-
-                <Button type="button" onClick={() => elegir(proveedorCreado.id, proveedorCreado)}>Listo, usar este proveedor</Button>
+        <Modal title="Elegir proveedor" subtitle="Busca por nombre, RFC o Id SAE" onClose={cerrar} width={560}>
+          {editando ? (
+            <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 6, padding: 14 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>
+                {editando.id ? "Editar proveedor" : "Nuevo proveedor"} — {unidad}
               </div>
-            ) : (
-              <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 6, padding: 14 }}>
-                <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>Nuevo proveedor — {unidad}</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
-                  <Field label="Nombre" style={{ gridColumn: "span 2" }}>
-                    <TextInput autoFocus value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} />
-                  </Field>
-                  <Field label="RFC">
-                    <TextInput value={nuevo.rfc} onChange={(e) => setNuevo({ ...nuevo, rfc: e.target.value.toUpperCase() })} />
-                  </Field>
-                  <Field label="Id SAE">
-                    <TextInput value={nuevo.id_sae} onChange={(e) => setNuevo({ ...nuevo, id_sae: e.target.value })} />
-                  </Field>
-                </div>
-                <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                  <Button type="button" onClick={crearProveedor} disabled={guardando}>{guardando ? "Creando…" : "Siguiente: cuentas bancarias"}</Button>
-                  <Button type="button" variant="ghost" onClick={() => { setCreando(false); setNuevo(nuevoBlank); }}>Cancelar</Button>
-                </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
+                <Field label="Nombre" style={{ gridColumn: "span 2" }}>
+                  <TextInput autoFocus value={editando.nombre} onChange={(e) => setEditando({ ...editando, nombre: e.target.value })} />
+                </Field>
+                <Field label="RFC">
+                  <TextInput value={editando.rfc} onChange={(e) => setEditando({ ...editando, rfc: e.target.value.toUpperCase() })} />
+                </Field>
+                <Field label="Id SAE">
+                  <TextInput value={editando.id_sae} onChange={(e) => setEditando({ ...editando, id_sae: e.target.value })} />
+                </Field>
               </div>
-            )
+              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+                <Button type="button" onClick={guardarIdentidad} disabled={guardando}>
+                  {guardando ? "Guardando…" : editando.id ? "Guardar cambios" : "Crear proveedor"}
+                </Button>
+                <Button type="button" variant="ghost" onClick={() => setEditando(null)}>Volver a la lista</Button>
+              </div>
+
+              {editando.id && (
+                <div style={{ marginTop: 16, borderTop: `1px solid ${T.borderSoft}`, paddingTop: 14 }}>
+                  <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>
+                    Cuentas bancarias ({cuentasDeEditando.length})
+                  </div>
+                  {cuentasDeEditando.length > 0 && (
+                    <table style={{ ...tableStyle, marginBottom: 10 }}>
+                      <thead>
+                        <tr>{["Banco","CLABE","No. Cuenta","Divisa",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+                      </thead>
+                      <tbody>
+                        {cuentasDeEditando.map((c) => (
+                          <tr key={c.id}>
+                            <td style={tdStyle}>{c.banco || "—"}</td>
+                            <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.clabe || "—"}</td>
+                            <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.numero_cuenta || "—"}</td>
+                            <td style={tdStyle}><Pill>{c.divisa || "MXP"}</Pill></td>
+                            <td style={tdStyle}><Button type="button" variant="danger" onClick={() => eliminarCuentaEditando(c.id)}>Eliminar</Button></td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, marginBottom: 8 }}>
+                    <Field label="Banco">
+                      <TextInput value={nuevaCuenta.banco} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, banco: e.target.value })} />
+                    </Field>
+                    <Field label="Sucursal">
+                      <TextInput value={nuevaCuenta.sucursal} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, sucursal: e.target.value })} />
+                    </Field>
+                    <Field label="SWIFT">
+                      <TextInput value={nuevaCuenta.swift} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, swift: e.target.value })} />
+                    </Field>
+                  </div>
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, alignItems: "end" }}>
+                    <Field label="CLABE">
+                      <TextInput value={nuevaCuenta.clabe} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, clabe: e.target.value })} placeholder="18 dígitos" />
+                    </Field>
+                    <Field label="No. Cuenta">
+                      <TextInput value={nuevaCuenta.numero_cuenta} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, numero_cuenta: e.target.value })} />
+                    </Field>
+                    <Field label="Divisa">
+                      <Select value={nuevaCuenta.divisa} onChange={(e) => setNuevaCuenta({ ...nuevaCuenta, divisa: e.target.value })}>
+                        {MONEDAS.map((m) => <option key={m}>{m}</option>)}
+                      </Select>
+                    </Field>
+                    <Button type="button" variant="ghost" onClick={agregarCuentaEditando}>+ Agregar cuenta</Button>
+                  </div>
+                  <Button type="button" onClick={confirmar} style={{ marginTop: 12 }}>Seleccionar este proveedor</Button>
+                </div>
+              )}
+            </div>
           ) : (
             <>
+              <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+                {proveedoresApi && (
+                  <Button type="button" variant="ghost" onClick={iniciarCrear}>+ Nuevo proveedor</Button>
+                )}
+                {proveedoresApi && resaltadoId && (
+                  <Button type="button" variant="ghost" onClick={iniciarEditar}>Editar proveedor</Button>
+                )}
+              </div>
               <TextInput
                 autoFocus
                 value={busqueda}
@@ -598,18 +612,19 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
                 placeholder="Buscar…"
                 style={{ width: "100%", marginBottom: 12 }}
               />
-              <div style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
+              <div style={{ maxHeight: 380, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6, marginBottom: 12 }}>
                 <div
-                  onClick={() => elegir("", null)}
-                  style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12.5, color: T.textFaint, borderBottom: `1px solid ${T.borderSoft}` }}
+                  onClick={() => setResaltadoId("")}
+                  style={{ padding: "9px 12px", cursor: "pointer", fontSize: 12.5, color: T.textFaint, borderBottom: `1px solid ${T.borderSoft}`, background: resaltadoId === "" ? T.accentBg : "transparent" }}
                 >
                   — No catalogado —
                 </div>
                 {filtrados.map((p) => (
                   <div
                     key={p.id}
-                    onClick={() => elegir(p.id, p)}
-                    style={{ padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === value ? T.accentBg : "transparent" }}
+                    onClick={() => setResaltadoId(p.id)}
+                    onDoubleClick={confirmar}
+                    style={{ padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === resaltadoId ? T.accentBg : "transparent" }}
                   >
                     <div style={{ fontSize: 12.5, color: T.text }}>{p.nombre}</div>
                     <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>{p.rfc || "—"}{p.id_sae ? ` · SAE ${p.id_sae}` : ""}</div>
@@ -618,6 +633,10 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
                 {!filtrados.length && (
                   <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>Sin resultados</div>
                 )}
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button type="button" onClick={confirmar}>Seleccionar</Button>
+                <Button type="button" variant="ghost" onClick={cerrar}>Cancelar</Button>
               </div>
             </>
           )}

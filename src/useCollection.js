@@ -19,13 +19,23 @@ export function useCollection(table, orderBy = "created_at", options = {}) {
   useEffect(() => {
     let mounted = true;
 
-    (async () => {
+    const fetchAll = async () => {
       const { data, error: err } = await supabase.from(table).select("*").order(orderBy, { ascending: true });
       if (!mounted) return;
       if (err) setError(err);
       else setRows(data || []);
       setReady(true);
-    })();
+    };
+
+    fetchAll();
+
+    // La sesión de Supabase Auth puede terminar de establecerse DESPUÉS de que
+    // este hook ya intentó su primera carga (que entonces sale sin token válido
+    // y las políticas la bloquean). Cuando el estado de auth cambia — login,
+    // sesión restaurada al abrir la pestaña, refresco de token — reintentamos.
+    const { data: authListener } = supabase.auth.onAuthStateChange(() => {
+      fetchAll();
+    });
 
     const channel = supabase
       .channel(`realtime:${table}`)
@@ -48,6 +58,7 @@ export function useCollection(table, orderBy = "created_at", options = {}) {
 
     return () => {
       mounted = false;
+      authListener.subscription.unsubscribe();
       supabase.removeChannel(channel);
     };
   }, [table, orderBy]);

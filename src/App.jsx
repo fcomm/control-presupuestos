@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.42.2";
+const APP_VERSION = "1.43.0";
 const CHANGELOG = [
+  { v: "1.43.0", desc: "Acceso por compañía: se puede restringir a un usuario a ver solo OSB/CTM/ISE específicas — reforzado a nivel de base de datos (no solo ocultar botones), configurable desde perfiles.unidades_permitidas en Supabase" },
   { v: "1.42.2", desc: "Agrega pantalla de 'nueva contraseña' (faltaba para que los links de restablecimiento funcionaran de punta a punta) y '¿Olvidaste tu contraseña?' autoservicio en el login" },
   { v: "1.42.1", desc: "Fix crítico: tras iniciar sesión, todas las tablas aparecían vacías — la primera carga de datos salía antes de que la sesión estuviera lista; ahora se reintenta cuando el estado de sesión cambia" },
   { v: "1.42.0", desc: "Login obligatorio (Supabase Auth) y auditoría — cada partida/transacción/proveedor/cuenta guarda quién la creó y quién la editó por última vez, visible en su modal" },
@@ -4080,15 +4081,28 @@ export default function App() {
   const [unidad, setUnidad] = useState("CTM");
   const [tab, setTab] = useState("dashboard");
 
+  const miPerfil = session ? perfilesApi.rows.find((p) => p.id === session.user.id) : null;
+  const unidadesPermitidas = (miPerfil?.unidades_permitidas && miPerfil.unidades_permitidas.length)
+    ? miPerfil.unidades_permitidas
+    : UNIDAD_KEYS;
+
+  // Si la unidad activa no está entre las permitidas (primera carga, o a alguien
+  // le acaban de restringir el acceso), se cambia sola a la primera que sí puede ver.
+  useEffect(() => {
+    if (unidadesPermitidas.length && !unidadesPermitidas.includes(unidad)) {
+      setUnidad(unidadesPermitidas[0]);
+    }
+  }, [unidadesPermitidas.join(","), unidad]);
+
   const unidades = useMemo(() => {
     const map = {};
-    UNIDADES_BASE.forEach((u) => { map[u] = { proyectos: [] }; });
+    UNIDADES_BASE.filter((u) => unidadesPermitidas.includes(u)).forEach((u) => { map[u] = { proyectos: [] }; });
     proyectosApi.rows.forEach((p) => {
-      if (!map[p.unidad]) map[p.unidad] = { proyectos: [] };
+      if (!map[p.unidad]) return; // fuera del alcance permitido, se ignora
       map[p.unidad].proyectos.push(p);
     });
     return map;
-  }, [proyectosApi.rows]);
+  }, [proyectosApi.rows, unidadesPermitidas.join(",")]);
 
   const partidas = partidasApi.rows;
   const transacciones = transaccionesApi.rows;

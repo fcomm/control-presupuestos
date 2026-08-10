@@ -94,8 +94,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.44.1";
+const APP_VERSION = "1.44.3";
 const CHANGELOG = [
+  { v: "1.44.3", desc: "Filtros, fechas, orden y agrupamiento ahora persisten al cambiar de pestaña mientras la sesión siga abierta (Partidas, Transacciones y ambos Reportes) — se pierden al cerrar el navegador, a propósito" },
+  { v: "1.44.2", desc: "Agrega campo SMI a Transacciones (formulario, columna, importador) — Reporte de Pagos usa el SMI de la transacción si existe, si no el de la partida" },
   { v: "1.44.1", desc: "Fix crítico: no se podía guardar una transacción nueva (violaba la política de seguridad) porque el formulario no llenaba 'unidad_detectada' al crearla manualmente" },
   { v: "1.44.0", desc: "Notas privadas por transacción — cada usuario puede dejar su propia nota (🔒), nadie más la ve ni puede consultarla, ni siquiera directo en la base de datos" },
   { v: "1.43.0", desc: "Acceso por compañía: se puede restringir a un usuario a ver solo OSB/CTM/ISE específicas — reforzado a nivel de base de datos (no solo ocultar botones), configurable desde perfiles.unidades_permitidas en Supabase" },
@@ -931,7 +933,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = []) {
 
     const col = {
       dia: findExactCol(headers, ["dia", "fecha"]) !== -1 ? findExactCol(headers, ["dia", "fecha"]) : findCol(headers, ["dia"]),
-      smi: findCol(headers, ["smi"]),
+      smi: findExactCol(headers, ["smi"]),
       solicitante: findCol(headers, ["solicitante"]),
       proyecto: findExactCol(headers, ["proyecto"]),
       zona: findExactCol(headers, ["zona"]),
@@ -984,6 +986,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = []) {
         unidad_detectada: partida ? partida.unidad : unidad_detectada,
         dia: col.dia !== -1 ? toISODate(row[col.dia]) : "",
         solicitante: (col.solicitante !== -1 && row[col.solicitante]) ? String(row[col.solicitante]).trim() : "",
+        smi: (col.smi !== -1 && row[col.smi]) ? String(row[col.smi]).trim() : "",
         proyecto: (col.proyecto !== -1 && row[col.proyecto]) ? String(row[col.proyecto]).trim() : "",
         zona: (col.zona !== -1 && row[col.zona]) ? String(row[col.zona]).trim() : "",
         area: (col.area !== -1 && row[col.area]) ? String(row[col.area]).trim() : "",
@@ -1425,6 +1428,24 @@ function AutoriaCaption({ record, perfilesApi }) {
       {creador && editor && editor !== creador ? ` · Última edición por ${editor}` : ""}
     </div>
   );
+}
+
+// Como useState, pero respaldado en sessionStorage — sobrevive cambios de
+// pestaña/vista mientras la sesión del navegador siga abierta (se pierde al
+// cerrar la pestaña o el navegador, a propósito).
+function useSessionState(key, defaultValue) {
+  const [value, setValue] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem(key);
+      return raw !== null ? JSON.parse(raw) : defaultValue;
+    } catch {
+      return defaultValue;
+    }
+  });
+  useEffect(() => {
+    try { sessionStorage.setItem(key, JSON.stringify(value)); } catch {}
+  }, [key, value]);
+  return [value, setValue];
 }
 
 function EmptyState({ title, body }) {
@@ -2078,7 +2099,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi }) {
   const categoriasDisponibles = RUBROS.find((r) => r.rubro === form.rubro)?.categorias || [];
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
 
-  const [filtros, setFiltros] = useState({ texto: "", mes: "Todos", rubro: "Todos", proyecto: "Todos" });
+  const [filtros, setFiltros] = useSessionState("ss-partidas-filtros", { texto: "", mes: "Todos", rubro: "Todos", proyecto: "Todos" });
   const rubrosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.rubro).filter(Boolean))].sort();
   const proyectosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.proyecto).filter(Boolean))].sort();
   const mesesDisponiblesFiltro = MESES.filter((m) => partidasUnidad.some((p) => p.mes === m));
@@ -2097,7 +2118,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi }) {
   const filtrosActivos = filtros.texto.trim() || filtros.mes !== "Todos" || filtros.rubro !== "Todos" || filtros.proyecto !== "Todos";
   const limpiarFiltros = () => setFiltros({ texto: "", mes: "Todos", rubro: "Todos", proyecto: "Todos" });
 
-  const [sort, setSort] = useState({ key: null, dir: "asc" });
+  const [sort, setSort] = useSessionState("ss-partidas-sort", { key: null, dir: "asc" });
   const partidasOrdenadas = sortRows(partidasFiltradas, sort, {
     mes: (r) => MESES.indexOf(r.mes),
     monto_estimado: (r) => Number(r.monto_estimado) || 0,
@@ -2110,7 +2131,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi }) {
     { value: "categoria", label: "Categoría" },
     { value: "proyecto", label: "Proyecto" },
   ];
-  const [groupBys, setGroupBys] = useState([]);
+  const [groupBys, setGroupBys] = useSessionState("ss-partidas-groupbys", []);
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
   const toggleGroup = (path) => setCollapsedGroups((prev) => {
     const next = new Set(prev);
@@ -2472,7 +2493,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const blank = {
-    partida_id: partidasUnidad[0]?.id || "", unidad_detectada: unidad, dia: "", solicitante: "", proyecto: "", zona: "", area: "",
+    partida_id: partidasUnidad[0]?.id || "", unidad_detectada: unidad, dia: "", solicitante: "", smi: "", proyecto: "", zona: "", area: "",
     proveedor: "", proveedor_id: "", cuenta_id: "", concepto_detallado: "", importe: "", moneda: "MXP", status: "",
     folio_compra_sae: "", folio_factura: "", forma_pago: "", metodo_pago: "",
   };
@@ -2484,8 +2505,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const transUnidad = transacciones.filter((t) => partidasUnidad.some((p) => p.id === t.partida_id));
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
-  const [filtros, setFiltros] = useState({ texto: "", fechaDesde: "", fechaHasta: "" });
-  const [sort, setSort] = useState({ key: "dia", dir: "desc" });
+  const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "" });
+  const [sort, setSort] = useSessionState("ss-transacciones-sort", { key: "dia", dir: "desc" });
 
   const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
 
@@ -2529,7 +2550,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { value: "_mes", label: "Mes (partida)" },
     { value: "_vinculo", label: "Vínculo" },
   ];
-  const [groupBys, setGroupBys] = useState([]);
+  const [groupBys, setGroupBys] = useSessionState("ss-transacciones-groupbys", []);
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
   const toggleGroup = (path) => setCollapsedGroups((prev) => {
     const next = new Set(prev);
@@ -2575,8 +2596,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { value: "proyecto", label: "Proyecto" },
     { value: "status", label: "Status" },
   ];
-  const [filtrosSV, setFiltrosSV] = useState({ fechaDesde: "", fechaHasta: "" });
-  const [groupBysSV, setGroupBysSV] = useState([]);
+  const [filtrosSV, setFiltrosSV] = useSessionState("ss-transacciones-sv-filtros", { fechaDesde: "", fechaHasta: "" });
+  const [groupBysSV, setGroupBysSV] = useSessionState("ss-transacciones-sv-groupbys", []);
   const [collapsedGroupsSV, setCollapsedGroupsSV] = useState(new Set());
   const toggleGroupSV = (path) => setCollapsedGroupsSV((prev) => {
     const next = new Set(prev);
@@ -2625,6 +2646,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 
   const COLUMNAS_TRANS = [
     { key: "dia", label: "Día", render: (t) => t.dia || "—" },
+    { key: "smi", label: "SMI", render: (t) => t.smi || "—" },
     {
       key: "folio", label: "Folio",
       render: (t) => {
@@ -2953,6 +2975,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <Field label="Solicitante">
               <TextInput value={form.solicitante} onChange={(e) => setForm({ ...form, solicitante: e.target.value })} />
             </Field>
+            <Field label="SMI (No. de Solicitud)">
+              <TextInput value={form.smi} onChange={(e) => setForm({ ...form, smi: e.target.value })} />
+            </Field>
             <Field label="Área">
               <TextInput value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
             </Field>
@@ -3087,7 +3112,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
       solicitante: t.solicitante || "",
       area: t.area || "",
       zona: t.zona || "",
-      numero_solicitud: partida?.smi || "",
+      numero_solicitud: t.smi || partida?.smi || "",
       no_sae: proveedor?.id_sae || "",
       folio_compra_sae: t.folio_compra_sae || "",
       folio_factura: t.folio_factura || "",
@@ -3108,10 +3133,10 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
     };
   });
 
-  const [buscar, setBuscar] = useState("");
-  const [fechaDesde, setFechaDesde] = useState("");
-  const [fechaHasta, setFechaHasta] = useState("");
-  const [sort, setSort] = useState({ key: "dia", dir: "desc" });
+  const [buscar, setBuscar] = useSessionState("ss-reporte-buscar", "");
+  const [fechaDesde, setFechaDesde] = useSessionState("ss-reporte-desde", "");
+  const [fechaHasta, setFechaHasta] = useSessionState("ss-reporte-hasta", "");
+  const [sort, setSort] = useSessionState("ss-reporte-sort", { key: "dia", dir: "desc" });
   const filasFiltradas = filas.filter((f) => {
     if (fechaDesde && (!f.dia || f.dia < fechaDesde)) return false;
     if (fechaHasta && (!f.dia || f.dia > fechaHasta)) return false;
@@ -3366,10 +3391,10 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
     };
   });
 
-  const [buscar, setBuscar] = useState("");
-  const [fechaDesde, setFechaDesde] = useState("");
-  const [fechaHasta, setFechaHasta] = useState("");
-  const [sort, setSort] = useState({ key: "dia", dir: "desc" });
+  const [buscar, setBuscar] = useSessionState("ss-reporte-direccion-buscar", "");
+  const [fechaDesde, setFechaDesde] = useSessionState("ss-reporte-direccion-desde", "");
+  const [fechaHasta, setFechaHasta] = useSessionState("ss-reporte-direccion-hasta", "");
+  const [sort, setSort] = useSessionState("ss-reporte-direccion-sort", { key: "dia", dir: "desc" });
   const filasFiltradas = filas.filter((f) => {
     if (fechaDesde && (!f.dia || f.dia < fechaDesde)) return false;
     if (fechaHasta && (!f.dia || f.dia > fechaHasta)) return false;

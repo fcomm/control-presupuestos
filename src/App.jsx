@@ -6,6 +6,7 @@ import {
 import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import { useCollection } from "./useCollection";
+import { supabase } from "./supabaseClient";
 
 /* ----------------------------------------------------------------------
    TOKENS
@@ -93,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.41.0";
+const APP_VERSION = "1.42.0";
 const CHANGELOG = [
+  { v: "1.42.0", desc: "Login obligatorio (Supabase Auth) y auditoría — cada partida/transacción/proveedor/cuenta guarda quién la creó y quién la editó por última vez, visible en su modal" },
   { v: "1.41.0", desc: "Los avisos de Reporte de Pagos (proveedor/cuenta sin vincular) ahora son una barra fija abajo del navegador, visible aunque hagas scroll" },
   { v: "1.40.1", desc: "Quita las comillas alrededor de los valores dinámicos (fechas, compañía, moneda, zona) en los títulos de ambos reportes exportados" },
   { v: "1.40.0", desc: "Reporte de Pagos: exportación a Excel agrupada por Zona y Moneda (bloque por cada combinación con datos, formato de la plantilla) — reemplaza la exportación plana anterior" },
@@ -1403,6 +1405,23 @@ function AvisosFlotantes({ avisos }) {
   );
 }
 
+// Leyenda de auditoría ("Creado por X · Editado por Y") para modales de edición.
+// No muestra nada si el registro es nuevo, o si no hay datos de autoría aún
+// (registros capturados antes de activar usuarios).
+function AutoriaCaption({ record, perfilesApi }) {
+  if (!record?.id) return null;
+  const nombreDe = (uid) => perfilesApi.rows.find((p) => p.id === uid)?.nombre || null;
+  const creador = record.created_by ? nombreDe(record.created_by) : null;
+  const editor = record.updated_by ? nombreDe(record.updated_by) : null;
+  if (!creador && !editor) return null;
+  return (
+    <div style={{ fontSize: 10.5, color: T.textFaint, marginBottom: 12 }}>
+      {creador && `Creado por ${creador}`}
+      {creador && editor && editor !== creador ? ` · Última edición por ${editor}` : ""}
+    </div>
+  );
+}
+
 function EmptyState({ title, body }) {
   return (
     <div style={{ ...panelStyle, textAlign: "center", padding: "48px 24px" }}>
@@ -2038,7 +2057,7 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
   );
 }
 
-function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
+function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadores = marcadoresDisponibles(proyectosUnidad);
   const anioDefault = (() => {
@@ -2255,6 +2274,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi }) {
           subtitle="Una fila por partida — puede recibir varias transacciones reales"
           onClose={closeModal}
         >
+          <AutoriaCaption record={form} perfilesApi={perfilesApi} />
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
             <Field label="Mes">
               <Select value={form.mes} onChange={(e) => setForm({ ...form, mes: e.target.value })}>
@@ -2441,7 +2461,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, transaccionesApi })
   );
 }
 
-function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi }) {
+function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
@@ -2875,6 +2895,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           subtitle="Se vincula a una partida — una partida puede tener varias"
           onClose={closeModal}
         >
+          <AutoriaCaption record={form} perfilesApi={perfilesApi} />
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
             <Field label="Partida" style={{ gridColumn: "span 4" }}>
               <PartidaPickerButton
@@ -3480,7 +3501,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
   );
 }
 
-function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi, cuentasApi }) {
+function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi, cuentasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "" });
   const [drafts, setDrafts] = useState({}); // id -> { field: value } — edición local antes de confirmar en blur
@@ -3564,7 +3585,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi, cuentasAp
         </div>
       </Panel>
 
-      <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
+      <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />
     </div>
   );
 }
@@ -3695,7 +3716,7 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
   );
 }
 
-function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
+function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const blank = { nombre: "", rfc: "", id_sae: "", referencia: "", notas: "" };
   const [form, setForm] = useState(blank);
@@ -3800,6 +3821,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
 
       {modalOpen && (
         <Modal title={editId ? "Editar proveedor" : "Nuevo proveedor"} subtitle={`Catálogo de ${unidad}`} onClose={closeModal} width={820}>
+          <AutoriaCaption record={form} perfilesApi={perfilesApi} />
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
             <Field label="Nombre" style={{ gridColumn: "span 3" }}>
               <TextInput value={form.nombre} onChange={(e) => setForm({ ...form, nombre: e.target.value })} />
@@ -3890,12 +3912,67 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi }) {
 /* ----------------------------------------------------------------------
    ROOT APP
 ---------------------------------------------------------------------- */
+// Sesión de Supabase Auth — undefined mientras carga, null si no hay sesión.
+function useAuth() {
+  const [session, setSession] = useState(undefined);
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data }) => setSession(data.session));
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+  return session;
+}
+
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError(""); setLoading(true);
+    try {
+      const { error: err } = await supabase.auth.signInWithPassword({ email: email.trim(), password });
+      if (err) setError(err.message === "Invalid login credentials" ? "Correo o contraseña incorrectos." : err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: T.bg, fontFamily: T.fontUI }}>
+      <form onSubmit={submit} style={{ ...panelStyle, width: 340 }}>
+        <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.14em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>
+          Control de presupuestos
+        </div>
+        <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 18 }}>Iniciar sesión</div>
+        <Field label="Correo" style={{ marginBottom: 12 }}>
+          <TextInput type="email" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} required />
+        </Field>
+        <Field label="Contraseña" style={{ marginBottom: 16 }}>
+          <TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} required />
+        </Field>
+        {error && <div style={{ fontSize: 12, color: T.red, marginBottom: 12 }}>{error}</div>}
+        <Button type="submit" disabled={loading} style={{ width: "100%", justifyContent: "center" }}>
+          {loading ? "Entrando…" : "Entrar"}
+        </Button>
+        <div style={{ fontSize: 11, color: T.textFaint, marginTop: 14 }}>
+          ¿No tienes cuenta? Pídele a tu administrador que te dé de alta.
+        </div>
+      </form>
+    </div>
+  );
+}
+
 export default function App() {
+  const session = useAuth();
   const proyectosApi = useCollection("proyectos");
-  const partidasApi = useCollection("partidas");
-  const transaccionesApi = useCollection("transacciones");
-  const proveedoresApi = useCollection("proveedores");
-  const cuentasApi = useCollection("proveedor_cuentas");
+  const partidasApi = useCollection("partidas", "created_at", { withAudit: true });
+  const transaccionesApi = useCollection("transacciones", "created_at", { withAudit: true });
+  const proveedoresApi = useCollection("proveedores", "created_at", { withAudit: true });
+  const cuentasApi = useCollection("proveedor_cuentas", "created_at", { withAudit: true });
+  const perfilesApi = useCollection("perfiles");
   const [unidad, setUnidad] = useState("CTM");
   const [tab, setTab] = useState("dashboard");
 
@@ -3921,6 +3998,17 @@ export default function App() {
     { id: "reporte-direccion", label: "Reporte Pagos Dirección" },
     { id: "catalogo", label: "Catálogo" },
   ];
+
+  if (session === undefined) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: T.bg, fontFamily: T.fontUI, color: T.textFaint, fontSize: 13 }}>
+        Cargando…
+      </div>
+    );
+  }
+  if (!session) {
+    return <LoginScreen />;
+  }
 
   return (
     <div style={{ background: T.bg, minHeight: "100%", fontFamily: T.fontUI, color: T.text, padding: 24 }}>
@@ -3982,6 +4070,12 @@ export default function App() {
             ))}
           </div>
         </div>
+        <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+          <span style={{ fontSize: 11.5, color: T.textFaint }}>
+            {perfilesApi.rows.find((p) => p.id === session.user.id)?.nombre || session.user.email}
+          </span>
+          <Button variant="ghost" onClick={() => supabase.auth.signOut()}>Cerrar sesión</Button>
+        </div>
       </div>
 
       <div style={{ display: "flex", gap: 4, borderBottom: `1px solid ${T.border}`, marginBottom: 22 }}>
@@ -4007,11 +4101,11 @@ export default function App() {
       ) : (
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
-          {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} />}
-          {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} />}
+          {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} />}
-          {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>
       )}
     </div>

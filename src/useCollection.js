@@ -4,7 +4,12 @@ import { supabase } from "./supabaseClient";
 // Generic hook: keeps `rows` in sync with a Supabase table (initial fetch +
 // realtime subscription), and exposes CRUD helpers. Every person running the
 // app against the same Supabase project sees each other's changes live.
-export function useCollection(table, orderBy = "created_at") {
+//
+// Pass { withAudit: true } for tables that have created_by/updated_by columns
+// — insert/bulkInsert/update will auto-fill them from the signed-in user,
+// so callers never need to set them manually.
+export function useCollection(table, orderBy = "created_at", options = {}) {
+  const { withAudit = false } = options;
   const [rows, setRows] = useState([]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(null);
@@ -47,27 +52,48 @@ export function useCollection(table, orderBy = "created_at") {
     };
   }, [table, orderBy]);
 
+  const currentUserId = useCallback(async () => {
+    if (!withAudit) return null;
+    const { data } = await supabase.auth.getUser();
+    return data?.user?.id || null;
+  }, [withAudit]);
+
   const insert = useCallback(async (record) => {
-    const { data, error: err } = await supabase.from(table).insert(record).select().single();
+    let payload = record;
+    if (withAudit) {
+      const uid = await currentUserId();
+      if (uid) payload = { ...record, created_by: record.created_by ?? uid, updated_by: uid };
+    }
+    const { data, error: err } = await supabase.from(table).insert(payload).select().single();
     if (err) { setError(err); throw err; }
     setRows((current) => (current.some((r) => r.id === data.id) ? current : [...current, data]));
     return data;
-  }, [table]);
+  }, [table, withAudit, currentUserId]);
 
   const bulkInsert = useCallback(async (records) => {
     if (!records.length) return [];
-    const { data, error: err } = await supabase.from(table).insert(records).select();
+    let payload = records;
+    if (withAudit) {
+      const uid = await currentUserId();
+      if (uid) payload = records.map((r) => ({ ...r, created_by: r.created_by ?? uid, updated_by: uid }));
+    }
+    const { data, error: err } = await supabase.from(table).insert(payload).select();
     if (err) { setError(err); throw err; }
     setRows((current) => [...current, ...data]);
     return data;
-  }, [table]);
+  }, [table, withAudit, currentUserId]);
 
   const update = useCallback(async (id, patch) => {
-    const { data, error: err } = await supabase.from(table).update(patch).eq("id", id).select().single();
+    let payload = patch;
+    if (withAudit) {
+      const uid = await currentUserId();
+      if (uid) payload = { ...patch, updated_by: uid };
+    }
+    const { data, error: err } = await supabase.from(table).update(payload).eq("id", id).select().single();
     if (err) { setError(err); throw err; }
     setRows((current) => current.map((r) => (r.id === id ? data : r)));
     return data;
-  }, [table]);
+  }, [table, withAudit, currentUserId]);
 
   const remove = useCallback(async (id) => {
     const { error: err } = await supabase.from(table).delete().eq("id", id);

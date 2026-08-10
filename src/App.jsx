@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.42.1";
+const APP_VERSION = "1.42.2";
 const CHANGELOG = [
+  { v: "1.42.2", desc: "Agrega pantalla de 'nueva contraseña' (faltaba para que los links de restablecimiento funcionaran de punta a punta) y '¿Olvidaste tu contraseña?' autoservicio en el login" },
   { v: "1.42.1", desc: "Fix crítico: tras iniciar sesión, todas las tablas aparecían vacías — la primera carga de datos salía antes de que la sesión estuviera lista; ahora se reintenta cuando el estado de sesión cambia" },
   { v: "1.42.0", desc: "Login obligatorio (Supabase Auth) y auditoría — cada partida/transacción/proveedor/cuenta guarda quién la creó y quién la editó por última vez, visible en su modal" },
   { v: "1.41.0", desc: "Los avisos de Reporte de Pagos (proveedor/cuenta sin vincular) ahora son una barra fija abajo del navegador, visible aunque hagas scroll" },
@@ -3914,21 +3915,73 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
    ROOT APP
 ---------------------------------------------------------------------- */
 // Sesión de Supabase Auth — undefined mientras carga, null si no hay sesión.
+// `recovery` se activa cuando la sesión viene de un link de "olvidé mi
+// contraseña" — en ese caso hay que pedir la contraseña nueva antes de
+// dejar entrar a la app normal.
 function useAuth() {
   const [session, setSession] = useState(undefined);
+  const [recovery, setRecovery] = useState(false);
   useEffect(() => {
     supabase.auth.getSession().then(({ data }) => setSession(data.session));
-    const { data: listener } = supabase.auth.onAuthStateChange((_event, s) => setSession(s));
+    const { data: listener } = supabase.auth.onAuthStateChange((event, s) => {
+      setSession(s);
+      if (event === "PASSWORD_RECOVERY") setRecovery(true);
+    });
     return () => listener.subscription.unsubscribe();
   }, []);
-  return session;
+  return { session, recovery, clearRecovery: () => setRecovery(false) };
+}
+
+function SetNewPasswordScreen({ onDone }) {
+  const [password, setPassword] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setError("");
+    if (password.length < 6) { setError("La contraseña debe tener al menos 6 caracteres."); return; }
+    if (password !== confirm) { setError("Las contraseñas no coinciden."); return; }
+    setLoading(true);
+    try {
+      const { error: err } = await supabase.auth.updateUser({ password });
+      if (err) { setError(err.message); return; }
+      onDone();
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: T.bg, fontFamily: T.fontUI }}>
+      <form onSubmit={submit} style={{ ...panelStyle, width: 340 }}>
+        <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.14em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>
+          Control de presupuestos
+        </div>
+        <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 18 }}>Elige tu nueva contraseña</div>
+        <Field label="Nueva contraseña" style={{ marginBottom: 12 }}>
+          <TextInput type="password" autoFocus value={password} onChange={(e) => setPassword(e.target.value)} required />
+        </Field>
+        <Field label="Confirmar contraseña" style={{ marginBottom: 16 }}>
+          <TextInput type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required />
+        </Field>
+        {error && <div style={{ fontSize: 12, color: T.red, marginBottom: 12 }}>{error}</div>}
+        <Button type="submit" disabled={loading} style={{ width: "100%", justifyContent: "center" }}>
+          {loading ? "Guardando…" : "Guardar contraseña"}
+        </Button>
+      </form>
+    </div>
+  );
 }
 
 function LoginScreen() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
+  const [aviso, setAviso] = useState("");
   const [loading, setLoading] = useState(false);
+  const [modoOlvido, setModoOlvido] = useState(false);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -3940,6 +3993,47 @@ function LoginScreen() {
       setLoading(false);
     }
   };
+
+  const enviarRecuperacion = async (e) => {
+    e.preventDefault();
+    setError(""); setAviso(""); setLoading(true);
+    try {
+      const { error: err } = await supabase.auth.resetPasswordForEmail(email.trim(), { redirectTo: window.location.origin });
+      if (err) setError(err.message);
+      else setAviso("Si ese correo tiene cuenta, te llegó un link para elegir una contraseña nueva.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  if (modoOlvido) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: T.bg, fontFamily: T.fontUI }}>
+        <form onSubmit={enviarRecuperacion} style={{ ...panelStyle, width: 340 }}>
+          <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.14em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>
+            Control de presupuestos
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>Recuperar contraseña</div>
+          <div style={{ fontSize: 12, color: T.textFaint, marginBottom: 16 }}>Te mandamos un link a tu correo para elegir una nueva.</div>
+          <Field label="Correo" style={{ marginBottom: 16 }}>
+            <TextInput type="email" autoFocus value={email} onChange={(e) => setEmail(e.target.value)} required />
+          </Field>
+          {error && <div style={{ fontSize: 12, color: T.red, marginBottom: 12 }}>{error}</div>}
+          {aviso && <div style={{ fontSize: 12, color: T.teal, marginBottom: 12 }}>{aviso}</div>}
+          <Button type="submit" disabled={loading} style={{ width: "100%", justifyContent: "center" }}>
+            {loading ? "Enviando…" : "Enviar link"}
+          </Button>
+          <button
+            type="button"
+            onClick={() => { setModoOlvido(false); setError(""); setAviso(""); }}
+            style={{ background: "none", border: "none", color: T.accent, fontSize: 11.5, cursor: "pointer", padding: 0, marginTop: 14 }}
+          >
+            ← Volver a iniciar sesión
+          </button>
+        </form>
+      </div>
+    );
+  }
 
   return (
     <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: T.bg, fontFamily: T.fontUI }}>
@@ -3958,16 +4052,25 @@ function LoginScreen() {
         <Button type="submit" disabled={loading} style={{ width: "100%", justifyContent: "center" }}>
           {loading ? "Entrando…" : "Entrar"}
         </Button>
-        <div style={{ fontSize: 11, color: T.textFaint, marginTop: 14 }}>
-          ¿No tienes cuenta? Pídele a tu administrador que te dé de alta.
+        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 14 }}>
+          <span style={{ fontSize: 11, color: T.textFaint }}>
+            ¿No tienes cuenta? Pídele a tu administrador que te dé de alta.
+          </span>
         </div>
+        <button
+          type="button"
+          onClick={() => { setModoOlvido(true); setError(""); }}
+          style={{ background: "none", border: "none", color: T.accent, fontSize: 11.5, cursor: "pointer", padding: 0, marginTop: 10 }}
+        >
+          ¿Olvidaste tu contraseña?
+        </button>
       </form>
     </div>
   );
 }
 
 export default function App() {
-  const session = useAuth();
+  const { session, recovery, clearRecovery } = useAuth();
   const proyectosApi = useCollection("proyectos");
   const partidasApi = useCollection("partidas", "created_at", { withAudit: true });
   const transaccionesApi = useCollection("transacciones", "created_at", { withAudit: true });
@@ -4006,6 +4109,9 @@ export default function App() {
         Cargando…
       </div>
     );
+  }
+  if (recovery) {
+    return <SetNewPasswordScreen onDone={clearRecovery} />;
   }
   if (!session) {
     return <LoginScreen />;

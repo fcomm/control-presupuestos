@@ -94,8 +94,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.43.0";
+const APP_VERSION = "1.44.1";
 const CHANGELOG = [
+  { v: "1.44.1", desc: "Fix crítico: no se podía guardar una transacción nueva (violaba la política de seguridad) porque el formulario no llenaba 'unidad_detectada' al crearla manualmente" },
+  { v: "1.44.0", desc: "Notas privadas por transacción — cada usuario puede dejar su propia nota (🔒), nadie más la ve ni puede consultarla, ni siquiera directo en la base de datos" },
   { v: "1.43.0", desc: "Acceso por compañía: se puede restringir a un usuario a ver solo OSB/CTM/ISE específicas — reforzado a nivel de base de datos (no solo ocultar botones), configurable desde perfiles.unidades_permitidas en Supabase" },
   { v: "1.42.2", desc: "Agrega pantalla de 'nueva contraseña' (faltaba para que los links de restablecimiento funcionaran de punta a punta) y '¿Olvidaste tu contraseña?' autoservicio en el login" },
   { v: "1.42.1", desc: "Fix crítico: tras iniciar sesión, todas las tablas aparecían vacías — la primera carga de datos salía antes de que la sesión estuviera lista; ahora se reintenta cuando el estado de sesión cambia" },
@@ -2464,13 +2466,13 @@ function ImportarTransaccionesPanel({ partidas, proveedores, transaccionesApi })
   );
 }
 
-function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi }) {
+function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const blank = {
-    partida_id: partidasUnidad[0]?.id || "", dia: "", solicitante: "", proyecto: "", zona: "", area: "",
+    partida_id: partidasUnidad[0]?.id || "", unidad_detectada: unidad, dia: "", solicitante: "", proyecto: "", zona: "", area: "",
     proveedor: "", proveedor_id: "", cuenta_id: "", concepto_detallado: "", importe: "", moneda: "MXP", status: "",
     folio_compra_sae: "", folio_factura: "", forma_pago: "", metodo_pago: "",
   };
@@ -2656,7 +2658,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { key: "proyecto", label: "Proyecto", render: (t) => t.proyecto || "—" },
     { key: "zona", label: "Zona", render: (t) => t.zona || "—" },
     { key: "area", label: "Área", render: (t) => t.area || "—" },
-    { key: "concepto_detallado", label: "Concepto", render: (t) => <span style={{ color: T.textDim }}>{t.concepto_detallado}</span> },
+    {
+      key: "concepto_detallado", label: "Concepto",
+      render: (t) => (
+        <span style={{ color: T.textDim }}>
+          {notaActual(t.id) && <span title="Tienes una nota privada aquí" style={{ marginRight: 5 }}>🔒</span>}
+          {t.concepto_detallado}
+        </span>
+      ),
+    },
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
     { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={/pagad/i.test(t.status) ? "teal" : "amber"}>{t.status}</Pill> : "—" },
   ];
@@ -2682,6 +2692,27 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     </tr>
   );
 
+  const [notaPrivada, setNotaPrivada] = useState("");
+  const notaActual = (transaccionId) => notasApi.rows.find((n) => n.transaccion_id === transaccionId && n.usuario_id === session?.user?.id);
+
+  const guardarNotaPrivada = async (transaccionId) => {
+    if (!session?.user?.id) return;
+    const existente = notaActual(transaccionId);
+    try {
+      if (!notaPrivada.trim()) {
+        if (existente) await notasApi.remove(existente.id);
+        return;
+      }
+      if (existente) {
+        await notasApi.update(existente.id, { nota: notaPrivada, updated_at: new Date().toISOString() });
+      } else {
+        await notasApi.insert({ id: uid(), transaccion_id: transaccionId, usuario_id: session.user.id, nota: notaPrivada });
+      }
+    } catch (err) {
+      alert("No se pudo guardar tu nota privada: " + (err.message || err));
+    }
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     if (!form.partida_id || !form.importe) return;
@@ -2691,13 +2722,17 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     rest.cuenta_id = rest.cuenta_id || null;
     setSaving(true);
     try {
+      let transaccionId = editId;
       if (editId) {
         await transaccionesApi.update(editId, rest);
         setEditId(null);
       } else {
-        await transaccionesApi.insert({ ...rest, id: uid() });
+        const creada = await transaccionesApi.insert({ ...rest, id: uid() });
+        transaccionId = creada.id;
       }
+      await guardarNotaPrivada(transaccionId);
       setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" });
+      setNotaPrivada("");
       setModalOpen(false);
     } catch (err) {
       alert("No se pudo guardar la transacción: " + (err.message || err));
@@ -2705,16 +2740,17 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       setSaving(false);
     }
   };
-  const openNew = () => { setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" }); setEditId(null); setModalOpen(true); };
+  const openNew = () => { setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" }); setEditId(null); setNotaPrivada(""); setModalOpen(true); };
   const startEdit = (t) => {
     // Quita campos internos (_proyecto, _rubro, _mes, _vinculo) que se agregan
     // solo para el agrupamiento — no existen como columnas reales en Supabase.
     const limpio = Object.fromEntries(Object.entries(t).filter(([k]) => !k.startsWith("_")));
     setForm(limpio);
     setEditId(t.id);
+    setNotaPrivada(notaActual(t.id)?.nota || "");
     setModalOpen(true);
   };
-  const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" }); };
+  const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" }); setNotaPrivada(""); };
   const remove = (id) => transaccionesApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
 
   if (!partidasUnidad.length) {
@@ -2991,6 +3027,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 <option>Pagado</option>
                 <option>No Pagado</option>
               </Select>
+            </Field>
+            <Field label="🔒 Tu nota privada (solo tú la ves)" style={{ gridColumn: "span 4" }}>
+              <TextInput value={notaPrivada} onChange={(e) => setNotaPrivada(e.target.value)} placeholder="Recordatorios, pendientes, contexto — nadie más puede ver esto" />
             </Field>
             <div style={{ gridColumn: "span 4", display: "flex", gap: 10, marginTop: 4 }}>
               <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Registrar transacción"}</Button>
@@ -4078,6 +4117,7 @@ export default function App() {
   const proveedoresApi = useCollection("proveedores", "created_at", { withAudit: true });
   const cuentasApi = useCollection("proveedor_cuentas", "created_at", { withAudit: true });
   const perfilesApi = useCollection("perfiles");
+  const notasApi = useCollection("transaccion_notas");
   const [unidad, setUnidad] = useState("CTM");
   const [tab, setTab] = useState("dashboard");
 
@@ -4223,7 +4263,7 @@ export default function App() {
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
           {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} />}
-          {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
+          {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} />}
           {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}

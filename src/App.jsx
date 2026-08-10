@@ -94,8 +94,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.44.3";
+const APP_VERSION = "1.44.5";
 const CHANGELOG = [
+  { v: "1.44.5", desc: "El ID de transacción cambia de formato secuencial (CTM-T-0001) a codificado por mes (CTM-AGO-001) — corre recodificar-folio-transaccion-por-mes.sql para actualizar las que ya tenían el formato viejo" },
+  { v: "1.44.4", desc: "Cada transacción tiene un ID único visible (ej. CTM-T-0001) — nueva columna, buscable, y visible en el modal; se les asignó también a las transacciones que ya existían" },
   { v: "1.44.3", desc: "Filtros, fechas, orden y agrupamiento ahora persisten al cambiar de pestaña mientras la sesión siga abierta (Partidas, Transacciones y ambos Reportes) — se pierden al cerrar el navegador, a propósito" },
   { v: "1.44.2", desc: "Agrega campo SMI a Transacciones (formulario, columna, importador) — Reporte de Pagos usa el SMI de la transacción si existe, si no el de la partida" },
   { v: "1.44.1", desc: "Fix crítico: no se podía guardar una transacción nueva (violaba la política de seguridad) porque el formulario no llenaba 'unidad_detectada' al crearla manualmente" },
@@ -199,6 +201,21 @@ function nextFolioNumber(prefix, existingFolios) {
 function autoFolio(unidad, mes, anio, existingFolios) {
   const prefix = folioPrefix(unidad, mes, anio);
   return prefix + String(nextFolioNumber(prefix, existingFolios)).padStart(3, "0");
+}
+
+// Identificador único por transacción (no ligado al mes, a diferencia del folio
+// de partida) — ej. "CTM-T-0001". Se asigna solo, no se puede editar.
+function nextFolioTransaccion(unidad, mes, existingTransacciones) {
+  const abr = MES_ABR[mes] || "GEN";
+  const prefix = `${unidad}-${abr}-`;
+  let max = 0;
+  existingTransacciones.forEach((t) => {
+    if (t.folio_transaccion && t.folio_transaccion.startsWith(prefix)) {
+      const n = parseInt(t.folio_transaccion.slice(prefix.length), 10);
+      if (!isNaN(n) && n > max) max = n;
+    }
+  });
+  return `${prefix}${String(max + 1).padStart(3, "0")}`;
 }
 
 // Captura TODAS las columnas del Excel que no tengan ya su propio campo en la
@@ -2516,7 +2533,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const partida = partidaDe(t);
-      const enTexto = [t.proveedor, t.concepto_detallado, t.solicitante, t.zona, partida?.folio, partida?.concepto]
+      const enTexto = [t.proveedor, t.concepto_detallado, t.solicitante, t.zona, t.folio_transaccion, partida?.folio, partida?.concepto]
         .some((v) => (v || "").toLowerCase().includes(q));
       if (!enTexto) return false;
     }
@@ -2645,6 +2662,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   );
 
   const COLUMNAS_TRANS = [
+    {
+      key: "folio_transaccion", label: "ID",
+      render: (t) => <span style={{ fontFamily: T.fontMono, color: T.accent, fontSize: 11 }}>{t.folio_transaccion || "—"}</span>,
+    },
     { key: "dia", label: "Día", render: (t) => t.dia || "—" },
     { key: "smi", label: "SMI", render: (t) => t.smi || "—" },
     {
@@ -2749,7 +2770,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         await transaccionesApi.update(editId, rest);
         setEditId(null);
       } else {
-        const creada = await transaccionesApi.insert({ ...rest, id: uid() });
+        const mesForm = MESES[(form.dia ? new Date(`${form.dia}T00:00:00`) : new Date()).getMonth()];
+        const creada = await transaccionesApi.insert({ ...rest, id: uid(), folio_transaccion: nextFolioTransaccion(unidad, mesForm, transUnidad) });
         transaccionId = creada.id;
       }
       await guardarNotaPrivada(transaccionId);
@@ -2953,7 +2975,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       {modalOpen && (
         <Modal
           title={editId ? "Editar transacción" : "Nueva transacción real"}
-          subtitle="Se vincula a una partida — una partida puede tener varias"
+          subtitle={form.folio_transaccion ? `ID: ${form.folio_transaccion} — se vincula a una partida` : "Se vincula a una partida — una partida puede tener varias"}
           onClose={closeModal}
         >
           <AutoriaCaption record={form} perfilesApi={perfilesApi} />

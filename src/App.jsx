@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.45.1";
+const APP_VERSION = "1.45.2";
 const CHANGELOG = [
+  { v: "1.45.2", desc: "Dashboard: los filtros Proyecto y Mes del panel 'Resumen general' quedan alineados en la misma fila, en vez de uno arriba y otro abajo" },
   { v: "1.45.1", desc: "Fix: la suma de moneda mixta en encabezados de columna se salía del recuadro — ahora cada moneda va en su propia línea, y los encabezados en general ya no desbordan texto largo" },
   { v: "1.45.0", desc: "Las columnas de dinero (Monto/Importe) muestran la suma de lo visible/filtrado justo en el encabezado — separada por moneda si hay mezcla — en Partidas, Transacciones (incluyendo sin vincular) y ambos Reportes de Pagos" },
   { v: "1.44.9", desc: "Dashboard: los 3 cuadros de montos quedan dentro de un panel 'Resumen general' con filtro de Proyecto (usa los importes ya prorrateados); el filtro de Mes existente los sigue afectando también" },
@@ -1241,23 +1242,23 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
         title="Resumen general"
         subtitle="Los importes ya vienen prorrateados según el marcador de cada partida"
         right={
-          <Field label="Proyecto">
-            <Select value={proyectoKpi} onChange={(e) => setProyectoKpi(e.target.value)} style={{ width: 190 }}>
-              <option>Todos</option>
-              {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
-            </Select>
-          </Field>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+            <Field label="Proyecto">
+              <Select value={proyectoKpi} onChange={(e) => setProyectoKpi(e.target.value)} style={{ width: 190 }}>
+                <option>Todos</option>
+                {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
+              </Select>
+            </Field>
+            <Field label="Mes">
+              <MesMultiSelect mesesDisponibles={mesesDisponibles} seleccionados={mesesSeleccionados} onChange={setMesesSeleccionados} />
+            </Field>
+          </div>
         }
       >
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
-          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-            <KpiCard label="Presupuestado" value={money(proyectoKpiData.presupuestado)} />
-            <KpiCard label="Ejecutado" value={money(proyectoKpiData.ejecutado)} accent={proyectoKpiData.presupuestado && proyectoKpiData.ejecutado / proyectoKpiData.presupuestado > 1 ? T.red : T.teal} />
-            <KpiCard label="Disponible" value={money(proyectoKpiData.presupuestado - proyectoKpiData.ejecutado)} accent={proyectoKpiData.presupuestado - proyectoKpiData.ejecutado < 0 ? T.red : T.text} />
-          </div>
-          <Field label="Mes">
-            <MesMultiSelect mesesDisponibles={mesesDisponibles} seleccionados={mesesSeleccionados} onChange={setMesesSeleccionados} />
-          </Field>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          <KpiCard label="Presupuestado" value={money(proyectoKpiData.presupuestado)} />
+          <KpiCard label="Ejecutado" value={money(proyectoKpiData.ejecutado)} accent={proyectoKpiData.presupuestado && proyectoKpiData.ejecutado / proyectoKpiData.presupuestado > 1 ? T.red : T.teal} />
+          <KpiCard label="Disponible" value={money(proyectoKpiData.presupuestado - proyectoKpiData.ejecutado)} accent={proyectoKpiData.presupuestado - proyectoKpiData.ejecutado < 0 ? T.red : T.text} />
         </div>
       </Panel>
 

@@ -94,8 +94,11 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.45.3";
+const APP_VERSION = "1.45.6";
 const CHANGELOG = [
+  { v: "1.45.6", desc: "Dashboard: el panel 'Resumen general' ahora muestra 5 cifras — Presupuestado, Ocupado, Pagado, Por Pagar y Disponible — en vez de solo 3, respetando los filtros de Mes/Proyecto" },
+  { v: "1.45.5", desc: "Fix: los filtros de Mes y Proyecto del Dashboard no persistían al cambiar de pestaña (se me había pasado aplicarles la persistencia de sesión que ya tienen Partidas/Transacciones/Reportes)" },
+  { v: "1.45.4", desc: "Fix: 'Resumen presupuestado por proyecto y rubro' mostraba marcadores de prorrateo (Todos, X Gral) como si fueran proyectos reales — ahora se reparten entre los proyectos reales del catálogo, igual que en las gráficas y KPIs" },
   { v: "1.45.3", desc: "Tabla de Partidas: debajo del Monto de cada fila aparece \"Ejercido\" (la suma de sus transacciones vinculadas) — verde si va bien, ámbar cerca del límite, rojo si se pasó" },
   { v: "1.45.2", desc: "Dashboard: los filtros Proyecto y Mes del panel 'Resumen general' quedan alineados en la misma fila, en vez de uno arriba y otro abajo" },
   { v: "1.45.1", desc: "Fix: la suma de moneda mixta en encabezados de columna se salía del recuadro — ahora cada moneda va en su propia línea, y los encabezados en general ya no desbordan texto largo" },
@@ -1153,7 +1156,7 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   const transUnidad = transacciones.filter((t) => idsPartidas.has(t.partida_id));
 
   const mesesDisponibles = MESES.filter((m) => partidasUnidad.some((p) => p.mes === m));
-  const [mesesSeleccionados, setMesesSeleccionados] = useState([]);
+  const [mesesSeleccionados, setMesesSeleccionados] = useSessionState("ss-dashboard-meses", []);
   const partidasFiltradasMes = mesesSeleccionados.length ? partidasUnidad.filter((p) => mesesSeleccionados.includes(p.mes)) : partidasUnidad;
   const mesLabel = mesesSeleccionados.length ? ` · ${mesesSeleccionados.join(", ")}` : "";
   const idsPartidasFiltradas = new Set(partidasFiltradasMes.map((p) => p.id));
@@ -1161,12 +1164,12 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 
   const porProyecto = useMemo(() => {
     const map = {};
-    proyectosUnidad.forEach((p) => { map[p.nombre] = { proyecto: p.nombre, presupuestado: 0, ejecutado: 0 }; });
+    proyectosUnidad.forEach((p) => { map[p.nombre] = { proyecto: p.nombre, presupuestado: 0, ejecutado: 0, pagado: 0 }; });
 
     partidasFiltradasMes.forEach((partida) => {
       const splits = resolverProrrateo(partida.proyecto, proyectosUnidad);
       splits.forEach(({ proyecto, fraccion }) => {
-        if (!map[proyecto]) map[proyecto] = { proyecto, presupuestado: 0, ejecutado: 0 };
+        if (!map[proyecto]) map[proyecto] = { proyecto, presupuestado: 0, ejecutado: 0, pagado: 0 };
         map[proyecto].presupuestado += (Number(partida.monto_estimado) || 0) * fraccion;
       });
     });
@@ -1176,8 +1179,9 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
       if (!partida) return;
       const splits = resolverProrrateo(partida.proyecto, proyectosUnidad);
       splits.forEach(({ proyecto, fraccion }) => {
-        if (!map[proyecto]) map[proyecto] = { proyecto, presupuestado: 0, ejecutado: 0 };
+        if (!map[proyecto]) map[proyecto] = { proyecto, presupuestado: 0, ejecutado: 0, pagado: 0 };
         map[proyecto].ejecutado += (Number(t.importe) || 0) * fraccion;
+        if (t.status === "Pagado") map[proyecto].pagado += (Number(t.importe) || 0) * fraccion;
       });
     });
 
@@ -1217,14 +1221,19 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 
   const totalPresupuestado = partidasFiltradasMes.reduce((s, p) => s + (Number(p.monto_estimado) || 0), 0);
   const totalEjecutado = transFiltradasMes.reduce((s, t) => s + (Number(t.importe) || 0), 0);
+  const totalPagado = transFiltradasMes.filter((t) => t.status === "Pagado").reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
   // Filtro de Proyecto para los cuadros de montos — usa los importes YA prorrateados
   // (porProyecto), así que si una partida es "Desh Gral" y filtras por "Desh Marfo",
   // sí cuenta su parte correspondiente.
-  const [proyectoKpi, setProyectoKpi] = useState("Todos");
+  const [proyectoKpi, setProyectoKpi] = useSessionState("ss-dashboard-proyecto", "Todos");
   const proyectoKpiData = proyectoKpi === "Todos"
-    ? { presupuestado: totalPresupuestado, ejecutado: totalEjecutado }
-    : (porProyecto.find((p) => p.proyecto === proyectoKpi) || { presupuestado: 0, ejecutado: 0 });
+    ? { presupuestado: totalPresupuestado, ejecutado: totalEjecutado, pagado: totalPagado }
+    : (porProyecto.find((p) => p.proyecto === proyectoKpi) || { presupuestado: 0, ejecutado: 0, pagado: 0 });
+  const kpiOcupado = proyectoKpiData.ejecutado;
+  const kpiPagado = proyectoKpiData.pagado;
+  const kpiPorPagar = kpiOcupado - kpiPagado;
+  const kpiDisponible = proyectoKpiData.presupuestado - kpiOcupado;
 
   const COLORS = [T.accent, T.teal, T.blue, T.amber, T.red, "#8B6FB0", "#B0955B", "#5BA0B0"];
 
@@ -1258,12 +1267,14 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
       >
         <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
           <KpiCard label="Presupuestado" value={money(proyectoKpiData.presupuestado)} />
-          <KpiCard label="Ejecutado" value={money(proyectoKpiData.ejecutado)} accent={proyectoKpiData.presupuestado && proyectoKpiData.ejecutado / proyectoKpiData.presupuestado > 1 ? T.red : T.teal} />
-          <KpiCard label="Disponible" value={money(proyectoKpiData.presupuestado - proyectoKpiData.ejecutado)} accent={proyectoKpiData.presupuestado - proyectoKpiData.ejecutado < 0 ? T.red : T.text} />
+          <KpiCard label="Ocupado" value={money(kpiOcupado)} accent={proyectoKpiData.presupuestado && kpiOcupado / proyectoKpiData.presupuestado > 1 ? T.red : T.amber} />
+          <KpiCard label="Pagado" value={money(kpiPagado)} accent={T.teal} />
+          <KpiCard label="Por Pagar" value={money(kpiPorPagar)} accent={T.amber} />
+          <KpiCard label="Disponible" value={money(kpiDisponible)} accent={kpiDisponible < 0 ? T.red : T.text} />
         </div>
       </Panel>
 
-      <ResumenPivotPanel partidasUnidad={partidasFiltradasMes} />
+      <ResumenPivotPanel partidasUnidad={partidasFiltradasMes} proyectosUnidad={proyectosUnidad} />
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 20 }}>
         <Panel title="Presupuesto vs. ejecutado por proyecto" subtitle={`Gastos compartidos ya prorrateados según su marcador${mesLabel}`}>
@@ -1350,7 +1361,7 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   );
 }
 
-function ResumenPivotPanel({ partidasUnidad }) {
+function ResumenPivotPanel({ partidasUnidad, proyectosUnidad }) {
   const partidasMXN = partidasUnidad.filter((p) => (p.moneda || "MXP") === "MXP");
   const meses = MESES.filter((m) => partidasMXN.some((p) => p.mes === m));
   const [collapsed, setCollapsed] = useState(new Set());
@@ -1362,7 +1373,16 @@ function ResumenPivotPanel({ partidasUnidad }) {
 
   if (!partidasMXN.length) return null;
 
-  const pivot = pivotearPorMes(partidasMXN, ["proyecto", "rubro", "concepto"], meses);
+  // "Todos" / "<Grupo> Gral" son marcadores de prorrateo, no proyectos reales —
+  // se reparten entre los proyectos reales antes de armar la tabla, para que
+  // nunca aparezcan como su propia fila.
+  const partidasResueltas = partidasMXN.flatMap((p) =>
+    resolverProrrateo(p.proyecto, proyectosUnidad).map(({ proyecto, fraccion }) => ({
+      ...p, proyecto, monto_estimado: (Number(p.monto_estimado) || 0) * fraccion,
+    }))
+  );
+
+  const pivot = pivotearPorMes(partidasResueltas, ["proyecto", "rubro", "concepto"], meses);
   const totalGeneral = meses.reduce((acc, m) => { acc[m] = 0; return acc; }, {});
   let granTotal = 0;
   partidasMXN.forEach((p) => {

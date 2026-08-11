@@ -94,8 +94,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.44.7";
+const APP_VERSION = "1.44.9";
 const CHANGELOG = [
+  { v: "1.44.9", desc: "Dashboard: los 3 cuadros de montos quedan dentro de un panel 'Resumen general' con filtro de Proyecto (usa los importes ya prorrateados); el filtro de Mes existente los sigue afectando también" },
+  { v: "1.44.8", desc: "Dashboard: mueve 'Resumen presupuestado por proyecto y rubro' justo debajo de los cuadros de montos (Presupuestado/Ejecutado/Disponible)" },
   { v: "1.44.7", desc: "Botón 'Descargar plantilla' en la carga masiva de Partidas y Transacciones — genera el Excel con el formato correcto directo desde la app, sin tener que pedirlo por chat" },
   { v: "1.44.6", desc: "Agrega Fecha de Pago a Transacciones — Status nace en 'No Pagado', y marcar 'Pagado' exige capturar la fecha antes de guardar. Fix de paso: el color de Status marcaba 'No Pagado' en verde por error" },
   { v: "1.44.5", desc: "El ID de transacción cambia de formato secuencial (CTM-T-0001) a codificado por mes (CTM-AGO-001) — corre recodificar-folio-transaccion-por-mes.sql para actualizar las que ya tenían el formato viejo" },
@@ -1212,6 +1214,14 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   const totalPresupuestado = partidasFiltradasMes.reduce((s, p) => s + (Number(p.monto_estimado) || 0), 0);
   const totalEjecutado = transFiltradasMes.reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
+  // Filtro de Proyecto para los cuadros de montos — usa los importes YA prorrateados
+  // (porProyecto), así que si una partida es "Desh Gral" y filtras por "Desh Marfo",
+  // sí cuenta su parte correspondiente.
+  const [proyectoKpi, setProyectoKpi] = useState("Todos");
+  const proyectoKpiData = proyectoKpi === "Todos"
+    ? { presupuestado: totalPresupuestado, ejecutado: totalEjecutado }
+    : (porProyecto.find((p) => p.proyecto === proyectoKpi) || { presupuestado: 0, ejecutado: 0 });
+
   const COLORS = [T.accent, T.teal, T.blue, T.amber, T.red, "#8B6FB0", "#B0955B", "#5BA0B0"];
 
   if (!partidasUnidad.length) {
@@ -1225,16 +1235,31 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-          <KpiCard label="Presupuestado" value={money(totalPresupuestado)} />
-          <KpiCard label="Ejecutado" value={money(totalEjecutado)} accent={totalPresupuestado && totalEjecutado / totalPresupuestado > 1 ? T.red : T.teal} />
-          <KpiCard label="Disponible" value={money(totalPresupuestado - totalEjecutado)} accent={totalPresupuestado - totalEjecutado < 0 ? T.red : T.text} />
+      <Panel
+        title="Resumen general"
+        subtitle="Los importes ya vienen prorrateados según el marcador de cada partida"
+        right={
+          <Field label="Proyecto">
+            <Select value={proyectoKpi} onChange={(e) => setProyectoKpi(e.target.value)} style={{ width: 190 }}>
+              <option>Todos</option>
+              {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
+            </Select>
+          </Field>
+        }
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 12 }}>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+            <KpiCard label="Presupuestado" value={money(proyectoKpiData.presupuestado)} />
+            <KpiCard label="Ejecutado" value={money(proyectoKpiData.ejecutado)} accent={proyectoKpiData.presupuestado && proyectoKpiData.ejecutado / proyectoKpiData.presupuestado > 1 ? T.red : T.teal} />
+            <KpiCard label="Disponible" value={money(proyectoKpiData.presupuestado - proyectoKpiData.ejecutado)} accent={proyectoKpiData.presupuestado - proyectoKpiData.ejecutado < 0 ? T.red : T.text} />
+          </div>
+          <Field label="Mes">
+            <MesMultiSelect mesesDisponibles={mesesDisponibles} seleccionados={mesesSeleccionados} onChange={setMesesSeleccionados} />
+          </Field>
         </div>
-        <Field label="Mes">
-          <MesMultiSelect mesesDisponibles={mesesDisponibles} seleccionados={mesesSeleccionados} onChange={setMesesSeleccionados} />
-        </Field>
-      </div>
+      </Panel>
+
+      <ResumenPivotPanel partidasUnidad={partidasFiltradasMes} />
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 20 }}>
         <Panel title="Presupuesto vs. ejecutado por proyecto" subtitle={`Gastos compartidos ya prorrateados según su marcador${mesLabel}`}>
@@ -1286,8 +1311,6 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
           </ResponsiveContainer>
         </Panel>
       )}
-
-      <ResumenPivotPanel partidasUnidad={partidasFiltradasMes} />
 
       <Panel title="Avance por proyecto" subtitle={`Detalle con marcador de prorrateo aplicado${mesLabel}`}>
         <div style={{ overflowX: "auto" }}>

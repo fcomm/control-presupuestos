@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.44.5";
+const APP_VERSION = "1.44.6";
 const CHANGELOG = [
+  { v: "1.44.6", desc: "Agrega Fecha de Pago a Transacciones — Status nace en 'No Pagado', y marcar 'Pagado' exige capturar la fecha antes de guardar. Fix de paso: el color de Status marcaba 'No Pagado' en verde por error" },
   { v: "1.44.5", desc: "El ID de transacción cambia de formato secuencial (CTM-T-0001) a codificado por mes (CTM-AGO-001) — corre recodificar-folio-transaccion-por-mes.sql para actualizar las que ya tenían el formato viejo" },
   { v: "1.44.4", desc: "Cada transacción tiene un ID único visible (ej. CTM-T-0001) — nueva columna, buscable, y visible en el modal; se les asignó también a las transacciones que ya existían" },
   { v: "1.44.3", desc: "Filtros, fechas, orden y agrupamiento ahora persisten al cambiar de pestaña mientras la sesión siga abierta (Partidas, Transacciones y ambos Reportes) — se pierden al cerrar el navegador, a propósito" },
@@ -2511,7 +2512,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const blank = {
     partida_id: partidasUnidad[0]?.id || "", unidad_detectada: unidad, dia: "", solicitante: "", smi: "", proyecto: "", zona: "", area: "",
-    proveedor: "", proveedor_id: "", cuenta_id: "", concepto_detallado: "", importe: "", moneda: "MXP", status: "",
+    proveedor: "", proveedor_id: "", cuenta_id: "", concepto_detallado: "", importe: "", moneda: "MXP", status: "No Pagado", fecha_pago: "",
     folio_compra_sae: "", folio_factura: "", forma_pago: "", metodo_pago: "",
   };
   const [form, setForm] = useState(blank);
@@ -2711,7 +2712,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       ),
     },
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
-    { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={/pagad/i.test(t.status) ? "teal" : "amber"}>{t.status}</Pill> : "—" },
+    { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—" },
+    { key: "fecha_pago", label: "Fecha de Pago", render: (t) => t.fecha_pago || "—" },
   ];
   const colVisibility = useColumnVisibility("colv-transacciones", COLUMNAS_TRANS);
   const columnasVisiblesBase = COLUMNAS_TRANS.filter((c) => !groupKeys.includes(c.key) && !colVisibility.hidden.has(c.key));
@@ -2759,10 +2761,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const submit = async (e) => {
     e.preventDefault();
     if (!form.partida_id || !form.importe) return;
+    if (form.status === "Pagado" && !form.fecha_pago) {
+      alert("Para marcar esta transacción como Pagada, primero indica la Fecha de Pago.");
+      return;
+    }
     const { id, ...restRaw } = form;
     const rest = Object.fromEntries(Object.entries(restRaw).filter(([k]) => !k.startsWith("_")));
     rest.proveedor_id = rest.proveedor_id || null;
     rest.cuenta_id = rest.cuenta_id || null;
+    rest.fecha_pago = rest.fecha_pago || null;
     setSaving(true);
     try {
       let transaccionId = editId;
@@ -3075,6 +3082,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 <option>No Pagado</option>
               </Select>
             </Field>
+            {form.status === "Pagado" && (
+              <Field label="Fecha de Pago">
+                <TextInput type="date" value={form.fecha_pago} onChange={(e) => setForm({ ...form, fecha_pago: e.target.value })} required />
+              </Field>
+            )}
             <Field label="🔒 Tu nota privada (solo tú la ves)" style={{ gridColumn: "span 4" }}>
               <TextInput value={notaPrivada} onChange={(e) => setNotaPrivada(e.target.value)} placeholder="Recordatorios, pendientes, contexto — nadie más puede ver esto" />
             </Field>

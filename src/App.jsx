@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.44.6";
+const APP_VERSION = "1.44.7";
 const CHANGELOG = [
+  { v: "1.44.7", desc: "Botón 'Descargar plantilla' en la carga masiva de Partidas y Transacciones — genera el Excel con el formato correcto directo desde la app, sin tener que pedirlo por chat" },
   { v: "1.44.6", desc: "Agrega Fecha de Pago a Transacciones — Status nace en 'No Pagado', y marcar 'Pagado' exige capturar la fecha antes de guardar. Fix de paso: el color de Status marcaba 'No Pagado' en verde por error" },
   { v: "1.44.5", desc: "El ID de transacción cambia de formato secuencial (CTM-T-0001) a codificado por mes (CTM-AGO-001) — corre recodificar-folio-transaccion-por-mes.sql para actualizar las que ya tenían el formato viejo" },
   { v: "1.44.4", desc: "Cada transacción tiene un ID único visible (ej. CTM-T-0001) — nueva columna, buscable, y visible en el modal; se les asignó también a las transacciones que ya existían" },
@@ -1985,6 +1986,50 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
   const [status, setStatus] = useState("");
   const [importing, setImporting] = useState(false);
 
+  const descargarPlantilla = async () => {
+    const wbx = new ExcelJS.Workbook();
+    const headers = ["Mes", "SMI", "Concepto", "Rubro", "Categoria", "Proyecto", "Sub Total MXN", "Sub Total USD", "Moneda", "ID"];
+    const ejemplos = {
+      OSB: ["Agosto", "", "Ejemplo: Servicio de energía eléctrica", "Servicios Básicos", "Energía eléctrica", "Todos", 12000, 0, "MXP", ""],
+      CTM: ["Agosto", "", "Ejemplo: Renta de oficina base Poza Rica", "Servicios Operativos", "Arrendamientos", "Todos", 27000, 0, "MXP", ""],
+      ISE: ["Agosto", "", "Ejemplo: Producto químico deshidratación", "Productos Químicos", "Productos químicos de operación", "Desh Gral", 0, 45000, "USD", ""],
+    };
+    UNIDAD_KEYS.forEach((u) => {
+      const ws = wbx.addWorksheet(`RawData-${u}`);
+      const headerRow = ws.addRow(headers);
+      headerRow.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
+      });
+      const ejemploRow = ws.addRow(ejemplos[u]);
+      ejemploRow.eachCell((cell) => { cell.font = { italic: true, color: { argb: "FF8B99A6" } }; });
+      ws.columns = [{ width: 10 }, { width: 8 }, { width: 45 }, { width: 24 }, { width: 30 }, { width: 16 }, { width: 14 }, { width: 14 }, { width: 9 }, { width: 14 }];
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+    });
+    const notas = wbx.addWorksheet("Instrucciones");
+    [
+      "Cómo usar esta plantilla",
+      "",
+      "1. Cada hoja \"RawData-OSB/CTM/ISE\" es el catálogo de esa compañía — no las mezcles.",
+      "2. BORRA la fila de ejemplo (fila 2, en cursiva gris) de cada hoja antes de subir.",
+      "3. ID/Folio: déjalo vacío para que la app le asigne uno automático, o pon uno",
+      "   existente (ej. CTM-AGO26-045) para ACTUALIZAR esa partida en vez de crear otra.",
+      "4. Sub Total MXN / Sub Total USD: llena solo el que aplique, deja el otro en 0.",
+      "5. Proyecto: usa un proyecto real del Catálogo, o los marcadores Desh Gral /",
+      "   Prod Gral / Todos.",
+    ].forEach((linea, i) => { notas.getCell(`A${i + 1}`).value = linea; });
+    notas.getCell("A1").font = { bold: true };
+    notas.getColumn(1).width = 90;
+
+    const buffer = await wbx.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "plantilla_partidas.xlsx";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const onFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -2036,7 +2081,11 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
   };
 
   return (
-    <Panel title="Carga masiva desde Excel" subtitle='Sube el libro con hojas "RawData-OSB", "RawData-CTM" y/o "RawData-ISE" — se detectan automáticamente'>
+    <Panel
+      title="Carga masiva desde Excel"
+      subtitle='Sube el libro con hojas "RawData-OSB", "RawData-CTM" y/o "RawData-ISE" — se detectan automáticamente'
+      right={<Button variant="ghost" onClick={descargarPlantilla}>Descargar plantilla</Button>}
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <input ref={inputRef} type="file" accept=".xlsx" onChange={onFile}
           style={{ fontSize: 12, color: T.textDim }} />
@@ -2400,6 +2449,62 @@ function ImportarTransaccionesPanel({ partidas, proveedores, transaccionesApi })
   const [status, setStatus] = useState("");
   const [importing, setImporting] = useState(false);
 
+  const descargarPlantilla = async () => {
+    const wbx = new ExcelJS.Workbook();
+    const headers = [
+      "Dia", "SMI", "SOLICITANTE", "Proyecto", "Zona", "ÁREA",
+      "NOMBRE/DENOMINACIÓN O RAZON SOCIAL", "CONCEPTO DE PAGO(DETALLADO",
+      "FOLIO COMPRA SAE", "FOLIO FACTURA", "FORMA DE PAGO", "MÉTODO DE PAGO",
+      "IMPORTE", "Moneda", "A Partida", "Status",
+    ];
+    const ejemplo = [
+      "11/08/2026", "", "Mariel Diaz", "Todos", "Queretaro", "Administracion",
+      "Comision Federal De Electricidad", "Servicio energía base operativa",
+      "", "", "03 - Transferencia electrónica de fondos", "PUE - Pago en una sola exhibición",
+      5137, "MXP", "CTM-AGO26-003", "No Pagado",
+    ];
+    UNIDAD_KEYS.forEach((u) => {
+      const ws = wbx.addWorksheet(u);
+      const headerRow = ws.addRow(headers);
+      headerRow.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
+      });
+      const ejemploRow = ws.addRow(ejemplo);
+      ejemploRow.eachCell((cell) => { cell.font = { italic: true, color: { argb: "FF8B99A6" } }; });
+      ws.columns = headers.map(() => ({ width: 16 }));
+      ws.getColumn(7).width = 32; ws.getColumn(8).width = 40;
+      ws.getColumn(11).width = 22; ws.getColumn(12).width = 22;
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+    });
+    const notas = wbx.addWorksheet("Instrucciones");
+    [
+      "Cómo usar esta plantilla",
+      "",
+      "1. El nombre de cada hoja (OSB, CTM, ISE) le dice a la app de qué compañía",
+      "   son esas transacciones — no cambies esos nombres.",
+      "2. BORRA la fila de ejemplo (fila 2, en cursiva gris) de cada hoja antes de subir.",
+      "3. A Partida: el folio EXACTO de la partida a la que corresponde ese pago",
+      "   (ej. CTM-AGO26-003). Si no lo tienes a la mano, déjalo vacío — la",
+      "   transacción se importa igual, solo queda \"sin vincular\" para asignarla después.",
+      "4. Proyecto: un proyecto real del Catálogo, o los marcadores Desh Gral /",
+      "   Prod Gral / Todos.",
+      "5. Zona: una de las zonas del Catálogo (Queretaro, Poza Rica, Paraiso, etc.).",
+      "6. Status: Pagado o No Pagado.",
+      "7. Moneda: MXP o USD.",
+    ].forEach((linea, i) => { notas.getCell(`A${i + 1}`).value = linea; });
+    notas.getCell("A1").font = { bold: true };
+    notas.getColumn(1).width = 90;
+
+    const buffer = await wbx.xlsx.writeBuffer();
+    const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "plantilla_transacciones.xlsx";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const onFile = async (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
@@ -2446,7 +2551,11 @@ function ImportarTransaccionesPanel({ partidas, proveedores, transaccionesApi })
   const sinVincularActuales = preview ? preview.rows.length - vinculadasActuales : 0;
 
   return (
-    <Panel title="Carga masiva de transacciones reales" subtitle='Sube el registro de pagos (columnas Día, Solicitante, Área, Proveedor, Importe, A Partida) — se vincula por el folio de la partida'>
+    <Panel
+      title="Carga masiva de transacciones reales"
+      subtitle='Sube el registro de pagos (columnas Día, Solicitante, Área, Proveedor, Importe, A Partida) — se vincula por el folio de la partida'
+      right={<Button variant="ghost" onClick={descargarPlantilla}>Descargar plantilla</Button>}
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <input ref={inputRef} type="file" accept=".xlsx" onChange={onFile} style={{ fontSize: 12, color: T.textDim }} />
         {status && <Pill tone="teal">{status}</Pill>}

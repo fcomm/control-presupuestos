@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.45.6";
+const APP_VERSION = "1.45.7";
 const CHANGELOG = [
+  { v: "1.45.7", desc: "Fix crítico: el Dashboard mostraba $0.00 en todos los cuadros al cambiar de compañía si el filtro de Proyecto guardado en sesión pertenecía a otra compañía — ahora se resetea solo a 'Todos' cuando no existe en la unidad actual" },
   { v: "1.45.6", desc: "Dashboard: el panel 'Resumen general' ahora muestra 5 cifras — Presupuestado, Ocupado, Pagado, Por Pagar y Disponible — en vez de solo 3, respetando los filtros de Mes/Proyecto" },
   { v: "1.45.5", desc: "Fix: los filtros de Mes y Proyecto del Dashboard no persistían al cambiar de pestaña (se me había pasado aplicarles la persistencia de sesión que ya tienen Partidas/Transacciones/Reportes)" },
   { v: "1.45.4", desc: "Fix: 'Resumen presupuestado por proyecto y rubro' mostraba marcadores de prorrateo (Todos, X Gral) como si fueran proyectos reales — ahora se reparten entre los proyectos reales del catálogo, igual que en las gráficas y KPIs" },
@@ -1227,6 +1228,13 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   // (porProyecto), así que si una partida es "Desh Gral" y filtras por "Desh Marfo",
   // sí cuenta su parte correspondiente.
   const [proyectoKpi, setProyectoKpi] = useSessionState("ss-dashboard-proyecto", "Todos");
+  // Si el proyecto guardado no existe en ESTA compañía (ej. veníamos de otra
+  // unidad), se regresa solo a "Todos" en vez de quedarse "huérfano" en $0.00.
+  useEffect(() => {
+    if (proyectoKpi !== "Todos" && !proyectosUnidad.some((p) => p.nombre === proyectoKpi)) {
+      setProyectoKpi("Todos");
+    }
+  }, [unidad, proyectosUnidad.map((p) => p.nombre).join(","), proyectoKpi]);
   const proyectoKpiData = proyectoKpi === "Todos"
     ? { presupuestado: totalPresupuestado, ejecutado: totalEjecutado, pagado: totalPagado }
     : (porProyecto.find((p) => p.proyecto === proyectoKpi) || { presupuestado: 0, ejecutado: 0, pagado: 0 });

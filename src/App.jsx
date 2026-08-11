@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.45.2";
+const APP_VERSION = "1.45.3";
 const CHANGELOG = [
+  { v: "1.45.3", desc: "Tabla de Partidas: debajo del Monto de cada fila aparece \"Ejercido\" (la suma de sus transacciones vinculadas) — verde si va bien, ámbar cerca del límite, rojo si se pasó" },
   { v: "1.45.2", desc: "Dashboard: los filtros Proyecto y Mes del panel 'Resumen general' quedan alineados en la misma fila, en vez de uno arriba y otro abajo" },
   { v: "1.45.1", desc: "Fix: la suma de moneda mixta en encabezados de columna se salía del recuadro — ahora cada moneda va en su propia línea, y los encabezados en general ya no desbordan texto largo" },
   { v: "1.45.0", desc: "Las columnas de dinero (Monto/Importe) muestran la suma de lo visible/filtrado justo en el encabezado — separada por moneda si hay mezcla — en Partidas, Transacciones (incluyendo sin vincular) y ambos Reportes de Pagos" },
@@ -2194,7 +2195,7 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
   );
 }
 
-function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi }) {
+function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, transacciones }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadores = marcadoresDisponibles(proyectosUnidad);
   const anioDefault = (() => {
@@ -2252,6 +2253,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi }) {
   const groupKeys = groupBys.map((g) => g.field);
   const grouped = groupKeys.length ? agruparRows(partidasOrdenadas, groupBys) : null;
 
+  const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
+
   const COLUMNAS_PARTIDA = [
     { key: "mes", label: "Mes", render: (p) => p.mes },
     { key: "anio", label: "Año", render: (p) => p.anio },
@@ -2260,7 +2263,20 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi }) {
     { key: "categoria", label: "Categoría", render: (p) => <span style={{ color: T.textDim }}>{p.categoria}</span> },
     { key: "proyecto", label: "Proyecto", render: (p) => p.proyecto },
     { key: "folio", label: "Folio", render: (p) => <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</span> },
-    { key: "monto_estimado", label: "Monto", render: (p) => <span style={{ fontFamily: T.fontMono }}>{money(p.monto_estimado, p.moneda)}</span> },
+    {
+      key: "monto_estimado", label: "Monto",
+      render: (p) => {
+        const usado = usadoDe(p);
+        const pct = p.monto_estimado ? (usado / p.monto_estimado) * 100 : 0;
+        const tone = pct > 100 ? T.red : pct > 85 ? T.amber : T.teal;
+        return (
+          <div>
+            <div style={{ fontFamily: T.fontMono }}>{money(p.monto_estimado, p.moneda)}</div>
+            {usado > 0 && <div style={{ fontFamily: T.fontMono, fontSize: 10.5, color: tone, marginTop: 2 }}>Ejercido {money(usado, p.moneda)}</div>}
+          </div>
+        );
+      },
+    },
   ];
   const colVisibility = useColumnVisibility("colv-partidas", COLUMNAS_PARTIDA);
   const columnasVisiblesBase = COLUMNAS_PARTIDA.filter((c) => (c.key === "proyecto" || !groupKeys.includes(c.key)) && !colVisibility.hidden.has(c.key));
@@ -4479,7 +4495,7 @@ export default function App() {
       ) : (
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
-          {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} />}
+          {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} />}
           {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} />}

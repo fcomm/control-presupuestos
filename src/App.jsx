@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.45.7";
+const APP_VERSION = "1.45.8";
 const CHANGELOG = [
+  { v: "1.45.8", desc: "Agrega 'Última actualización' a Partidas y Transacciones — se actualiza sola con un trigger de base de datos en cada edición (incluso ediciones directas o importaciones), visible como columna y en el modal de edición" },
   { v: "1.45.7", desc: "Fix crítico: el Dashboard mostraba $0.00 en todos los cuadros al cambiar de compañía si el filtro de Proyecto guardado en sesión pertenecía a otra compañía — ahora se resetea solo a 'Todos' cuando no existe en la unidad actual" },
   { v: "1.45.6", desc: "Dashboard: el panel 'Resumen general' ahora muestra 5 cifras — Presupuestado, Ocupado, Pagado, Por Pagar y Disponible — en vez de solo 3, respetando los filtros de Mes/Proyecto" },
   { v: "1.45.5", desc: "Fix: los filtros de Mes y Proyecto del Dashboard no persistían al cambiar de pestaña (se me había pasado aplicarles la persistencia de sesión que ya tienen Partidas/Transacciones/Reportes)" },
@@ -1490,16 +1491,28 @@ function AvisosFlotantes({ avisos }) {
 // Leyenda de auditoría ("Creado por X · Editado por Y") para modales de edición.
 // No muestra nada si el registro es nuevo, o si no hay datos de autoría aún
 // (registros capturados antes de activar usuarios).
+// Formatea un timestamp de Supabase (ISO) a algo legible en es-MX.
+function formatFechaHora(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString("es-MX", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
 function AutoriaCaption({ record, perfilesApi }) {
   if (!record?.id) return null;
   const nombreDe = (uid) => perfilesApi.rows.find((p) => p.id === uid)?.nombre || null;
   const creador = record.created_by ? nombreDe(record.created_by) : null;
   const editor = record.updated_by ? nombreDe(record.updated_by) : null;
-  if (!creador && !editor) return null;
+  const actualizado = formatFechaHora(record.updated_at);
+  if (!creador && !editor && !actualizado) return null;
   return (
     <div style={{ fontSize: 10.5, color: T.textFaint, marginBottom: 12 }}>
       {creador && `Creado por ${creador}`}
       {creador && editor && editor !== creador ? ` · Última edición por ${editor}` : ""}
+      {actualizado && ` · Última actualización: ${actualizado}`}
     </div>
   );
 }
@@ -2305,6 +2318,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         );
       },
     },
+    { key: "updated_at", label: "Última actualización", render: (p) => <span style={{ fontSize: 11, color: T.textFaint }}>{formatFechaHora(p.updated_at) || "—"}</span> },
   ];
   const colVisibility = useColumnVisibility("colv-partidas", COLUMNAS_PARTIDA);
   const columnasVisiblesBase = COLUMNAS_PARTIDA.filter((c) => (c.key === "proyecto" || !groupKeys.includes(c.key)) && !colVisibility.hidden.has(c.key));
@@ -2912,6 +2926,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
     { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—" },
     { key: "fecha_pago", label: "Fecha de Pago", render: (t) => t.fecha_pago || "—" },
+    { key: "updated_at", label: "Última actualización", render: (t) => <span style={{ fontSize: 11, color: T.textFaint }}>{formatFechaHora(t.updated_at) || "—"}</span> },
   ];
   const colVisibility = useColumnVisibility("colv-transacciones", COLUMNAS_TRANS);
   const columnasVisiblesBase = COLUMNAS_TRANS.filter((c) => !groupKeys.includes(c.key) && !colVisibility.hidden.has(c.key));

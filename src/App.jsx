@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.45.0";
+const APP_VERSION = "1.45.1";
 const CHANGELOG = [
+  { v: "1.45.1", desc: "Fix: la suma de moneda mixta en encabezados de columna se salía del recuadro — ahora cada moneda va en su propia línea, y los encabezados en general ya no desbordan texto largo" },
   { v: "1.45.0", desc: "Las columnas de dinero (Monto/Importe) muestran la suma de lo visible/filtrado justo en el encabezado — separada por moneda si hay mezcla — en Partidas, Transacciones (incluyendo sin vincular) y ambos Reportes de Pagos" },
   { v: "1.44.9", desc: "Dashboard: los 3 cuadros de montos quedan dentro de un panel 'Resumen general' con filtro de Proyecto (usa los importes ya prorrateados); el filtro de Mes existente los sigue afectando también" },
   { v: "1.44.8", desc: "Dashboard: mueve 'Resumen presupuestado por proyecto y rubro' justo debajo de los cuadros de montos (Presupuestado/Ejecutado/Disponible)" },
@@ -1822,9 +1823,7 @@ function sumaPorMoneda(rows, montoKey, monedaKey = "moneda") {
     if (!v) return;
     totals[m] = (totals[m] || 0) + v;
   });
-  const entries = Object.entries(totals);
-  if (!entries.length) return "";
-  return entries.map(([m, v]) => money(v, m)).join(" · ");
+  return Object.entries(totals).map(([m, v]) => money(v, m)); // una línea por moneda
 }
 
 function SortableTh({ label, sortKey, sort, setSort, width, onResizeStart, onDragStart, onDragOver, onDrop, sumLabel }) {
@@ -1839,9 +1838,9 @@ function SortableTh({ label, sortKey, sort, setSort, width, onResizeStart, onDra
       onClick={() => setSort((s) => (s.key === sortKey ? { key: sortKey, dir: s.dir === "asc" ? "desc" : "asc" } : { key: sortKey, dir: "asc" }))}
     >
       <div>{label}{active ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}</div>
-      {sumLabel && (
-        <div style={{ fontSize: 9.5, fontWeight: 400, textTransform: "none", letterSpacing: "normal", color: T.teal, fontFamily: T.fontMono, marginTop: 2, whiteSpace: "nowrap" }}>
-          Σ {sumLabel}
+      {sumLabel && sumLabel.length > 0 && (
+        <div style={{ fontSize: 9.5, fontWeight: 400, textTransform: "none", letterSpacing: "normal", color: T.teal, fontFamily: T.fontMono, marginTop: 2 }}>
+          {sumLabel.map((linea, i) => <div key={i} style={{ whiteSpace: "nowrap" }}>{i === 0 ? "Σ " : ""}{linea}</div>)}
         </div>
       )}
       {onResizeStart && (
@@ -2016,7 +2015,7 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
 }
 
 const tableStyle = { width: "100%", borderCollapse: "collapse", fontSize: 12.5 };
-const thStyle = { textAlign: "left", padding: "8px 10px", color: T.textFaint, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", borderBottom: `1px solid ${T.border}` };
+const thStyle = { textAlign: "left", padding: "8px 10px", color: T.textFaint, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", borderBottom: `1px solid ${T.border}`, overflowWrap: "break-word", wordBreak: "break-word" };
 const tdStyle = { padding: "9px 10px", borderBottom: `1px solid ${T.borderSoft}`, color: T.text, overflowWrap: "break-word", wordBreak: "break-word" };
 
 /* ----------------------------------------------------------------------

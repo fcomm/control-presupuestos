@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.44.9";
+const APP_VERSION = "1.45.0";
 const CHANGELOG = [
+  { v: "1.45.0", desc: "Las columnas de dinero (Monto/Importe) muestran la suma de lo visible/filtrado justo en el encabezado — separada por moneda si hay mezcla — en Partidas, Transacciones (incluyendo sin vincular) y ambos Reportes de Pagos" },
   { v: "1.44.9", desc: "Dashboard: los 3 cuadros de montos quedan dentro de un panel 'Resumen general' con filtro de Proyecto (usa los importes ya prorrateados); el filtro de Mes existente los sigue afectando también" },
   { v: "1.44.8", desc: "Dashboard: mueve 'Resumen presupuestado por proyecto y rubro' justo debajo de los cuadros de montos (Presupuestado/Ejecutado/Disponible)" },
   { v: "1.44.7", desc: "Botón 'Descargar plantilla' en la carga masiva de Partidas y Transacciones — genera el Excel con el formato correcto directo desde la app, sin tener que pedirlo por chat" },
@@ -1811,7 +1812,22 @@ function useColumnOrder(storageKey, columns) {
   return { ordered, moveColumn };
 }
 
-function SortableTh({ label, sortKey, sort, setSort, width, onResizeStart, onDragStart, onDragOver, onDrop }) {
+// Suma un campo de dinero sobre una lista de filas, separado por moneda (para
+// no mezclar pesos con dólares) — para mostrarlo en el encabezado de la columna.
+function sumaPorMoneda(rows, montoKey, monedaKey = "moneda") {
+  const totals = {};
+  rows.forEach((r) => {
+    const m = r[monedaKey] || "MXP";
+    const v = Number(r[montoKey]) || 0;
+    if (!v) return;
+    totals[m] = (totals[m] || 0) + v;
+  });
+  const entries = Object.entries(totals);
+  if (!entries.length) return "";
+  return entries.map(([m, v]) => money(v, m)).join(" · ");
+}
+
+function SortableTh({ label, sortKey, sort, setSort, width, onResizeStart, onDragStart, onDragOver, onDrop, sumLabel }) {
   const active = sort.key === sortKey;
   return (
     <th
@@ -1822,7 +1838,12 @@ function SortableTh({ label, sortKey, sort, setSort, width, onResizeStart, onDra
       style={{ ...thStyle, position: "relative", cursor: "pointer", userSelect: "none", width, color: active ? T.accent : thStyle.color }}
       onClick={() => setSort((s) => (s.key === sortKey ? { key: sortKey, dir: s.dir === "asc" ? "desc" : "asc" } : { key: sortKey, dir: "asc" }))}
     >
-      {label}{active ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}
+      <div>{label}{active ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}</div>
+      {sumLabel && (
+        <div style={{ fontSize: 9.5, fontWeight: 400, textTransform: "none", letterSpacing: "normal", color: T.teal, fontFamily: T.fontMono, marginTop: 2, whiteSpace: "nowrap" }}>
+          Σ {sumLabel}
+        </div>
+      )}
       {onResizeStart && (
         <span
           draggable={false}
@@ -2362,6 +2383,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi }) {
                     key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
                     width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
                     onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={onColDragOver} onDrop={(e) => onColDrop(e, c.key)}
+                    sumLabel={c.key === "monto_estimado" ? sumaPorMoneda(partidasOrdenadas, "monto_estimado") : undefined}
                   />
                 ))}
                 <th style={thStyle}></th>
@@ -3012,6 +3034,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
                     width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
                     onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={onColDragOver} onDrop={(e) => onColDrop(e, c.key)}
+                    sumLabel={c.key === "importe" ? sumaPorMoneda(transOrdenadas, "importe") : undefined}
                   />
                 ))}
                 <th style={thStyle}></th>
@@ -3088,6 +3111,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                       key={c.key} label={c.label} sortKey={c.key} sort={{ key: "", dir: "asc" }} setSort={() => {}}
                       width={colWidthsSV.getWidth(c.key)} onResizeStart={(e) => colWidthsSV.startResize(c.key, e)}
                       onDragStart={(e) => onColDragStartSV(e, c.key)} onDragOver={onColDragOverSV} onDrop={(e) => onColDropSV(e, c.key)}
+                      sumLabel={c.key === "importe" ? sumaPorMoneda(sinVincularFiltrado, "importe") : undefined}
                     />
                   ))}
                   <th style={thStyle}>Vincular a partida</th>
@@ -3491,6 +3515,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
                     key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
                     width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
                     onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={onColDragOver} onDrop={(e) => onColDrop(e, c.key)}
+                    sumLabel={c.key === "importe" ? sumaPorMoneda(filasOrdenadas, "importe") : undefined}
                   />
                 ))}
               </tr>
@@ -3709,6 +3734,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
                     key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
                     width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
                     onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={onColDragOver} onDrop={(e) => onColDrop(e, c.key)}
+                    sumLabel={c.key === "importe" ? sumaPorMoneda(filasOrdenadas, "importe") : undefined}
                   />
                 ))}
               </tr>

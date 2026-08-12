@@ -5,6 +5,8 @@ import {
 } from "recharts";
 import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import { useCollection } from "./useCollection";
 import { supabase } from "./supabaseClient";
 
@@ -94,8 +96,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.0";
+const APP_VERSION = "1.46.1";
 const CHANGELOG = [
+  { v: "1.46.1", desc: "Reporte Pagos Dirección: botón 'Generar reporte (PDF)' — toma las transacciones filtradas, genera el PDF, y las marca como 'Reportadas' (con confirmación previa)" },
   { v: "1.46.0", desc: "Transacciones: nuevo marcador 'Reportado' — selecciona varias con checkbox y dales 'Marcar como reportadas' al enviar tu reporte semanal; filtra por 'No reportado' para ver de un vistazo qué es nuevo desde tu último envío" },
   { v: "1.45.13", desc: "Partidas: cada fila con transacciones vinculadas trae un botón ▶ para expandirla y ver rápido Concepto/Monto/Status de esas transacciones, sin salir de la tabla" },
   { v: "1.45.12", desc: "Partidas: el filtro de Mes cambia de selector único a multi-selección con casillas (igual que en el Dashboard) — puedes filtrar por varios meses a la vez" },
@@ -3698,7 +3701,7 @@ const COLUMNAS_REPORTE_DIRECCION = [
   { key: "status", label: "Status" },
 ];
 
-function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedoresApi }) {
+function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const transUnidad = transacciones.filter(
@@ -3811,6 +3814,54 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
     URL.revokeObjectURL(url);
   };
 
+  const [generandoReporte, setGenerandoReporte] = useState(false);
+  const generarReportePDF = async () => {
+    if (!filasOrdenadas.length) {
+      alert("No hay transacciones en el filtro actual para generar el reporte.");
+      return;
+    }
+    const confirmado = confirm(
+      `Esto va a generar un PDF con las ${filasOrdenadas.length} transacción(es) que tienes filtradas ahora, y las va a marcar como "Reportadas". ¿Continuar?`
+    );
+    if (!confirmado) return;
+
+    setGenerandoReporte(true);
+    try {
+      const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
+      const inicio = fechaDesde || diasOrdenados[0] || "";
+      const fin = fechaHasta || diasOrdenados[diasOrdenados.length - 1] || "";
+
+      const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+      doc.setFontSize(13);
+      doc.text(`Reporte de pagos a realizar del dia ${inicio} al dia ${fin} Compañía ${unidad}`, 30, 30);
+      doc.setFontSize(9);
+      doc.setTextColor(120);
+      doc.text(`Total a pagar MXP: ${money(totalMXN, "MXP")}   ·   Total a pagar USD: ${money(totalUSD, "USD")}`, 30, 46);
+
+      autoTable(doc, {
+        startY: 58,
+        head: [["Día", "Solicitante", "Proyecto", "Zona", "Proveedor", "Concepto", "Importe", "Moneda", "A Partida", "Status"]],
+        body: filasOrdenadas.map((f) => [
+          f.dia || "", f.solicitante || "", f.proyecto || "", f.zona || "", f.proveedor || "",
+          f.concepto || "", money(f.importe, f.moneda), f.moneda || "", f.a_partida || "", f.status || "",
+        ]),
+        styles: { fontSize: 7.5, cellPadding: 4 },
+        headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
+        bodyStyles: { halign: "center" },
+        columnStyles: { 5: { halign: "left" } },
+      });
+
+      doc.save(`reporte-pagos-direccion-${unidad}-${new Date().toISOString().slice(0, 10)}.pdf`);
+
+      for (const f of filasOrdenadas) {
+        await transaccionesApi.update(f.id, { reportado_at: new Date().toISOString() });
+      }
+    } catch (err) {
+      alert("No se pudo generar el reporte: " + (err.message || err));
+    } finally {
+      setGenerandoReporte(false);
+    }
+  };
   const totalMXN = filasOrdenadas.filter((f) => f.moneda === "MXP").reduce((s, f) => s + f.importe, 0);
   const totalUSD = filasOrdenadas.filter((f) => f.moneda === "USD").reduce((s, f) => s + f.importe, 0);
 
@@ -3843,6 +3894,9 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, proveedores
               onShowAll={colVisibility.showAll}
             />
             <Button onClick={exportarExcel}>Exportar a Excel</Button>
+            <Button onClick={generarReportePDF} disabled={generandoReporte}>
+              {generandoReporte ? "Generando…" : "Generar reporte (PDF)"}
+            </Button>
           </div>
         }
       >
@@ -4623,7 +4677,7 @@ export default function App() {
           {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} />}
           {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
-          {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} />}
+          {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
           {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>
       )}

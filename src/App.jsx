@@ -94,8 +94,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.45.10";
+const APP_VERSION = "1.45.12";
 const CHANGELOG = [
+  { v: "1.45.12", desc: "Partidas: el filtro de Mes cambia de selector único a multi-selección con casillas (igual que en el Dashboard) — puedes filtrar por varios meses a la vez" },
+  { v: "1.45.11", desc: "Dashboard: quita el panel 'Avance por proyecto' (ya no se necesita)" },
   { v: "1.45.10", desc: "Transacciones: renombra el campo 'Día' a 'Día de Pago Programado' — en la tabla, el formulario, la vista de sin vincular y la vista previa de importación" },
   { v: "1.45.9", desc: "Partidas: 'Ejercido' pasa de una segunda línea debajo del Monto a un tooltip al pasar el mouse (subrayado punteado de color) — evita que se agregue una fila extra al exportar/copiar a Excel" },
   { v: "1.45.8", desc: "Agrega 'Última actualización' a Partidas y Transacciones — se actualiza sola con un trigger de base de datos en cada edición (incluso ediciones directas o importaciones), visible como columna y en el modal de edición" },
@@ -1338,36 +1340,6 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
         </Panel>
       )}
 
-      <Panel title="Avance por proyecto" subtitle={`Detalle con marcador de prorrateo aplicado${mesLabel}`}>
-        <div style={{ overflowX: "auto" }}>
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                {["Proyecto","Presupuestado","Ejecutado","Disponible","Avance"].map((h) => (
-                  <th key={h} style={thStyle}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {porProyecto.map((r) => {
-                const pct = r.presupuestado ? (r.ejecutado / r.presupuestado) * 100 : 0;
-                const tone = pct > 100 ? "red" : pct > 85 ? "amber" : "teal";
-                return (
-                  <tr key={r.proyecto}>
-                    <td style={tdStyle}>{r.proyecto}</td>
-                    <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{money(r.presupuestado)}</td>
-                    <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{money(r.ejecutado)}</td>
-                    <td style={{ ...tdStyle, fontFamily: T.fontMono, color: r.presupuestado - r.ejecutado < 0 ? T.red : T.text }}>
-                      {money(r.presupuestado - r.ejecutado)}
-                    </td>
-                    <td style={tdStyle}><Pill tone={tone}>{pct.toFixed(0)}%</Pill></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
     </div>
   );
 }
@@ -2254,7 +2226,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const categoriasDisponibles = RUBROS.find((r) => r.rubro === form.rubro)?.categorias || [];
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
 
-  const [filtros, setFiltros] = useSessionState("ss-partidas-filtros", { texto: "", mes: "Todos", rubro: "Todos", proyecto: "Todos" });
+  const [filtros, setFiltros] = useSessionState("ss-partidas-filtros", { texto: "", mes: [], rubro: "Todos", proyecto: "Todos" });
+  const filtrosMes = Array.isArray(filtros.mes) ? filtros.mes : [];
   const rubrosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.rubro).filter(Boolean))].sort();
   const proyectosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.proyecto).filter(Boolean))].sort();
   const mesesDisponiblesFiltro = MESES.filter((m) => partidasUnidad.some((p) => p.mes === m));
@@ -2265,13 +2238,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       const enTexto = [p.concepto, p.folio, p.smi, p.categoria].some((v) => (v || "").toLowerCase().includes(q));
       if (!enTexto) return false;
     }
-    if (filtros.mes !== "Todos" && p.mes !== filtros.mes) return false;
+    if (filtrosMes.length && !filtrosMes.includes(p.mes)) return false;
     if (filtros.rubro !== "Todos" && p.rubro !== filtros.rubro) return false;
     if (filtros.proyecto !== "Todos" && p.proyecto !== filtros.proyecto) return false;
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.mes !== "Todos" || filtros.rubro !== "Todos" || filtros.proyecto !== "Todos";
-  const limpiarFiltros = () => setFiltros({ texto: "", mes: "Todos", rubro: "Todos", proyecto: "Todos" });
+  const filtrosActivos = filtros.texto.trim() || filtrosMes.length > 0 || filtros.rubro !== "Todos" || filtros.proyecto !== "Todos";
+  const limpiarFiltros = () => setFiltros({ texto: "", mes: [], rubro: "Todos", proyecto: "Todos" });
 
   const [sort, setSort] = useSessionState("ss-partidas-sort", { key: null, dir: "asc" });
   const partidasOrdenadas = sortRows(partidasFiltradas, sort, {
@@ -2396,10 +2369,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             />
           </Field>
           <Field label="Mes">
-            <Select value={filtros.mes} onChange={(e) => setFiltros({ ...filtros, mes: e.target.value })} style={{ width: 130 }}>
-              <option>Todos</option>
-              {mesesDisponiblesFiltro.map((m) => <option key={m}>{m}</option>)}
-            </Select>
+            <MesMultiSelect mesesDisponibles={mesesDisponiblesFiltro} seleccionados={filtrosMes} onChange={(nuevo) => setFiltros({ ...filtros, mes: nuevo })} />
           </Field>
           <Field label="Proyecto">
             <Select value={filtros.proyecto} onChange={(e) => setFiltros({ ...filtros, proyecto: e.target.value })} style={{ width: 180 }}>

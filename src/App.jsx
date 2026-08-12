@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.45.12";
+const APP_VERSION = "1.45.13";
 const CHANGELOG = [
+  { v: "1.45.13", desc: "Partidas: cada fila con transacciones vinculadas trae un botón ▶ para expandirla y ver rápido Concepto/Monto/Status de esas transacciones, sin salir de la tabla" },
   { v: "1.45.12", desc: "Partidas: el filtro de Mes cambia de selector único a multi-selección con casillas (igual que en el Dashboard) — puedes filtrar por varios meses a la vez" },
   { v: "1.45.11", desc: "Dashboard: quita el panel 'Avance por proyecto' (ya no se necesita)" },
   { v: "1.45.10", desc: "Transacciones: renombra el campo 'Día' a 'Día de Pago Programado' — en la tabla, el formulario, la vista de sin vincular y la vista previa de importación" },
@@ -2305,19 +2306,64 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const onColDragStart = (e, key) => { dragKeyRef.current = key; e.dataTransfer.effectAllowed = "move"; };
   const onColDragOver = (e) => e.preventDefault();
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
-  const renderRowTr = (p, depth = 0) => (
-    <tr key={p.id}>
-      {columnasVisibles.map((c, i) => (
-        <td key={c.key} style={i === 0 && depth ? { ...tdStyle, paddingLeft: 14 + depth * 26 } : tdStyle}>{c.render(p)}</td>
-      ))}
-      <td style={tdStyle}>
-        <div style={{ display: "flex", gap: 6 }}>
-          <Button variant="ghost" onClick={() => startEdit(p)}>Editar</Button>
-          <Button variant="danger" onClick={() => remove(p.id)}>Eliminar</Button>
-        </div>
-      </td>
-    </tr>
-  );
+  const [expandedIds, setExpandedIds] = useState(new Set());
+  const toggleExpand = (id) => setExpandedIds((prev) => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+
+  const renderRowTr = (p, depth = 0) => {
+    const expandido = expandedIds.has(p.id);
+    const transDeEsta = transacciones.filter((t) => t.partida_id === p.id);
+    return (
+      <React.Fragment key={p.id}>
+        <tr>
+          <td style={{ ...tdStyle, width: 30, textAlign: "center" }}>
+            {transDeEsta.length > 0 && (
+              <button
+                type="button"
+                onClick={() => toggleExpand(p.id)}
+                title={expandido ? "Ocultar transacciones" : `Ver ${transDeEsta.length} transacción(es)`}
+                style={{ background: "none", border: "none", cursor: "pointer", color: T.textFaint, fontSize: 11, padding: 2 }}
+              >
+                {expandido ? "▼" : "▶"}
+              </button>
+            )}
+          </td>
+          {columnasVisibles.map((c, i) => (
+            <td key={c.key} style={i === 0 && depth ? { ...tdStyle, paddingLeft: 14 + depth * 26 } : tdStyle}>{c.render(p)}</td>
+          ))}
+          <td style={tdStyle}>
+            <div style={{ display: "flex", gap: 6 }}>
+              <Button variant="ghost" onClick={() => startEdit(p)}>Editar</Button>
+              <Button variant="danger" onClick={() => remove(p.id)}>Eliminar</Button>
+            </div>
+          </td>
+        </tr>
+        {expandido && (
+          <tr>
+            <td colSpan={columnasVisibles.length + 2} style={{ padding: "0 0 0 40px", background: T.panelAlt, borderBottom: `1px solid ${T.border}` }}>
+              <table style={{ ...tableStyle, margin: "8px 0" }}>
+                <thead>
+                  <tr>{["Concepto","Monto","Status"].map((h) => <th key={h} style={{ ...thStyle, background: "transparent" }}>{h}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {transDeEsta.map((t) => (
+                    <tr key={t.id}>
+                      <td style={{ ...tdStyle, color: T.textDim }}>{t.concepto_detallado || "—"}</td>
+                      <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</td>
+                      <td style={tdStyle}>{t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </td>
+          </tr>
+        )}
+      </React.Fragment>
+    );
+  };
 
 
   const submit = async (e) => {
@@ -2405,11 +2451,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         <div style={{ overflowX: "auto" }}>
           <table style={{ ...tableStyle, tableLayout: "fixed" }}>
             <colgroup>
+              <col style={{ width: 30 }} />
               {columnasVisibles.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
               <col style={{ width: 140 }} />
             </colgroup>
             <thead>
               <tr>
+                <th style={thStyle}></th>
                 {columnasVisibles.map((c) => (
                   <SortableTh
                     key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
@@ -2423,13 +2471,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             </thead>
             <tbody>
               {groupKeys.length
-                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 1, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])))
+                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 2, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])))
                 : partidasOrdenadas.map((p) => renderRowTr(p))}
               {!partidasUnidad.length && (
-                <tr><td colSpan={columnasVisibles.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
+                <tr><td colSpan={columnasVisibles.length + 2} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
               )}
               {partidasUnidad.length > 0 && !partidasFiltradas.length && (
-                <tr><td colSpan={columnasVisibles.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna partida coincide con estos filtros</td></tr>
+                <tr><td colSpan={columnasVisibles.length + 2} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna partida coincide con estos filtros</td></tr>
               )}
             </tbody>
           </table>

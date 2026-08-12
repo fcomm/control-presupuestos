@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.45.13";
+const APP_VERSION = "1.46.0";
 const CHANGELOG = [
+  { v: "1.46.0", desc: "Transacciones: nuevo marcador 'Reportado' — selecciona varias con checkbox y dales 'Marcar como reportadas' al enviar tu reporte semanal; filtra por 'No reportado' para ver de un vistazo qué es nuevo desde tu último envío" },
   { v: "1.45.13", desc: "Partidas: cada fila con transacciones vinculadas trae un botón ▶ para expandirla y ver rápido Concepto/Monto/Status de esas transacciones, sin salir de la tabla" },
   { v: "1.45.12", desc: "Partidas: el filtro de Mes cambia de selector único a multi-selección con casillas (igual que en el Dashboard) — puedes filtrar por varios meses a la vez" },
   { v: "1.45.11", desc: "Dashboard: quita el panel 'Avance por proyecto' (ya no se necesita)" },
@@ -2757,14 +2758,18 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const transUnidad = transacciones.filter((t) => partidasUnidad.some((p) => p.id === t.partida_id));
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
-  const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "" });
+  const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos" });
   const [sort, setSort] = useSessionState("ss-transacciones-sort", { key: "dia", dir: "desc" });
+  const [seleccionadas, setSeleccionadas] = useState(new Set());
+  const [marcandoReportado, setMarcandoReportado] = useState(false);
 
   const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
 
   const transFiltradas = transUnidad.filter((t) => {
     if (filtros.fechaDesde && (!t.dia || t.dia < filtros.fechaDesde)) return false;
     if (filtros.fechaHasta && (!t.dia || t.dia > filtros.fechaHasta)) return false;
+    if (filtros.reportado === "Reportado" && !t.reportado_at) return false;
+    if (filtros.reportado === "No reportado" && t.reportado_at) return false;
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const partida = partidaDe(t);
@@ -2774,8 +2779,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta;
-  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "" });
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos";
+  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos" });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
@@ -2948,6 +2953,12 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
     { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—" },
     { key: "fecha_pago", label: "Fecha de Pago", render: (t) => t.fecha_pago || "—" },
+    {
+      key: "reportado_at", label: "Reportado",
+      render: (t) => t.reportado_at
+        ? <Pill tone="accent">{formatFechaHora(t.reportado_at)}</Pill>
+        : <Pill tone="amber">No reportado</Pill>,
+    },
     { key: "updated_at", label: "Última actualización", render: (t) => <span style={{ fontSize: 11, color: T.textFaint }}>{formatFechaHora(t.updated_at) || "—"}</span> },
   ];
   const colVisibility = useColumnVisibility("colv-transacciones", COLUMNAS_TRANS);
@@ -2960,6 +2971,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
   const renderRowTr = (t, depth = 0) => (
     <tr key={t.id}>
+      <td style={{ ...tdStyle, textAlign: "center" }}>
+        <input type="checkbox" checked={seleccionadas.has(t.id)} onChange={() => toggleSeleccion(t.id)} />
+      </td>
       {columnasVisibles.map((c, i) => (
         <td key={c.key} style={i === 0 && depth ? { ...tdStyle, paddingLeft: 14 + depth * 26 } : tdStyle}>{c.render(t)}</td>
       ))}
@@ -3039,6 +3053,30 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" }); setNotaPrivada(""); };
   const remove = (id) => transaccionesApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
 
+  const toggleSeleccion = (id) => setSeleccionadas((prev) => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const toggleSeleccionTodas = () => {
+    const idsVisibles = transOrdenadas.map((t) => t.id);
+    const todasSeleccionadas = idsVisibles.length > 0 && idsVisibles.every((id) => seleccionadas.has(id));
+    setSeleccionadas(todasSeleccionadas ? new Set() : new Set(idsVisibles));
+  };
+  const marcarReportadas = async (reportar) => {
+    setMarcandoReportado(true);
+    try {
+      for (const id of seleccionadas) {
+        await transaccionesApi.update(id, { reportado_at: reportar ? new Date().toISOString() : null });
+      }
+      setSeleccionadas(new Set());
+    } catch (err) {
+      alert("No se pudo actualizar: " + (err.message || err));
+    } finally {
+      setMarcandoReportado(false);
+    }
+  };
+
   if (!partidasUnidad.length) {
     return <EmptyState title="Primero crea partidas" body={`Registra al menos una partida de ${unidad} en la pestaña Partidas antes de capturar transacciones reales.`} />;
   }
@@ -3083,6 +3121,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           <Field label="Hasta">
             <TextInput type="date" value={filtros.fechaHasta} onChange={(e) => setFiltros({ ...filtros, fechaHasta: e.target.value })} />
           </Field>
+          <Field label="Reportado">
+            <Select value={filtros.reportado} onChange={(e) => setFiltros({ ...filtros, reportado: e.target.value })} style={{ width: 150 }}>
+              <option>Todos</option>
+              <option>Reportado</option>
+              <option>No reportado</option>
+            </Select>
+          </Field>
           {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
           <div style={{ width: 1, alignSelf: "stretch", background: T.borderSoft, margin: "0 4px" }} />
           <GroupByControl
@@ -3102,14 +3147,29 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           />
         </div>
 
+        {seleccionadas.size > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, padding: "10px 14px", background: T.accentBg, border: `1px solid ${T.accent}55`, borderRadius: 6 }}>
+            <span style={{ fontSize: 12.5, color: T.text }}>{seleccionadas.size} seleccionada(s)</span>
+            <Button onClick={() => marcarReportadas(true)} disabled={marcandoReportado}>
+              {marcandoReportado ? "Marcando…" : "Marcar como reportadas"}
+            </Button>
+            <Button variant="ghost" onClick={() => marcarReportadas(false)} disabled={marcandoReportado}>Quitar marca de reportado</Button>
+            <Button variant="ghost" onClick={() => setSeleccionadas(new Set())}>Cancelar selección</Button>
+          </div>
+        )}
+
         <div style={{ overflowX: "auto" }}>
           <table style={{ ...tableStyle, tableLayout: "fixed" }}>
             <colgroup>
+              <col style={{ width: 28 }} />
               {columnasVisibles.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
               <col style={{ width: 140 }} />
             </colgroup>
             <thead>
               <tr>
+                <th style={{ ...thStyle, textAlign: "center" }}>
+                  <input type="checkbox" checked={transOrdenadas.length > 0 && transOrdenadas.every((t) => seleccionadas.has(t.id))} onChange={toggleSeleccionTodas} />
+                </th>
                 {columnasVisibles.map((c) => (
                   <SortableTh
                     key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
@@ -3123,13 +3183,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </thead>
             <tbody>
               {groupKeys.length
-                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 1, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES_TRANS.map((o) => [o.value, o.label])))
+                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 2, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES_TRANS.map((o) => [o.value, o.label])))
                 : transEnriquecidas.map((t) => renderRowTr(t))}
               {!transUnidad.length && (
-                <tr><td colSpan={columnasVisibles.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones aún</td></tr>
+                <tr><td colSpan={columnasVisibles.length + 2} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones aún</td></tr>
               )}
               {transUnidad.length > 0 && !transFiltradas.length && (
-                <tr><td colSpan={columnasVisibles.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna transacción coincide con estos filtros</td></tr>
+                <tr><td colSpan={columnasVisibles.length + 2} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna transacción coincide con estos filtros</td></tr>
               )}
             </tbody>
           </table>

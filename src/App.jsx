@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.45.8";
+const APP_VERSION = "1.45.9";
 const CHANGELOG = [
+  { v: "1.45.9", desc: "Partidas: 'Ejercido' pasa de una segunda línea debajo del Monto a un tooltip al pasar el mouse (subrayado punteado de color) — evita que se agregue una fila extra al exportar/copiar a Excel" },
   { v: "1.45.8", desc: "Agrega 'Última actualización' a Partidas y Transacciones — se actualiza sola con un trigger de base de datos en cada edición (incluso ediciones directas o importaciones), visible como columna y en el modal de edición" },
   { v: "1.45.7", desc: "Fix crítico: el Dashboard mostraba $0.00 en todos los cuadros al cambiar de compañía si el filtro de Proyecto guardado en sesión pertenecía a otra compañía — ahora se resetea solo a 'Todos' cuando no existe en la unidad actual" },
   { v: "1.45.6", desc: "Dashboard: el panel 'Resumen general' ahora muestra 5 cifras — Presupuestado, Ocupado, Pagado, Por Pagar y Disponible — en vez de solo 3, respetando los filtros de Mes/Proyecto" },
@@ -2311,10 +2312,12 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         const pct = p.monto_estimado ? (usado / p.monto_estimado) * 100 : 0;
         const tone = pct > 100 ? T.red : pct > 85 ? T.amber : T.teal;
         return (
-          <div>
-            <div style={{ fontFamily: T.fontMono }}>{money(p.monto_estimado, p.moneda)}</div>
-            {usado > 0 && <div style={{ fontFamily: T.fontMono, fontSize: 10.5, color: tone, marginTop: 2 }}>Ejercido {money(usado, p.moneda)}</div>}
-          </div>
+          <span
+            style={{ fontFamily: T.fontMono, borderBottom: usado > 0 ? `1px dashed ${tone}` : "none", cursor: usado > 0 ? "help" : "default" }}
+            title={usado > 0 ? `Ejercido: ${money(usado, p.moneda)} (${pct.toFixed(0)}%)` : undefined}
+          >
+            {money(p.monto_estimado, p.moneda)}
+          </span>
         );
       },
     },

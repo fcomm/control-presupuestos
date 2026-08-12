@@ -94,8 +94,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.45.9";
+const APP_VERSION = "1.45.10";
 const CHANGELOG = [
+  { v: "1.45.10", desc: "Transacciones: renombra el campo 'Día' a 'Día de Pago Programado' — en la tabla, el formulario, la vista de sin vincular y la vista previa de importación" },
   { v: "1.45.9", desc: "Partidas: 'Ejercido' pasa de una segunda línea debajo del Monto a un tooltip al pasar el mouse (subrayado punteado de color) — evita que se agregue una fila extra al exportar/copiar a Excel" },
   { v: "1.45.8", desc: "Agrega 'Última actualización' a Partidas y Transacciones — se actualiza sola con un trigger de base de datos en cada edición (incluso ediciones directas o importaciones), visible como columna y en el modal de edición" },
   { v: "1.45.7", desc: "Fix crítico: el Dashboard mostraba $0.00 en todos los cuadros al cambiar de compañía si el filtro de Proyecto guardado en sesión pertenecía a otra compañía — ahora se resetea solo a 'Todos' cuando no existe en la unidad actual" },
@@ -2685,7 +2686,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, transaccionesApi })
           <div style={{ overflowX: "auto", maxHeight: 340, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
             <table style={tableStyle}>
               <thead>
-                <tr>{["Día","Folio","Proveedor","Importe","Partida"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+                <tr>{["Día de Pago Programado","Folio","Proveedor","Importe","Partida"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
               </thead>
               <tbody>
                 {preview.rows.map((r) => {
@@ -2812,7 +2813,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   };
 
   const COLUMNAS_SINVINC = [
-    { key: "dia", label: "Día", render: (t) => t.dia || "—" },
+    { key: "dia", label: "Día de Pago Programado", render: (t) => t.dia || "—" },
     { key: "folio_original", label: "Folio", render: (t) => <span style={{ fontFamily: T.fontMono, color: T.red }}>{t.folio_original || "(sin folio)"}</span> },
     { key: "proveedor", label: "Proveedor", render: renderProveedorConIndicador },
     { key: "zona", label: "Zona", render: (t) => t.zona || "—" },
@@ -2882,7 +2883,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       key: "folio_transaccion", label: "ID",
       render: (t) => <span style={{ fontFamily: T.fontMono, color: T.accent, fontSize: 11 }}>{t.folio_transaccion || "—"}</span>,
     },
-    { key: "dia", label: "Día", render: (t) => t.dia || "—" },
+    { key: "dia", label: "Día de Pago Programado", render: (t) => t.dia || "—" },
     { key: "smi", label: "SMI", render: (t) => t.smi || "—" },
     {
       key: "folio", label: "Folio",
@@ -3216,7 +3217,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 onChange={(id) => setForm({ ...form, partida_id: id })}
               />
             </Field>
-            <Field label="Día">
+            <Field label="Día de Pago Programado">
               <TextInput type="date" value={form.dia} onChange={(e) => setForm({ ...form, dia: e.target.value })} />
             </Field>
             <Field label="Solicitante">

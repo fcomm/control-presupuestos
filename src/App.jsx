@@ -96,8 +96,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.2";
+const APP_VERSION = "1.46.3";
 const CHANGELOG = [
+  { v: "1.46.3", desc: "Transacciones: botón 'Duplicar' — abre el formulario de nueva transacción prellenado con los datos de la original (Status vuelve a 'No Pagado', y se limpian folios de compra/factura), para revisar y guardar como registro nuevo" },
   { v: "1.46.2", desc: "Agrega popup de confirmación antes de eliminar cualquier registro individual (partida, transacción, proveedor, cuenta bancaria, proyecto) — las eliminaciones en lote ya lo tenían" },
   { v: "1.46.1", desc: "Reporte Pagos Dirección: botón 'Generar reporte (PDF)' — toma las transacciones filtradas, genera el PDF, y las marca como 'Reportadas' (con confirmación previa)" },
   { v: "1.46.0", desc: "Transacciones: nuevo marcador 'Reportado' — selecciona varias con checkbox y dales 'Marcar como reportadas' al enviar tu reporte semanal; filtra por 'No reportado' para ver de un vistazo qué es nuevo desde tu último envío" },
@@ -2991,6 +2992,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       <td style={tdStyle}>
         <div style={{ display: "flex", gap: 6 }}>
           <Button variant="ghost" onClick={() => startEdit(t)}>Editar</Button>
+          <Button variant="ghost" onClick={() => duplicar(t)}>Duplicar</Button>
           <Button variant="danger" onClick={() => remove(t.id)}>Eliminar</Button>
         </div>
       </td>
@@ -3062,6 +3064,17 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     setModalOpen(true);
   };
   const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" }); setNotaPrivada(""); };
+  const duplicar = (t) => {
+    // Copia los datos de la transacción, pero como registro NUEVO: sin folio propio,
+    // sin fecha de pago/status heredado (nace "No Pagado"), y sin folios de compra/
+    // factura (son específicos de cada pago, no algo que tenga sentido clonar).
+    const { id, folio_transaccion, created_by, updated_by, updated_at, created_at, reportado_at, ...resto } = t;
+    const limpio = Object.fromEntries(Object.entries(resto).filter(([k]) => !k.startsWith("_")));
+    setForm({ ...limpio, status: "No Pagado", fecha_pago: "", folio_compra_sae: "", folio_factura: "" });
+    setEditId(null);
+    setNotaPrivada("");
+    setModalOpen(true);
+  };
   const remove = (id) => {
     const t = transUnidad.find((x) => x.id === id) || sinVincular.find((x) => x.id === id);
     if (!confirm(`¿Eliminar la transacción "${t?.concepto_detallado || id}" (${money(t?.importe, t?.moneda)})? Esto no se puede deshacer.`)) return;

@@ -7,6 +7,7 @@ import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import { Wallet, BarChart3, CheckCircle2, FileEdit, ArrowDownCircle, ArrowUpCircle, Info } from "lucide-react";
 import { useCollection } from "./useCollection";
 import { supabase } from "./supabaseClient";
 
@@ -96,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.6";
+const APP_VERSION = "1.46.7";
 const CHANGELOG = [
+  { v: "1.46.7", desc: "Dashboard: 'Resumen general' pasa a formato de tabla ('Resumen financiero') con un ícono por columna y una insignia circular por moneda, siguiendo el diseño de referencia" },
   { v: "1.46.6", desc: "Dashboard: rediseña el panel 'Resumen general' — cada moneda queda en su propio bloque con fondo sutil y un pill de color, en vez de una etiqueta chica de texto arriba de cada fila" },
   { v: "1.46.5", desc: "Dashboard: el panel 'Resumen general' duplica sus 5 cuadros para mostrar USD además de MXP — de paso corrige un bug donde antes se sumaban MXP y USD juntos en esos mismos cuadros" },
   { v: "1.46.4", desc: "Transacciones: los botones Editar/Duplicar/Eliminar de cada fila cambian a íconos compactos (✎/⧉/✕) con tooltip, para que quepan bien los 3 en el espacio de la columna" },
@@ -1319,8 +1321,8 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <Panel
-        title="Resumen general"
-        subtitle="Los importes ya vienen prorrateados según el marcador de cada partida"
+        title="Resumen financiero"
+        subtitle="Importes prorrateados por partida"
         right={
           <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
             <Field label="Proyecto">
@@ -1335,28 +1337,73 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
           </div>
         }
       >
-        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-          <div style={{ background: T.bg, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: "14px 16px" }}>
-            <Pill tone="accent">MXP</Pill>
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 12 }}>
-              <KpiCard label="Presupuestado" value={money(proyectoKpiData.presupuestado)} />
-              <KpiCard label="Ocupado" value={money(kpiOcupado)} accent={proyectoKpiData.presupuestado && kpiOcupado / proyectoKpiData.presupuestado > 1 ? T.red : T.amber} />
-              <KpiCard label="Pagado" value={money(kpiPagado)} accent={T.teal} />
-              <KpiCard label="Por Pagar" value={money(kpiPorPagar)} accent={T.amber} />
-              <KpiCard label="Disponible" value={money(kpiDisponible)} accent={kpiDisponible < 0 ? T.red : T.text} />
-            </div>
-          </div>
-
-          <div style={{ background: T.bg, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: "14px 16px" }}>
-            <Pill tone="teal">USD</Pill>
-            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 12 }}>
-              <KpiCard label="Presupuestado" value={money(proyectoKpiDataUSD.presupuestado, "USD")} />
-              <KpiCard label="Ocupado" value={money(kpiOcupadoUSD, "USD")} accent={proyectoKpiDataUSD.presupuestado && kpiOcupadoUSD / proyectoKpiDataUSD.presupuestado > 1 ? T.red : T.amber} />
-              <KpiCard label="Pagado" value={money(kpiPagadoUSD, "USD")} accent={T.teal} />
-              <KpiCard label="Por Pagar" value={money(kpiPorPagarUSD, "USD")} accent={T.amber} />
-              <KpiCard label="Disponible" value={money(kpiDisponibleUSD, "USD")} accent={kpiDisponibleUSD < 0 ? T.red : T.text} />
-            </div>
-          </div>
+        {(() => {
+          const filas = [
+            { moneda: "MXN", data: proyectoKpiData, ocupado: kpiOcupado, pagado: kpiPagado, porPagar: kpiPorPagar, disponible: kpiDisponible },
+            { moneda: "USD", data: proyectoKpiDataUSD, ocupado: kpiOcupadoUSD, pagado: kpiPagadoUSD, porPagar: kpiPorPagarUSD, disponible: kpiDisponibleUSD },
+          ];
+          const colIcon = { textAlign: "center", color: T.textFaint, marginBottom: 6, display: "flex", justifyContent: "center" };
+          const colVal = { textAlign: "center", fontFamily: T.fontMono, fontSize: 15, fontWeight: 700 };
+          return (
+            <table style={{ ...tableStyle, tableLayout: "fixed" }}>
+              <colgroup>
+                <col style={{ width: 110 }} />
+                {[0, 1, 2, 3, 4].map((i) => <col key={i} />)}
+              </colgroup>
+              <thead>
+                <tr>
+                  <th style={thStyle}>Moneda</th>
+                  <th style={{ ...thStyle, textAlign: "center" }}>Presupuestado</th>
+                  <th style={{ ...thStyle, textAlign: "center" }}>Ocupado</th>
+                  <th style={{ ...thStyle, textAlign: "center" }}>Pagado</th>
+                  <th style={{ ...thStyle, textAlign: "center" }}>Por Pagar</th>
+                  <th style={{ ...thStyle, textAlign: "center" }}>Disponible</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filas.map((f) => (
+                  <tr key={f.moneda}>
+                    <td style={tdStyle}>
+                      <span style={{
+                        display: "inline-flex", alignItems: "center", justifyContent: "center",
+                        width: 52, height: 52, borderRadius: "50%", background: T.accentBg,
+                        color: T.accent, fontWeight: 700, fontSize: 12.5, fontFamily: T.fontMono,
+                      }}>
+                        {f.moneda}
+                      </span>
+                    </td>
+                    <td style={tdStyle}>
+                      <div style={colIcon}><Wallet size={20} color={T.accent} /></div>
+                      <div style={colVal}>{money(f.data.presupuestado, f.moneda === "USD" ? "USD" : "MXP")}</div>
+                    </td>
+                    <td style={tdStyle}>
+                      <div style={colIcon}><BarChart3 size={20} color={T.red} /></div>
+                      <div style={{ ...colVal, color: f.data.presupuestado && f.ocupado / f.data.presupuestado > 1 ? T.red : T.text }}>
+                        {money(f.ocupado, f.moneda === "USD" ? "USD" : "MXP")}
+                      </div>
+                    </td>
+                    <td style={tdStyle}>
+                      <div style={colIcon}><CheckCircle2 size={20} color={T.teal} /></div>
+                      <div style={{ ...colVal, color: T.teal }}>{money(f.pagado, f.moneda === "USD" ? "USD" : "MXP")}</div>
+                    </td>
+                    <td style={tdStyle}>
+                      <div style={colIcon}><FileEdit size={20} color={T.amber} /></div>
+                      <div style={{ ...colVal, color: T.amber }}>{money(f.porPagar, f.moneda === "USD" ? "USD" : "MXP")}</div>
+                    </td>
+                    <td style={tdStyle}>
+                      <div style={colIcon}>
+                        {f.disponible < 0 ? <ArrowDownCircle size={20} color={T.red} /> : <ArrowUpCircle size={20} color={T.teal} />}
+                      </div>
+                      <div style={{ ...colVal, color: f.disponible < 0 ? T.red : T.teal }}>{money(f.disponible, f.moneda === "USD" ? "USD" : "MXP")}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          );
+        })()}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 14, fontSize: 11.5, color: T.textFaint }}>
+          <Info size={14} /> Importes prorrateados por partida
         </div>
       </Panel>
 

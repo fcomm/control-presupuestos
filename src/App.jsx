@@ -96,8 +96,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.1";
+const APP_VERSION = "1.46.2";
 const CHANGELOG = [
+  { v: "1.46.2", desc: "Agrega popup de confirmación antes de eliminar cualquier registro individual (partida, transacción, proveedor, cuenta bancaria, proyecto) — las eliminaciones en lote ya lo tenían" },
   { v: "1.46.1", desc: "Reporte Pagos Dirección: botón 'Generar reporte (PDF)' — toma las transacciones filtradas, genera el PDF, y las marca como 'Reportadas' (con confirmación previa)" },
   { v: "1.46.0", desc: "Transacciones: nuevo marcador 'Reportado' — selecciona varias con checkbox y dales 'Marcar como reportadas' al enviar tu reporte semanal; filtra por 'No reportado' para ver de un vistazo qué es nuevo desde tu último envío" },
   { v: "1.45.13", desc: "Partidas: cada fila con transacciones vinculadas trae un botón ▶ para expandirla y ver rápido Concepto/Monto/Status de esas transacciones, sin salir de la tabla" },
@@ -558,7 +559,10 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
       alert("No se pudo agregar la cuenta: " + (err.message || err));
     }
   };
-  const eliminarCuentaEditando = (id) => cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
+  const eliminarCuentaEditando = (id) => {
+    if (!confirm("¿Eliminar esta cuenta bancaria? Esto no se puede deshacer.")) return;
+    cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
+  };
 
   return (
     <>
@@ -2400,7 +2404,11 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const openNew = () => { setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" }); setEditId(null); setModalOpen(true); };
   const startEdit = (p) => { setForm(p); setEditId(p.id); setModalOpen(true); };
   const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" }); };
-  const remove = (id) => partidasApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+  const remove = (id) => {
+    const p = partidasUnidad.find((x) => x.id === id);
+    if (!confirm(`¿Eliminar la partida "${p?.concepto || id}" (folio ${p?.folio || "—"})? Esto no se puede deshacer.`)) return;
+    partidasApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -3054,7 +3062,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     setModalOpen(true);
   };
   const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" }); setNotaPrivada(""); };
-  const remove = (id) => transaccionesApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+  const remove = (id) => {
+    const t = transUnidad.find((x) => x.id === id) || sinVincular.find((x) => x.id === id);
+    if (!confirm(`¿Eliminar la transacción "${t?.concepto_detallado || id}" (${money(t?.importe, t?.moneda)})? Esto no se puede deshacer.`)) return;
+    transaccionesApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+  };
 
   const toggleSeleccion = (id) => setSeleccionadas((prev) => {
     const next = new Set(prev);
@@ -3972,6 +3984,8 @@ function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi, cuentasAp
     proyectosApi.update(id, { [field]: val }).catch((err) => alert("No se pudo actualizar: " + (err.message || err)));
   };
   const removeProyecto = (id) => {
+    const p = proyectosApi.rows.find((x) => x.id === id);
+    if (!confirm(`¿Eliminar el proyecto "${p?.nombre || id}" del catálogo? Esto no se puede deshacer.`)) return;
     proyectosApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
   };
   const addProyecto = () => {
@@ -4194,7 +4208,11 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
   const openNew = () => { setForm(blank); setEditId(null); setNuevaCuenta(cuentaBlank); setModalOpen(true); };
   const startEdit = (p) => { setForm(p); setEditId(p.id); setNuevaCuenta(cuentaBlank); setModalOpen(true); };
   const closeModal = () => { setModalOpen(false); setEditId(null); setForm(blank); setNuevaCuenta(cuentaBlank); };
-  const remove = (id) => proveedoresApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+  const remove = (id) => {
+    const p = proveedoresApi.rows.find((x) => x.id === id);
+    if (!confirm(`¿Eliminar al proveedor "${p?.nombre || id}"? Esto no se puede deshacer y también borrará sus cuentas bancarias.`)) return;
+    proveedoresApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+  };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -4227,7 +4245,10 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
       alert("No se pudo agregar la cuenta: " + (err.message || err));
     }
   };
-  const eliminarCuenta = (id) => cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
+  const eliminarCuenta = (id) => {
+    if (!confirm("¿Eliminar esta cuenta bancaria? Esto no se puede deshacer.")) return;
+    cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>

@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.11";
+const APP_VERSION = "1.46.12";
 const CHANGELOG = [
+  { v: "1.46.12", desc: "Fix crítico: el popup de editar transacción desde Partidas dejaba la pantalla en blanco al abrir — Forma/Método de Pago intentaban renderizar el objeto {value,label} completo en vez de solo el texto" },
   { v: "1.46.11", desc: "Fix: al agrupar Transacciones por 'Mes (partida)' los meses salían en orden alfabético en vez de cronológico — el fix ya existía para el campo 'mes' de Partidas, pero no cubría el campo '_mes' que usa Transacciones" },
   { v: "1.46.10", desc: "Botón 'Contraer todo' visible junto a los controles de tabla (Partidas, Transacciones, sin vincular) — ya no hace falta abrir el menú de Agrupar por para encontrarlo. Partidas también tiene 'Contraer transacciones' para las filas expandidas" },
   { v: "1.46.9", desc: "Transacciones: agrega 'Moneda' como opción de Agrupar por (tanto en la tabla principal como en la de sin vincular)" },
@@ -2428,13 +2429,13 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
         <Field label="Forma de Pago">
           <Select value={form.forma_pago || ""} onChange={(e) => setForm({ ...form, forma_pago: e.target.value })}>
             <option value="">— Sin especificar —</option>
-            {FORMAS_PAGO.map((f) => <option key={f}>{f}</option>)}
+            {FORMAS_PAGO.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
           </Select>
         </Field>
         <Field label="Método de Pago">
           <Select value={form.metodo_pago || ""} onChange={(e) => setForm({ ...form, metodo_pago: e.target.value })}>
             <option value="">— Sin especificar —</option>
-            {METODOS_PAGO.map((m) => <option key={m}>{m}</option>)}
+            {METODOS_PAGO.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
           </Select>
         </Field>
         <Field label="Importe">

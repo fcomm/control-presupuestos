@@ -96,8 +96,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.4";
+const APP_VERSION = "1.46.5";
 const CHANGELOG = [
+  { v: "1.46.5", desc: "Dashboard: el panel 'Resumen general' duplica sus 5 cuadros para mostrar USD además de MXP — de paso corrige un bug donde antes se sumaban MXP y USD juntos en esos mismos cuadros" },
   { v: "1.46.4", desc: "Transacciones: los botones Editar/Duplicar/Eliminar de cada fila cambian a íconos compactos (✎/⧉/✕) con tooltip, para que quepan bien los 3 en el espacio de la columna" },
   { v: "1.46.3", desc: "Transacciones: botón 'Duplicar' — abre el formulario de nueva transacción prellenado con los datos de la original (Status vuelve a 'No Pagado', y se limpian folios de compra/factura), para revisar y guardar como registro nuevo" },
   { v: "1.46.2", desc: "Agrega popup de confirmación antes de eliminar cualquier registro individual (partida, transacción, proveedor, cuenta bancaria, proyecto) — las eliminaciones en lote ya lo tenían" },
@@ -1199,31 +1200,39 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   const idsPartidasFiltradas = new Set(partidasFiltradasMes.map((p) => p.id));
   const transFiltradasMes = transUnidad.filter((t) => idsPartidasFiltradas.has(t.partida_id));
 
-  const porProyecto = useMemo(() => {
-    const map = {};
-    proyectosUnidad.forEach((p) => { map[p.nombre] = { proyecto: p.nombre, presupuestado: 0, ejecutado: 0, pagado: 0 }; });
+  // Igual que porProyecto, pero separado por moneda — nunca se suma MXP con USD.
+  const porProyectoPorMoneda = useMemo(() => {
+    const nuevoMapa = () => {
+      const m = {};
+      proyectosUnidad.forEach((p) => { m[p.nombre] = { proyecto: p.nombre, presupuestado: 0, ejecutado: 0, pagado: 0 }; });
+      return m;
+    };
+    const mapas = { MXP: nuevoMapa(), USD: nuevoMapa() };
 
     partidasFiltradasMes.forEach((partida) => {
+      const m = (partida.moneda || "MXP") === "USD" ? "USD" : "MXP";
       const splits = resolverProrrateo(partida.proyecto, proyectosUnidad);
       splits.forEach(({ proyecto, fraccion }) => {
-        if (!map[proyecto]) map[proyecto] = { proyecto, presupuestado: 0, ejecutado: 0, pagado: 0 };
-        map[proyecto].presupuestado += (Number(partida.monto_estimado) || 0) * fraccion;
+        if (!mapas[m][proyecto]) mapas[m][proyecto] = { proyecto, presupuestado: 0, ejecutado: 0, pagado: 0 };
+        mapas[m][proyecto].presupuestado += (Number(partida.monto_estimado) || 0) * fraccion;
       });
     });
 
     transFiltradasMes.forEach((t) => {
       const partida = partidasFiltradasMes.find((p) => p.id === t.partida_id);
       if (!partida) return;
+      const m = (t.moneda || "MXP") === "USD" ? "USD" : "MXP";
       const splits = resolverProrrateo(partida.proyecto, proyectosUnidad);
       splits.forEach(({ proyecto, fraccion }) => {
-        if (!map[proyecto]) map[proyecto] = { proyecto, presupuestado: 0, ejecutado: 0, pagado: 0 };
-        map[proyecto].ejecutado += (Number(t.importe) || 0) * fraccion;
-        if (t.status === "Pagado") map[proyecto].pagado += (Number(t.importe) || 0) * fraccion;
+        if (!mapas[m][proyecto]) mapas[m][proyecto] = { proyecto, presupuestado: 0, ejecutado: 0, pagado: 0 };
+        mapas[m][proyecto].ejecutado += (Number(t.importe) || 0) * fraccion;
+        if (t.status === "Pagado") mapas[m][proyecto].pagado += (Number(t.importe) || 0) * fraccion;
       });
     });
 
-    return Object.values(map);
+    return { MXP: Object.values(mapas.MXP), USD: Object.values(mapas.USD) };
   }, [proyectosUnidad, partidasFiltradasMes, transFiltradasMes]);
+  const porProyecto = porProyectoPorMoneda.MXP; // usado por el pivot/gráficas existentes (solo MXP)
 
   const porRubro = useMemo(() => {
     const map = {};
@@ -1256,12 +1265,15 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
     return Object.values(map).filter((m) => m.presupuestado > 0 || m.ejecutado > 0);
   }, [partidasUnidad, transUnidad]);
 
-  const totalPresupuestado = partidasFiltradasMes.reduce((s, p) => s + (Number(p.monto_estimado) || 0), 0);
-  const totalEjecutado = transFiltradasMes.reduce((s, t) => s + (Number(t.importe) || 0), 0);
-  const totalPagado = transFiltradasMes.filter((t) => t.status === "Pagado").reduce((s, t) => s + (Number(t.importe) || 0), 0);
+  const totalPresupuestadoMXN = partidasFiltradasMes.filter((p) => (p.moneda || "MXP") !== "USD").reduce((s, p) => s + (Number(p.monto_estimado) || 0), 0);
+  const totalEjecutadoMXN = transFiltradasMes.filter((t) => (t.moneda || "MXP") !== "USD").reduce((s, t) => s + (Number(t.importe) || 0), 0);
+  const totalPagadoMXN = transFiltradasMes.filter((t) => (t.moneda || "MXP") !== "USD" && t.status === "Pagado").reduce((s, t) => s + (Number(t.importe) || 0), 0);
+  const totalPresupuestadoUSD = partidasFiltradasMes.filter((p) => p.moneda === "USD").reduce((s, p) => s + (Number(p.monto_estimado) || 0), 0);
+  const totalEjecutadoUSD = transFiltradasMes.filter((t) => t.moneda === "USD").reduce((s, t) => s + (Number(t.importe) || 0), 0);
+  const totalPagadoUSD = transFiltradasMes.filter((t) => t.moneda === "USD" && t.status === "Pagado").reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
   // Filtro de Proyecto para los cuadros de montos — usa los importes YA prorrateados
-  // (porProyecto), así que si una partida es "Desh Gral" y filtras por "Desh Marfo",
+  // (porProyectoPorMoneda), así que si una partida es "Desh Gral" y filtras por "Desh Marfo",
   // sí cuenta su parte correspondiente.
   const [proyectoKpi, setProyectoKpi] = useSessionState("ss-dashboard-proyecto", "Todos");
   // Si el proyecto guardado no existe en ESTA compañía (ej. veníamos de otra
@@ -1271,13 +1283,26 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
       setProyectoKpi("Todos");
     }
   }, [unidad, proyectosUnidad.map((p) => p.nombre).join(","), proyectoKpi]);
-  const proyectoKpiData = proyectoKpi === "Todos"
-    ? { presupuestado: totalPresupuestado, ejecutado: totalEjecutado, pagado: totalPagado }
-    : (porProyecto.find((p) => p.proyecto === proyectoKpi) || { presupuestado: 0, ejecutado: 0, pagado: 0 });
+
+  const kpiDataDe = (moneda) => {
+    if (proyectoKpi === "Todos") {
+      return moneda === "USD"
+        ? { presupuestado: totalPresupuestadoUSD, ejecutado: totalEjecutadoUSD, pagado: totalPagadoUSD }
+        : { presupuestado: totalPresupuestadoMXN, ejecutado: totalEjecutadoMXN, pagado: totalPagadoMXN };
+    }
+    return porProyectoPorMoneda[moneda].find((p) => p.proyecto === proyectoKpi) || { presupuestado: 0, ejecutado: 0, pagado: 0 };
+  };
+  const proyectoKpiData = kpiDataDe("MXP");
   const kpiOcupado = proyectoKpiData.ejecutado;
   const kpiPagado = proyectoKpiData.pagado;
   const kpiPorPagar = kpiOcupado - kpiPagado;
   const kpiDisponible = proyectoKpiData.presupuestado - kpiOcupado;
+
+  const proyectoKpiDataUSD = kpiDataDe("USD");
+  const kpiOcupadoUSD = proyectoKpiDataUSD.ejecutado;
+  const kpiPagadoUSD = proyectoKpiDataUSD.pagado;
+  const kpiPorPagarUSD = kpiOcupadoUSD - kpiPagadoUSD;
+  const kpiDisponibleUSD = proyectoKpiDataUSD.presupuestado - kpiOcupadoUSD;
 
   const COLORS = [T.accent, T.teal, T.blue, T.amber, T.red, "#8B6FB0", "#B0955B", "#5BA0B0"];
 
@@ -1309,12 +1334,22 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
           </div>
         }
       >
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 8 }}>MXP</div>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 22 }}>
           <KpiCard label="Presupuestado" value={money(proyectoKpiData.presupuestado)} />
           <KpiCard label="Ocupado" value={money(kpiOcupado)} accent={proyectoKpiData.presupuestado && kpiOcupado / proyectoKpiData.presupuestado > 1 ? T.red : T.amber} />
           <KpiCard label="Pagado" value={money(kpiPagado)} accent={T.teal} />
           <KpiCard label="Por Pagar" value={money(kpiPorPagar)} accent={T.amber} />
           <KpiCard label="Disponible" value={money(kpiDisponible)} accent={kpiDisponible < 0 ? T.red : T.text} />
+        </div>
+
+        <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 8 }}>USD</div>
+        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+          <KpiCard label="Presupuestado" value={money(proyectoKpiDataUSD.presupuestado, "USD")} />
+          <KpiCard label="Ocupado" value={money(kpiOcupadoUSD, "USD")} accent={proyectoKpiDataUSD.presupuestado && kpiOcupadoUSD / proyectoKpiDataUSD.presupuestado > 1 ? T.red : T.amber} />
+          <KpiCard label="Pagado" value={money(kpiPagadoUSD, "USD")} accent={T.teal} />
+          <KpiCard label="Por Pagar" value={money(kpiPorPagarUSD, "USD")} accent={T.amber} />
+          <KpiCard label="Disponible" value={money(kpiDisponibleUSD, "USD")} accent={kpiDisponibleUSD < 0 ? T.red : T.text} />
         </div>
       </Panel>
 

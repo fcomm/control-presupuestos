@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.7";
+const APP_VERSION = "1.46.8";
 const CHANGELOG = [
+  { v: "1.46.8", desc: "Partidas: la fila expandida de transacciones vinculadas trae un botón ✎ para editar esa transacción en un popup, sin salir de la vista de Partidas (no cambia de pestaña ni pierde tus filtros)" },
   { v: "1.46.7", desc: "Dashboard: 'Resumen general' pasa a formato de tabla ('Resumen financiero') con un ícono por columna y una insignia circular por moneda, siguiendo el diseño de referencia" },
   { v: "1.46.6", desc: "Dashboard: rediseña el panel 'Resumen general' — cada moneda queda en su propio bloque con fondo sutil y un pill de color, en vez de una etiqueta chica de texto arriba de cada fila" },
   { v: "1.46.5", desc: "Dashboard: el panel 'Resumen general' duplica sus 5 cuadros para mostrar USD además de MXP — de paso corrige un bug donde antes se sumaban MXP y USD juntos en esos mismos cuadros" },
@@ -2330,7 +2331,139 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
   );
 }
 
-function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, transacciones }) {
+// Modal ligero para editar una transacción sin salir de la vista en la que
+// estás (ej. desde la fila expandida de una partida) — no cambia de pestaña.
+// No incluye el selector de Partida (aquí ya se sabe a cuál pertenece).
+function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, proveedoresApi, cuentasApi, unidad }) {
+  const [form, setForm] = useState({ ...transaccion });
+  const [saving, setSaving] = useState(false);
+  const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
+  const cuentasDelProveedorSeleccionado = form.proveedor_id ? cuentasApi.rows.filter((c) => c.proveedor_id === form.proveedor_id) : [];
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (form.status === "Pagado" && !form.fecha_pago) {
+      alert("Para marcar esta transacción como Pagada, primero indica la Fecha de Pago.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const { id, ...restRaw } = form;
+      const rest = Object.fromEntries(Object.entries(restRaw).filter(([k]) => !k.startsWith("_")));
+      rest.proveedor_id = rest.proveedor_id || null;
+      rest.cuenta_id = rest.cuenta_id || null;
+      rest.fecha_pago = rest.fecha_pago || null;
+      await transaccionesApi.update(transaccion.id, rest);
+      onClose();
+    } catch (err) {
+      alert("No se pudo guardar: " + (err.message || err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal
+      title="Editar transacción"
+      subtitle={form.folio_transaccion ? `ID: ${form.folio_transaccion}` : undefined}
+      onClose={onClose}
+      width={760}
+      zIndex={1100}
+    >
+      <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        <Field label="Día de Pago Programado">
+          <TextInput type="date" value={form.dia || ""} onChange={(e) => setForm({ ...form, dia: e.target.value })} />
+        </Field>
+        <Field label="Solicitante">
+          <TextInput value={form.solicitante || ""} onChange={(e) => setForm({ ...form, solicitante: e.target.value })} />
+        </Field>
+        <Field label="SMI">
+          <TextInput value={form.smi || ""} onChange={(e) => setForm({ ...form, smi: e.target.value })} />
+        </Field>
+        <Field label="Área">
+          <TextInput value={form.area || ""} onChange={(e) => setForm({ ...form, area: e.target.value })} />
+        </Field>
+        <Field label="Proyecto">
+          <TextInput value={form.proyecto || ""} onChange={(e) => setForm({ ...form, proyecto: e.target.value })} />
+        </Field>
+        <Field label="Zona">
+          <TextInput value={form.zona || ""} onChange={(e) => setForm({ ...form, zona: e.target.value })} />
+        </Field>
+        <Field label="Proveedor (catálogo)" style={{ gridColumn: "span 2" }}>
+          <ProveedorPickerButton
+            proveedores={proveedoresUnidad}
+            proveedoresApi={proveedoresApi}
+            cuentasApi={cuentasApi}
+            unidad={unidad}
+            value={form.proveedor_id}
+            onChange={(id, p) => {
+              const proveedor = p !== undefined ? p : (proveedoresUnidad.find((pr) => pr.id === id) || null);
+              setForm({ ...form, proveedor_id: id, proveedor: proveedor ? proveedor.nombre : form.proveedor, cuenta_id: "" });
+            }}
+          />
+        </Field>
+        <Field label="Proveedor / Razón social (texto)" style={{ gridColumn: "span 2" }}>
+          <TextInput value={form.proveedor || ""} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} />
+        </Field>
+        {form.proveedor_id && (
+          <Field label="Cuenta bancaria" style={{ gridColumn: "span 2" }}>
+            <Select value={form.cuenta_id || ""} onChange={(e) => setForm({ ...form, cuenta_id: e.target.value })}>
+              <option value="">— Elige una cuenta —</option>
+              {cuentasDelProveedorSeleccionado.map((c) => <option key={c.id} value={c.id}>{c.banco} · {c.clabe} ({c.divisa})</option>)}
+            </Select>
+          </Field>
+        )}
+        <Field label="Concepto de pago (detallado)" style={{ gridColumn: "span 4" }}>
+          <TextInput value={form.concepto_detallado || ""} onChange={(e) => setForm({ ...form, concepto_detallado: e.target.value })} />
+        </Field>
+        <Field label="Folio Compra SAE">
+          <TextInput value={form.folio_compra_sae || ""} onChange={(e) => setForm({ ...form, folio_compra_sae: e.target.value })} />
+        </Field>
+        <Field label="Folio Factura">
+          <TextInput value={form.folio_factura || ""} onChange={(e) => setForm({ ...form, folio_factura: e.target.value })} />
+        </Field>
+        <Field label="Forma de Pago">
+          <Select value={form.forma_pago || ""} onChange={(e) => setForm({ ...form, forma_pago: e.target.value })}>
+            <option value="">— Sin especificar —</option>
+            {FORMAS_PAGO.map((f) => <option key={f}>{f}</option>)}
+          </Select>
+        </Field>
+        <Field label="Método de Pago">
+          <Select value={form.metodo_pago || ""} onChange={(e) => setForm({ ...form, metodo_pago: e.target.value })}>
+            <option value="">— Sin especificar —</option>
+            {METODOS_PAGO.map((m) => <option key={m}>{m}</option>)}
+          </Select>
+        </Field>
+        <Field label="Importe">
+          <TextInput type="number" step="0.01" value={form.importe ?? ""} onChange={(e) => setForm({ ...form, importe: e.target.value })} />
+        </Field>
+        <Field label="Moneda">
+          <Select value={form.moneda || "MXP"} onChange={(e) => setForm({ ...form, moneda: e.target.value })}>
+            {MONEDAS.map((m) => <option key={m}>{m}</option>)}
+          </Select>
+        </Field>
+        <Field label="Status">
+          <Select value={form.status || ""} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+            <option value="">— Sin especificar —</option>
+            <option>Pagado</option>
+            <option>No Pagado</option>
+          </Select>
+        </Field>
+        {form.status === "Pagado" && (
+          <Field label="Fecha de Pago">
+            <TextInput type="date" value={form.fecha_pago || ""} onChange={(e) => setForm({ ...form, fecha_pago: e.target.value })} required />
+          </Field>
+        )}
+        <div style={{ gridColumn: "span 4", display: "flex", gap: 10, marginTop: 4 }}>
+          <Button type="submit" disabled={saving}>{saving ? "Guardando…" : "Guardar cambios"}</Button>
+          <Button type="button" variant="ghost" onClick={onClose}>Cancelar</Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadores = marcadoresDisponibles(proyectosUnidad);
   const anioDefault = (() => {
@@ -2426,6 +2559,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const onColDragOver = (e) => e.preventDefault();
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
   const [expandedIds, setExpandedIds] = useState(new Set());
+  const [transaccionEditando, setTransaccionEditando] = useState(null);
   const toggleExpand = (id) => setExpandedIds((prev) => {
     const next = new Set(prev);
     next.has(id) ? next.delete(id) : next.add(id);
@@ -2465,7 +2599,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             <td colSpan={columnasVisibles.length + 2} style={{ padding: "0 0 0 40px", background: T.panelAlt, borderBottom: `1px solid ${T.border}` }}>
               <table style={{ ...tableStyle, margin: "8px 0" }}>
                 <thead>
-                  <tr>{["Concepto","Monto","Status"].map((h) => <th key={h} style={{ ...thStyle, background: "transparent" }}>{h}</th>)}</tr>
+                  <tr>{["Concepto","Monto","Status",""].map((h) => <th key={h} style={{ ...thStyle, background: "transparent" }}>{h}</th>)}</tr>
                 </thead>
                 <tbody>
                   {transDeEsta.map((t) => (
@@ -2473,6 +2607,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                       <td style={{ ...tdStyle, color: T.textDim }}>{t.concepto_detallado || "—"}</td>
                       <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</td>
                       <td style={tdStyle}>{t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—"}</td>
+                      <td style={tdStyle}>
+                        <IconButton icon="✎" label="Editar transacción" tone={T.accent} onClick={() => setTransaccionEditando(t)} />
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -2682,6 +2819,16 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             </div>
           </form>
         </Modal>
+      )}
+      {transaccionEditando && (
+        <TransaccionQuickEditModal
+          transaccion={transaccionEditando}
+          onClose={() => setTransaccionEditando(null)}
+          transaccionesApi={transaccionesApi}
+          proveedoresApi={proveedoresApi}
+          cuentasApi={cuentasApi}
+          unidad={unidad}
+        />
       )}
     </div>
   );
@@ -4818,7 +4965,7 @@ export default function App() {
       ) : (
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
-          {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} />}
+          {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}

@@ -97,8 +97,11 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.8";
+const APP_VERSION = "1.46.11";
 const CHANGELOG = [
+  { v: "1.46.11", desc: "Fix: al agrupar Transacciones por 'Mes (partida)' los meses salían en orden alfabético en vez de cronológico — el fix ya existía para el campo 'mes' de Partidas, pero no cubría el campo '_mes' que usa Transacciones" },
+  { v: "1.46.10", desc: "Botón 'Contraer todo' visible junto a los controles de tabla (Partidas, Transacciones, sin vincular) — ya no hace falta abrir el menú de Agrupar por para encontrarlo. Partidas también tiene 'Contraer transacciones' para las filas expandidas" },
+  { v: "1.46.9", desc: "Transacciones: agrega 'Moneda' como opción de Agrupar por (tanto en la tabla principal como en la de sin vincular)" },
   { v: "1.46.8", desc: "Partidas: la fila expandida de transacciones vinculadas trae un botón ✎ para editar esa transacción en un popup, sin salir de la vista de Partidas (no cambia de pestaña ni pierde tus filtros)" },
   { v: "1.46.7", desc: "Dashboard: 'Resumen general' pasa a formato de tabla ('Resumen financiero') con un ícono por columna y una insignia circular por moneda, siguiendo el diseño de referencia" },
   { v: "1.46.6", desc: "Dashboard: rediseña el panel 'Resumen general' — cada moneda queda en su propio bloque con fondo sutil y un pill de color, en vez de una etiqueta chica de texto arriba de cada fila" },
@@ -2024,7 +2027,7 @@ function agruparRows(rows, levels, montoKey = "monto_estimado") {
     buckets.get(val).push(r);
   });
   let entries = [...buckets.entries()];
-  if (key === "mes") {
+  if (key === "mes" || key === "_mes") {
     entries.sort((a, b) => MESES.indexOf(a[0]) - MESES.indexOf(b[0]));
   } else {
     entries.sort((a, b) => a[0].localeCompare(b[0]));
@@ -2700,6 +2703,12 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             collapsed={collapsedGroups}
             setCollapsed={setCollapsedGroups}
           />
+          {groupKeys.length > 0 && (
+            <Button variant="ghost" onClick={() => setCollapsedGroups(new Set(collectGroupPaths(grouped)))}>Contraer todo</Button>
+          )}
+          {expandedIds.size > 0 && (
+            <Button variant="ghost" onClick={() => setExpandedIds(new Set())}>Contraer transacciones</Button>
+          )}
           <ColumnVisibilityControl
             columns={COLUMNAS_PARTIDA}
             hidden={colVisibility.hidden}
@@ -3071,6 +3080,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { value: "proveedor", label: "Proveedor" },
     { value: "proyecto", label: "Proyecto (transacción)" },
     { value: "status", label: "Status" },
+    { value: "moneda", label: "Moneda" },
     { value: "_proyecto", label: "Proyecto (partida)" },
     { value: "_rubro", label: "Rubro (partida)" },
     { value: "_mes", label: "Mes (partida)" },
@@ -3121,6 +3131,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { value: "proveedor", label: "Proveedor" },
     { value: "proyecto", label: "Proyecto" },
     { value: "status", label: "Status" },
+    { value: "moneda", label: "Moneda" },
   ];
   const [filtrosSV, setFiltrosSV] = useSessionState("ss-transacciones-sv-filtros", { fechaDesde: "", fechaHasta: "" });
   const [groupBysSV, setGroupBysSV] = useSessionState("ss-transacciones-sv-groupbys", []);
@@ -3424,6 +3435,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             collapsed={collapsedGroups}
             setCollapsed={setCollapsedGroups}
           />
+          {groupKeys.length > 0 && (
+            <Button variant="ghost" onClick={() => setCollapsedGroups(new Set(collectGroupPaths(grouped)))}>Contraer todo</Button>
+          )}
           <ColumnVisibilityControl
             columns={COLUMNAS_TRANS}
             hidden={colVisibility.hidden}
@@ -3517,6 +3531,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               collapsed={collapsedGroupsSV}
               setCollapsed={setCollapsedGroupsSV}
             />
+            {groupKeysSV.length > 0 && (
+              <Button variant="ghost" onClick={() => setCollapsedGroupsSV(new Set(collectGroupPaths(groupedSV)))}>Contraer todo</Button>
+            )}
             <ColumnVisibilityControl
               columns={COLUMNAS_SINVINC}
               hidden={colVisibilitySV.hidden}

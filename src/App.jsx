@@ -96,8 +96,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.5";
+const APP_VERSION = "1.46.6";
 const CHANGELOG = [
+  { v: "1.46.6", desc: "Dashboard: rediseña el panel 'Resumen general' — cada moneda queda en su propio bloque con fondo sutil y un pill de color, en vez de una etiqueta chica de texto arriba de cada fila" },
   { v: "1.46.5", desc: "Dashboard: el panel 'Resumen general' duplica sus 5 cuadros para mostrar USD además de MXP — de paso corrige un bug donde antes se sumaban MXP y USD juntos en esos mismos cuadros" },
   { v: "1.46.4", desc: "Transacciones: los botones Editar/Duplicar/Eliminar de cada fila cambian a íconos compactos (✎/⧉/✕) con tooltip, para que quepan bien los 3 en el espacio de la columna" },
   { v: "1.46.3", desc: "Transacciones: botón 'Duplicar' — abre el formulario de nueva transacción prellenado con los datos de la original (Status vuelve a 'No Pagado', y se limpian folios de compra/factura), para revisar y guardar como registro nuevo" },
@@ -1334,22 +1335,28 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
           </div>
         }
       >
-        <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 8 }}>MXP</div>
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginBottom: 22 }}>
-          <KpiCard label="Presupuestado" value={money(proyectoKpiData.presupuestado)} />
-          <KpiCard label="Ocupado" value={money(kpiOcupado)} accent={proyectoKpiData.presupuestado && kpiOcupado / proyectoKpiData.presupuestado > 1 ? T.red : T.amber} />
-          <KpiCard label="Pagado" value={money(kpiPagado)} accent={T.teal} />
-          <KpiCard label="Por Pagar" value={money(kpiPorPagar)} accent={T.amber} />
-          <KpiCard label="Disponible" value={money(kpiDisponible)} accent={kpiDisponible < 0 ? T.red : T.text} />
-        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
+          <div style={{ background: T.bg, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: "14px 16px" }}>
+            <Pill tone="accent">MXP</Pill>
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 12 }}>
+              <KpiCard label="Presupuestado" value={money(proyectoKpiData.presupuestado)} />
+              <KpiCard label="Ocupado" value={money(kpiOcupado)} accent={proyectoKpiData.presupuestado && kpiOcupado / proyectoKpiData.presupuestado > 1 ? T.red : T.amber} />
+              <KpiCard label="Pagado" value={money(kpiPagado)} accent={T.teal} />
+              <KpiCard label="Por Pagar" value={money(kpiPorPagar)} accent={T.amber} />
+              <KpiCard label="Disponible" value={money(kpiDisponible)} accent={kpiDisponible < 0 ? T.red : T.text} />
+            </div>
+          </div>
 
-        <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 8 }}>USD</div>
-        <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
-          <KpiCard label="Presupuestado" value={money(proyectoKpiDataUSD.presupuestado, "USD")} />
-          <KpiCard label="Ocupado" value={money(kpiOcupadoUSD, "USD")} accent={proyectoKpiDataUSD.presupuestado && kpiOcupadoUSD / proyectoKpiDataUSD.presupuestado > 1 ? T.red : T.amber} />
-          <KpiCard label="Pagado" value={money(kpiPagadoUSD, "USD")} accent={T.teal} />
-          <KpiCard label="Por Pagar" value={money(kpiPorPagarUSD, "USD")} accent={T.amber} />
-          <KpiCard label="Disponible" value={money(kpiDisponibleUSD, "USD")} accent={kpiDisponibleUSD < 0 ? T.red : T.text} />
+          <div style={{ background: T.bg, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: "14px 16px" }}>
+            <Pill tone="teal">USD</Pill>
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap", marginTop: 12 }}>
+              <KpiCard label="Presupuestado" value={money(proyectoKpiDataUSD.presupuestado, "USD")} />
+              <KpiCard label="Ocupado" value={money(kpiOcupadoUSD, "USD")} accent={proyectoKpiDataUSD.presupuestado && kpiOcupadoUSD / proyectoKpiDataUSD.presupuestado > 1 ? T.red : T.amber} />
+              <KpiCard label="Pagado" value={money(kpiPagadoUSD, "USD")} accent={T.teal} />
+              <KpiCard label="Por Pagar" value={money(kpiPorPagarUSD, "USD")} accent={T.amber} />
+              <KpiCard label="Disponible" value={money(kpiDisponibleUSD, "USD")} accent={kpiDisponibleUSD < 0 ? T.red : T.text} />
+            </div>
+          </div>
         </div>
       </Panel>
 

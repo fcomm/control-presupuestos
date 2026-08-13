@@ -96,8 +96,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.3";
+const APP_VERSION = "1.46.4";
 const CHANGELOG = [
+  { v: "1.46.4", desc: "Transacciones: los botones Editar/Duplicar/Eliminar de cada fila cambian a íconos compactos (✎/⧉/✕) con tooltip, para que quepan bien los 3 en el espacio de la columna" },
   { v: "1.46.3", desc: "Transacciones: botón 'Duplicar' — abre el formulario de nueva transacción prellenado con los datos de la original (Status vuelve a 'No Pagado', y se limpian folios de compra/factura), para revisar y guardar como registro nuevo" },
   { v: "1.46.2", desc: "Agrega popup de confirmación antes de eliminar cualquier registro individual (partida, transacción, proveedor, cuenta bancaria, proyecto) — las eliminaciones en lote ya lo tenían" },
   { v: "1.46.1", desc: "Reporte Pagos Dirección: botón 'Generar reporte (PDF)' — toma las transacciones filtradas, genera el PDF, y las marca como 'Reportadas' (con confirmación previa)" },
@@ -1107,6 +1108,26 @@ function Button({ children, variant = "primary", ...rest }) {
       }}
     >
       {children}
+    </button>
+  );
+}
+
+// Botón compacto de solo ícono, para filas de tabla con varias acciones donde
+// el texto completo ("Editar"/"Duplicar"/"Eliminar") ya no cabe bien.
+function IconButton({ icon, label, tone = T.textDim, ...rest }) {
+  return (
+    <button
+      {...rest}
+      title={label}
+      aria-label={label}
+      style={{
+        width: 28, height: 28, borderRadius: 6, cursor: "pointer",
+        background: "transparent", border: `1px solid ${tone}55`, color: tone,
+        fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center", padding: 0,
+        flexShrink: 0,
+      }}
+    >
+      {icon}
     </button>
   );
 }
@@ -2990,10 +3011,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         <td key={c.key} style={i === 0 && depth ? { ...tdStyle, paddingLeft: 14 + depth * 26 } : tdStyle}>{c.render(t)}</td>
       ))}
       <td style={tdStyle}>
-        <div style={{ display: "flex", gap: 6 }}>
-          <Button variant="ghost" onClick={() => startEdit(t)}>Editar</Button>
-          <Button variant="ghost" onClick={() => duplicar(t)}>Duplicar</Button>
-          <Button variant="danger" onClick={() => remove(t.id)}>Eliminar</Button>
+        <div style={{ display: "flex", gap: 4 }}>
+          <IconButton icon="✎" label="Editar" tone={T.accent} onClick={() => startEdit(t)} />
+          <IconButton icon="⧉" label="Duplicar" tone={T.textDim} onClick={() => duplicar(t)} />
+          <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => remove(t.id)} />
         </div>
       </td>
     </tr>

@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.14";
+const APP_VERSION = "1.46.15";
 const CHANGELOG = [
+  { v: "1.46.15", desc: "Fix: agrupar por Mes ya considera el Año — antes 'Noviembre 2025' y 'Septiembre 2026' se ordenaban solo por nombre de mes (Noviembre después de Septiembre), ahora Noviembre 2025 sale primero; de paso, meses del mismo nombre mismo mes pero distinto año ya no se mezclan en un solo grupo" },
   { v: "1.46.14", desc: "Fix: el popup de '+ Nueva partida' (dentro del selector de Partida) siempre creaba la partida en el año actual, sin opción de cambiarlo — ahora trae un campo Año editable" },
   { v: "1.46.13", desc: "Partidas: agrega filtro de Año (multi-selección, junto a Mes) y 'Año' como opción de Agrupar por — necesario ahora que va a haber datos de 2025 y 2026 conviviendo" },
   { v: "1.46.12", desc: "Fix crítico: el popup de editar transacción desde Partidas dejaba la pantalla en blanco al abrir — Forma/Método de Pago intentaban renderizar el objeto {value,label} completo en vez de solo el texto" },
@@ -2038,15 +2039,36 @@ const SIN_DATO = "— Sin dato —";
 function agruparRows(rows, levels, montoKey = "monto_estimado") {
   if (!levels.length) return { type: "rows", rows };
   const [{ field: key, dir = "asc" }, ...rest] = levels;
+  const esCampoMes = key === "mes" || key === "_mes";
+  const anioDe = (r) => Number(key === "mes" ? r.anio : r._anio) || null;
+
   const buckets = new Map();
   rows.forEach((r) => {
-    const val = (r[key] ?? "").toString().trim() || SIN_DATO;
+    let val;
+    if (esCampoMes) {
+      const mes = (r[key] ?? "").toString().trim();
+      const anio = anioDe(r);
+      // "Noviembre 2025" y "Noviembre 2026" son grupos distintos, no el mismo —
+      // si no se conoce el año, se queda como antes (solo el nombre del mes).
+      val = mes ? (anio ? `${mes} ${anio}` : mes) : SIN_DATO;
+    } else {
+      val = (r[key] ?? "").toString().trim() || SIN_DATO;
+    }
     if (!buckets.has(val)) buckets.set(val, []);
     buckets.get(val).push(r);
   });
   let entries = [...buckets.entries()];
-  if (key === "mes" || key === "_mes") {
-    entries.sort((a, b) => MESES.indexOf(a[0]) - MESES.indexOf(b[0]));
+  if (esCampoMes) {
+    // Ordena por año real y luego por posición del mes en el calendario —
+    // no alfabéticamente ni solo por nombre de mes.
+    entries.sort((a, b) => {
+      const anioA = anioDe(a[1][0]) || 0;
+      const anioB = anioDe(b[1][0]) || 0;
+      if (anioA !== anioB) return anioA - anioB;
+      const mesA = a[1][0][key] ?? "";
+      const mesB = b[1][0][key] ?? "";
+      return MESES.indexOf(mesA) - MESES.indexOf(mesB);
+    });
   } else {
     entries.sort((a, b) => a[0].localeCompare(b[0]));
   }
@@ -3096,7 +3118,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   // agrupar por Proyecto/Rubro/Mes aunque esos campos no vivan en la transacción misma.
   const transEnriquecidas = transOrdenadas.map((t) => {
     const p = partidaDe(t);
-    return { ...t, _proyecto: p?.proyecto || SIN_DATO, _rubro: p?.rubro || SIN_DATO, _mes: p?.mes || SIN_DATO, _vinculo: t.partida_id ? "Vinculada" : "Sin vincular" };
+    return { ...t, _proyecto: p?.proyecto || SIN_DATO, _rubro: p?.rubro || SIN_DATO, _mes: p?.mes || SIN_DATO, _anio: p?.anio || null, _vinculo: t.partida_id ? "Vinculada" : "Sin vincular" };
   });
 
   const GROUP_OPCIONES_TRANS = [

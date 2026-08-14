@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.18";
+const APP_VERSION = "1.46.19";
 const CHANGELOG = [
+  { v: "1.46.19", desc: "Dashboard: 'Resumen presupuestado por proyecto y rubro' ahora tiene sus propios filtros de Proyecto/Mes/Año (compartidos con 'Resumen financiero') y un botón 'Contraer todo'" },
   { v: "1.46.18", desc: "Catálogo de Proyectos: cambia de edición implícita (clic+salir para guardar) a explícita — botón 'Editar' activa los campos, y 'Guardar'/'Cancelar' confirma o descarta el cambio" },
   { v: "1.46.17", desc: "Fix: 'Resumen presupuestado por proyecto y rubro' combinaba el mismo mes de distintos años en una sola columna — ahora, cuando los datos abarcan más de un año, cada columna se separa en 'Mes Año' (ej. Agosto 2025 y Agosto 2026 aparte), ordenadas cronológicamente" },
   { v: "1.46.16", desc: "Dashboard: agrega filtro de Año (junto a Proyecto/Mes) en 'Resumen financiero' — necesario ahora que hay datos de 2025 y 2026. Nota: la tabla de 'Resumen presupuestado por proyecto y rubro' de abajo aún combina el mismo mes de distintos años si dejas Año en 'Todos'" },
@@ -1431,7 +1432,18 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
         </div>
       </Panel>
 
-      <ResumenPivotPanel partidasUnidad={partidasFiltradasMes} proyectosUnidad={proyectosUnidad} />
+      <ResumenPivotPanel
+        partidasUnidad={partidasFiltradasMes}
+        proyectosUnidad={proyectosUnidad}
+        proyectoKpi={proyectoKpi}
+        setProyectoKpi={setProyectoKpi}
+        mesesDisponibles={mesesDisponibles}
+        mesesSeleccionados={mesesSeleccionados}
+        setMesesSeleccionados={setMesesSeleccionados}
+        aniosDisponibles={aniosDisponibles}
+        aniosSeleccionados={aniosSeleccionados}
+        setAniosSeleccionados={setAniosSeleccionados}
+      />
 
       <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 20 }}>
         <Panel title="Presupuesto vs. ejecutado por proyecto" subtitle={`Gastos compartidos ya prorrateados según su marcador${mesLabel}`}>
@@ -1488,7 +1500,12 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   );
 }
 
-function ResumenPivotPanel({ partidasUnidad, proyectosUnidad }) {
+function ResumenPivotPanel({
+  partidasUnidad, proyectosUnidad,
+  proyectoKpi, setProyectoKpi,
+  mesesDisponibles, mesesSeleccionados, setMesesSeleccionados,
+  aniosDisponibles, aniosSeleccionados, setAniosSeleccionados,
+}) {
   const partidasMXN = partidasUnidad.filter((p) => (p.moneda || "MXP") === "MXP");
   const aniosPresentes = [...new Set(partidasMXN.map((p) => p.anio).filter(Boolean))];
   const multiAnio = aniosPresentes.length > 1;
@@ -1508,29 +1525,61 @@ function ResumenPivotPanel({ partidasUnidad, proyectosUnidad }) {
     return next;
   });
 
-  if (!partidasMXN.length) return null;
+  const filtros = (
+    <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+      <Field label="Proyecto">
+        <Select value={proyectoKpi} onChange={(e) => setProyectoKpi(e.target.value)} style={{ width: 190 }}>
+          <option>Todos</option>
+          {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
+        </Select>
+      </Field>
+      <Field label="Mes">
+        <MesMultiSelect mesesDisponibles={mesesDisponibles} seleccionados={mesesSeleccionados} onChange={setMesesSeleccionados} />
+      </Field>
+      <Field label="Año">
+        <AnioMultiSelect aniosDisponibles={aniosDisponibles} seleccionados={aniosSeleccionados} onChange={setAniosSeleccionados} />
+      </Field>
+    </div>
+  );
+
+  if (!partidasMXN.length) {
+    return (
+      <Panel title="Resumen presupuestado por proyecto y rubro" subtitle="Solo montos en MXP" right={filtros}>
+        <div style={{ textAlign: "center", color: T.textFaint, fontSize: 12.5, padding: 24 }}>Sin partidas para estos filtros</div>
+      </Panel>
+    );
+  }
 
   // "Todos" / "<Grupo> Gral" son marcadores de prorrateo, no proyectos reales —
   // se reparten entre los proyectos reales antes de armar la tabla, para que
   // nunca aparezcan como su propia fila.
-  const partidasResueltas = partidasMXN.flatMap((p) =>
+  let partidasResueltas = partidasMXN.flatMap((p) =>
     resolverProrrateo(p.proyecto, proyectosUnidad).map(({ proyecto, fraccion }) => ({
       ...p, proyecto, monto_estimado: (Number(p.monto_estimado) || 0) * fraccion, _columna: columnaDe(p),
     }))
   );
+  if (proyectoKpi !== "Todos") partidasResueltas = partidasResueltas.filter((p) => p.proyecto === proyectoKpi);
 
   const pivot = pivotearPorMes(partidasResueltas, ["proyecto", "rubro", "concepto"], meses, "monto_estimado", "_columna");
   const totalGeneral = meses.reduce((acc, m) => { acc[m] = 0; return acc; }, {});
   let granTotal = 0;
-  partidasMXN.forEach((p) => {
+  partidasResueltas.forEach((p) => {
     const v = Number(p.monto_estimado) || 0;
-    const col = columnaDe(p);
-    if (totalGeneral[col] !== undefined) totalGeneral[col] += v;
+    if (totalGeneral[p._columna] !== undefined) totalGeneral[p._columna] += v;
     granTotal += v;
   });
 
   return (
-    <Panel title="Resumen presupuestado por proyecto y rubro" subtitle="Solo montos en MXP — clic en una fila para expandir/colapsar">
+    <Panel
+      title="Resumen presupuestado por proyecto y rubro"
+      subtitle="Solo montos en MXP — clic en una fila para expandir/colapsar"
+      right={
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+          {filtros}
+          <Button variant="ghost" onClick={() => setCollapsed(new Set(collectGroupPaths(pivot)))}>Contraer todo</Button>
+        </div>
+      }
+    >
       <div style={{ overflowX: "auto" }}>
         <table style={tableStyle}>
           <thead>

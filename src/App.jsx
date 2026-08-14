@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.17";
+const APP_VERSION = "1.46.18";
 const CHANGELOG = [
+  { v: "1.46.18", desc: "Catálogo de Proyectos: cambia de edición implícita (clic+salir para guardar) a explícita — botón 'Editar' activa los campos, y 'Guardar'/'Cancelar' confirma o descarta el cambio" },
   { v: "1.46.17", desc: "Fix: 'Resumen presupuestado por proyecto y rubro' combinaba el mismo mes de distintos años en una sola columna — ahora, cuando los datos abarcan más de un año, cada columna se separa en 'Mes Año' (ej. Agosto 2025 y Agosto 2026 aparte), ordenadas cronológicamente" },
   { v: "1.46.16", desc: "Dashboard: agrega filtro de Año (junto a Proyecto/Mes) en 'Resumen financiero' — necesario ahora que hay datos de 2025 y 2026. Nota: la tabla de 'Resumen presupuestado por proyecto y rubro' de abajo aún combina el mismo mes de distintos años si dejas Año en 'Todos'" },
   { v: "1.46.15", desc: "Fix: agrupar por Mes ya considera el Año — antes 'Noviembre 2025' y 'Septiembre 2026' se ordenaban solo por nombre de mes (Noviembre después de Septiembre), ahora Noviembre 2025 sale primero; de paso, meses del mismo nombre mismo mes pero distinto año ya no se mezclan en un solo grupo" },
@@ -4327,18 +4328,25 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
 function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi, cuentasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "" });
-  const [drafts, setDrafts] = useState({}); // id -> { field: value } — edición local antes de confirmar en blur
+  const [editingId, setEditingId] = useState(null);
+  const [draft, setDraft] = useState({ nombre: "", grupo: "", pct: "" });
+  const [guardandoId, setGuardandoId] = useState(null);
 
-  const draftValue = (p, field) => (drafts[p.id]?.[field] !== undefined ? drafts[p.id][field] : p[field]);
-  const setDraft = (id, field, val) => setDrafts((d) => ({ ...d, [id]: { ...d[id], [field]: val } }));
-  const commitDraft = (id, field) => {
-    if (drafts[id]?.[field] === undefined) return;
-    const val = field === "pct" ? Number(drafts[id][field]) || 0 : drafts[id][field];
-    updateProyecto(id, field, val);
+  const empezarEditar = (p) => {
+    setEditingId(p.id);
+    setDraft({ nombre: p.nombre || "", grupo: p.grupo || "", pct: p.pct ?? "" });
   };
-
-  const updateProyecto = (id, field, val) => {
-    proyectosApi.update(id, { [field]: val }).catch((err) => alert("No se pudo actualizar: " + (err.message || err)));
+  const cancelarEditar = () => { setEditingId(null); setDraft({ nombre: "", grupo: "", pct: "" }); };
+  const guardarEditar = async (id) => {
+    setGuardandoId(id);
+    try {
+      await proyectosApi.update(id, { nombre: draft.nombre, grupo: draft.grupo, pct: Number(draft.pct) || 0 });
+      cancelarEditar();
+    } catch (err) {
+      alert("No se pudo actualizar: " + (err.message || err));
+    } finally {
+      setGuardandoId(null);
+    }
   };
   const removeProyecto = (id) => {
     const p = proyectosApi.rows.find((x) => x.id === id);
@@ -4367,14 +4375,38 @@ function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi, cuentasAp
               <tr>{["Proyecto","Grupo","% Administrativos",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
             </thead>
             <tbody>
-              {proyectosUnidad.map((p) => (
-                <tr key={p.id}>
-                  <td style={tdStyle}><TextInput value={draftValue(p, "nombre")} onChange={(e) => setDraft(p.id, "nombre", e.target.value)} onBlur={() => commitDraft(p.id, "nombre")} /></td>
-                  <td style={tdStyle}><TextInput value={draftValue(p, "grupo")} onChange={(e) => setDraft(p.id, "grupo", e.target.value)} onBlur={() => commitDraft(p.id, "grupo")} placeholder="Desh / Prod / IMP" /></td>
-                  <td style={tdStyle}><TextInput type="number" value={draftValue(p, "pct")} onChange={(e) => setDraft(p.id, "pct", e.target.value)} onBlur={() => commitDraft(p.id, "pct")} style={{ width: 90 }} /></td>
-                  <td style={tdStyle}><Button variant="danger" onClick={() => removeProyecto(p.id)}>Eliminar</Button></td>
-                </tr>
-              ))}
+              {proyectosUnidad.map((p) => {
+                const editando = editingId === p.id;
+                return (
+                  <tr key={p.id}>
+                    {editando ? (
+                      <>
+                        <td style={tdStyle}><TextInput autoFocus value={draft.nombre} onChange={(e) => setDraft({ ...draft, nombre: e.target.value })} /></td>
+                        <td style={tdStyle}><TextInput value={draft.grupo} onChange={(e) => setDraft({ ...draft, grupo: e.target.value })} placeholder="Desh / Prod / IMP" /></td>
+                        <td style={tdStyle}><TextInput type="number" value={draft.pct} onChange={(e) => setDraft({ ...draft, pct: e.target.value })} style={{ width: 90 }} /></td>
+                        <td style={tdStyle}>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <Button onClick={() => guardarEditar(p.id)} disabled={guardandoId === p.id}>{guardandoId === p.id ? "Guardando…" : "Guardar"}</Button>
+                            <Button variant="ghost" onClick={cancelarEditar}>Cancelar</Button>
+                          </div>
+                        </td>
+                      </>
+                    ) : (
+                      <>
+                        <td style={tdStyle}>{p.nombre}</td>
+                        <td style={{ ...tdStyle, color: T.textDim }}>{p.grupo || "—"}</td>
+                        <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{p.pct ?? 0}%</td>
+                        <td style={tdStyle}>
+                          <div style={{ display: "flex", gap: 6 }}>
+                            <Button variant="ghost" onClick={() => empezarEditar(p)}>Editar</Button>
+                            <Button variant="danger" onClick={() => removeProyecto(p.id)}>Eliminar</Button>
+                          </div>
+                        </td>
+                      </>
+                    )}
+                  </tr>
+                );
+              })}
               <tr>
                 <td style={tdStyle}><TextInput placeholder="Nuevo proyecto" value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} /></td>
                 <td style={tdStyle}><TextInput placeholder="Grupo" value={nuevo.grupo} onChange={(e) => setNuevo({ ...nuevo, grupo: e.target.value })} /></td>

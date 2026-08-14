@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.20";
+const APP_VERSION = "1.46.21";
 const CHANGELOG = [
+  { v: "1.46.21", desc: "Dashboard: quita el gráfico 'Distribución por rubro'. 'Presupuesto vs. ejecutado por proyecto' y 'Tendencia mensual' ahora separan MXP y USD en bloques distintos, en vez de sumarlos juntos" },
   { v: "1.46.20", desc: "Dashboard: nuevo panel 'Pagado real por proyecto y mes' — misma estructura que el de presupuestado, pero suma solo transacciones con Status = Pagado, para que Dirección vea lo realmente pagado sin confundirlo con el plan" },
   { v: "1.46.19", desc: "Dashboard: 'Resumen presupuestado por proyecto y rubro' ahora tiene sus propios filtros de Proyecto/Mes/Año (compartidos con 'Resumen financiero') y un botón 'Contraer todo'" },
   { v: "1.46.18", desc: "Catálogo de Proyectos: cambia de edición implícita (clic+salir para guardar) a explícita — botón 'Editar' activa los campos, y 'Guardar'/'Cancelar' confirma o descarta el cambio" },
@@ -1259,36 +1260,32 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
     return { MXP: Object.values(mapas.MXP), USD: Object.values(mapas.USD) };
   }, [proyectosUnidad, partidasFiltradasMes, transFiltradasMes]);
   const porProyecto = porProyectoPorMoneda.MXP; // usado por el pivot/gráficas existentes (solo MXP)
-
-  const porRubro = useMemo(() => {
-    const map = {};
-    partidasFiltradasMes.forEach((p) => {
-      map[p.rubro] = map[p.rubro] || { rubro: p.rubro, presupuestado: 0, ejecutado: 0 };
-      map[p.rubro].presupuestado += Number(p.monto_estimado) || 0;
-    });
-    transFiltradasMes.forEach((t) => {
-      const partida = partidasFiltradasMes.find((p) => p.id === t.partida_id);
-      if (!partida) return;
-      map[partida.rubro] = map[partida.rubro] || { rubro: partida.rubro, presupuestado: 0, ejecutado: 0 };
-      map[partida.rubro].ejecutado += Number(t.importe) || 0;
-    });
-    return Object.values(map).sort((a, b) => b.presupuestado - a.presupuestado);
-  }, [partidasFiltradasMes, transFiltradasMes]);
+  const porProyectoUSD = porProyectoPorMoneda.USD;
 
   // La tendencia mensual siempre usa TODOS los meses (sin filtrar), es la única
-  // vista pensada justo para comparar entre meses.
-  const porMes = useMemo(() => {
-    const map = {};
-    MESES.forEach((m) => { map[m] = { mes: m, presupuestado: 0, ejecutado: 0 }; });
+  // vista pensada justo para comparar entre meses. Separada por moneda, para
+  // nunca sumar MXP con USD en la misma línea.
+  const porMesPorMoneda = useMemo(() => {
+    const nuevoMapa = () => {
+      const m = {};
+      MESES.forEach((mes) => { m[mes] = { mes, presupuestado: 0, ejecutado: 0 }; });
+      return m;
+    };
+    const mapas = { MXP: nuevoMapa(), USD: nuevoMapa() };
     partidasUnidad.forEach((p) => {
-      if (map[p.mes]) map[p.mes].presupuestado += Number(p.monto_estimado) || 0;
+      const m = (p.moneda || "MXP") === "USD" ? "USD" : "MXP";
+      if (mapas[m][p.mes]) mapas[m][p.mes].presupuestado += Number(p.monto_estimado) || 0;
     });
     transUnidad.forEach((t) => {
       const partida = partidasUnidad.find((p) => p.id === t.partida_id);
-      if (!partida || !map[partida.mes]) return;
-      map[partida.mes].ejecutado += Number(t.importe) || 0;
+      if (!partida) return;
+      const m = (t.moneda || "MXP") === "USD" ? "USD" : "MXP";
+      if (mapas[m][partida.mes]) mapas[m][partida.mes].ejecutado += Number(t.importe) || 0;
     });
-    return Object.values(map).filter((m) => m.presupuestado > 0 || m.ejecutado > 0);
+    return {
+      MXP: Object.values(mapas.MXP).filter((m) => m.presupuestado > 0 || m.ejecutado > 0),
+      USD: Object.values(mapas.USD).filter((m) => m.presupuestado > 0 || m.ejecutado > 0),
+    };
   }, [partidasUnidad, transUnidad]);
 
   const totalPresupuestadoMXN = partidasFiltradasMes.filter((p) => (p.moneda || "MXP") !== "USD").reduce((s, p) => s + (Number(p.monto_estimado) || 0), 0);
@@ -1455,9 +1452,10 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
         aniosDisponibles={aniosDisponibles}
       />
 
-      <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 20 }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         <Panel title="Presupuesto vs. ejecutado por proyecto" subtitle={`Gastos compartidos ya prorrateados según su marcador${mesLabel}`}>
-          <ResponsiveContainer width="100%" height={Math.max(220, porProyecto.length * 34)}>
+          <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>MXP</div>
+          <ResponsiveContainer width="100%" height={Math.max(180, porProyecto.length * 34)}>
             <BarChart data={porProyecto} layout="vertical" margin={{ left: 8, right: 16 }}>
               <CartesianGrid strokeDasharray="2 4" stroke={T.borderSoft} horizontal={false} />
               <XAxis type="number" tick={{ fill: T.textFaint, fontSize: 10 }} tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`} stroke={T.border} />
@@ -1468,32 +1466,31 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
               <Bar dataKey="ejecutado" name="Ejecutado" fill={T.accent} radius={[0,3,3,0]} />
             </BarChart>
           </ResponsiveContainer>
-        </Panel>
 
-        <Panel title="Distribución por rubro" subtitle="Sobre el total presupuestado">
-          <ResponsiveContainer width="100%" height={260}>
-            <PieChart>
-              <Pie data={porRubro} dataKey="presupuestado" nameKey="rubro" innerRadius={55} outerRadius={90} paddingAngle={2}>
-                {porRubro.map((_, i) => <Cell key={i} fill={COLORS[i % COLORS.length]} stroke={T.panel} strokeWidth={2} />)}
-              </Pie>
-              <Tooltip content={<ChartTooltip />} />
-            </PieChart>
-          </ResponsiveContainer>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 4 }}>
-            {porRubro.slice(0, 8).map((r, i) => (
-              <div key={r.rubro} style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10.5, color: T.textDim }}>
-                <span style={{ width: 8, height: 8, borderRadius: 2, background: COLORS[i % COLORS.length] }} />
-                {r.rubro}
-              </div>
-            ))}
-          </div>
+          <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, margin: "18px 0 4px" }}>USD</div>
+          {porProyectoUSD.some((p) => p.presupuestado || p.ejecutado) ? (
+            <ResponsiveContainer width="100%" height={Math.max(180, porProyectoUSD.length * 34)}>
+              <BarChart data={porProyectoUSD} layout="vertical" margin={{ left: 8, right: 16 }}>
+                <CartesianGrid strokeDasharray="2 4" stroke={T.borderSoft} horizontal={false} />
+                <XAxis type="number" tick={{ fill: T.textFaint, fontSize: 10 }} tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`} stroke={T.border} />
+                <YAxis type="category" dataKey="proyecto" width={110} tick={{ fill: T.textDim, fontSize: 11 }} stroke={T.border} />
+                <Tooltip content={<ChartTooltip />} />
+                <Legend wrapperStyle={{ fontSize: 11, color: T.textDim }} />
+                <Bar dataKey="presupuestado" name="Presupuestado" fill={T.border} radius={[0,3,3,0]} />
+                <Bar dataKey="ejecutado" name="Ejecutado" fill={T.teal} radius={[0,3,3,0]} />
+              </BarChart>
+            </ResponsiveContainer>
+          ) : (
+            <div style={{ textAlign: "center", color: T.textFaint, fontSize: 12, padding: 16 }}>Sin datos en USD para estos filtros</div>
+          )}
         </Panel>
       </div>
 
-      {porMes.length > 1 && (
+      {(porMesPorMoneda.MXP.length > 1 || porMesPorMoneda.USD.length > 1) && (
         <Panel title="Tendencia mensual" subtitle="Presupuestado vs. ejecutado">
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={porMes}>
+          <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>MXP</div>
+          <ResponsiveContainer width="100%" height={200}>
+            <LineChart data={porMesPorMoneda.MXP}>
               <CartesianGrid strokeDasharray="2 4" stroke={T.borderSoft} />
               <XAxis dataKey="mes" tick={{ fill: T.textFaint, fontSize: 10 }} stroke={T.border} />
               <YAxis tick={{ fill: T.textFaint, fontSize: 10 }} tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`} stroke={T.border} />
@@ -1503,6 +1500,23 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
               <Line type="monotone" dataKey="ejecutado" name="Ejecutado" stroke={T.accent} strokeWidth={2} dot={{ r: 3 }} />
             </LineChart>
           </ResponsiveContainer>
+
+          <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, margin: "18px 0 4px" }}>USD</div>
+          {porMesPorMoneda.USD.length > 0 ? (
+            <ResponsiveContainer width="100%" height={200}>
+              <LineChart data={porMesPorMoneda.USD}>
+                <CartesianGrid strokeDasharray="2 4" stroke={T.borderSoft} />
+                <XAxis dataKey="mes" tick={{ fill: T.textFaint, fontSize: 10 }} stroke={T.border} />
+                <YAxis tick={{ fill: T.textFaint, fontSize: 10 }} tickFormatter={(v) => `$${(v/1000).toFixed(0)}k`} stroke={T.border} />
+                <Tooltip content={<ChartTooltip />} />
+                <Legend wrapperStyle={{ fontSize: 11, color: T.textDim }} />
+                <Line type="monotone" dataKey="presupuestado" name="Presupuestado" stroke={T.textFaint} strokeWidth={2} dot={false} />
+                <Line type="monotone" dataKey="ejecutado" name="Ejecutado" stroke={T.teal} strokeWidth={2} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          ) : (
+            <div style={{ textAlign: "center", color: T.textFaint, fontSize: 12, padding: 16 }}>Sin datos en USD para estos filtros</div>
+          )}
         </Panel>
       )}
 

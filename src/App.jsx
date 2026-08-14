@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.22";
+const APP_VERSION = "1.46.23";
 const CHANGELOG = [
+  { v: "1.46.23", desc: "Dashboard: el selector de Moneda (MXP/USD) del panel comparativo cambia de menú desplegable a un switch deslizante estilo iOS" },
   { v: "1.46.22", desc: "Dashboard: 'Presupuestado' y 'Pagado real' se fusionan en un solo marco con filtros compartidos (Proyecto/Mes/Año) y un selector de Moneda (MXP/USD) nuevo, para dejar claro que el mismo filtro aplica a ambas tablas" },
   { v: "1.46.21", desc: "Dashboard: quita el gráfico 'Distribución por rubro'. 'Presupuesto vs. ejecutado por proyecto' y 'Tendencia mensual' ahora separan MXP y USD en bloques distintos, en vez de sumarlos juntos" },
   { v: "1.46.20", desc: "Dashboard: nuevo panel 'Pagado real por proyecto y mes' — misma estructura que el de presupuestado, pero suma solo transacciones con Status = Pagado, para que Dirección vea lo realmente pagado sin confundirlo con el plan" },
@@ -1154,6 +1155,38 @@ function IconButton({ icon, label, tone = T.textDim, ...rest }) {
   );
 }
 
+// Switch deslizante estilo iOS, para elegir entre dos opciones (ej. MXP/USD).
+function SlidingToggle({ opciones, value, onChange }) {
+  const idx = Math.max(0, opciones.indexOf(value));
+  const anchoBoton = 68;
+  return (
+    <div style={{
+      position: "relative", width: anchoBoton * opciones.length + 4, height: 30,
+      background: T.panelAlt, borderRadius: 15, border: `1px solid ${T.border}`, display: "flex",
+    }}>
+      <div style={{
+        position: "absolute", top: 2, left: 2 + idx * anchoBoton, width: anchoBoton - 2, height: 24,
+        background: T.accent, borderRadius: 12, transition: "left 0.2s ease",
+        boxShadow: "0 1px 3px rgba(35,42,49,0.2)",
+      }} />
+      {opciones.map((op) => (
+        <button
+          key={op}
+          type="button"
+          onClick={() => onChange(op)}
+          style={{
+            position: "relative", zIndex: 1, width: anchoBoton, border: "none", background: "transparent",
+            fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: T.fontUI, letterSpacing: "0.02em",
+            color: value === op ? "#FFFFFF" : T.textDim, transition: "color 0.2s ease",
+          }}
+        >
+          {op}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function Pill({ children, tone = "dim" }) {
   const tones = {
     dim: { color: T.textDim, background: T.panelAlt, border: `1px solid ${T.border}` },
@@ -1612,10 +1645,7 @@ function ResumenComparativoPanel({
             <AnioMultiSelect aniosDisponibles={aniosDisponibles} seleccionados={aniosSeleccionados} onChange={setAniosSeleccionados} />
           </Field>
           <Field label="Moneda">
-            <Select value={monedaResumen} onChange={(e) => setMonedaResumen(e.target.value)} style={{ width: 100 }}>
-              <option>MXP</option>
-              <option>USD</option>
-            </Select>
+            <SlidingToggle opciones={["MXP", "USD"]} value={monedaResumen} onChange={setMonedaResumen} />
           </Field>
         </div>
       }

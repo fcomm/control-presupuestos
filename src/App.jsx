@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.13";
+const APP_VERSION = "1.46.14";
 const CHANGELOG = [
+  { v: "1.46.14", desc: "Fix: el popup de '+ Nueva partida' (dentro del selector de Partida) siempre creaba la partida en el año actual, sin opción de cambiarlo — ahora trae un campo Año editable" },
   { v: "1.46.13", desc: "Partidas: agrega filtro de Año (multi-selección, junto a Mes) y 'Año' como opción de Agrupar por — necesario ahora que va a haber datos de 2025 y 2026 conviviendo" },
   { v: "1.46.12", desc: "Fix crítico: el popup de editar transacción desde Partidas dejaba la pantalla en blanco al abrir — Forma/Método de Pago intentaban renderizar el objeto {value,label} completo en vez de solo el texto" },
   { v: "1.46.11", desc: "Fix: al agrupar Transacciones por 'Mes (partida)' los meses salían en orden alfabético en vez de cronológico — el fix ya existía para el campo 'mes' de Partidas, pero no cubría el campo '_mes' que usa Transacciones" },
@@ -354,7 +355,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
 
   const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
-  const nuevaPartidaBlank = { mes: MESES[0], concepto: "", rubro: RUBROS[0]?.rubro || "", proyecto: proyectosOpciones[0] || "", monto_estimado: "", moneda: "MXP" };
+  const nuevaPartidaBlank = { mes: MESES[0], anio: new Date().getFullYear(), concepto: "", rubro: RUBROS[0]?.rubro || "", proyecto: proyectosOpciones[0] || "", monto_estimado: "", moneda: "MXP" };
   const [creando, setCreando] = useState(false);
   const [nuevaPartida, setNuevaPartida] = useState(nuevaPartidaBlank);
   const [guardandoPartida, setGuardandoPartida] = useState(false);
@@ -363,7 +364,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
     if (!nuevaPartida.concepto.trim() || !nuevaPartida.monto_estimado) return;
     setGuardandoPartida(true);
     try {
-      const anio = new Date().getFullYear();
+      const anio = Number(nuevaPartida.anio) || new Date().getFullYear();
       const existingFolios = partidas.filter((p) => p.unidad === unidad).map((p) => p.folio);
       const folio = autoFolio(unidad, nuevaPartida.mes, anio, existingFolios);
       const categoriaDefault = RUBROS.find((r) => r.rubro === nuevaPartida.rubro)?.categorias?.[0] || "Diversos";
@@ -442,6 +443,9 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
                   <Select value={nuevaPartida.mes} onChange={(e) => setNuevaPartida({ ...nuevaPartida, mes: e.target.value })}>
                     {MESES.map((m) => <option key={m}>{m}</option>)}
                   </Select>
+                </Field>
+                <Field label="Año">
+                  <TextInput type="number" value={nuevaPartida.anio} onChange={(e) => setNuevaPartida({ ...nuevaPartida, anio: e.target.value })} />
                 </Field>
                 <Field label="Rubro">
                   <Select value={nuevaPartida.rubro} onChange={(e) => setNuevaPartida({ ...nuevaPartida, rubro: e.target.value })}>

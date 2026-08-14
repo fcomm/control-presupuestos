@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.12";
+const APP_VERSION = "1.46.13";
 const CHANGELOG = [
+  { v: "1.46.13", desc: "Partidas: agrega filtro de Año (multi-selección, junto a Mes) y 'Año' como opción de Agrupar por — necesario ahora que va a haber datos de 2025 y 2026 conviviendo" },
   { v: "1.46.12", desc: "Fix crítico: el popup de editar transacción desde Partidas dejaba la pantalla en blanco al abrir — Forma/Método de Pago intentaban renderizar el objeto {value,label} completo en vez de solo el texto" },
   { v: "1.46.11", desc: "Fix: al agrupar Transacciones por 'Mes (partida)' los meses salían en orden alfabético en vez de cronológico — el fix ya existía para el campo 'mes' de Partidas, pero no cubría el campo '_mes' que usa Transacciones" },
   { v: "1.46.10", desc: "Botón 'Contraer todo' visible junto a los controles de tabla (Partidas, Transacciones, sin vincular) — ya no hace falta abrir el menú de Agrupar por para encontrarlo. Partidas también tiene 'Contraer transacciones' para las filas expandidas" },
@@ -1810,7 +1811,10 @@ function GroupByControl({ options, value, onChange, maxLevels = 3, groupedTree, 
 }
 
 
-function MesMultiSelect({ mesesDisponibles, seleccionados, onChange }) {
+// Selector de casillas múltiples genérico — se usa tanto para Mes como para Año.
+// `opciones` = lista de valores disponibles; `todosLabel` = texto cuando no hay
+// nada seleccionado (equivale a "todos").
+function MultiSelect({ opciones, seleccionados, onChange, todosLabel, unidadLabel = "" }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -1819,8 +1823,8 @@ function MesMultiSelect({ mesesDisponibles, seleccionados, onChange }) {
     return () => document.removeEventListener("mousedown", onClickFuera);
   }, []);
 
-  const label = seleccionados.length === 0 ? "Todos los meses" : seleccionados.length === 1 ? seleccionados[0] : `${seleccionados.length} meses`;
-  const toggleMes = (m) => onChange(seleccionados.includes(m) ? seleccionados.filter((x) => x !== m) : [...seleccionados, m]);
+  const label = seleccionados.length === 0 ? todosLabel : seleccionados.length === 1 ? String(seleccionados[0]) : `${seleccionados.length}${unidadLabel}`;
+  const toggleValor = (v) => onChange(seleccionados.includes(v) ? seleccionados.filter((x) => x !== v) : [...seleccionados, v]);
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
@@ -1840,12 +1844,12 @@ function MesMultiSelect({ mesesDisponibles, seleccionados, onChange }) {
         }}>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: T.text, padding: "5px 4px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, marginBottom: 4, paddingBottom: 8 }}>
             <input type="checkbox" checked={seleccionados.length === 0} onChange={() => onChange([])} />
-            Todos los meses
+            {todosLabel}
           </label>
-          {mesesDisponibles.map((m) => (
-            <label key={m} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: T.text, padding: "5px 4px", cursor: "pointer" }}>
-              <input type="checkbox" checked={seleccionados.includes(m)} onChange={() => toggleMes(m)} />
-              {m}
+          {opciones.map((v) => (
+            <label key={v} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: T.text, padding: "5px 4px", cursor: "pointer" }}>
+              <input type="checkbox" checked={seleccionados.includes(v)} onChange={() => toggleValor(v)} />
+              {v}
             </label>
           ))}
           <Button variant="ghost" onClick={() => setOpen(false)} style={{ width: "100%", marginTop: 8 }}>Cerrar</Button>
@@ -1854,6 +1858,15 @@ function MesMultiSelect({ mesesDisponibles, seleccionados, onChange }) {
     </div>
   );
 }
+
+function MesMultiSelect({ mesesDisponibles, seleccionados, onChange }) {
+  return <MultiSelect opciones={mesesDisponibles} seleccionados={seleccionados} onChange={onChange} todosLabel="Todos los meses" unidadLabel=" meses" />;
+}
+
+function AnioMultiSelect({ aniosDisponibles, seleccionados, onChange }) {
+  return <MultiSelect opciones={aniosDisponibles} seleccionados={seleccionados} onChange={onChange} todosLabel="Todos los años" unidadLabel=" años" />;
+}
+
 
 
 function Modal({ title, subtitle, onClose, children, width = 720, zIndex = 1000 }) {
@@ -2483,11 +2496,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const categoriasDisponibles = RUBROS.find((r) => r.rubro === form.rubro)?.categorias || [];
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
 
-  const [filtros, setFiltros] = useSessionState("ss-partidas-filtros", { texto: "", mes: [], rubro: "Todos", proyecto: "Todos" });
+  const [filtros, setFiltros] = useSessionState("ss-partidas-filtros", { texto: "", mes: [], anio: [], rubro: "Todos", proyecto: "Todos" });
   const filtrosMes = Array.isArray(filtros.mes) ? filtros.mes : [];
+  const filtrosAnio = Array.isArray(filtros.anio) ? filtros.anio : [];
   const rubrosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.rubro).filter(Boolean))].sort();
   const proyectosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.proyecto).filter(Boolean))].sort();
   const mesesDisponiblesFiltro = MESES.filter((m) => partidasUnidad.some((p) => p.mes === m));
+  const aniosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.anio).filter(Boolean))].sort((a, b) => a - b);
 
   const partidasFiltradas = partidasUnidad.filter((p) => {
     if (filtros.texto.trim()) {
@@ -2496,12 +2511,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       if (!enTexto) return false;
     }
     if (filtrosMes.length && !filtrosMes.includes(p.mes)) return false;
+    if (filtrosAnio.length && !filtrosAnio.includes(p.anio)) return false;
     if (filtros.rubro !== "Todos" && p.rubro !== filtros.rubro) return false;
     if (filtros.proyecto !== "Todos" && p.proyecto !== filtros.proyecto) return false;
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtrosMes.length > 0 || filtros.rubro !== "Todos" || filtros.proyecto !== "Todos";
-  const limpiarFiltros = () => setFiltros({ texto: "", mes: [], rubro: "Todos", proyecto: "Todos" });
+  const filtrosActivos = filtros.texto.trim() || filtrosMes.length > 0 || filtrosAnio.length > 0 || filtros.rubro !== "Todos" || filtros.proyecto !== "Todos";
+  const limpiarFiltros = () => setFiltros({ texto: "", mes: [], anio: [], rubro: "Todos", proyecto: "Todos" });
 
   const [sort, setSort] = useSessionState("ss-partidas-sort", { key: null, dir: "asc" });
   const partidasOrdenadas = sortRows(partidasFiltradas, sort, {
@@ -2511,6 +2527,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   });
 
   const GROUP_OPCIONES = [
+    { value: "anio", label: "Año" },
     { value: "mes", label: "Mes" },
     { value: "rubro", label: "Rubro" },
     { value: "categoria", label: "Categoría" },
@@ -2680,6 +2697,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           </Field>
           <Field label="Mes">
             <MesMultiSelect mesesDisponibles={mesesDisponiblesFiltro} seleccionados={filtrosMes} onChange={(nuevo) => setFiltros({ ...filtros, mes: nuevo })} />
+          </Field>
+          <Field label="Año">
+            <AnioMultiSelect aniosDisponibles={aniosDisponiblesFiltro} seleccionados={filtrosAnio} onChange={(nuevo) => setFiltros({ ...filtros, anio: nuevo })} />
           </Field>
           <Field label="Proyecto">
             <Select value={filtros.proyecto} onChange={(e) => setFiltros({ ...filtros, proyecto: e.target.value })} style={{ width: 180 }}>

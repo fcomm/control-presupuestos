@@ -97,8 +97,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.23";
+const APP_VERSION = "1.46.25";
 const CHANGELOG = [
+  { v: "1.46.25", desc: "Fix crítico: al crear una transacción nueva, el ID (folio_transaccion) se generaba sin año (ej. OSB-AGO-001), así que Agosto 2025 y Agosto 2026 competían por la misma numeración y podían chocar — ahora incluye el año, igual que el folio de las partidas" },
+  { v: "1.46.24", desc: "Fix: el estado de 'Contraer todo' del panel comparativo del Dashboard se perdía al cambiar de pestaña y regresar — ahora persiste en la sesión, igual que los demás filtros" },
   { v: "1.46.23", desc: "Dashboard: el selector de Moneda (MXP/USD) del panel comparativo cambia de menú desplegable a un switch deslizante estilo iOS" },
   { v: "1.46.22", desc: "Dashboard: 'Presupuestado' y 'Pagado real' se fusionan en un solo marco con filtros compartidos (Proyecto/Mes/Año) y un selector de Moneda (MXP/USD) nuevo, para dejar claro que el mismo filtro aplica a ambas tablas" },
   { v: "1.46.21", desc: "Dashboard: quita el gráfico 'Distribución por rubro'. 'Presupuesto vs. ejecutado por proyecto' y 'Tendencia mensual' ahora separan MXP y USD en bloques distintos, en vez de sumarlos juntos" },
@@ -250,9 +252,9 @@ function autoFolio(unidad, mes, anio, existingFolios) {
 
 // Identificador único por transacción (no ligado al mes, a diferencia del folio
 // de partida) — ej. "CTM-T-0001". Se asigna solo, no se puede editar.
-function nextFolioTransaccion(unidad, mes, existingTransacciones) {
+function nextFolioTransaccion(unidad, mes, anio, existingTransacciones) {
   const abr = MES_ABR[mes] || "GEN";
-  const prefix = `${unidad}-${abr}-`;
+  const prefix = anio ? `${unidad}-${abr}${String(anio).slice(-2)}-` : `${unidad}-${abr}-`;
   let max = 0;
   existingTransacciones.forEach((t) => {
     if (t.folio_transaccion && t.folio_transaccion.startsWith(prefix)) {
@@ -1587,8 +1589,8 @@ function ResumenComparativoPanel({
     return MESES.indexOf(mesA) - MESES.indexOf(mesB);
   });
 
-  const [collapsedPptado, setCollapsedPptado] = useState(new Set());
-  const [collapsedPagado, setCollapsedPagado] = useState(new Set());
+  const [collapsedPptado, setCollapsedPptado] = useSessionSetState("ss-dashboard-collapsed-pptado");
+  const [collapsedPagado, setCollapsedPagado] = useSessionSetState("ss-dashboard-collapsed-pagado");
   const togglePptado = (path) => setCollapsedPptado((prev) => { const n = new Set(prev); n.has(path) ? n.delete(path) : n.add(path); return n; });
   const togglePagado = (path) => setCollapsedPagado((prev) => { const n = new Set(prev); n.has(path) ? n.delete(path) : n.add(path); return n; });
 
@@ -1816,6 +1818,21 @@ function useSessionState(key, defaultValue) {
     try { sessionStorage.setItem(key, JSON.stringify(value)); } catch {}
   }, [key, value]);
   return [value, setValue];
+}
+
+// Igual que useSessionState, pero para un Set (ej. filas colapsadas) — un Set
+// no se guarda directo como JSON, así que se convierte a/desde arreglo por dentro.
+function useSessionSetState(key, defaultArray = []) {
+  const [arr, setArr] = useSessionState(key, defaultArray);
+  const set = new Set(arr);
+  const setSet = (next) => {
+    setArr((prevArr) => {
+      const prevSet = new Set(prevArr);
+      const nextSet = typeof next === "function" ? next(prevSet) : next;
+      return [...nextSet];
+    });
+  };
+  return [set, setSet];
 }
 
 function EmptyState({ title, body }) {
@@ -3532,8 +3549,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         await transaccionesApi.update(editId, rest);
         setEditId(null);
       } else {
-        const mesForm = MESES[(form.dia ? new Date(`${form.dia}T00:00:00`) : new Date()).getMonth()];
-        const creada = await transaccionesApi.insert({ ...rest, id: uid(), folio_transaccion: nextFolioTransaccion(unidad, mesForm, transUnidad) });
+        const fechaForm = form.dia ? new Date(`${form.dia}T00:00:00`) : new Date();
+        const mesForm = MESES[fechaForm.getMonth()];
+        const anioForm = fechaForm.getFullYear();
+        const creada = await transaccionesApi.insert({ ...rest, id: uid(), folio_transaccion: nextFolioTransaccion(unidad, mesForm, anioForm, transUnidad) });
         transaccionId = creada.id;
       }
       await guardarNotaPrivada(transaccionId);

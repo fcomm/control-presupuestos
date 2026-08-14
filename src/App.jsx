@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.25";
+const APP_VERSION = "1.46.26";
 const CHANGELOG = [
+  { v: "1.46.26", desc: "Fix: crear una transacción podía chocar con el folio de otra creada casi al mismo tiempo (por otra persona u otra pestaña) — ahora reintenta automáticamente con el siguiente número hasta 5 veces antes de mostrar error" },
   { v: "1.46.25", desc: "Fix crítico: al crear una transacción nueva, el ID (folio_transaccion) se generaba sin año (ej. OSB-AGO-001), así que Agosto 2025 y Agosto 2026 competían por la misma numeración y podían chocar — ahora incluye el año, igual que el folio de las partidas" },
   { v: "1.46.24", desc: "Fix: el estado de 'Contraer todo' del panel comparativo del Dashboard se perdía al cambiar de pestaña y regresar — ahora persiste en la sesión, igual que los demás filtros" },
   { v: "1.46.23", desc: "Dashboard: el selector de Moneda (MXP/USD) del panel comparativo cambia de menú desplegable a un switch deslizante estilo iOS" },
@@ -252,7 +253,7 @@ function autoFolio(unidad, mes, anio, existingFolios) {
 
 // Identificador único por transacción (no ligado al mes, a diferencia del folio
 // de partida) — ej. "CTM-T-0001". Se asigna solo, no se puede editar.
-function nextFolioTransaccion(unidad, mes, anio, existingTransacciones) {
+function nextFolioTransaccion(unidad, mes, anio, existingTransacciones, offset = 0) {
   const abr = MES_ABR[mes] || "GEN";
   const prefix = anio ? `${unidad}-${abr}${String(anio).slice(-2)}-` : `${unidad}-${abr}-`;
   let max = 0;
@@ -262,7 +263,26 @@ function nextFolioTransaccion(unidad, mes, anio, existingTransacciones) {
       if (!isNaN(n) && n > max) max = n;
     }
   });
-  return `${prefix}${String(max + 1).padStart(3, "0")}`;
+  return `${prefix}${String(max + 1 + offset).padStart(3, "0")}`;
+}
+
+// Inserta una transacción nueva reintentando el folio si otra persona (u otra
+// pestaña) alcanzó a tomar el mismo número justo antes — el cálculo del
+// siguiente folio se hace en el navegador, así que dos inserciones casi
+// simultáneas pueden calcular el mismo. Si el choque es por otra causa
+// (no folio_transaccion), no reintenta — deja que el error normal se muestre.
+async function insertTransaccionConReintento(transaccionesApi, rest, unidad, mesForm, anioForm, transUnidad) {
+  const maxIntentos = 5;
+  for (let intento = 0; intento < maxIntentos; intento++) {
+    const folio = nextFolioTransaccion(unidad, mesForm, anioForm, transUnidad, intento);
+    try {
+      return await transaccionesApi.insert({ ...rest, id: uid(), folio_transaccion: folio });
+    } catch (err) {
+      const chocoPorFolio = /folio_transaccion|idx_transacciones_folio_transaccion/i.test(err?.message || "");
+      if (!chocoPorFolio || intento === maxIntentos - 1) throw err;
+      // reintenta con el siguiente número
+    }
+  }
 }
 
 // Captura TODAS las columnas del Excel que no tengan ya su propio campo en la
@@ -3552,7 +3572,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         const fechaForm = form.dia ? new Date(`${form.dia}T00:00:00`) : new Date();
         const mesForm = MESES[fechaForm.getMonth()];
         const anioForm = fechaForm.getFullYear();
-        const creada = await transaccionesApi.insert({ ...rest, id: uid(), folio_transaccion: nextFolioTransaccion(unidad, mesForm, anioForm, transUnidad) });
+        const creada = await insertTransaccionConReintento(transaccionesApi, rest, unidad, mesForm, anioForm, transUnidad);
         transaccionId = creada.id;
       }
       await guardarNotaPrivada(transaccionId);

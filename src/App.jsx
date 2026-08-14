@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.16";
+const APP_VERSION = "1.46.17";
 const CHANGELOG = [
+  { v: "1.46.17", desc: "Fix: 'Resumen presupuestado por proyecto y rubro' combinaba el mismo mes de distintos años en una sola columna — ahora, cuando los datos abarcan más de un año, cada columna se separa en 'Mes Año' (ej. Agosto 2025 y Agosto 2026 aparte), ordenadas cronológicamente" },
   { v: "1.46.16", desc: "Dashboard: agrega filtro de Año (junto a Proyecto/Mes) en 'Resumen financiero' — necesario ahora que hay datos de 2025 y 2026. Nota: la tabla de 'Resumen presupuestado por proyecto y rubro' de abajo aún combina el mismo mes de distintos años si dejas Año en 'Todos'" },
   { v: "1.46.15", desc: "Fix: agrupar por Mes ya considera el Año — antes 'Noviembre 2025' y 'Septiembre 2026' se ordenaban solo por nombre de mes (Noviembre después de Septiembre), ahora Noviembre 2025 sale primero; de paso, meses del mismo nombre mismo mes pero distinto año ya no se mezclan en un solo grupo" },
   { v: "1.46.14", desc: "Fix: el popup de '+ Nueva partida' (dentro del selector de Partida) siempre creaba la partida en el año actual, sin opción de cambiarlo — ahora trae un campo Año editable" },
@@ -1488,7 +1489,17 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 
 function ResumenPivotPanel({ partidasUnidad, proyectosUnidad }) {
   const partidasMXN = partidasUnidad.filter((p) => (p.moneda || "MXP") === "MXP");
-  const meses = MESES.filter((m) => partidasMXN.some((p) => p.mes === m));
+  const aniosPresentes = [...new Set(partidasMXN.map((p) => p.anio).filter(Boolean))];
+  const multiAnio = aniosPresentes.length > 1;
+  // Si hay más de un año en los datos, cada columna es "Mes Año" (para no mezclar
+  // "Agosto 2025" con "Agosto 2026") — si no, se queda solo con el nombre del mes.
+  const columnaDe = (p) => (multiAnio && p.anio) ? `${p.mes} ${p.anio}` : p.mes;
+  const meses = [...new Set(partidasMXN.map(columnaDe))].sort((a, b) => {
+    const [mesA, anioA] = a.split(" ");
+    const [mesB, anioB] = b.split(" ");
+    if ((anioA || "") !== (anioB || "")) return (anioA || "").localeCompare(anioB || "");
+    return MESES.indexOf(mesA) - MESES.indexOf(mesB);
+  });
   const [collapsed, setCollapsed] = useState(new Set());
   const toggle = (path) => setCollapsed((prev) => {
     const next = new Set(prev);
@@ -1503,16 +1514,17 @@ function ResumenPivotPanel({ partidasUnidad, proyectosUnidad }) {
   // nunca aparezcan como su propia fila.
   const partidasResueltas = partidasMXN.flatMap((p) =>
     resolverProrrateo(p.proyecto, proyectosUnidad).map(({ proyecto, fraccion }) => ({
-      ...p, proyecto, monto_estimado: (Number(p.monto_estimado) || 0) * fraccion,
+      ...p, proyecto, monto_estimado: (Number(p.monto_estimado) || 0) * fraccion, _columna: columnaDe(p),
     }))
   );
 
-  const pivot = pivotearPorMes(partidasResueltas, ["proyecto", "rubro", "concepto"], meses);
+  const pivot = pivotearPorMes(partidasResueltas, ["proyecto", "rubro", "concepto"], meses, "monto_estimado", "_columna");
   const totalGeneral = meses.reduce((acc, m) => { acc[m] = 0; return acc; }, {});
   let granTotal = 0;
   partidasMXN.forEach((p) => {
     const v = Number(p.monto_estimado) || 0;
-    if (totalGeneral[p.mes] !== undefined) totalGeneral[p.mes] += v;
+    const col = columnaDe(p);
+    if (totalGeneral[col] !== undefined) totalGeneral[col] += v;
     granTotal += v;
   });
 
@@ -2111,13 +2123,13 @@ function collectGroupPaths(node, path = "") {
 
 // Groups rows by a fixed key path (e.g. ['proyecto','rubro','concepto']) and, at every
 // level, also sums the montoKey broken out per month — used by the pivot/resumen view.
-function pivotearPorMes(rows, keys, meses, montoKey = "monto_estimado") {
+function pivotearPorMes(rows, keys, meses, montoKey = "monto_estimado", colKey = "mes") {
   const mesSums = {};
   meses.forEach((m) => { mesSums[m] = 0; });
   let total = 0;
   rows.forEach((r) => {
     const v = Number(r[montoKey]) || 0;
-    if (mesSums[r.mes] !== undefined) mesSums[r.mes] += v;
+    if (mesSums[r[colKey]] !== undefined) mesSums[r[colKey]] += v;
     total += v;
   });
   if (!keys.length) return { type: "rows", mesSums, total };
@@ -2134,7 +2146,7 @@ function pivotearPorMes(rows, keys, meses, montoKey = "monto_estimado") {
     key,
     mesSums,
     total,
-    entries: entries.map(([value, groupRows]) => ({ value, child: pivotearPorMes(groupRows, rest, meses, montoKey) })),
+    entries: entries.map(([value, groupRows]) => ({ value, child: pivotearPorMes(groupRows, rest, meses, montoKey, colKey) })),
   };
 }
 

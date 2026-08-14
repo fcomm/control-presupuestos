@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.27";
+const APP_VERSION = "1.46.28";
 const CHANGELOG = [
+  { v: "1.46.28", desc: "Fix crítico: Transacciones y Dashboard filtraban por unidad usando la partida vinculada en vez del campo propio 'unidad_detectada' — cualquier transacción cuya partida no perteneciera exactamente a esa compañía (partida borrada, mal elegida, etc.) desaparecía por completo de la vista y de los totales del Dashboard, aunque existiera en la base de datos" },
   { v: "1.46.27", desc: "Fix crítico: el choque de folio al crear transacciones seguía pasando porque el navegador tenía el estado desactualizado tras las cargas masivas grandes — ahora se confirma el número más alto real contra la base de datos justo antes de guardar, en vez de confiar solo en lo cargado localmente" },
   { v: "1.46.26", desc: "Fix: crear una transacción podía chocar con el folio de otra creada casi al mismo tiempo (por otra persona u otra pestaña) — ahora reintenta automáticamente con el siguiente número hasta 5 veces antes de mostrar error" },
   { v: "1.46.25", desc: "Fix crítico: al crear una transacción nueva, el ID (folio_transaccion) se generaba sin año (ej. OSB-AGO-001), así que Agosto 2025 y Agosto 2026 competían por la misma numeración y podían chocar — ahora incluye el año, igual que el folio de las partidas" },
@@ -1290,7 +1291,7 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const idsPartidas = new Set(partidasUnidad.map((p) => p.id));
-  const transUnidad = transacciones.filter((t) => idsPartidas.has(t.partida_id));
+  const transUnidad = transacciones.filter((t) => idsPartidas.has(t.partida_id) || t.unidad_detectada === unidad);
 
   const mesesDisponibles = MESES.filter((m) => partidasUnidad.some((p) => p.mes === m));
   const [mesesSeleccionados, setMesesSeleccionados] = useSessionState("ss-dashboard-meses", []);
@@ -3318,7 +3319,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [saving, setSaving] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const cuentasDelProveedorSeleccionado = form.proveedor_id ? cuentasApi.rows.filter((c) => c.proveedor_id === form.proveedor_id) : [];
-  const transUnidad = transacciones.filter((t) => partidasUnidad.some((p) => p.id === t.partida_id));
+  const transUnidad = transacciones.filter((t) => t.unidad_detectada === unidad);
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
   const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos" });

@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.15";
+const APP_VERSION = "1.46.16";
 const CHANGELOG = [
+  { v: "1.46.16", desc: "Dashboard: agrega filtro de Año (junto a Proyecto/Mes) en 'Resumen financiero' — necesario ahora que hay datos de 2025 y 2026. Nota: la tabla de 'Resumen presupuestado por proyecto y rubro' de abajo aún combina el mismo mes de distintos años si dejas Año en 'Todos'" },
   { v: "1.46.15", desc: "Fix: agrupar por Mes ya considera el Año — antes 'Noviembre 2025' y 'Septiembre 2026' se ordenaban solo por nombre de mes (Noviembre después de Septiembre), ahora Noviembre 2025 sale primero; de paso, meses del mismo nombre mismo mes pero distinto año ya no se mezclan en un solo grupo" },
   { v: "1.46.14", desc: "Fix: el popup de '+ Nueva partida' (dentro del selector de Partida) siempre creaba la partida en el año actual, sin opción de cambiarlo — ahora trae un campo Año editable" },
   { v: "1.46.13", desc: "Partidas: agrega filtro de Año (multi-selección, junto a Mes) y 'Año' como opción de Agrupar por — necesario ahora que va a haber datos de 2025 y 2026 conviviendo" },
@@ -1209,8 +1210,15 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 
   const mesesDisponibles = MESES.filter((m) => partidasUnidad.some((p) => p.mes === m));
   const [mesesSeleccionados, setMesesSeleccionados] = useSessionState("ss-dashboard-meses", []);
-  const partidasFiltradasMes = mesesSeleccionados.length ? partidasUnidad.filter((p) => mesesSeleccionados.includes(p.mes)) : partidasUnidad;
-  const mesLabel = mesesSeleccionados.length ? ` · ${mesesSeleccionados.join(", ")}` : "";
+  const aniosDisponibles = [...new Set(partidasUnidad.map((p) => p.anio).filter(Boolean))].sort((a, b) => a - b);
+  const [aniosSeleccionados, setAniosSeleccionados] = useSessionState("ss-dashboard-anios", []);
+  const partidasFiltradasMes = partidasUnidad.filter((p) =>
+    (!mesesSeleccionados.length || mesesSeleccionados.includes(p.mes)) &&
+    (!aniosSeleccionados.length || aniosSeleccionados.includes(p.anio))
+  );
+  const mesLabel = (mesesSeleccionados.length || aniosSeleccionados.length)
+    ? ` · ${[...mesesSeleccionados, ...aniosSeleccionados].join(", ")}`
+    : "";
   const idsPartidasFiltradas = new Set(partidasFiltradasMes.map((p) => p.id));
   const transFiltradasMes = transUnidad.filter((t) => idsPartidasFiltradas.has(t.partida_id));
 
@@ -1344,6 +1352,9 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
             </Field>
             <Field label="Mes">
               <MesMultiSelect mesesDisponibles={mesesDisponibles} seleccionados={mesesSeleccionados} onChange={setMesesSeleccionados} />
+            </Field>
+            <Field label="Año">
+              <AnioMultiSelect aniosDisponibles={aniosDisponibles} seleccionados={aniosSeleccionados} onChange={setAniosSeleccionados} />
             </Field>
           </div>
         }

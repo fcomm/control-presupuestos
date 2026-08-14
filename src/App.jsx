@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.26";
+const APP_VERSION = "1.46.27";
 const CHANGELOG = [
+  { v: "1.46.27", desc: "Fix crítico: el choque de folio al crear transacciones seguía pasando porque el navegador tenía el estado desactualizado tras las cargas masivas grandes — ahora se confirma el número más alto real contra la base de datos justo antes de guardar, en vez de confiar solo en lo cargado localmente" },
   { v: "1.46.26", desc: "Fix: crear una transacción podía chocar con el folio de otra creada casi al mismo tiempo (por otra persona u otra pestaña) — ahora reintenta automáticamente con el siguiente número hasta 5 veces antes de mostrar error" },
   { v: "1.46.25", desc: "Fix crítico: al crear una transacción nueva, el ID (folio_transaccion) se generaba sin año (ej. OSB-AGO-001), así que Agosto 2025 y Agosto 2026 competían por la misma numeración y podían chocar — ahora incluye el año, igual que el folio de las partidas" },
   { v: "1.46.24", desc: "Fix: el estado de 'Contraer todo' del panel comparativo del Dashboard se perdía al cambiar de pestaña y regresar — ahora persiste en la sesión, igual que los demás filtros" },
@@ -263,7 +264,23 @@ function nextFolioTransaccion(unidad, mes, anio, existingTransacciones, offset =
       if (!isNaN(n) && n > max) max = n;
     }
   });
-  return `${prefix}${String(max + 1 + offset).padStart(3, "0")}`;
+  return { prefix, siguiente: max + 1 + offset };
+}
+
+// Consulta a Supabase (no al estado local, que puede estar desactualizado tras
+// una carga masiva grande) el folio_transaccion más alto que ya existe para
+// este prefijo — así el "siguiente número" siempre es real, no una suposición
+// basada en lo que el navegador alcanzó a recibir por realtime.
+async function maxFolioTransaccionReal(prefix) {
+  const { data, error } = await supabase
+    .from("transacciones")
+    .select("folio_transaccion")
+    .like("folio_transaccion", `${prefix}%`)
+    .order("folio_transaccion", { ascending: false })
+    .limit(1);
+  if (error || !data?.length) return 0;
+  const n = parseInt(data[0].folio_transaccion.slice(prefix.length), 10);
+  return isNaN(n) ? 0 : n;
 }
 
 // Inserta una transacción nueva reintentando el folio si otra persona (u otra
@@ -272,9 +289,15 @@ function nextFolioTransaccion(unidad, mes, anio, existingTransacciones, offset =
 // simultáneas pueden calcular el mismo. Si el choque es por otra causa
 // (no folio_transaccion), no reintenta — deja que el error normal se muestre.
 async function insertTransaccionConReintento(transaccionesApi, rest, unidad, mesForm, anioForm, transUnidad) {
-  const maxIntentos = 5;
+  const { prefix, siguiente: siguienteLocal } = nextFolioTransaccion(unidad, mesForm, anioForm, transUnidad, 0);
+  // El estado local (transUnidad) puede estar desactualizado tras una carga
+  // masiva grande — se confirma el número real contra la base antes de usarlo.
+  const maxReal = await maxFolioTransaccionReal(prefix);
+  let siguiente = Math.max(siguienteLocal, maxReal + 1);
+
+  const maxIntentos = 8;
   for (let intento = 0; intento < maxIntentos; intento++) {
-    const folio = nextFolioTransaccion(unidad, mesForm, anioForm, transUnidad, intento);
+    const folio = `${prefix}${String(siguiente + intento).padStart(3, "0")}`;
     try {
       return await transaccionesApi.insert({ ...rest, id: uid(), folio_transaccion: folio });
     } catch (err) {

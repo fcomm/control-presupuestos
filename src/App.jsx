@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.29";
+const APP_VERSION = "1.46.30";
 const CHANGELOG = [
+  { v: "1.46.30", desc: "Agrega columna '#' con numeración dinámica en Partidas y Transacciones — cuenta las filas realmente visibles en ese momento (respeta filtros, orden, y sigue contando sin reiniciar aunque tengas Agrupar por activo)" },
   { v: "1.46.29", desc: "Fix crítico: la carga inicial de datos (partidas, transacciones, etc.) traía como máximo 1000 filas por tabla — con la base ya creciendo por las cargas masivas, esto dejaba fuera las filas más recientes en tablas grandes, sin ningún error visible. Ahora pagina hasta traer todo" },
   { v: "1.46.28", desc: "Fix crítico: Transacciones y Dashboard filtraban por unidad usando la partida vinculada en vez del campo propio 'unidad_detectada' — cualquier transacción cuya partida no perteneciera exactamente a esa compañía (partida borrada, mal elegida, etc.) desaparecía por completo de la vista y de los totales del Dashboard, aunque existiera en la base de datos" },
   { v: "1.46.27", desc: "Fix crítico: el choque de folio al crear transacciones seguía pasando porque el navegador tenía el estado desactualizado tras las cargas masivas grandes — ahora se confirma el número más alto real contra la base de datos justo antes de guardar, en vez de confiar solo en lo cargado localmente" },
@@ -2403,8 +2404,8 @@ function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth) {
 // Flattens a grouped tree into <tr> elements: a header row per group (collapsible,
 // with count + sum), followed by that group's leaf rows (via renderRowTr) when expanded.
 const GROUP_LEVEL_COLORS = [T.accent, T.teal, T.blue];
-function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}) {
-  if (node.type === "rows") return node.rows.map((r) => renderRowTr(r, depth));
+function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}, counter = { n: 0 }) {
+  if (node.type === "rows") return node.rows.map((r) => renderRowTr(r, depth, ++counter.n));
   let out = [];
   const levelColor = GROUP_LEVEL_COLORS[depth % GROUP_LEVEL_COLORS.length];
   node.entries.forEach((entry) => {
@@ -2430,7 +2431,7 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
         </td>
       </tr>
     );
-    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels));
+    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels, counter));
   });
   return out;
 }
@@ -2853,12 +2854,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     return next;
   });
 
-  const renderRowTr = (p, depth = 0) => {
+  const renderRowTr = (p, depth = 0, n) => {
     const expandido = expandedIds.has(p.id);
     const transDeEsta = transacciones.filter((t) => t.partida_id === p.id);
     return (
       <React.Fragment key={p.id}>
         <tr>
+          <td style={{ ...tdStyle, width: 36, textAlign: "right", color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{n}</td>
           <td style={{ ...tdStyle, width: 30, textAlign: "center" }}>
             {transDeEsta.length > 0 && (
               <button
@@ -2883,7 +2885,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         </tr>
         {expandido && (
           <tr>
-            <td colSpan={columnasVisibles.length + 2} style={{ padding: "0 0 0 40px", background: T.panelAlt, borderBottom: `1px solid ${T.border}` }}>
+            <td colSpan={columnasVisibles.length + 3} style={{ padding: "0 0 0 40px", background: T.panelAlt, borderBottom: `1px solid ${T.border}` }}>
               <table style={{ ...tableStyle, margin: "8px 0" }}>
                 <thead>
                   <tr>{["Concepto","Monto","Status",""].map((h) => <th key={h} style={{ ...thStyle, background: "transparent" }}>{h}</th>)}</tr>
@@ -3007,12 +3009,14 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         <div style={{ overflowX: "auto" }}>
           <table style={{ ...tableStyle, tableLayout: "fixed" }}>
             <colgroup>
+              <col style={{ width: 36 }} />
               <col style={{ width: 30 }} />
               {columnasVisibles.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
               <col style={{ width: 140 }} />
             </colgroup>
             <thead>
               <tr>
+                <th style={thStyle}>#</th>
                 <th style={thStyle}></th>
                 {columnasVisibles.map((c) => (
                   <SortableTh
@@ -3027,13 +3031,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             </thead>
             <tbody>
               {groupKeys.length
-                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 2, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])))
-                : partidasOrdenadas.map((p) => renderRowTr(p))}
+                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])))
+                : partidasOrdenadas.map((p, i) => renderRowTr(p, 0, i + 1))}
               {!partidasUnidad.length && (
-                <tr><td colSpan={columnasVisibles.length + 2} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
+                <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
               )}
               {partidasUnidad.length > 0 && !partidasFiltradas.length && (
-                <tr><td colSpan={columnasVisibles.length + 2} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna partida coincide con estos filtros</td></tr>
+                <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna partida coincide con estos filtros</td></tr>
               )}
             </tbody>
           </table>
@@ -3536,8 +3540,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const onColDragStart = (e, key) => { dragKeyRef.current = key; e.dataTransfer.effectAllowed = "move"; };
   const onColDragOver = (e) => e.preventDefault();
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
-  const renderRowTr = (t, depth = 0) => (
+  const renderRowTr = (t, depth = 0, n) => (
     <tr key={t.id}>
+      <td style={{ ...tdStyle, width: 36, textAlign: "right", color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{n}</td>
       <td style={{ ...tdStyle, textAlign: "center" }}>
         <input type="checkbox" checked={seleccionadas.has(t.id)} onChange={() => toggleSeleccion(t.id)} />
       </td>
@@ -3749,12 +3754,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         <div style={{ overflowX: "auto" }}>
           <table style={{ ...tableStyle, tableLayout: "fixed" }}>
             <colgroup>
+              <col style={{ width: 36 }} />
               <col style={{ width: 28 }} />
               {columnasVisibles.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
               <col style={{ width: 140 }} />
             </colgroup>
             <thead>
               <tr>
+                <th style={thStyle}>#</th>
                 <th style={{ ...thStyle, textAlign: "center" }}>
                   <input type="checkbox" checked={transOrdenadas.length > 0 && transOrdenadas.every((t) => seleccionadas.has(t.id))} onChange={toggleSeleccionTodas} />
                 </th>
@@ -3771,13 +3778,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </thead>
             <tbody>
               {groupKeys.length
-                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 2, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES_TRANS.map((o) => [o.value, o.label])))
-                : transEnriquecidas.map((t) => renderRowTr(t))}
+                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES_TRANS.map((o) => [o.value, o.label])))
+                : transEnriquecidas.map((t, i) => renderRowTr(t, 0, i + 1))}
               {!transUnidad.length && (
-                <tr><td colSpan={columnasVisibles.length + 2} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones aún</td></tr>
+                <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones aún</td></tr>
               )}
               {transUnidad.length > 0 && !transFiltradas.length && (
-                <tr><td colSpan={columnasVisibles.length + 2} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna transacción coincide con estos filtros</td></tr>
+                <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna transacción coincide con estos filtros</td></tr>
               )}
             </tbody>
           </table>

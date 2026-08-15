@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.30";
+const APP_VERSION = "1.46.31";
 const CHANGELOG = [
+  { v: "1.46.31", desc: "Transacciones: agrega 'Día de Pago Programado' como opción de Agrupar por (tabla principal y sin vincular)" },
   { v: "1.46.30", desc: "Agrega columna '#' con numeración dinámica en Partidas y Transacciones — cuenta las filas realmente visibles en ese momento (respeta filtros, orden, y sigue contando sin reiniciar aunque tengas Agrupar por activo)" },
   { v: "1.46.29", desc: "Fix crítico: la carga inicial de datos (partidas, transacciones, etc.) traía como máximo 1000 filas por tabla — con la base ya creciendo por las cargas masivas, esto dejaba fuera las filas más recientes en tablas grandes, sin ningún error visible. Ahora pagina hasta traer todo" },
   { v: "1.46.28", desc: "Fix crítico: Transacciones y Dashboard filtraban por unidad usando la partida vinculada en vez del campo propio 'unidad_detectada' — cualquier transacción cuya partida no perteneciera exactamente a esa compañía (partida borrada, mal elegida, etc.) desaparecía por completo de la vista y de los totales del Dashboard, aunque existiera en la base de datos" },
@@ -3366,6 +3367,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   });
 
   const GROUP_OPCIONES_TRANS = [
+    { value: "dia", label: "Día de Pago Programado" },
     { value: "zona", label: "Zona" },
     { value: "area", label: "Área" },
     { value: "proveedor", label: "Proveedor" },
@@ -3417,6 +3419,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { key: "status", label: "Status", render: (t) => t.status || "—" },
   ];
   const GROUP_OPCIONES_SINVINC = [
+    { value: "dia", label: "Día de Pago Programado" },
     { value: "zona", label: "Zona" },
     { value: "area", label: "Área" },
     { value: "proveedor", label: "Proveedor" },

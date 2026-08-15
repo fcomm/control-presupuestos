@@ -20,10 +20,31 @@ export function useCollection(table, orderBy = "created_at", options = {}) {
     let mounted = true;
 
     const fetchAll = async () => {
-      const { data, error: err } = await supabase.from(table).select("*").order(orderBy, { ascending: true });
+      // Supabase limita cada consulta a un máximo de filas por default (1000
+      // en la mayoría de los proyectos) — con tablas grandes hace falta pedir
+      // por páginas hasta traer todo, o las filas más recientes se quedan
+      // fuera silenciosamente sin que se vea ningún error.
+      const PAGE_SIZE = 1000;
+      let allRows = [];
+      let from = 0;
+      while (true) {
+        const { data, error: err } = await supabase
+          .from(table)
+          .select("*")
+          .order(orderBy, { ascending: true })
+          .range(from, from + PAGE_SIZE - 1);
+        if (err) {
+          if (!mounted) return;
+          setError(err);
+          setReady(true);
+          return;
+        }
+        allRows = allRows.concat(data || []);
+        if (!data || data.length < PAGE_SIZE) break;
+        from += PAGE_SIZE;
+      }
       if (!mounted) return;
-      if (err) setError(err);
-      else setRows(data || []);
+      setRows(allRows);
       setReady(true);
     };
 

@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.28";
+const APP_VERSION = "1.46.29";
 const CHANGELOG = [
+  { v: "1.46.29", desc: "Fix crítico: la carga inicial de datos (partidas, transacciones, etc.) traía como máximo 1000 filas por tabla — con la base ya creciendo por las cargas masivas, esto dejaba fuera las filas más recientes en tablas grandes, sin ningún error visible. Ahora pagina hasta traer todo" },
   { v: "1.46.28", desc: "Fix crítico: Transacciones y Dashboard filtraban por unidad usando la partida vinculada en vez del campo propio 'unidad_detectada' — cualquier transacción cuya partida no perteneciera exactamente a esa compañía (partida borrada, mal elegida, etc.) desaparecía por completo de la vista y de los totales del Dashboard, aunque existiera en la base de datos" },
   { v: "1.46.27", desc: "Fix crítico: el choque de folio al crear transacciones seguía pasando porque el navegador tenía el estado desactualizado tras las cargas masivas grandes — ahora se confirma el número más alto real contra la base de datos justo antes de guardar, en vez de confiar solo en lo cargado localmente" },
   { v: "1.46.26", desc: "Fix: crear una transacción podía chocar con el folio de otra creada casi al mismo tiempo (por otra persona u otra pestaña) — ahora reintenta automáticamente con el siguiente número hasta 5 veces antes de mostrar error" },

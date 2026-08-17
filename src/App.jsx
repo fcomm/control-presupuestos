@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.37";
+const APP_VERSION = "1.46.38";
 const CHANGELOG = [
+  { v: "1.46.38", desc: "Reporte de Pagos: Forma de Pago y Método de Pago muestran solo el código (ej. '03', 'PPD') en vez del texto completo, en la tabla y en el Excel exportado — pasa el mouse encima para ver el nombre completo" },
   { v: "1.46.37", desc: "Reporte de Pagos (PDF): los bloques de Zona/Moneda ya no fuerzan una página nueva cada uno — fluyen en la misma página mientras quepan, y solo saltan de página cuando de verdad no hay espacio" },
   { v: "1.46.36", desc: "Separa 'Reportado' en dos marcas independientes: 'Reportado a Dirección' (ya se avisó que el gasto se va a hacer) y 'Enviado a Pagos' (ya se mandó a ejecutar) — cada una con su propia columna, filtro, y selección en lote en Transacciones; los botones PDF de Reporte de Pagos y Reporte Pagos Dirección ahora marcan cada uno la suya" },
   { v: "1.46.35", desc: "Reporte de Pagos: botón 'Generar reporte (PDF)' — igual que en Reporte Pagos Dirección, agrupa por Zona y Moneda (mismo criterio que el Excel) y marca las transacciones incluidas como 'Reportadas', con confirmación previa" },
@@ -4187,8 +4188,10 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       no_sae: proveedor?.id_sae || "",
       folio_compra_sae: t.folio_compra_sae || "",
       folio_factura: t.folio_factura || "",
-      forma_pago: FORMAS_PAGO.find((f) => f.value === t.forma_pago)?.label || t.forma_pago || "",
-      metodo_pago: METODOS_PAGO.find((m) => m.value === t.metodo_pago)?.label || t.metodo_pago || "",
+      forma_pago: t.forma_pago || "",
+      forma_pago_label: FORMAS_PAGO.find((f) => f.value === t.forma_pago)?.label || t.forma_pago || "",
+      metodo_pago: t.metodo_pago || "",
+      metodo_pago_label: METODOS_PAGO.find((m) => m.value === t.metodo_pago)?.label || t.metodo_pago || "",
       proveedor: proveedor?.nombre || t.proveedor || "",
       referencia: proveedor?.referencia || "",
       notas: proveedor?.notas || "",
@@ -4486,7 +4489,11 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               {filasOrdenadas.map((f) => (
                 <tr key={f.id}>
                   {columnas.map((c) => (
-                    <td key={c.key} style={c.key === "importe" ? { ...tdStyle, fontFamily: T.fontMono } : tdStyle}>
+                    <td
+                      key={c.key}
+                      style={c.key === "importe" ? { ...tdStyle, fontFamily: T.fontMono } : tdStyle}
+                      title={c.key === "forma_pago" ? f.forma_pago_label : c.key === "metodo_pago" ? f.metodo_pago_label : undefined}
+                    >
                       {c.key === "importe" ? money(f.importe, f.moneda) : (f[c.key] || "—")}
                     </td>
                   ))}

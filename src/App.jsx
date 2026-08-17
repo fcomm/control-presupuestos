@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.31";
+const APP_VERSION = "1.46.32";
 const CHANGELOG = [
+  { v: "1.46.32", desc: "Partidas: nuevo checkbox 'Recurrente' — con el botón 'Generar recurrentes pendientes', crea de un jalón los meses que falten hasta diciembre para cada partida marcada, con el mismo monto (🔁 en la tabla indica cuáles ya están marcadas)" },
   { v: "1.46.31", desc: "Transacciones: agrega 'Día de Pago Programado' como opción de Agrupar por (tabla principal y sin vincular)" },
   { v: "1.46.30", desc: "Agrega columna '#' con numeración dinámica en Partidas y Transacciones — cuenta las filas realmente visibles en ese momento (respeta filtros, orden, y sigue contando sin reiniciar aunque tengas Agrupar por activo)" },
   { v: "1.46.29", desc: "Fix crítico: la carga inicial de datos (partidas, transacciones, etc.) traía como máximo 1000 filas por tabla — con la base ya creciendo por las cargas masivas, esto dejaba fuera las filas más recientes en tablas grandes, sin ningún error visible. Ahora pagina hasta traer todo" },
@@ -2755,7 +2756,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     const anios = partidas.filter((p) => p.unidad === unidad).map((p) => p.anio).filter(Boolean);
     return anios.length ? Math.max(...anios) : new Date().getFullYear();
   })();
-  const blank = { unidad, mes: "Agosto", anio: anioDefault, smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: RUBROS[0].categorias[0], proyecto: marcadores[0] || "", monto_estimado: "", moneda: "MXP", folio: "" };
+  const blank = { unidad, mes: "Agosto", anio: anioDefault, smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: RUBROS[0].categorias[0], proyecto: marcadores[0] || "", monto_estimado: "", moneda: "MXP", folio: "", es_recurrente: false };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -2816,7 +2817,15 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const COLUMNAS_PARTIDA = [
     { key: "mes", label: "Mes", render: (p) => p.mes },
     { key: "anio", label: "Año", render: (p) => p.anio },
-    { key: "concepto", label: "Concepto", render: (p) => p.concepto },
+    {
+      key: "concepto", label: "Concepto",
+      render: (p) => (
+        <span>
+          {p.concepto}
+          {p.es_recurrente && <span title="Recurrente — se repite cada mes" style={{ marginLeft: 6, fontSize: 11, color: T.accent }}>🔁</span>}
+        </span>
+      ),
+    },
     { key: "rubro", label: "Rubro", render: (p) => <Pill>{p.rubro}</Pill> },
     { key: "categoria", label: "Categoría", render: (p) => <span style={{ color: T.textDim }}>{p.categoria}</span> },
     { key: "proyecto", label: "Proyecto", render: (p) => p.proyecto },
@@ -2941,6 +2950,52 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
 
   const openNew = () => { setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" }); setEditId(null); setModalOpen(true); };
   const startEdit = (p) => { setForm(p); setEditId(p.id); setModalOpen(true); };
+
+  const [generandoRecurrentes, setGenerandoRecurrentes] = useState(false);
+  const partidasRecurrentes = partidasUnidad.filter((p) => p.es_recurrente);
+  // Para cada partida recurrente, calcula qué meses le faltan (desde su propio
+  // mes+1 hasta diciembre de su mismo año) que todavía no existan como partida
+  // igual (mismo Proyecto+Rubro+Categoria+Concepto+Año) más adelante en el año.
+  const faltantesRecurrentes = partidasRecurrentes.flatMap((base) => {
+    const idxBase = MESES.indexOf(base.mes);
+    if (idxBase === -1) return [];
+    const meses = [];
+    for (let i = idxBase + 1; i < 12; i++) {
+      const yaExiste = partidasUnidad.some((p) =>
+        p.anio === base.anio && p.mes === MESES[i] &&
+        p.proyecto === base.proyecto && p.rubro === base.rubro &&
+        p.categoria === base.categoria && p.concepto === base.concepto
+      );
+      if (!yaExiste) meses.push({ base, mes: MESES[i] });
+    }
+    return meses;
+  });
+
+  const generarRecurrentesPendientes = async () => {
+    if (!faltantesRecurrentes.length) return;
+    const confirmado = confirm(
+      `Esto va a crear ${faltantesRecurrentes.length} partida(s) nueva(s) — los meses que faltan hasta diciembre para cada partida marcada como recurrente, con el mismo monto. ¿Continuar?`
+    );
+    if (!confirmado) return;
+    setGenerandoRecurrentes(true);
+    try {
+      let folios = partidas.filter((p) => p.unidad === unidad).map((p) => p.folio);
+      for (const { base, mes } of faltantesRecurrentes) {
+        const folio = autoFolio(unidad, mes, base.anio, folios);
+        folios = [...folios, folio];
+        await partidasApi.insert({
+          id: uid(), unidad, mes, anio: base.anio, smi: base.smi || "",
+          concepto: base.concepto, rubro: base.rubro, categoria: base.categoria,
+          proyecto: base.proyecto, monto_estimado: base.monto_estimado, moneda: base.moneda,
+          folio, es_recurrente: true,
+        });
+      }
+    } catch (err) {
+      alert("No se pudo generar: " + (err.message || err));
+    } finally {
+      setGenerandoRecurrentes(false);
+    }
+  };
   const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" }); };
   const remove = (id) => {
     const p = partidasUnidad.find((x) => x.id === id);
@@ -2953,7 +3008,16 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       <Panel
         title={`Partidas de ${unidad}`}
         subtitle={filtrosActivos ? `${partidasFiltradas.length} de ${partidasUnidad.length} registradas` : `${partidasUnidad.length} registradas`}
-        right={<Button onClick={openNew}>+ Nueva partida</Button>}
+        right={
+          <div style={{ display: "flex", gap: 8 }}>
+            {faltantesRecurrentes.length > 0 && (
+              <Button variant="ghost" onClick={generarRecurrentesPendientes} disabled={generandoRecurrentes}>
+                {generandoRecurrentes ? "Generando…" : `Generar recurrentes pendientes (${faltantesRecurrentes.length})`}
+              </Button>
+            )}
+            <Button onClick={openNew}>+ Nueva partida</Button>
+          </div>
+        }
       >
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
           <Field label="Buscar">
@@ -3095,6 +3159,12 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
               <Select value={form.moneda} onChange={(e) => setForm({ ...form, moneda: e.target.value })}>
                 {MONEDAS.map((m) => <option key={m}>{m}</option>)}
               </Select>
+            </Field>
+            <Field label="Recurrente">
+              <label style={{ display: "flex", alignItems: "center", gap: 8, height: 34, cursor: "pointer" }}>
+                <input type="checkbox" checked={!!form.es_recurrente} onChange={(e) => setForm({ ...form, es_recurrente: e.target.checked })} />
+                <span style={{ fontSize: 12, color: T.textDim }}>Se repite cada mes</span>
+              </label>
             </Field>
             <div style={{ gridColumn: "span 4", fontSize: 10.5, color: T.textFaint, marginTop: -6 }}>
               Formato automático del folio: UNIDAD-MESAÑO-### (ej. {unidad}-{(MES_ABR[form.mes]||"MES")}{String(form.anio).slice(-2)}-045)

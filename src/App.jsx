@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.35";
+const APP_VERSION = "1.46.36";
 const CHANGELOG = [
+  { v: "1.46.36", desc: "Separa 'Reportado' en dos marcas independientes: 'Reportado a Dirección' (ya se avisó que el gasto se va a hacer) y 'Enviado a Pagos' (ya se mandó a ejecutar) — cada una con su propia columna, filtro, y selección en lote en Transacciones; los botones PDF de Reporte de Pagos y Reporte Pagos Dirección ahora marcan cada uno la suya" },
   { v: "1.46.35", desc: "Reporte de Pagos: botón 'Generar reporte (PDF)' — igual que en Reporte Pagos Dirección, agrupa por Zona y Moneda (mismo criterio que el Excel) y marca las transacciones incluidas como 'Reportadas', con confirmación previa" },
   { v: "1.46.34", desc: "Etiquetas de campo en las filas de agrupamiento (ej. 'DÍA DE PAGO PROGRAMADO', 'ZONA') más grandes, en negritas y con más contraste — ya no se pierden junto al valor" },
   { v: "1.46.33", desc: "Rediseña las filas de agrupamiento: cada nivel baja de intensidad (fondo, tamaño y grosor de texto) mientras más profundo, para distinguir mejor la jerarquía de un vistazo. También corrige la fecha de 'Reportado' que se encimaba con la columna de Folio (formato más corto)" },
@@ -3431,10 +3432,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const transUnidad = transacciones.filter((t) => t.unidad_detectada === unidad);
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
-  const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos" });
+  const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos" });
   const [sort, setSort] = useSessionState("ss-transacciones-sort", { key: "dia", dir: "desc" });
   const [seleccionadas, setSeleccionadas] = useState(new Set());
   const [marcandoReportado, setMarcandoReportado] = useState(false);
+  const [marcandoEnviado, setMarcandoEnviado] = useState(false);
 
   const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
 
@@ -3443,6 +3445,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     if (filtros.fechaHasta && (!t.dia || t.dia > filtros.fechaHasta)) return false;
     if (filtros.reportado === "Reportado" && !t.reportado_at) return false;
     if (filtros.reportado === "No reportado" && t.reportado_at) return false;
+    if (filtros.enviadoPagos === "Enviado" && !t.enviado_pagos_at) return false;
+    if (filtros.enviadoPagos === "No enviado" && t.enviado_pagos_at) return false;
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const partida = partidaDe(t);
@@ -3452,8 +3456,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos";
-  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos" });
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos";
+  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos" });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
@@ -3631,10 +3635,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—" },
     { key: "fecha_pago", label: "Fecha de Pago", render: (t) => t.fecha_pago || "—" },
     {
-      key: "reportado_at", label: "Reportado",
+      key: "reportado_at", label: "Reportado a Dirección",
       render: (t) => t.reportado_at
         ? <Pill tone="accent">{formatFechaCorta(t.reportado_at)}</Pill>
         : <Pill tone="amber">No reportado</Pill>,
+    },
+    {
+      key: "enviado_pagos_at", label: "Enviado a Pagos",
+      render: (t) => t.enviado_pagos_at
+        ? <Pill tone="teal">{formatFechaCorta(t.enviado_pagos_at)}</Pill>
+        : <Pill tone="amber">No enviado</Pill>,
     },
     { key: "updated_at", label: "Última actualización", render: (t) => <span style={{ fontSize: 11, color: T.textFaint }}>{formatFechaHora(t.updated_at) || "—"}</span> },
   ];
@@ -3772,6 +3782,19 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       setMarcandoReportado(false);
     }
   };
+  const marcarEnviadasPagos = async (enviar) => {
+    setMarcandoEnviado(true);
+    try {
+      for (const id of seleccionadas) {
+        await transaccionesApi.update(id, { enviado_pagos_at: enviar ? new Date().toISOString() : null });
+      }
+      setSeleccionadas(new Set());
+    } catch (err) {
+      alert("No se pudo actualizar: " + (err.message || err));
+    } finally {
+      setMarcandoEnviado(false);
+    }
+  };
 
   if (!partidasUnidad.length) {
     return <EmptyState title="Primero crea partidas" body={`Registra al menos una partida de ${unidad} en la pestaña Partidas antes de capturar transacciones reales.`} />;
@@ -3817,11 +3840,18 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           <Field label="Hasta">
             <TextInput type="date" value={filtros.fechaHasta} onChange={(e) => setFiltros({ ...filtros, fechaHasta: e.target.value })} />
           </Field>
-          <Field label="Reportado">
-            <Select value={filtros.reportado} onChange={(e) => setFiltros({ ...filtros, reportado: e.target.value })} style={{ width: 150 }}>
+          <Field label="Reportado a Dirección">
+            <Select value={filtros.reportado} onChange={(e) => setFiltros({ ...filtros, reportado: e.target.value })} style={{ width: 170 }}>
               <option>Todos</option>
               <option>Reportado</option>
               <option>No reportado</option>
+            </Select>
+          </Field>
+          <Field label="Enviado a Pagos">
+            <Select value={filtros.enviadoPagos} onChange={(e) => setFiltros({ ...filtros, enviadoPagos: e.target.value })} style={{ width: 160 }}>
+              <option>Todos</option>
+              <option>Enviado</option>
+              <option>No enviado</option>
             </Select>
           </Field>
           {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
@@ -3847,12 +3877,17 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         </div>
 
         {seleccionadas.size > 0 && (
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, padding: "10px 14px", background: T.accentBg, border: `1px solid ${T.accent}55`, borderRadius: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, padding: "10px 14px", background: T.accentBg, border: `1px solid ${T.accent}55`, borderRadius: 6, flexWrap: "wrap" }}>
             <span style={{ fontSize: 12.5, color: T.text }}>{seleccionadas.size} seleccionada(s)</span>
             <Button onClick={() => marcarReportadas(true)} disabled={marcandoReportado}>
-              {marcandoReportado ? "Marcando…" : "Marcar como reportadas"}
+              {marcandoReportado ? "Marcando…" : "Marcar como reportadas a Dirección"}
             </Button>
-            <Button variant="ghost" onClick={() => marcarReportadas(false)} disabled={marcandoReportado}>Quitar marca de reportado</Button>
+            <Button variant="ghost" onClick={() => marcarReportadas(false)} disabled={marcandoReportado}>Quitar marca</Button>
+            <div style={{ width: 1, alignSelf: "stretch", background: T.accent, opacity: 0.3, margin: "0 2px" }} />
+            <Button onClick={() => marcarEnviadasPagos(true)} disabled={marcandoEnviado}>
+              {marcandoEnviado ? "Marcando…" : "Marcar como enviadas a Pagos"}
+            </Button>
+            <Button variant="ghost" onClick={() => marcarEnviadasPagos(false)} disabled={marcandoEnviado}>Quitar marca</Button>
             <Button variant="ghost" onClick={() => setSeleccionadas(new Set())}>Cancelar selección</Button>
           </div>
         )}
@@ -4282,7 +4317,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       return;
     }
     const confirmado = confirm(
-      `Esto va a generar un PDF con las ${filasOrdenadas.length} transacción(es) que tienes filtradas ahora, y las va a marcar como "Reportadas". ¿Continuar?`
+      `Esto va a generar un PDF con las ${filasOrdenadas.length} transacción(es) que tienes filtradas ahora, y las va a marcar como "Enviadas a Pagos". ¿Continuar?`
     );
     if (!confirmado) return;
 
@@ -4332,7 +4367,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       doc.save(`reporte-pagos-${unidad}-${new Date().toISOString().slice(0, 10)}.pdf`);
 
       for (const f of filasOrdenadas) {
-        await transaccionesApi.update(f.id, { reportado_at: new Date().toISOString() });
+        await transaccionesApi.update(f.id, { enviado_pagos_at: new Date().toISOString() });
       }
     } catch (err) {
       alert("No se pudo generar el reporte: " + (err.message || err));

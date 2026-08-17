@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.33";
+const APP_VERSION = "1.46.34";
 const CHANGELOG = [
+  { v: "1.46.34", desc: "Etiquetas de campo en las filas de agrupamiento (ej. 'DÍA DE PAGO PROGRAMADO', 'ZONA') más grandes, en negritas y con más contraste — ya no se pierden junto al valor" },
   { v: "1.46.33", desc: "Rediseña las filas de agrupamiento: cada nivel baja de intensidad (fondo, tamaño y grosor de texto) mientras más profundo, para distinguir mejor la jerarquía de un vistazo. También corrige la fecha de 'Reportado' que se encimaba con la columna de Folio (formato más corto)" },
   { v: "1.46.32", desc: "Partidas: nuevo checkbox 'Recurrente' — con el botón 'Generar recurrentes pendientes', crea de un jalón los meses que falten hasta diciembre para cada partida marcada, con el mismo monto (🔁 en la tabla indica cuáles ya están marcadas)" },
   { v: "1.46.31", desc: "Transacciones: agrega 'Día de Pago Programado' como opción de Agrupar por (tabla principal y sin vincular)" },
@@ -2430,6 +2431,9 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
   const bgShade = ["#EEF1F4", "#F4F6F8", "#F8F9FB"][Math.min(depth, 2)];
   const valueFontSize = [13, 12, 11.5][Math.min(depth, 2)];
   const valueFontWeight = [700, 600, 600][Math.min(depth, 2)];
+  const labelFontSize = [12, 11, 10.5][Math.min(depth, 2)];
+  const labelFontWeight = [800, 700, 600][Math.min(depth, 2)];
+  const labelColor = [T.text, T.textDim, T.textFaint][Math.min(depth, 2)];
   const rowPadding = depth === 0 ? "12px 10px" : "8px 10px";
   const borderWidth = depth === 0 ? 4 : depth === 1 ? 3 : 2;
   const pillTone = depth === 0 ? "accent" : depth === 1 ? "teal" : "dim";
@@ -2451,7 +2455,7 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <span style={{ color: T.textFaint, fontSize: depth === 0 ? 11 : 9.5, width: 12, flexShrink: 0 }}>{isCollapsed ? "▶" : "▼"}</span>
-            <span style={{ fontSize: 9.5, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", flexShrink: 0 }}>{fieldLabels[node.key] || node.key}</span>
+            <span style={{ fontSize: labelFontSize, fontWeight: labelFontWeight, color: labelColor, textTransform: "uppercase", letterSpacing: "0.04em", flexShrink: 0 }}>{fieldLabels[node.key] || node.key}</span>
             <Pill tone={pillTone}>
               <span style={{ fontSize: valueFontSize, fontWeight: valueFontWeight, fontFamily: T.fontUI, letterSpacing: 0 }}>{entry.value}</span>
             </Pill>

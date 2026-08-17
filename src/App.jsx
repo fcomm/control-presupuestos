@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.36";
+const APP_VERSION = "1.46.37";
 const CHANGELOG = [
+  { v: "1.46.37", desc: "Reporte de Pagos (PDF): los bloques de Zona/Moneda ya no fuerzan una página nueva cada uno — fluyen en la misma página mientras quepan, y solo saltan de página cuando de verdad no hay espacio" },
   { v: "1.46.36", desc: "Separa 'Reportado' en dos marcas independientes: 'Reportado a Dirección' (ya se avisó que el gasto se va a hacer) y 'Enviado a Pagos' (ya se mandó a ejecutar) — cada una con su propia columna, filtro, y selección en lote en Transacciones; los botones PDF de Reporte de Pagos y Reporte Pagos Dirección ahora marcan cada uno la suya" },
   { v: "1.46.35", desc: "Reporte de Pagos: botón 'Generar reporte (PDF)' — igual que en Reporte Pagos Dirección, agrupa por Zona y Moneda (mismo criterio que el Excel) y marca las transacciones incluidas como 'Reportadas', con confirmación previa" },
   { v: "1.46.34", desc: "Etiquetas de campo en las filas de agrupamiento (ej. 'DÍA DE PAGO PROGRAMADO', 'ZONA') más grandes, en negritas y con más contraste — ya no se pierden junto al valor" },
@@ -4330,7 +4331,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       const ordenMoneda = (m) => (m === "MXP" ? 0 : m === "USD" ? 1 : 2);
 
       const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
-      let primeraTabla = true;
+      const alturaPagina = doc.internal.pageSize.getHeight();
+      const margenInferior = 40;
+      let cursorY = 30; // dónde va el próximo título — solo salta de página si de verdad no cabe
 
       zonas.forEach((zona) => {
         const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
@@ -4340,17 +4343,25 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           const filasGrupo = filasOrdenadas.filter((f) => f.zona === zona && f.moneda === moneda);
           if (!filasGrupo.length) return;
 
-          if (!primeraTabla) doc.addPage();
-          primeraTabla = false;
+          // Espacio mínimo para el título + al menos una fila de la tabla —
+          // si no cabe en lo que resta de la página, ahí sí se salta.
+          const alturaMinima = 58 + 24 + 20;
+          if (cursorY > 30 && cursorY + alturaMinima > alturaPagina - margenInferior) {
+            doc.addPage();
+            cursorY = 30;
+          } else if (cursorY > 30) {
+            cursorY += 26; // espacio entre un bloque y el siguiente en la misma página
+          }
 
           doc.setFontSize(13);
-          doc.text(`Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad} - ${moneda}`, 30, 30);
+          doc.setTextColor(0);
+          doc.text(`Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad} - ${moneda}`, 30, cursorY);
           doc.setFontSize(10);
           doc.setTextColor(120);
-          doc.text(`Zona: ${zona}`, 30, 46);
+          doc.text(`Zona: ${zona}`, 30, cursorY + 16);
 
           autoTable(doc, {
-            startY: 58,
+            startY: cursorY + 28,
             head: [["Día", "Solicitante", "Proveedor", "Concepto de pago", "Banco", "Cuenta CLABE", "Importe"]],
             body: filasGrupo.map((f) => [
               f.dia || "", f.solicitante || "", f.proveedor || "", f.concepto || "",
@@ -4360,7 +4371,10 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
             headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
             bodyStyles: { halign: "center" },
             columnStyles: { 2: { halign: "left" }, 3: { halign: "left" } },
+            margin: { bottom: margenInferior },
           });
+
+          cursorY = doc.lastAutoTable.finalY;
         });
       });
 

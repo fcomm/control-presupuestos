@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.34";
+const APP_VERSION = "1.46.35";
 const CHANGELOG = [
+  { v: "1.46.35", desc: "Reporte de Pagos: botón 'Generar reporte (PDF)' — igual que en Reporte Pagos Dirección, agrupa por Zona y Moneda (mismo criterio que el Excel) y marca las transacciones incluidas como 'Reportadas', con confirmación previa" },
   { v: "1.46.34", desc: "Etiquetas de campo en las filas de agrupamiento (ej. 'DÍA DE PAGO PROGRAMADO', 'ZONA') más grandes, en negritas y con más contraste — ya no se pierden junto al valor" },
   { v: "1.46.33", desc: "Rediseña las filas de agrupamiento: cada nivel baja de intensidad (fondo, tamaño y grosor de texto) mientras más profundo, para distinguir mejor la jerarquía de un vistazo. También corrige la fecha de 'Reportado' que se encimaba con la columna de Folio (formato más corto)" },
   { v: "1.46.32", desc: "Partidas: nuevo checkbox 'Recurrente' — con el botón 'Generar recurrentes pendientes', crea de un jalón los meses que falten hasta diciembre para cada partida marcada, con el mismo monto (🔁 en la tabla indica cuáles ya están marcadas)" },
@@ -4129,7 +4130,7 @@ const COLUMNAS_REPORTE = [
   { key: "notas", label: "Notas" },
 ];
 
-function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuentasApi }) {
+function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi, cuentasApi }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const transUnidad = transacciones.filter(
@@ -4274,6 +4275,71 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
     URL.revokeObjectURL(url);
   };
 
+  const [generandoReporte, setGenerandoReporte] = useState(false);
+  const generarReportePDF = async () => {
+    if (!filasOrdenadas.length) {
+      alert("No hay transacciones en el filtro actual para generar el reporte.");
+      return;
+    }
+    const confirmado = confirm(
+      `Esto va a generar un PDF con las ${filasOrdenadas.length} transacción(es) que tienes filtradas ahora, y las va a marcar como "Reportadas". ¿Continuar?`
+    );
+    if (!confirmado) return;
+
+    setGenerandoReporte(true);
+    try {
+      const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
+      const inicio = fechaDesde || diasOrdenados[0] || "";
+      const fin = fechaHasta || diasOrdenados[diasOrdenados.length - 1] || "";
+      const zonas = [...new Set(filasOrdenadas.map((f) => f.zona).filter(Boolean))].sort();
+      const ordenMoneda = (m) => (m === "MXP" ? 0 : m === "USD" ? 1 : 2);
+
+      const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+      let primeraTabla = true;
+
+      zonas.forEach((zona) => {
+        const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
+          .sort((a, b) => ordenMoneda(a) - ordenMoneda(b));
+
+        monedasEnZona.forEach((moneda) => {
+          const filasGrupo = filasOrdenadas.filter((f) => f.zona === zona && f.moneda === moneda);
+          if (!filasGrupo.length) return;
+
+          if (!primeraTabla) doc.addPage();
+          primeraTabla = false;
+
+          doc.setFontSize(13);
+          doc.text(`Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad} - ${moneda}`, 30, 30);
+          doc.setFontSize(10);
+          doc.setTextColor(120);
+          doc.text(`Zona: ${zona}`, 30, 46);
+
+          autoTable(doc, {
+            startY: 58,
+            head: [["Día", "Solicitante", "Proveedor", "Concepto de pago", "Banco", "Cuenta CLABE", "Importe"]],
+            body: filasGrupo.map((f) => [
+              f.dia || "", f.solicitante || "", f.proveedor || "", f.concepto || "",
+              f.banco || "", f.clabe || "", money(f.importe, f.moneda),
+            ]),
+            styles: { fontSize: 8, cellPadding: 4 },
+            headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
+            bodyStyles: { halign: "center" },
+            columnStyles: { 2: { halign: "left" }, 3: { halign: "left" } },
+          });
+        });
+      });
+
+      doc.save(`reporte-pagos-${unidad}-${new Date().toISOString().slice(0, 10)}.pdf`);
+
+      for (const f of filasOrdenadas) {
+        await transaccionesApi.update(f.id, { reportado_at: new Date().toISOString() });
+      }
+    } catch (err) {
+      alert("No se pudo generar el reporte: " + (err.message || err));
+    } finally {
+      setGenerandoReporte(false);
+    }
+  };
   const totalMXN = filasOrdenadas.filter((f) => f.moneda === "MXP").reduce((s, f) => s + f.importe, 0);
   const totalUSD = filasOrdenadas.filter((f) => f.moneda === "USD").reduce((s, f) => s + f.importe, 0);
   const sinProveedorVinculado = filas.filter((f) => !f._vinculadoProveedor && f.proveedor).length;
@@ -4327,6 +4393,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, proveedoresApi, cuen
               onShowAll={colVisibility.showAll}
             />
             <Button onClick={exportarExcel}>Exportar a Excel</Button>
+            <Button onClick={generarReportePDF} disabled={generandoReporte}>
+              {generandoReporte ? "Generando…" : "Generar reporte (PDF)"}
+            </Button>
           </div>
         }
       >
@@ -5416,7 +5485,7 @@ export default function App() {
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
           {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
-          {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
           {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>

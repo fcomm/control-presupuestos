@@ -97,8 +97,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.32";
+const APP_VERSION = "1.46.33";
 const CHANGELOG = [
+  { v: "1.46.33", desc: "Rediseña las filas de agrupamiento: cada nivel baja de intensidad (fondo, tamaño y grosor de texto) mientras más profundo, para distinguir mejor la jerarquía de un vistazo. También corrige la fecha de 'Reportado' que se encimaba con la columna de Folio (formato más corto)" },
   { v: "1.46.32", desc: "Partidas: nuevo checkbox 'Recurrente' — con el botón 'Generar recurrentes pendientes', crea de un jalón los meses que falten hasta diciembre para cada partida marcada, con el mismo monto (🔁 en la tabla indica cuáles ya están marcadas)" },
   { v: "1.46.31", desc: "Transacciones: agrega 'Día de Pago Programado' como opción de Agrupar por (tabla principal y sin vincular)" },
   { v: "1.46.30", desc: "Agrega columna '#' con numeración dinámica en Partidas y Transacciones — cuenta las filas realmente visibles en ese momento (respeta filtros, orden, y sigue contando sin reiniciar aunque tengas Agrupar por activo)" },
@@ -1834,6 +1835,20 @@ function formatFechaHora(iso) {
   }
 }
 
+// Versión corta (sin año, sin "p.m." completo) para celdas angostas donde el
+// formato completo se encima con la columna de al lado.
+function formatFechaCorta(iso) {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    const fecha = d.toLocaleDateString("es-MX", { day: "2-digit", month: "short" });
+    const hora = d.toLocaleTimeString("es-MX", { hour: "numeric", minute: "2-digit", hour12: true }).replace(/\s?[ap]\.?\s?m\.?/i, (m) => m.trim()[0].toLowerCase());
+    return `${fecha}, ${hora}`;
+  } catch {
+    return "";
+  }
+}
+
 function AutoriaCaption({ record, perfilesApi }) {
   if (!record?.id) return null;
   const nombreDe = (uid) => perfilesApi.rows.find((p) => p.id === uid)?.nombre || null;
@@ -2410,6 +2425,15 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
   if (node.type === "rows") return node.rows.map((r) => renderRowTr(r, depth, ++counter.n));
   let out = [];
   const levelColor = GROUP_LEVEL_COLORS[depth % GROUP_LEVEL_COLORS.length];
+  // La jerarquía visual baja de intensidad mientras más profundo el nivel:
+  // fondo más oscuro y texto más grande/grueso arriba, más sutil abajo.
+  const bgShade = ["#EEF1F4", "#F4F6F8", "#F8F9FB"][Math.min(depth, 2)];
+  const valueFontSize = [13, 12, 11.5][Math.min(depth, 2)];
+  const valueFontWeight = [700, 600, 600][Math.min(depth, 2)];
+  const rowPadding = depth === 0 ? "12px 10px" : "8px 10px";
+  const borderWidth = depth === 0 ? 4 : depth === 1 ? 3 : 2;
+  const pillTone = depth === 0 ? "accent" : depth === 1 ? "teal" : "dim";
+
   node.entries.forEach((entry) => {
     const groupPath = `${path}/${node.key}:${entry.value}`;
     const isCollapsed = collapsed.has(groupPath);
@@ -2418,17 +2442,21 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
         <td
           colSpan={colSpan}
           style={{
-            ...tdStyle, background: T.panelAlt,
-            paddingLeft: 14 + depth * 26,
-            borderLeft: `3px solid ${levelColor}`,
+            ...tdStyle, background: bgShade,
+            padding: rowPadding,
+            paddingLeft: 14 + depth * 24,
+            borderLeft: `${borderWidth}px solid ${levelColor}`,
+            borderBottom: `1px solid ${T.borderSoft}`,
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ color: T.textFaint, fontSize: 10, width: 12 }}>{isCollapsed ? "▶" : "▼"}</span>
-            <span style={{ fontSize: 10.5, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.04em" }}>{fieldLabels[node.key] || node.key}:</span>
-            <Pill tone="accent">{entry.value}</Pill>
-            <span style={{ fontSize: 11, color: T.textFaint }}>{entry.count}</span>
-            <span style={{ fontSize: 11.5, fontFamily: T.fontMono, color: T.textDim, marginLeft: "auto" }}>{money(entry.sum)}</span>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <span style={{ color: T.textFaint, fontSize: depth === 0 ? 11 : 9.5, width: 12, flexShrink: 0 }}>{isCollapsed ? "▶" : "▼"}</span>
+            <span style={{ fontSize: 9.5, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", flexShrink: 0 }}>{fieldLabels[node.key] || node.key}</span>
+            <Pill tone={pillTone}>
+              <span style={{ fontSize: valueFontSize, fontWeight: valueFontWeight, fontFamily: T.fontUI, letterSpacing: 0 }}>{entry.value}</span>
+            </Pill>
+            <span style={{ fontSize: 10.5, color: T.textFaint, background: T.panel, borderRadius: 999, padding: "1px 7px", flexShrink: 0 }}>{entry.count}</span>
+            <span style={{ fontSize: depth === 0 ? 13 : 11.5, fontWeight: depth === 0 ? 700 : 600, fontFamily: T.fontMono, color: T.text, marginLeft: "auto", flexShrink: 0 }}>{money(entry.sum)}</span>
           </div>
         </td>
       </tr>
@@ -3600,7 +3628,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     {
       key: "reportado_at", label: "Reportado",
       render: (t) => t.reportado_at
-        ? <Pill tone="accent">{formatFechaHora(t.reportado_at)}</Pill>
+        ? <Pill tone="accent">{formatFechaCorta(t.reportado_at)}</Pill>
         : <Pill tone="amber">No reportado</Pill>,
     },
     { key: "updated_at", label: "Última actualización", render: (t) => <span style={{ fontSize: 11, color: T.textFaint }}>{formatFechaHora(t.updated_at) || "—"}</span> },

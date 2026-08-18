@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.47.1";
+const APP_VERSION = "1.47.2";
 const CHANGELOG = [
+  { v: "1.47.2", desc: "Dashboard: el botón 'Contraer todo' del panel comparativo pasa a la barra de filtros (a la izquierda de Proyecto) y ahora gobierna las dos tablas a la vez en vez de una cada uno. Además alterna: si ya está todo contraído, el botón dice 'Expandir todo'" },
   { v: "1.47.1", desc: "Fix: en el panel 'Presupuestado vs. pagado real', la tabla de Pagado real solo mostraba columnas de los meses que ya tenían algún pago — si filtrabas Agosto/Septiembre/Octubre y solo había pagos en Agosto, las otras dos columnas desaparecían y las dos tablas dejaban de ser comparables. Ahora ambas comparten el mismo eje de meses (el mes filtrado aparece en las dos, en ceros si no hay pagos) y la misma regla de etiquetado de año" },
   { v: "1.47.0", desc: "Nueva pestaña Vehículos con tres vistas: Dashboard (disponibilidad de la flotilla, estatus por compañía, composición por tipo, distribución por ubicación y unidades con más SMI abiertas), Flotilla (tabla completa con búsqueda, columnas configurables y las SMI de cada unidad al expandir el renglón) y Mantenimientos (captura de folio, fecha, taller y costo). Incluye las compañías IZ2 y JEF, que solo existen en la flotilla, y avisa de posibles duplicados por VIN, placas o número de motor" },
   { v: "1.46.38", desc: "Reporte de Pagos: Forma de Pago y Método de Pago muestran solo el código (ej. '03', 'PPD') en vez del texto completo, en la tabla y en el Excel exportado — pasa el mouse encima para ver el nombre completo" },
@@ -1700,12 +1701,35 @@ function ResumenComparativoPanel({
     granTotalPagado += v;
   });
 
+  // Un solo control para las dos tablas: si queda algo abierto en cualquiera de
+  // las dos, contrae ambas; si ya están todas cerradas, las abre.
+  const rutasPptado = collectGroupPaths(pivotPptado);
+  const rutasPagado = collectGroupPaths(pivotPagado);
+  const todoContraido =
+    (rutasPptado.length + rutasPagado.length) > 0 &&
+    rutasPptado.every((r) => collapsedPptado.has(r)) &&
+    rutasPagado.every((r) => collapsedPagado.has(r));
+  const toggleTodo = () => {
+    if (todoContraido) {
+      setCollapsedPptado(new Set());
+      setCollapsedPagado(new Set());
+    } else {
+      setCollapsedPptado(new Set(rutasPptado));
+      setCollapsedPagado(new Set(rutasPagado));
+    }
+  };
+
   return (
     <Panel
       title="Presupuestado vs. pagado real, por proyecto"
       subtitle="Los mismos filtros aplican a ambas tablas de abajo"
       right={
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "flex-end" }}>
+            <Button variant="ghost" onClick={toggleTodo} style={{ height: 34 }}>
+              {todoContraido ? "Expandir todo" : "Contraer todo"}
+            </Button>
+          </div>
           <Field label="Proyecto">
             <Select value={proyectoKpi} onChange={(e) => setProyectoKpi(e.target.value)} style={{ width: 190 }}>
               <option>Todos</option>
@@ -1724,11 +1748,8 @@ function ResumenComparativoPanel({
         </div>
       }
     >
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+      <div style={{ marginBottom: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>Presupuestado por rubro</div>
-        {partidasResueltas.length > 0 && (
-          <Button variant="ghost" onClick={() => setCollapsedPptado(new Set(collectGroupPaths(pivotPptado)))}>Contraer todo</Button>
-        )}
       </div>
       {!partidasMoneda.length ? (
         <div style={{ textAlign: "center", color: T.textFaint, fontSize: 12.5, padding: 24 }}>Sin partidas en {monedaResumen} para estos filtros</div>
@@ -1754,11 +1775,8 @@ function ResumenComparativoPanel({
         </div>
       )}
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+      <div style={{ marginBottom: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>Pagado real (Status = Pagado)</div>
-        {filasPagadoResueltas.length > 0 && (
-          <Button variant="ghost" onClick={() => setCollapsedPagado(new Set(collectGroupPaths(pivotPagado)))}>Contraer todo</Button>
-        )}
       </div>
       {!pagadasMoneda.length ? (
         <div style={{ textAlign: "center", color: T.textFaint, fontSize: 12.5, padding: 24 }}>Sin pagos en {monedaResumen} para estos filtros</div>

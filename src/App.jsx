@@ -55,6 +55,17 @@ const RUBROS = [
 
 const UNIDADES_BASE = ["OSB", "CTM", "ISE"];
 
+// Vehiculos: la flotilla incluye dos companias (IZ2, JEF) que no manejan
+// presupuesto propio, por eso no estan en UNIDADES_BASE — viven solo aqui.
+const VEH_COMPANIAS = ["OSB", "CTM", "ISE", "IZ2", "JEF"];
+const VEH_EST_FUNCIONAL = ["Funcional", "Mtto Requerido", "En Mtto", "Fuera de Servicio", "No Encontrado"];
+const VEH_EST_OPERACIONAL = ["En Operación", "Resguardo", "Fuera de Operacion", "No Encontrado"];
+const VEH_EST_ADMIN = ["Activa", "Vendida", "No Encontrado", "Baja"];
+const VEH_TIPOS = ["Camioneta", "Camion", "Montacargas", "Camper", "Maquinaria", "Remolque"];
+const VEH_GPS = ["Positrace", "WIALON"];
+const MTTO_ESTATUS = ["Solicitado", "En proceso", "Concluido", "Cancelado"];
+const MTTO_TIPOS = ["Preventivo", "Correctivo"];
+
 const MONEDAS = ["MXP", "USD"];
 const ZONAS = ["Queretaro", "Poza Rica", "Paraiso", "Altamira", "Cerro Azul", "CDMX", "Guaymas", "Torreon", "Rosarito", "Agua Dulce", "Cotaxtla"];
 
@@ -97,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.46.38";
+const APP_VERSION = "1.47.0";
 const CHANGELOG = [
+  { v: "1.47.0", desc: "Nueva pestaña Vehículos con tres vistas: Dashboard (disponibilidad de la flotilla, estatus por compañía, composición por tipo, distribución por ubicación y unidades con más SMI abiertas), Flotilla (tabla completa con búsqueda, columnas configurables y las SMI de cada unidad al expandir el renglón) y Mantenimientos (captura de folio, fecha, taller y costo). Incluye las compañías IZ2 y JEF, que solo existen en la flotilla, y avisa de posibles duplicados por VIN, placas o número de motor" },
   { v: "1.46.38", desc: "Reporte de Pagos: Forma de Pago y Método de Pago muestran solo el código (ej. '03', 'PPD') en vez del texto completo, en la tabla y en el Excel exportado — pasa el mouse encima para ver el nombre completo" },
   { v: "1.46.37", desc: "Reporte de Pagos (PDF): los bloques de Zona/Moneda ya no fuerzan una página nueva cada uno — fluyen en la misma página mientras quepan, y solo saltan de página cuando de verdad no hay espacio" },
   { v: "1.46.36", desc: "Separa 'Reportado' en dos marcas independientes: 'Reportado a Dirección' (ya se avisó que el gasto se va a hacer) y 'Enviado a Pagos' (ya se mandó a ejecutar) — cada una con su propia columna, filtro, y selección en lote en Transacciones; los botones PDF de Reporte de Pagos y Reporte Pagos Dirección ahora marcan cada uno la suya" },
@@ -5386,6 +5398,1043 @@ function LoginScreen() {
   );
 }
 
+/* ----------------------------------------------------------------------
+   TAB: VEHÍCULOS  (flotilla + mantenimientos + dashboard)
+---------------------------------------------------------------------- */
+
+// Devuelve los vehículos ya filtrados por la barra de filtros compartida.
+function filtrarVehiculos(vehiculos, f) {
+  return vehiculos.filter((v) => {
+    if (f.companias.length && !f.companias.includes(v.compania || SIN_DATO)) return false;
+    if (f.ubicaciones.length && !f.ubicaciones.includes(v.ubicacion || SIN_DATO)) return false;
+    if (f.funcional.length && !f.funcional.includes(v.estatus_funcional || SIN_DATO)) return false;
+    if (f.admin.length && !f.admin.includes(v.estatus_administrativo || SIN_DATO)) return false;
+    if (f.tipos.length && !f.tipos.includes(v.tipo || SIN_DATO)) return false;
+    if (f.proyectos.length) {
+      const ps = v.proyectos && v.proyectos.length ? v.proyectos : [SIN_DATO];
+      if (!ps.some((p) => f.proyectos.includes(p))) return false;
+    }
+    return true;
+  });
+}
+
+// Busca coincidencias en los campos de texto del vehículo (económico, placas,
+// VIN, motor, modelo, responsables, notas).
+function coincideBusqueda(v, q) {
+  if (!q) return true;
+  const t = q.toLowerCase();
+  const campos = [
+    v.no_economico, v.placas, v.vin, v.no_motor, v.fabricante,
+    v.tipo, v.subtipo, v.modelo, v.notas, v.compania,
+    ...(v.responsables || []), ...(v.proyectos || []),
+  ];
+  return campos.some((c) => c && String(c).toLowerCase().includes(t));
+}
+
+const VEH_COL_ESTATUS = {
+  "Funcional": T.teal,
+  "En Mtto": T.amber,
+  "Mtto Requerido": T.amber,
+  "Fuera de Servicio": T.red,
+  "No Encontrado": T.red,
+};
+
+function tonoFuncional(e) {
+  if (e === "Funcional") return "teal";
+  if (e === "En Mtto" || e === "Mtto Requerido") return "amber";
+  if (e === "Fuera de Servicio" || e === "No Encontrado") return "red";
+  return "dim";
+}
+function tonoAdmin(e) {
+  if (e === "Activa") return "teal";
+  if (e === "Vendida") return "accent";
+  if (e === "Baja") return "dim";
+  return "red";
+}
+function tonoMtto(e) {
+  if (e === "Concluido") return "teal";
+  if (e === "En proceso") return "amber";
+  if (e === "Cancelado") return "dim";
+  return "red";
+}
+
+// Detecta el mismo VIN / placas / no. de motor en económicos distintos —
+// son los registros que hay que revisar a mano antes de confiar en los conteos.
+function posiblesDuplicados(vehiculos) {
+  const salida = [];
+  [["vin", "VIN"], ["placas", "Placas"], ["no_motor", "No. Motor"]].forEach(([campo, etiqueta]) => {
+    const mapa = {};
+    vehiculos.forEach((v) => {
+      const val = (v[campo] || "").trim();
+      if (!val) return;
+      (mapa[val] = mapa[val] || []).push(v.no_economico);
+    });
+    Object.entries(mapa).forEach(([valor, ecos]) => {
+      if (ecos.length > 1) salida.push({ campo: etiqueta, valor, economicos: ecos.sort() });
+    });
+  });
+  return salida;
+}
+
+/* ------------------------------- DASHBOARD ------------------------------- */
+
+function VehiculosDashboard({ vehiculos, mantenimientos, ubicaciones, onVerVehiculo }) {
+  const nombreUbic = (cod) => (ubicaciones.find((u) => u.codigo === cod) || {}).nombre || cod || SIN_DATO;
+
+  const activos = vehiculos.filter((v) => v.estatus_administrativo === "Activa");
+  const cuenta = (pred) => activos.filter(pred).length;
+  const funcionales = cuenta((v) => v.estatus_funcional === "Funcional");
+  const enMtto = cuenta((v) => v.estatus_funcional === "En Mtto" || v.estatus_funcional === "Mtto Requerido");
+  const fueraServicio = cuenta((v) => v.estatus_funcional === "Fuera de Servicio");
+  const noEncontrados = cuenta((v) => v.estatus_funcional === "No Encontrado");
+  const disponibilidad = activos.length ? (funcionales / activos.length) * 100 : 0;
+
+  const idsVisibles = new Set(vehiculos.map((v) => v.id));
+  const mttosVisibles = mantenimientos.filter((m) => idsVisibles.has(m.vehiculo_id));
+  const mttosAbiertos = mttosVisibles.filter((m) => m.estatus === "Solicitado" || m.estatus === "En proceso");
+
+  // Costo capturado de mantenimientos, separado por moneda.
+  const costos = sumaPorMoneda(mttosVisibles, "costo", "moneda");
+
+  // Barras apiladas: estatus funcional por compañía.
+  const porCompania = useMemo(() => {
+    const mapa = {};
+    activos.forEach((v) => {
+      const c = v.compania || SIN_DATO;
+      mapa[c] = mapa[c] || { compania: c };
+      const e = v.estatus_funcional || SIN_DATO;
+      mapa[c][e] = (mapa[c][e] || 0) + 1;
+    });
+    return Object.values(mapa).sort((a, b) => a.compania.localeCompare(b.compania));
+  }, [vehiculos]);
+
+  const estatusPresentes = useMemo(() => {
+    const s = new Set();
+    activos.forEach((v) => s.add(v.estatus_funcional || SIN_DATO));
+    return [...s].sort();
+  }, [vehiculos]);
+
+  const porTipo = useMemo(() => {
+    const mapa = {};
+    activos.forEach((v) => {
+      const t = v.tipo || SIN_DATO;
+      mapa[t] = (mapa[t] || 0) + 1;
+    });
+    return Object.entries(mapa).map(([tipo, n]) => ({ tipo, n })).sort((a, b) => b.n - a.n);
+  }, [vehiculos]);
+
+  const porUbicacion = useMemo(() => {
+    const mapa = {};
+    activos.forEach((v) => {
+      const u = v.ubicacion || SIN_DATO;
+      mapa[u] = mapa[u] || { ubicacion: u, total: 0, funcional: 0, mtto: 0, fuera: 0 };
+      mapa[u].total += 1;
+      if (v.estatus_funcional === "Funcional") mapa[u].funcional += 1;
+      else if (v.estatus_funcional === "En Mtto" || v.estatus_funcional === "Mtto Requerido") mapa[u].mtto += 1;
+      else mapa[u].fuera += 1;
+    });
+    return Object.values(mapa).sort((a, b) => b.total - a.total);
+  }, [vehiculos]);
+
+  // Vehículos con más SMI abiertas — los que están costando más atención.
+  const rankingMtto = useMemo(() => {
+    const mapa = {};
+    mttosAbiertos.forEach((m) => { mapa[m.vehiculo_id] = (mapa[m.vehiculo_id] || 0) + 1; });
+    return Object.entries(mapa)
+      .map(([id, n]) => ({ vehiculo: vehiculos.find((v) => v.id === id), n }))
+      .filter((r) => r.vehiculo)
+      .sort((a, b) => b.n - a.n)
+      .slice(0, 12);
+  }, [mantenimientos, vehiculos]);
+
+  const duplicados = useMemo(() => posiblesDuplicados(vehiculos), [vehiculos]);
+
+  if (!vehiculos.length) {
+    return <EmptyState title="Sin vehículos que mostrar" body="Ajusta los filtros de arriba, o carga la flotilla corriendo los scripts de migración en Supabase." />;
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 18 }}>
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "stretch" }}>
+        <KpiCard label="Flotilla activa" value={activos.length} />
+        <KpiCard label="Funcionales" value={funcionales} accent={T.teal} />
+        <KpiCard label="Requieren / en mtto" value={enMtto} accent={T.amber} />
+        <KpiCard label="Fuera de servicio" value={fueraServicio} accent={T.red} />
+        <KpiCard label="No encontrados" value={noEncontrados} accent={T.red} />
+        <KpiCard label="SMI abiertas" value={mttosAbiertos.length} accent={T.blue} />
+        <div style={{ ...panelStyle, padding: "10px 20px", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ fontSize: 10.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.06em" }}>Disponibilidad</div>
+          <Gauge pct={disponibilidad} size={86} />
+        </div>
+      </div>
+
+      {duplicados.length > 0 && (
+        <Panel title="Posibles duplicados" subtitle="Mismo VIN, placas o número de motor en económicos distintos — revisa si son la misma unidad capturada dos veces">
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {duplicados.map((d, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 12, color: T.text }}>
+                <Pill tone="amber">{d.campo}</Pill>
+                <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{d.valor}</span>
+                <span style={{ color: T.textFaint }}>→</span>
+                {d.economicos.map((e) => (
+                  <button
+                    key={e}
+                    type="button"
+                    onClick={() => onVerVehiculo && onVerVehiculo(e)}
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: T.accent, fontFamily: T.fontMono, fontSize: 12, textDecoration: "underline" }}
+                  >
+                    {e}
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        </Panel>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: 18 }}>
+        <Panel title="Estatus funcional por compañía" subtitle="Solo unidades activas">
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={porCompania} margin={{ top: 8, right: 8, left: -18, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={T.borderSoft} vertical={false} />
+              <XAxis dataKey="compania" tick={{ fontSize: 11, fill: T.textDim }} axisLine={{ stroke: T.border }} tickLine={false} />
+              <YAxis tick={{ fontSize: 11, fill: T.textDim }} axisLine={false} tickLine={false} allowDecimals={false} />
+              <Tooltip content={<ChartTooltip />} />
+              <Legend wrapperStyle={{ fontSize: 11 }} />
+              {estatusPresentes.map((e) => (
+                <Bar key={e} dataKey={e} stackId="a" fill={VEH_COL_ESTATUS[e] || T.textFaint} />
+              ))}
+            </BarChart>
+          </ResponsiveContainer>
+        </Panel>
+
+        <Panel title="Composición de la flotilla" subtitle="Unidades activas por tipo">
+          <ResponsiveContainer width="100%" height={260}>
+            <BarChart data={porTipo} layout="vertical" margin={{ top: 8, right: 24, left: 30, bottom: 4 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke={T.borderSoft} horizontal={false} />
+              <XAxis type="number" tick={{ fontSize: 11, fill: T.textDim }} axisLine={{ stroke: T.border }} tickLine={false} allowDecimals={false} />
+              <YAxis type="category" dataKey="tipo" tick={{ fontSize: 11, fill: T.textDim }} axisLine={false} tickLine={false} width={90} />
+              <Tooltip content={<ChartTooltip />} />
+              <Bar dataKey="n" name="Unidades" fill={T.accent} radius={[0, 3, 3, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+        </Panel>
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: 18 }}>
+        <Panel title="Distribución por ubicación" subtitle="Dónde está parada la flotilla activa">
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead>
+              <tr>
+                <th style={thStyle}>Ubicación</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Total</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Funcional</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>En mtto</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Otros</th>
+              </tr>
+            </thead>
+            <tbody>
+              {porUbicacion.map((u) => (
+                <tr key={u.ubicacion}>
+                  <td style={tdStyle}>{nombreUbic(u.ubicacion)}</td>
+                  <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, fontWeight: 600 }}>{u.total}</td>
+                  <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, color: T.teal }}>{u.funcional || "—"}</td>
+                  <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, color: T.amber }}>{u.mtto || "—"}</td>
+                  <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, color: T.textFaint }}>{u.fuera || "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </Panel>
+
+        <Panel
+          title="Unidades con más SMI abiertas"
+          subtitle="Solicitadas o en proceso"
+          right={costos.length > 0 && (
+            <div style={{ textAlign: "right" }}>
+              <div style={{ fontSize: 10, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.06em" }}>Costo capturado</div>
+              {costos.map((c, i) => (
+                <div key={i} style={{ fontSize: 12.5, fontFamily: T.fontMono, color: T.text }}>{c}</div>
+              ))}
+            </div>
+          )}
+        >
+          {rankingMtto.length === 0 ? (
+            <div style={{ fontSize: 12.5, color: T.textFaint, padding: "18px 0", textAlign: "center" }}>
+              No hay SMI abiertas con los filtros actuales.
+            </div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+              <thead>
+                <tr>
+                  <th style={thStyle}>Económico</th>
+                  <th style={thStyle}>Compañía</th>
+                  <th style={thStyle}>Estatus</th>
+                  <th style={{ ...thStyle, textAlign: "right" }}>SMI</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rankingMtto.map(({ vehiculo, n }) => (
+                  <tr key={vehiculo.id}>
+                    <td style={tdStyle}>
+                      <button
+                        type="button"
+                        onClick={() => onVerVehiculo && onVerVehiculo(vehiculo.no_economico)}
+                        style={{ background: "none", border: "none", padding: 0, cursor: "pointer", color: T.accent, fontFamily: T.fontMono, fontSize: 12.5, textDecoration: "underline" }}
+                      >
+                        {vehiculo.no_economico}
+                      </button>
+                    </td>
+                    <td style={tdStyle}>{vehiculo.compania || "—"}</td>
+                    <td style={tdStyle}><Pill tone={tonoFuncional(vehiculo.estatus_funcional)}>{vehiculo.estatus_funcional || "—"}</Pill></td>
+                    <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, fontWeight: 600 }}>{n}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+/* ------------------------------- FORMULARIO ------------------------------ */
+
+const VEH_FORM_VACIO = {
+  no_economico: "", compania: "", proyectos: [], estatus_administrativo: "Activa",
+  estatus_funcional: "", estatus_operacional: "", ubicacion: "", placas: "", vin: "",
+  no_motor: "", fabricante: "", tipo: "", subtipo: "", modelo: "", anio: "",
+  responsables: [], gps: "", notas: "",
+};
+
+function VehiculoModal({ inicial, ubicaciones, proyectosOpciones, companiasOpciones, onGuardar, onClose, perfilesApi, registro }) {
+  const [f, setF] = useState({ ...VEH_FORM_VACIO, ...(inicial || {}), anio: inicial && inicial.anio != null ? String(inicial.anio) : "" });
+  const [guardando, setGuardando] = useState(false);
+  const set = (k, v) => setF((prev) => ({ ...prev, [k]: v }));
+
+  const toggleProyecto = (p) =>
+    set("proyectos", f.proyectos.includes(p) ? f.proyectos.filter((x) => x !== p) : [...f.proyectos, p]);
+
+  const guardar = async () => {
+    if (!f.no_economico.trim()) { alert("El número económico es obligatorio."); return; }
+    setGuardando(true);
+    try {
+      await onGuardar({
+        no_economico: f.no_economico.trim(),
+        compania: f.compania || null,
+        proyectos: f.proyectos,
+        estatus_administrativo: f.estatus_administrativo || "Activa",
+        estatus_funcional: f.estatus_funcional || null,
+        estatus_operacional: f.estatus_operacional || null,
+        ubicacion: f.ubicacion || null,
+        placas: f.placas.trim() || null,
+        vin: f.vin.trim().toUpperCase() || null,
+        no_motor: f.no_motor.trim() || null,
+        fabricante: f.fabricante.trim() || null,
+        tipo: f.tipo || null,
+        subtipo: f.subtipo.trim() || null,
+        modelo: f.modelo.trim() || null,
+        anio: f.anio && /^\d{4}$/.test(f.anio) ? Number(f.anio) : null,
+        responsables: f.responsables,
+        gps: f.gps || null,
+        notas: f.notas.trim() || null,
+      });
+      onClose();
+    } catch (err) {
+      alert("No se pudo guardar: " + (err.message || err));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={inicial && inicial.id ? `Editar ${inicial.no_economico}` : "Nuevo vehículo"}
+      subtitle={inicial && inicial.id ? "Los cambios quedan registrados con tu usuario" : "Alta manual de una unidad"}
+      onClose={onClose}
+      width={860}
+    >
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
+        <Field label="No. Económico *">
+          <TextInput value={f.no_economico} onChange={(e) => set("no_economico", e.target.value)} placeholder="CTM-V001" />
+        </Field>
+        <Field label="Compañía">
+          <Select value={f.compania} onChange={(e) => set("compania", e.target.value)}>
+            <option value="">— Sin asignar —</option>
+            {companiasOpciones.map((c) => <option key={c} value={c}>{c}</option>)}
+          </Select>
+        </Field>
+        <Field label="Estatus administrativo">
+          <Select value={f.estatus_administrativo} onChange={(e) => set("estatus_administrativo", e.target.value)}>
+            {VEH_EST_ADMIN.map((e) => <option key={e} value={e}>{e}</option>)}
+          </Select>
+        </Field>
+        <Field label="Estatus funcional">
+          <Select value={f.estatus_funcional} onChange={(e) => set("estatus_funcional", e.target.value)}>
+            <option value="">— Sin dato —</option>
+            {VEH_EST_FUNCIONAL.map((e) => <option key={e} value={e}>{e}</option>)}
+          </Select>
+        </Field>
+        <Field label="Estatus operacional">
+          <Select value={f.estatus_operacional} onChange={(e) => set("estatus_operacional", e.target.value)}>
+            <option value="">— Sin dato —</option>
+            {VEH_EST_OPERACIONAL.map((e) => <option key={e} value={e}>{e}</option>)}
+          </Select>
+        </Field>
+        <Field label="Ubicación">
+          <Select value={f.ubicacion} onChange={(e) => set("ubicacion", e.target.value)}>
+            <option value="">— Sin dato —</option>
+            {ubicaciones.map((u) => <option key={u.codigo} value={u.codigo}>{u.codigo} · {u.nombre}</option>)}
+          </Select>
+        </Field>
+        <Field label="Placas">
+          <TextInput value={f.placas} onChange={(e) => set("placas", e.target.value)} />
+        </Field>
+        <Field label="VIN">
+          <TextInput value={f.vin} onChange={(e) => set("vin", e.target.value)} />
+        </Field>
+        <Field label="No. Motor">
+          <TextInput value={f.no_motor} onChange={(e) => set("no_motor", e.target.value)} />
+        </Field>
+        <Field label="Fabricante">
+          <TextInput value={f.fabricante} onChange={(e) => set("fabricante", e.target.value)} placeholder="Toyota" />
+        </Field>
+        <Field label="Tipo">
+          <Select value={f.tipo} onChange={(e) => set("tipo", e.target.value)}>
+            <option value="">— Sin dato —</option>
+            {VEH_TIPOS.map((t) => <option key={t} value={t}>{t}</option>)}
+          </Select>
+        </Field>
+        <Field label="Subtipo">
+          <TextInput value={f.subtipo} onChange={(e) => set("subtipo", e.target.value)} placeholder="Plataforma" />
+        </Field>
+        <Field label="Modelo">
+          <TextInput value={f.modelo} onChange={(e) => set("modelo", e.target.value)} placeholder="Hilux Doble Cabina" />
+        </Field>
+        <Field label="Año">
+          <TextInput value={f.anio} onChange={(e) => set("anio", e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="2019" />
+        </Field>
+        <Field label="GPS">
+          <Select value={f.gps} onChange={(e) => set("gps", e.target.value)}>
+            <option value="">— Sin GPS —</option>
+            {VEH_GPS.map((g) => <option key={g} value={g}>{g}</option>)}
+          </Select>
+        </Field>
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <div style={{ textTransform: "uppercase", letterSpacing: "0.06em", fontSize: 10.5, color: T.textDim, marginBottom: 8 }}>Proyectos</div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
+          {proyectosOpciones.map((p) => (
+            <label key={p} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12.5, color: T.text, cursor: "pointer" }}>
+              <input type="checkbox" checked={f.proyectos.includes(p)} onChange={() => toggleProyecto(p)} />
+              {p}
+            </label>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+        <Field label="Responsables (separados por coma)">
+          <TextInput
+            value={f.responsables.join(", ")}
+            onChange={(e) => set("responsables", e.target.value.split(",").map((s) => s.trim()).filter(Boolean))}
+            placeholder="Juan Pérez, María López"
+          />
+        </Field>
+        <Field label="Notas generales">
+          <TextInput value={f.notas} onChange={(e) => set("notas", e.target.value)} />
+        </Field>
+      </div>
+
+      {registro && <div style={{ marginTop: 14 }}><AutoriaCaption record={registro} perfilesApi={perfilesApi} /></div>}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}>
+        <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+        <Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function MantenimientoModal({ inicial, vehiculos, onGuardar, onClose, perfilesApi }) {
+  const [f, setF] = useState({
+    folio: "", vehiculo_id: "", zona: "", anio: "", fecha: "", tipo_mtto: "",
+    descripcion: "", estatus: "Solicitado", proveedor: "", costo: "", moneda: "MXP", notas: "",
+    ...(inicial || {}),
+    anio: inicial && inicial.anio != null ? String(inicial.anio) : "",
+    costo: inicial && inicial.costo != null ? String(inicial.costo) : "",
+  });
+  const [guardando, setGuardando] = useState(false);
+  const set = (k, v) => setF((prev) => ({ ...prev, [k]: v }));
+
+  const guardar = async () => {
+    if (!f.folio.trim()) { alert("El folio de la SMI es obligatorio."); return; }
+    if (!f.vehiculo_id) { alert("Elige a qué vehículo pertenece."); return; }
+    setGuardando(true);
+    try {
+      await onGuardar({
+        folio: f.folio.trim().toUpperCase(),
+        vehiculo_id: f.vehiculo_id,
+        zona: f.zona.trim() || null,
+        anio: f.anio && /^\d{4}$/.test(f.anio) ? Number(f.anio) : null,
+        fecha: f.fecha || null,
+        tipo_mtto: f.tipo_mtto || null,
+        descripcion: f.descripcion.trim() || null,
+        estatus: f.estatus,
+        proveedor: f.proveedor.trim() || null,
+        costo: f.costo !== "" && !isNaN(Number(f.costo)) ? Number(f.costo) : null,
+        moneda: f.moneda || "MXP",
+        notas: f.notas.trim() || null,
+      });
+      onClose();
+    } catch (err) {
+      alert("No se pudo guardar: " + (err.message || err));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const ordenados = [...vehiculos].sort((a, b) => a.no_economico.localeCompare(b.no_economico));
+
+  return (
+    <Modal
+      title={inicial && inicial.id ? `Editar ${inicial.folio}` : "Nueva SMI"}
+      subtitle="Solicitud de mantenimiento"
+      onClose={onClose}
+      width={780}
+    >
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
+        <Field label="Folio *">
+          <TextInput value={f.folio} onChange={(e) => set("folio", e.target.value)} placeholder="MTTO-PR-2026-001" />
+        </Field>
+        <Field label="Vehículo *">
+          <Select value={f.vehiculo_id} onChange={(e) => set("vehiculo_id", e.target.value)}>
+            <option value="">— Elegir —</option>
+            {ordenados.map((v) => (
+              <option key={v.id} value={v.id}>{v.no_economico}{v.compania ? ` · ${v.compania}` : ""}</option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Zona">
+          <TextInput value={f.zona} onChange={(e) => set("zona", e.target.value)} placeholder="PR-UP" />
+        </Field>
+        <Field label="Año">
+          <TextInput value={f.anio} onChange={(e) => set("anio", e.target.value.replace(/\D/g, "").slice(0, 4))} placeholder="2026" />
+        </Field>
+        <Field label="Fecha">
+          <TextInput type="date" value={f.fecha || ""} onChange={(e) => set("fecha", e.target.value)} />
+        </Field>
+        <Field label="Tipo">
+          <Select value={f.tipo_mtto} onChange={(e) => set("tipo_mtto", e.target.value)}>
+            <option value="">— Sin dato —</option>
+            {MTTO_TIPOS.map((t) => <option key={t} value={t}>{t}</option>)}
+          </Select>
+        </Field>
+        <Field label="Estatus">
+          <Select value={f.estatus} onChange={(e) => set("estatus", e.target.value)}>
+            {MTTO_ESTATUS.map((e) => <option key={e} value={e}>{e}</option>)}
+          </Select>
+        </Field>
+        <Field label="Proveedor / taller">
+          <TextInput value={f.proveedor} onChange={(e) => set("proveedor", e.target.value)} />
+        </Field>
+        <Field label="Costo">
+          <TextInput value={f.costo} onChange={(e) => set("costo", e.target.value)} placeholder="0.00" />
+        </Field>
+        <Field label="Moneda">
+          <Select value={f.moneda} onChange={(e) => set("moneda", e.target.value)}>
+            {MONEDAS.map((m) => <option key={m} value={m}>{m}</option>)}
+          </Select>
+        </Field>
+      </div>
+
+      <div style={{ marginTop: 14, display: "grid", gap: 14 }}>
+        <Field label="Descripción del trabajo">
+          <TextInput value={f.descripcion} onChange={(e) => set("descripcion", e.target.value)} placeholder="Cambio de balatas y rectificado de discos" />
+        </Field>
+        <Field label="Notas">
+          <TextInput value={f.notas} onChange={(e) => set("notas", e.target.value)} />
+        </Field>
+      </div>
+
+      {inicial && inicial.id && <div style={{ marginTop: 14 }}><AutoriaCaption record={inicial} perfilesApi={perfilesApi} /></div>}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 20 }}>
+        <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+        <Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* --------------------------------- FLOTILLA ------------------------------- */
+
+const COLUMNAS_VEHICULOS = [
+  { key: "no_economico", label: "No. Económico" },
+  { key: "compania", label: "Compañía" },
+  { key: "proyectos", label: "Proyectos" },
+  { key: "estatus_funcional", label: "Est. Funcional" },
+  { key: "estatus_operacional", label: "Est. Operacional" },
+  { key: "estatus_administrativo", label: "Est. Administrativo" },
+  { key: "ubicacion", label: "Ubicación" },
+  { key: "tipo", label: "Tipo" },
+  { key: "subtipo", label: "Subtipo" },
+  { key: "fabricante", label: "Fabricante" },
+  { key: "modelo", label: "Modelo" },
+  { key: "anio", label: "Año" },
+  { key: "placas", label: "Placas" },
+  { key: "vin", label: "VIN" },
+  { key: "no_motor", label: "No. Motor" },
+  { key: "gps", label: "GPS" },
+  { key: "responsables", label: "Responsables" },
+  { key: "smi", label: "SMI abiertas" },
+  { key: "notas", label: "Notas" },
+];
+
+function FlotillaPanel({ vehiculos, vehiculosApi, mantenimientos, ubicaciones, proyectosOpciones, companiasOpciones, perfilesApi, expandido, setExpandido }) {
+  const [busqueda, setBusqueda] = useSessionState("veh:busqueda", "");
+  const [sort, setSort] = useSessionState("veh:sort", { key: "no_economico", dir: "asc" });
+  const [editando, setEditando] = useState(null); // objeto vehículo, o {} para nuevo
+  const { visible, hidden, toggle, showAll } = useColumnVisibility("veh:columnas", COLUMNAS_VEHICULOS);
+
+  const nombreUbic = (cod) => (ubicaciones.find((u) => u.codigo === cod) || {}).nombre || cod;
+
+  const smiPorVehiculo = useMemo(() => {
+    const mapa = {};
+    mantenimientos.forEach((m) => { (mapa[m.vehiculo_id] = mapa[m.vehiculo_id] || []).push(m); });
+    return mapa;
+  }, [mantenimientos]);
+
+  const filas = useMemo(() => {
+    const buscados = vehiculos.filter((v) => coincideBusqueda(v, busqueda));
+    return sortRows(buscados, sort, {
+      proyectos: (v) => (v.proyectos || []).join(", "),
+      responsables: (v) => (v.responsables || []).join(", "),
+      ubicacion: (v) => nombreUbic(v.ubicacion) || "",
+      smi: (v) => (smiPorVehiculo[v.id] || []).filter((m) => m.estatus === "Solicitado" || m.estatus === "En proceso").length,
+      anio: (v) => v.anio || 0,
+    });
+  }, [vehiculos, busqueda, sort, smiPorVehiculo, ubicaciones]);
+
+  const guardar = async (datos) => {
+    if (editando && editando.id) await vehiculosApi.update(editando.id, datos);
+    else await vehiculosApi.insert({ id: uid(), ...datos });
+  };
+
+  const eliminar = (v) => {
+    if (!confirm(`¿Eliminar ${v.no_economico}? También se borran sus SMI asociadas.`)) return;
+    vehiculosApi.remove(v.id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+  };
+
+  const celda = (v, key) => {
+    switch (key) {
+      case "no_economico":
+        return <span style={{ fontFamily: T.fontMono, fontWeight: 600 }}>{v.no_economico}</span>;
+      case "proyectos":
+        return (v.proyectos || []).length
+          ? <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>{v.proyectos.map((p) => <Pill key={p} tone="dim">{p}</Pill>)}</span>
+          : <span style={{ color: T.textFaint }}>—</span>;
+      case "estatus_funcional":
+        return v.estatus_funcional ? <Pill tone={tonoFuncional(v.estatus_funcional)}>{v.estatus_funcional}</Pill> : <span style={{ color: T.textFaint }}>—</span>;
+      case "estatus_administrativo":
+        return <Pill tone={tonoAdmin(v.estatus_administrativo)}>{v.estatus_administrativo}</Pill>;
+      case "ubicacion":
+        return v.ubicacion ? nombreUbic(v.ubicacion) : <span style={{ color: T.textFaint }}>—</span>;
+      case "responsables":
+        return (v.responsables || []).length ? v.responsables.join(", ") : <span style={{ color: T.textFaint }}>—</span>;
+      case "smi": {
+        const abiertas = (smiPorVehiculo[v.id] || []).filter((m) => m.estatus === "Solicitado" || m.estatus === "En proceso").length;
+        return abiertas ? <Pill tone="amber">{abiertas}</Pill> : <span style={{ color: T.textFaint }}>—</span>;
+      }
+      case "vin":
+      case "no_motor":
+      case "placas":
+        return v[key] ? <span style={{ fontFamily: T.fontMono, fontSize: 11.5 }}>{v[key]}</span> : <span style={{ color: T.textFaint }}>—</span>;
+      default:
+        return v[key] != null && v[key] !== "" ? v[key] : <span style={{ color: T.textFaint }}>—</span>;
+    }
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <TextInput
+          value={busqueda}
+          onChange={(e) => setBusqueda(e.target.value)}
+          placeholder="Buscar económico, placas, VIN, modelo, responsable…"
+          style={{ width: 340 }}
+        />
+        <span style={{ fontSize: 12, color: T.textDim }}>
+          {filas.length} {filas.length === 1 ? "unidad" : "unidades"}
+        </span>
+        <div style={{ flex: 1 }} />
+        <ColumnVisibilityControl columns={COLUMNAS_VEHICULOS} hidden={hidden} onToggle={toggle} onShowAll={showAll} />
+        <Button onClick={() => setEditando({})}>Nuevo vehículo</Button>
+      </div>
+
+      {filas.length === 0 ? (
+        <EmptyState title="Sin resultados" body="Ningún vehículo coincide con los filtros y la búsqueda actuales." />
+      ) : (
+        <div style={{ ...panelStyle, padding: 0, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead>
+              <tr>
+                <th style={{ ...thStyle, width: 34 }}></th>
+                <th style={{ ...thStyle, width: 40 }}>#</th>
+                {visible.map((c) => (
+                  <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort} />
+                ))}
+                <th style={{ ...thStyle, width: 76 }}>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((v, i) => {
+                const smis = (smiPorVehiculo[v.id] || []).slice().sort((a, b) => (a.folio || "").localeCompare(b.folio || ""));
+                const abierto = expandido === v.id;
+                return (
+                  <React.Fragment key={v.id}>
+                    <tr>
+                      <td style={{ ...tdStyle, textAlign: "center" }}>
+                        {smis.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setExpandido(abierto ? null : v.id)}
+                            style={{ background: "none", border: "none", cursor: "pointer", color: T.textDim, fontSize: 11, padding: 0 }}
+                            title={abierto ? "Ocultar SMI" : "Ver SMI"}
+                          >
+                            {abierto ? "▾" : "▸"}
+                          </button>
+                        )}
+                      </td>
+                      <td style={{ ...tdStyle, color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{i + 1}</td>
+                      {visible.map((c) => <td key={c.key} style={tdStyle}>{celda(v, c.key)}</td>)}
+                      <td style={tdStyle}>
+                        <div style={{ display: "flex", gap: 5 }}>
+                          <IconButton icon="✎" label="Editar" onClick={() => setEditando(v)} />
+                          <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => eliminar(v)} />
+                        </div>
+                      </td>
+                    </tr>
+                    {abierto && (
+                      <tr>
+                        <td colSpan={visible.length + 3} style={{ padding: "10px 18px 16px 52px", background: T.panelAlt, borderBottom: `1px solid ${T.borderSoft}` }}>
+                          <div style={{ fontSize: 10.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+                            SMI de mantenimiento · {smis.length}
+                          </div>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                            <thead>
+                              <tr>
+                                <th style={thStyle}>Folio</th>
+                                <th style={thStyle}>Estatus</th>
+                                <th style={thStyle}>Tipo</th>
+                                <th style={thStyle}>Fecha</th>
+                                <th style={thStyle}>Descripción</th>
+                                <th style={{ ...thStyle, textAlign: "right" }}>Costo</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {smis.map((m) => (
+                                <tr key={m.id}>
+                                  <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{m.folio}</td>
+                                  <td style={tdStyle}><Pill tone={tonoMtto(m.estatus)}>{m.estatus}</Pill></td>
+                                  <td style={tdStyle}>{m.tipo_mtto || <span style={{ color: T.textFaint }}>—</span>}</td>
+                                  <td style={tdStyle}>{m.fecha || <span style={{ color: T.textFaint }}>—</span>}</td>
+                                  <td style={tdStyle}>{m.descripcion || <span style={{ color: T.textFaint }}>Pendiente de capturar</span>}</td>
+                                  <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>
+                                    {m.costo != null ? money(m.costo, m.moneda || "MXP") : <span style={{ color: T.textFaint }}>—</span>}
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {editando && (
+        <VehiculoModal
+          inicial={editando.id ? editando : null}
+          registro={editando.id ? editando : null}
+          ubicaciones={ubicaciones}
+          proyectosOpciones={proyectosOpciones}
+          companiasOpciones={companiasOpciones}
+          perfilesApi={perfilesApi}
+          onGuardar={guardar}
+          onClose={() => setEditando(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ------------------------------ MANTENIMIENTOS ---------------------------- */
+
+function MantenimientosPanel({ vehiculos, mantenimientos, mantenimientosApi, perfilesApi }) {
+  const [estatusFiltro, setEstatusFiltro] = useSessionSetState("veh:mtto:estatus", []);
+  const [aniosFiltro, setAniosFiltro] = useSessionSetState("veh:mtto:anios", []);
+  const [sort, setSort] = useSessionState("veh:mtto:sort", { key: "folio", dir: "asc" });
+  const [editando, setEditando] = useState(null);
+
+  const porId = useMemo(() => {
+    const m = {};
+    vehiculos.forEach((v) => { m[v.id] = v; });
+    return m;
+  }, [vehiculos]);
+
+  const aniosDisponibles = useMemo(
+    () => [...new Set(mantenimientos.map((m) => m.anio).filter(Boolean))].sort((a, b) => b - a).map(String),
+    [mantenimientos]
+  );
+
+  const filas = useMemo(() => {
+    const f = mantenimientos.filter((m) => {
+      if (estatusFiltro.size && !estatusFiltro.has(m.estatus)) return false;
+      if (aniosFiltro.size && !aniosFiltro.has(String(m.anio))) return false;
+      return true;
+    });
+    return sortRows(f, sort, {
+      vehiculo: (m) => (porId[m.vehiculo_id] || {}).no_economico || "",
+      compania: (m) => (porId[m.vehiculo_id] || {}).compania || "",
+      costo: (m) => Number(m.costo) || 0,
+    });
+  }, [mantenimientos, estatusFiltro, aniosFiltro, sort, porId]);
+
+  const totales = sumaPorMoneda(filas, "costo", "moneda");
+
+  const guardar = async (datos) => {
+    if (editando && editando.id) await mantenimientosApi.update(editando.id, datos);
+    else await mantenimientosApi.insert({ id: uid(), ...datos });
+  };
+
+  const eliminar = (m) => {
+    if (!confirm(`¿Eliminar la SMI ${m.folio}?`)) return;
+    mantenimientosApi.remove(m.id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 14 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+        <MultiSelect
+          opciones={MTTO_ESTATUS}
+          seleccionados={[...estatusFiltro]}
+          onChange={(vals) => setEstatusFiltro(new Set(vals))}
+          todosLabel="Todos los estatus"
+          unidadLabel=" estatus"
+        />
+        <MultiSelect
+          opciones={aniosDisponibles}
+          seleccionados={[...aniosFiltro]}
+          onChange={(vals) => setAniosFiltro(new Set(vals))}
+          todosLabel="Todos los años"
+          unidadLabel=" años"
+        />
+        <span style={{ fontSize: 12, color: T.textDim }}>{filas.length} SMI</span>
+        {totales.length > 0 && (
+          <span style={{ fontSize: 12, color: T.teal, fontFamily: T.fontMono }}>Σ {totales.join(" · ")}</span>
+        )}
+        <div style={{ flex: 1 }} />
+        <Button onClick={() => setEditando({})}>Nueva SMI</Button>
+      </div>
+
+      {filas.length === 0 ? (
+        <EmptyState title="Sin SMI" body="No hay solicitudes de mantenimiento con los filtros actuales." />
+      ) : (
+        <div style={{ ...panelStyle, padding: 0, overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+            <thead>
+              <tr>
+                <th style={{ ...thStyle, width: 40 }}>#</th>
+                <SortableTh label="Folio" sortKey="folio" sort={sort} setSort={setSort} />
+                <SortableTh label="Vehículo" sortKey="vehiculo" sort={sort} setSort={setSort} />
+                <SortableTh label="Compañía" sortKey="compania" sort={sort} setSort={setSort} />
+                <SortableTh label="Zona" sortKey="zona" sort={sort} setSort={setSort} />
+                <SortableTh label="Año" sortKey="anio" sort={sort} setSort={setSort} />
+                <SortableTh label="Fecha" sortKey="fecha" sort={sort} setSort={setSort} />
+                <SortableTh label="Tipo" sortKey="tipo_mtto" sort={sort} setSort={setSort} />
+                <SortableTh label="Estatus" sortKey="estatus" sort={sort} setSort={setSort} />
+                <SortableTh label="Descripción" sortKey="descripcion" sort={sort} setSort={setSort} />
+                <SortableTh label="Proveedor" sortKey="proveedor" sort={sort} setSort={setSort} />
+                <SortableTh label="Costo" sortKey="costo" sort={sort} setSort={setSort} sumLabel={totales} />
+                <th style={{ ...thStyle, width: 76 }}>Acciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((m, i) => {
+                const v = porId[m.vehiculo_id];
+                return (
+                  <tr key={m.id}>
+                    <td style={{ ...tdStyle, color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{i + 1}</td>
+                    <td style={{ ...tdStyle, fontFamily: T.fontMono, fontWeight: 600 }}>{m.folio}</td>
+                    <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{v ? v.no_economico : <span style={{ color: T.textFaint }}>—</span>}</td>
+                    <td style={tdStyle}>{(v && v.compania) || <span style={{ color: T.textFaint }}>—</span>}</td>
+                    <td style={tdStyle}>{m.zona || <span style={{ color: T.textFaint }}>—</span>}</td>
+                    <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{m.anio || <span style={{ color: T.textFaint }}>—</span>}</td>
+                    <td style={tdStyle}>{m.fecha || <span style={{ color: T.textFaint }}>—</span>}</td>
+                    <td style={tdStyle}>{m.tipo_mtto || <span style={{ color: T.textFaint }}>—</span>}</td>
+                    <td style={tdStyle}><Pill tone={tonoMtto(m.estatus)}>{m.estatus}</Pill></td>
+                    <td style={tdStyle}>{m.descripcion || <span style={{ color: T.textFaint }}>Pendiente de capturar</span>}</td>
+                    <td style={tdStyle}>{m.proveedor || <span style={{ color: T.textFaint }}>—</span>}</td>
+                    <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>
+                      {m.costo != null ? money(m.costo, m.moneda || "MXP") : <span style={{ color: T.textFaint }}>—</span>}
+                    </td>
+                    <td style={tdStyle}>
+                      <div style={{ display: "flex", gap: 5 }}>
+                        <IconButton icon="✎" label="Editar" onClick={() => setEditando(m)} />
+                        <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => eliminar(m)} />
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {editando && (
+        <MantenimientoModal
+          inicial={editando.id ? editando : null}
+          vehiculos={vehiculos}
+          perfilesApi={perfilesApi}
+          onGuardar={guardar}
+          onClose={() => setEditando(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+/* --------------------------------- TAB RAÍZ ------------------------------- */
+
+function VehiculosTab({ vehiculos, vehiculosApi, mantenimientos, mantenimientosApi, ubicaciones, perfilesApi, unidadesPermitidas }) {
+  const [sub, setSub] = useSessionState("veh:sub", "dashboard");
+  const [companias, setCompanias] = useSessionSetState("veh:f:companias", []);
+  const [ubics, setUbics] = useSessionSetState("veh:f:ubicaciones", []);
+  const [funcional, setFuncional] = useSessionSetState("veh:f:funcional", []);
+  const [admin, setAdmin] = useSessionSetState("veh:f:admin", ["Activa"]);
+  const [tipos, setTipos] = useSessionSetState("veh:f:tipos", []);
+  const [proyectos, setProyectos] = useSessionSetState("veh:f:proyectos", []);
+  const [expandido, setExpandido] = useState(null);
+
+  // Solo las compañías que este usuario tiene permitido ver. Si no tiene
+  // restricción, ve las 5 (incluidas IZ2 y JEF, que no existen en el selector
+  // global de unidad de negocio pero sí tienen vehículos).
+  const companiasOpciones = useMemo(() => {
+    const permitidas = unidadesPermitidas && unidadesPermitidas.length ? unidadesPermitidas : null;
+    return VEH_COMPANIAS.filter((c) => !permitidas || permitidas.includes(c));
+  }, [unidadesPermitidas]);
+
+  const proyectosOpciones = useMemo(() => {
+    const s = new Set();
+    vehiculos.forEach((v) => (v.proyectos || []).forEach((p) => s.add(p)));
+    return [...s].sort();
+  }, [vehiculos]);
+
+  const ubicacionesOpciones = useMemo(
+    () => ubicaciones.slice().sort((a, b) => a.nombre.localeCompare(b.nombre)),
+    [ubicaciones]
+  );
+
+  const filtrados = useMemo(
+    () => filtrarVehiculos(vehiculos, {
+      companias: [...companias], ubicaciones: [...ubics], funcional: [...funcional],
+      admin: [...admin], tipos: [...tipos], proyectos: [...proyectos],
+    }),
+    [vehiculos, companias, ubics, funcional, admin, tipos, proyectos]
+  );
+
+  const idsFiltrados = useMemo(() => new Set(filtrados.map((v) => v.id)), [filtrados]);
+  const mttosFiltrados = useMemo(
+    () => mantenimientos.filter((m) => idsFiltrados.has(m.vehiculo_id)),
+    [mantenimientos, idsFiltrados]
+  );
+
+  // Desde el Dashboard se puede saltar a una unidad concreta: cambia a Flotilla
+  // y la deja expandida.
+  const verVehiculo = (economico) => {
+    const v = vehiculos.find((x) => x.no_economico === economico);
+    setSub("flotilla");
+    if (v) setExpandido(v.id);
+  };
+
+  const SUBS = [
+    { id: "dashboard", label: "Dashboard" },
+    { id: "flotilla", label: "Flotilla" },
+    { id: "mantenimientos", label: "Mantenimientos" },
+  ];
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+        <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3 }}>
+          {SUBS.map((s) => (
+            <button
+              key={s.id}
+              onClick={() => setSub(s.id)}
+              style={{
+                padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
+                background: sub === s.id ? T.accent : "transparent",
+                color: sub === s.id ? "#FFFFFF" : T.textDim,
+                fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
+              }}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        <MultiSelect opciones={companiasOpciones} seleccionados={[...companias]} onChange={(v) => setCompanias(new Set(v))} todosLabel="Todas las compañías" unidadLabel=" compañías" />
+        <MultiSelect opciones={proyectosOpciones} seleccionados={[...proyectos]} onChange={(v) => setProyectos(new Set(v))} todosLabel="Todos los proyectos" unidadLabel=" proyectos" />
+        <MultiSelect opciones={ubicacionesOpciones.map((u) => u.codigo)} seleccionados={[...ubics]} onChange={(v) => setUbics(new Set(v))} todosLabel="Todas las ubicaciones" unidadLabel=" ubic." />
+        <MultiSelect opciones={VEH_TIPOS} seleccionados={[...tipos]} onChange={(v) => setTipos(new Set(v))} todosLabel="Todos los tipos" unidadLabel=" tipos" />
+        <MultiSelect opciones={VEH_EST_FUNCIONAL} seleccionados={[...funcional]} onChange={(v) => setFuncional(new Set(v))} todosLabel="Todo est. funcional" unidadLabel=" estatus" />
+        <MultiSelect opciones={VEH_EST_ADMIN} seleccionados={[...admin]} onChange={(v) => setAdmin(new Set(v))} todosLabel="Todo est. admin." unidadLabel=" estatus" />
+      </div>
+
+      {sub === "dashboard" && (
+        <VehiculosDashboard
+          vehiculos={filtrados}
+          mantenimientos={mttosFiltrados}
+          ubicaciones={ubicaciones}
+          onVerVehiculo={verVehiculo}
+        />
+      )}
+      {sub === "flotilla" && (
+        <FlotillaPanel
+          vehiculos={filtrados}
+          vehiculosApi={vehiculosApi}
+          mantenimientos={mttosFiltrados}
+          ubicaciones={ubicaciones}
+          proyectosOpciones={proyectosOpciones}
+          companiasOpciones={companiasOpciones}
+          perfilesApi={perfilesApi}
+          expandido={expandido}
+          setExpandido={setExpandido}
+        />
+      )}
+      {sub === "mantenimientos" && (
+        <MantenimientosPanel
+          vehiculos={filtrados}
+          mantenimientos={mttosFiltrados}
+          mantenimientosApi={mantenimientosApi}
+          perfilesApi={perfilesApi}
+        />
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const { session, recovery, clearRecovery } = useAuth();
   const proyectosApi = useCollection("proyectos");
@@ -5395,6 +6444,9 @@ export default function App() {
   const cuentasApi = useCollection("proveedor_cuentas", "created_at", { withAudit: true });
   const perfilesApi = useCollection("perfiles");
   const notasApi = useCollection("transaccion_notas");
+  const vehiculosApi = useCollection("vehiculos", "no_economico", { withAudit: true });
+  const vehMantenimientosApi = useCollection("vehiculo_mantenimientos", "folio", { withAudit: true });
+  const vehUbicacionesApi = useCollection("vehiculo_ubicaciones", "nombre");
   const [unidad, setUnidad] = useState("CTM");
   const [tab, setTab] = useState("dashboard");
 
@@ -5431,6 +6483,7 @@ export default function App() {
     { id: "transacciones", label: "Transacciones" },
     { id: "reporte", label: "Reporte de Pagos" },
     { id: "reporte-direccion", label: "Reporte Pagos Dirección" },
+    { id: "vehiculos", label: "Vehículos" },
     { id: "catalogo", label: "Catálogo" },
   ];
 
@@ -5543,6 +6596,17 @@ export default function App() {
           {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
+          {tab === "vehiculos" && (
+            <VehiculosTab
+              vehiculos={vehiculosApi.rows}
+              vehiculosApi={vehiculosApi}
+              mantenimientos={vehMantenimientosApi.rows}
+              mantenimientosApi={vehMantenimientosApi}
+              ubicaciones={vehUbicacionesApi.rows}
+              perfilesApi={perfilesApi}
+              unidadesPermitidas={miPerfil?.unidades_permitidas || []}
+            />
+          )}
           {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>
       )}

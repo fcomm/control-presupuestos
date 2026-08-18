@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.47.0";
+const APP_VERSION = "1.47.1";
 const CHANGELOG = [
+  { v: "1.47.1", desc: "Fix: en el panel 'Presupuestado vs. pagado real', la tabla de Pagado real solo mostraba columnas de los meses que ya tenían algún pago — si filtrabas Agosto/Septiembre/Octubre y solo había pagos en Agosto, las otras dos columnas desaparecían y las dos tablas dejaban de ser comparables. Ahora ambas comparten el mismo eje de meses (el mes filtrado aparece en las dos, en ceros si no hay pagos) y la misma regla de etiquetado de año" },
   { v: "1.47.0", desc: "Nueva pestaña Vehículos con tres vistas: Dashboard (disponibilidad de la flotilla, estatus por compañía, composición por tipo, distribución por ubicación y unidades con más SMI abiertas), Flotilla (tabla completa con búsqueda, columnas configurables y las SMI de cada unidad al expandir el renglón) y Mantenimientos (captura de folio, fecha, taller y costo). Incluye las compañías IZ2 y JEF, que solo existen en la flotilla, y avisa de posibles duplicados por VIN, placas o número de motor" },
   { v: "1.46.38", desc: "Reporte de Pagos: Forma de Pago y Método de Pago muestran solo el código (ej. '03', 'PPD') en vez del texto completo, en la tabla y en el Excel exportado — pasa el mouse encima para ver el nombre completo" },
   { v: "1.46.37", desc: "Reporte de Pagos (PDF): los bloques de Zona/Moneda ya no fuerzan una página nueva cada uno — fluyen en la misma página mientras quepan, y solo saltan de página cuando de verdad no hay espacio" },
@@ -1634,22 +1635,27 @@ function ResumenComparativoPanel({
   const partidasMoneda = partidasUnidad.filter((p) => (p.moneda || "MXP") === monedaResumen);
   const pagadasMoneda = transacciones.filter((t) => t.status === "Pagado" && (t.moneda || "MXP") === monedaResumen && !!partidaDe(t));
 
-  const aniosPresentesPptado = [...new Set(partidasMoneda.map((p) => p.anio).filter(Boolean))];
-  const multiAnioPptado = aniosPresentesPptado.length > 1;
-  const columnaDePptado = (p) => (multiAnioPptado && p.anio) ? `${p.mes} ${p.anio}` : p.mes;
-  const mesesPptado = [...new Set(partidasMoneda.map(columnaDePptado))].sort((a, b) => {
-    const [mesA, anioA] = a.split(" "); const [mesB, anioB] = b.split(" ");
-    if ((anioA || "") !== (anioB || "")) return (anioA || "").localeCompare(anioB || "");
-    return MESES.indexOf(mesA) - MESES.indexOf(mesB);
-  });
+  // Eje de meses COMPARTIDO por las dos tablas. Antes cada una lo armaba con
+  // sus propios datos, así que un mes filtrado sin pagos simplemente perdía su
+  // columna en "Pagado real" y las tablas dejaban de cuadrar. Ahora la columna
+  // aparece en ambas (en ceros si no hay nada), que es el punto del panel.
+  const aniosPresentes = [...new Set([
+    ...partidasMoneda.map((p) => p.anio),
+    ...pagadasMoneda.map((t) => partidaDe(t)?.anio),
+  ].filter(Boolean))];
+  const multiAnio = aniosPresentes.length > 1;
 
-  const aniosPresentesPagado = [...new Set(pagadasMoneda.map((t) => partidaDe(t)?.anio).filter(Boolean))];
-  const multiAnioPagado = aniosPresentesPagado.length > 1;
+  const etiquetaColumna = (mes, anio) => (multiAnio && anio) ? `${mes} ${anio}` : mes;
+  const columnaDePptado = (p) => etiquetaColumna(p.mes, p.anio);
   const columnaDePagado = (t) => {
     const p = partidaDe(t);
-    return (multiAnioPagado && p?.anio) ? `${p.mes} ${p.anio}` : p?.mes;
+    return p ? etiquetaColumna(p.mes, p.anio) : null;
   };
-  const mesesPagado = [...new Set(pagadasMoneda.map(columnaDePagado))].filter(Boolean).sort((a, b) => {
+
+  const columnas = [...new Set([
+    ...partidasMoneda.map(columnaDePptado),
+    ...pagadasMoneda.map(columnaDePagado),
+  ])].filter(Boolean).sort((a, b) => {
     const [mesA, anioA] = a.split(" "); const [mesB, anioB] = b.split(" ");
     if ((anioA || "") !== (anioB || "")) return (anioA || "").localeCompare(anioB || "");
     return MESES.indexOf(mesA) - MESES.indexOf(mesB);
@@ -1676,8 +1682,8 @@ function ResumenComparativoPanel({
   });
   if (proyectoKpi !== "Todos") filasPagadoResueltas = filasPagadoResueltas.filter((f) => f.proyecto === proyectoKpi);
 
-  const pivotPptado = pivotearPorMes(partidasResueltas, ["proyecto", "rubro", "concepto"], mesesPptado, "monto_estimado", "_columna");
-  const totalPptado = mesesPptado.reduce((acc, m) => { acc[m] = 0; return acc; }, {});
+  const pivotPptado = pivotearPorMes(partidasResueltas, ["proyecto", "rubro", "concepto"], columnas, "monto_estimado", "_columna");
+  const totalPptado = columnas.reduce((acc, m) => { acc[m] = 0; return acc; }, {});
   let granTotalPptado = 0;
   partidasResueltas.forEach((p) => {
     const v = Number(p.monto_estimado) || 0;
@@ -1685,8 +1691,8 @@ function ResumenComparativoPanel({
     granTotalPptado += v;
   });
 
-  const pivotPagado = pivotearPorMes(filasPagadoResueltas, ["proyecto", "rubro", "concepto"], mesesPagado, "importe", "_columna");
-  const totalPagado = mesesPagado.reduce((acc, m) => { acc[m] = 0; return acc; }, {});
+  const pivotPagado = pivotearPorMes(filasPagadoResueltas, ["proyecto", "rubro", "concepto"], columnas, "importe", "_columna");
+  const totalPagado = columnas.reduce((acc, m) => { acc[m] = 0; return acc; }, {});
   let granTotalPagado = 0;
   filasPagadoResueltas.forEach((f) => {
     const v = Number(f.importe) || 0;
@@ -1732,15 +1738,15 @@ function ResumenComparativoPanel({
             <thead>
               <tr>
                 <th style={thStyle}>Proyecto</th>
-                {mesesPptado.map((m) => <th key={m} style={{ ...thStyle, textAlign: "right" }}>{m}</th>)}
+                {columnas.map((m) => <th key={m} style={{ ...thStyle, textAlign: "right" }}>{m}</th>)}
                 <th style={{ ...thStyle, textAlign: "right" }}>Total general</th>
               </tr>
             </thead>
             <tbody>
-              {buildPivotTrs(pivotPptado, "", collapsedPptado, togglePptado, mesesPptado, 0)}
+              {buildPivotTrs(pivotPptado, "", collapsedPptado, togglePptado, columnas, 0)}
               <tr style={{ background: T.panelAlt }}>
                 <td style={{ ...tdStyle, fontWeight: 700 }}>Total general</td>
-                {mesesPptado.map((m) => <td key={m} style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>{money(totalPptado[m], monedaResumen)}</td>)}
+                {columnas.map((m) => <td key={m} style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>{money(totalPptado[m], monedaResumen)}</td>)}
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>{money(granTotalPptado, monedaResumen)}</td>
               </tr>
             </tbody>
@@ -1762,15 +1768,15 @@ function ResumenComparativoPanel({
             <thead>
               <tr>
                 <th style={thStyle}>Proyecto</th>
-                {mesesPagado.map((m) => <th key={m} style={{ ...thStyle, textAlign: "right" }}>{m}</th>)}
+                {columnas.map((m) => <th key={m} style={{ ...thStyle, textAlign: "right" }}>{m}</th>)}
                 <th style={{ ...thStyle, textAlign: "right" }}>Total general</th>
               </tr>
             </thead>
             <tbody>
-              {buildPivotTrs(pivotPagado, "", collapsedPagado, togglePagado, mesesPagado, 0)}
+              {buildPivotTrs(pivotPagado, "", collapsedPagado, togglePagado, columnas, 0)}
               <tr style={{ background: T.panelAlt }}>
                 <td style={{ ...tdStyle, fontWeight: 700 }}>Total general</td>
-                {mesesPagado.map((m) => <td key={m} style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>{money(totalPagado[m], monedaResumen)}</td>)}
+                {columnas.map((m) => <td key={m} style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>{money(totalPagado[m], monedaResumen)}</td>)}
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>{money(granTotalPagado, monedaResumen)}</td>
               </tr>
             </tbody>

@@ -108,8 +108,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.48.0";
+const APP_VERSION = "1.50.0";
 const CHANGELOG = [
+  { v: "1.50.0", desc: "Dashboard: el panel comparativo estrena filtrado en cascada de tres niveles — Año (YTD o un año con datos), Periodo (todo el año o Desde-Hasta), y las listas de mes, que solo aparecen cuando eligen rango. YTD va del inicio del año en curso al mes actual. Reemplaza el selector de periodos y el botón YTD de las versiones anteriores" },
+  { v: "1.49.0", desc: "Dashboard: botón YTD en el panel comparativo — fija el rango del inicio del año en curso al mes actual (a diferencia del rango por default, que corta en el mes cerrado anterior); se ilumina cuando el rango seleccionado es exactamente ese, y se deshabilita si no hay partidas del año en curso. Además corrige el componente de botón, que descartaba en silencio los estilos que recibía: los botones de acceso y el de Cerrar de los menús desplegables recuperan su ancho completo, y varios márgenes vuelven a aplicarse" },
   { v: "1.48.0", desc: "Dashboard: el panel comparativo cambia sus filtros de Mes/Año a un rango Desde/Hasta por periodo completo (ej. de 'Enero 2026' a 'Julio 2026'), lo que permite rangos que cruzan el cierre de año — imposible de expresar antes. Arranca por default en el último mes cerrado (el inmediato previo al actual). Estos filtros ahora son propios del panel y ya no se comparten con el resto del Dashboard" },
   { v: "1.47.2", desc: "Dashboard: el botón 'Contraer todo' del panel comparativo pasa a la barra de filtros (a la izquierda de Proyecto) y ahora gobierna las dos tablas a la vez en vez de una cada uno. Además alterna: si ya está todo contraído, el botón dice 'Expandir todo'" },
   { v: "1.47.1", desc: "Fix: en el panel 'Presupuestado vs. pagado real', la tabla de Pagado real solo mostraba columnas de los meses que ya tenían algún pago — si filtrabas Agosto/Septiembre/Octubre y solo había pagos en Agosto, las otras dos columnas desaparecían y las dos tablas dejaban de ser comparables. Ahora ambas comparten el mismo eje de meses (el mes filtrado aparece en las dos, en ceros si no hay pagos) y la misma regla de etiquetado de año" },
@@ -1181,7 +1183,7 @@ function Select(props) {
   return <select {...props} style={{ ...inputStyle, ...(props.style || {}) }} />;
 }
 
-function Button({ children, variant = "primary", ...rest }) {
+function Button({ children, variant = "primary", style, ...rest }) {
   const styles = {
     primary: { background: T.accent, color: "#FFFFFF", border: `1px solid ${T.accent}` },
     ghost: { background: "transparent", color: T.textDim, border: `1px solid ${T.border}` },
@@ -1199,6 +1201,7 @@ function Button({ children, variant = "primary", ...rest }) {
         cursor: "pointer",
         fontFamily: T.fontUI,
         letterSpacing: "0.01em",
+        ...style,
       }}
     >
       {children}
@@ -1628,43 +1631,48 @@ function ResumenComparativoPanel({
   proyectoKpi, setProyectoKpi,
   monedaResumen, setMonedaResumen,
 }) {
-  // Clave ordenable de un periodo: año * 12 + índice del mes.
-  const clavePeriodo = (anio, mes) => {
-    const i = MESES.indexOf(mes);
-    return (anio && i >= 0) ? Number(anio) * 12 + i : null;
-  };
-  const etiquetaPeriodo = (clave) => `${MESES[clave % 12]} ${Math.floor(clave / 12)}`;
-
-  const periodos = [...new Set(
-    partidasUnidad.map((p) => clavePeriodo(p.anio, p.mes)).filter((c) => c !== null)
-  )].sort((a, b) => a - b);
-
-  // Default: hasta el mes inmediato previo al actual (el último mes cerrado),
-  // desde enero de ese mismo año. Ambos se recortan a lo que exista en datos.
+  // Filtrado en cascada de tres niveles:
+  //   1. Año     -> "YTD" o un año concreto con datos
+  //   2. Periodo -> todo el año, o un rango de meses (no aplica en YTD)
+  //   3. Desde/Hasta -> meses sueltos, porque el año ya quedó fijo arriba
   const hoy = new Date();
-  const clavePrevio = hoy.getFullYear() * 12 + (hoy.getMonth() - 1);
-  const defaultHasta = periodos.length
-    ? (periodos.filter((c) => c <= clavePrevio).pop() ?? periodos[0])
-    : null;
-  const defaultDesde = periodos.length
-    ? (periodos.find((c) => c >= Math.floor(defaultHasta / 12) * 12) ?? periodos[0])
-    : null;
+  const anioActual = hoy.getFullYear();
+  const mesActualIdx = hoy.getMonth();
 
-  const [desdeGuardado, setDesde] = useSessionState("ss-dashboard-rango-desde", null);
-  const [hastaGuardado, setHasta] = useSessionState("ss-dashboard-rango-hasta", null);
-  // Si lo guardado ya no existe en los datos (cambió de unidad, se borró una
-  // partida), se cae al default en vez de dejar el panel vacío sin explicación.
-  const desde = periodos.includes(desdeGuardado) ? desdeGuardado : defaultDesde;
-  const hasta = periodos.includes(hastaGuardado) ? hastaGuardado : defaultHasta;
+  const aniosConDatos = [...new Set(partidasUnidad.map((p) => Number(p.anio)).filter(Boolean))].sort((a, b) => b - a);
+  const hayYTD = partidasUnidad.some((p) => Number(p.anio) === anioActual && MESES.indexOf(p.mes) <= mesActualIdx);
+  const opcionesAnio = [...(hayYTD ? ["YTD"] : []), ...aniosConDatos.map(String)];
 
-  const cambiarDesde = (v) => { setDesde(v); if (hasta !== null && v > hasta) setHasta(v); };
-  const cambiarHasta = (v) => { setHasta(v); if (desde !== null && v < desde) setDesde(v); };
+  const [anioGuardado, setAnioSel] = useSessionState("ss-dashboard-f1-anio", null);
+  const anioSel = opcionesAnio.includes(anioGuardado) ? anioGuardado : (opcionesAnio[0] ?? null);
+  const esYTD = anioSel === "YTD";
+  const anioEfectivo = esYTD ? anioActual : Number(anioSel);
 
-  const enRango = (p) => {
-    const c = clavePeriodo(p.anio, p.mes);
-    return c !== null && (desde === null || c >= desde) && (hasta === null || c <= hasta);
-  };
-  const partidasRango = partidasUnidad.filter(enRango);
+  const [modoGuardado, setModo] = useSessionState("ss-dashboard-f2-periodo", "todo");
+  const modo = esYTD ? "todo" : (modoGuardado === "rango" ? "rango" : "todo");
+
+  // Solo se listan los meses que existen en datos para ese año, para que no se
+  // pueda elegir un rango que garantiza tablas vacías.
+  const mesesDelAnio = MESES.filter((m) => partidasUnidad.some((p) => Number(p.anio) === anioEfectivo && p.mes === m));
+  const [desdeGuardado, setMesDesde] = useSessionState("ss-dashboard-f3-desde", null);
+  const [hastaGuardado, setMesHasta] = useSessionState("ss-dashboard-f3-hasta", null);
+  const mesDesde = mesesDelAnio.includes(desdeGuardado) ? desdeGuardado : (mesesDelAnio[0] ?? MESES[0]);
+  const mesHasta = mesesDelAnio.includes(hastaGuardado) ? hastaGuardado : (mesesDelAnio[mesesDelAnio.length - 1] ?? MESES[11]);
+  const cambiarDesde = (m) => { setMesDesde(m); if (MESES.indexOf(m) > MESES.indexOf(mesHasta)) setMesHasta(m); };
+  const cambiarHasta = (m) => { setMesHasta(m); if (MESES.indexOf(m) < MESES.indexOf(mesDesde)) setMesDesde(m); };
+
+  // Ventana efectiva de meses (índices inclusivos) que resulta de los 3 filtros.
+  const [iDesde, iHasta] = esYTD
+    ? [0, mesActualIdx]
+    : modo === "rango"
+      ? [MESES.indexOf(mesDesde), MESES.indexOf(mesHasta)]
+      : [0, 11];
+
+  const partidasRango = partidasUnidad.filter((p) => {
+    if (Number(p.anio) !== anioEfectivo) return false;
+    const i = MESES.indexOf(p.mes);
+    return i >= iDesde && i <= iHasta;
+  });
   const idsRango = new Set(partidasRango.map((p) => p.id));
 
   const partidaDe = (t) => partidasRango.find((p) => p.id === t.partida_id);
@@ -1771,16 +1779,33 @@ function ResumenComparativoPanel({
               {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
             </Select>
           </Field>
-          <Field label="Desde">
-            <Select value={desde ?? ""} onChange={(e) => cambiarDesde(Number(e.target.value))} style={{ width: 150 }} disabled={!periodos.length}>
-              {periodos.map((c) => <option key={c} value={c}>{etiquetaPeriodo(c)}</option>)}
+          <Field label="Año">
+            <Select value={anioSel ?? ""} onChange={(e) => setAnioSel(e.target.value)} style={{ width: 110 }} disabled={!opcionesAnio.length}>
+              {opcionesAnio.map((o) => <option key={o} value={o}>{o}</option>)}
             </Select>
           </Field>
-          <Field label="Hasta">
-            <Select value={hasta ?? ""} onChange={(e) => cambiarHasta(Number(e.target.value))} style={{ width: 150 }} disabled={!periodos.length}>
-              {periodos.map((c) => <option key={c} value={c}>{etiquetaPeriodo(c)}</option>)}
-            </Select>
-          </Field>
+          {!esYTD && (
+            <Field label="Periodo">
+              <Select value={modo} onChange={(e) => setModo(e.target.value)} style={{ width: 150 }}>
+                <option value="todo">Todo</option>
+                <option value="rango">Desde - Hasta</option>
+              </Select>
+            </Field>
+          )}
+          {!esYTD && modo === "rango" && (
+            <>
+              <Field label="Desde">
+                <Select value={mesDesde} onChange={(e) => cambiarDesde(e.target.value)} style={{ width: 135 }}>
+                  {mesesDelAnio.map((m) => <option key={m} value={m}>{m}</option>)}
+                </Select>
+              </Field>
+              <Field label="Hasta">
+                <Select value={mesHasta} onChange={(e) => cambiarHasta(e.target.value)} style={{ width: 135 }}>
+                  {mesesDelAnio.map((m) => <option key={m} value={m}>{m}</option>)}
+                </Select>
+              </Field>
+            </>
+          )}
           <Field label="Moneda">
             <SlidingToggle opciones={["MXP", "USD"]} value={monedaResumen} onChange={setMonedaResumen} />
           </Field>

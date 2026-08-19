@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.51.0";
+const APP_VERSION = "1.51.1";
 const CHANGELOG = [
+  { v: "1.51.1", desc: "Fix: la exportación a Excel del Reporte de Pagos salía corrida — los encabezados y los anchos seguían siendo 19 columnas mientras las filas ya traían 20, y el formato de moneda caía sobre SWIFT en lugar de Importe. El layout de la exportación (encabezado, ancho y valor) queda unificado en un solo arreglo para que no pueda volver a desalinearse. Además, las columnas nuevas ahora aparecen en su posición natural dentro de la tabla en vez de irse hasta el extremo derecho, que era lo que escondía 'Referencia de Pago' si ya tenías un orden de columnas guardado" },
   { v: "1.51.0", desc: "Transacciones: nuevo campo 'Referencia de Pago' (folio SPEI, número de cheque, etc.) disponible en el alta, la edición rápida, la carga masiva y como columna del Reporte de Pagos, además de entrar en ambos buscadores. La columna 'Referencia' del reporte pasa a llamarse 'Referencia (Proveedor)' para distinguirla, ya que ese dato viene del catálogo de proveedores y no del pago. Requiere correr la migración SQL 03-referencia-pago.sql" },
   { v: "1.50.0", desc: "Dashboard: el panel comparativo estrena filtrado en cascada de tres niveles — Año (YTD o un año con datos), Periodo (todo el año o Desde-Hasta), y las listas de mes, que solo aparecen cuando eligen rango. YTD va del inicio del año en curso al mes actual. Reemplaza el selector de periodos y el botón YTD de las versiones anteriores" },
   { v: "1.49.0", desc: "Dashboard: botón YTD en el panel comparativo — fija el rango del inicio del año en curso al mes actual (a diferencia del rango por default, que corta en el mes cerrado anterior); se ilumina cuando el rango seleccionado es exactamente ese, y se deshabilita si no hay partidas del año en curso. Además corrige el componente de botón, que descartaba en silencio los estilos que recibía: los botones de acceso y el de Cerrar de los menús desplegables recuperan su ancho completo, y varios márgenes vuelven a aplicarse" },
@@ -2312,16 +2313,23 @@ function useColumnWidths(storageKey, defaultWidth = 160) {
 }
 
 // Recuerda el ORDEN de las columnas (por tabla, via localStorage) y reordena la
-// lista de columnas visibles según esa preferencia — las que aparecen nuevas
-// (por ejemplo, al cambiar el agrupamiento) se agregan al final.
+// lista de columnas visibles según esa preferencia. Las columnas nuevas — las
+// que aún no existían cuando se guardó la preferencia — se insertan en su lugar
+// natural (justo después de la que las precede en la definición), no al final:
+// si se agregaran al final, una columna nueva aparecería escondida al extremo
+// derecho de la tabla y parecería que no se agregó.
 function useColumnOrder(storageKey, columns) {
   const [order, setOrder] = useState(() => {
     try { return JSON.parse(localStorage.getItem(storageKey) || "[]"); } catch { return []; }
   });
   const byKey = new Map(columns.map((c) => [c.key, c]));
-  const fromStored = order.filter((k) => byKey.has(k)).map((k) => byKey.get(k));
-  const missing = columns.filter((c) => !order.includes(c.key));
-  const ordered = [...fromStored, ...missing];
+  const ordered = order.filter((k) => byKey.has(k)).map((k) => byKey.get(k));
+  columns.forEach((c, i) => {
+    if (order.includes(c.key)) return;
+    const previa = columns.slice(0, i).reverse().find((x) => ordered.some((o) => o.key === x.key));
+    const at = previa ? ordered.findIndex((o) => o.key === previa.key) + 1 : ordered.length;
+    ordered.splice(at, 0, c);
+  });
 
   const moveColumn = (draggedKey, targetKey) => {
     if (draggedKey === targetKey) return;
@@ -4345,12 +4353,32 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   const exportarExcel = async () => {
     const wbx = new ExcelJS.Workbook();
     const ws = wbx.addWorksheet("Reporte de pagos");
-    ws.columns = [
-      { width: 8.875 }, { width: 10 }, { width: 8.125 }, { width: 10.125 }, { width: 10.125 },
-      { width: 8.625 }, { width: 8.25 }, { width: 15 }, { width: 12 }, { width: 17.625 },
-      { width: 11.25 }, { width: 13.625 }, { width: 15.5 }, { width: 18 }, { width: 12.5 },
-      { width: 9 }, { width: 10.5 }, { width: 10.5 }, { width: 8.875 },
+    // Layout de la exportación en UN solo lugar: encabezado, ancho y valor van
+    // juntos. Antes eran tres arreglos paralelos, y agregar una columna a uno
+    // sin tocar los otros corría todo el archivo en silencio.
+    const COLS_EXPORT = [
+      { header: "Día", width: 8.875, get: (f) => f.dia },
+      { header: "Solicitante", width: 10, get: (f) => f.solicitante },
+      { header: "Área", width: 8.125, get: (f) => f.area },
+      { header: "No. Solicitud (SMI)", width: 10.125, get: (f) => f.numero_solicitud },
+      { header: "No. SAE", width: 10.125, get: (f) => f.no_sae },
+      { header: "Folio Compra SAE", width: 8.625, get: (f) => f.folio_compra_sae },
+      { header: "Folio Factura", width: 8.25, get: (f) => f.folio_factura },
+      { header: "Forma de Pago", width: 15, get: (f) => f.forma_pago },
+      { header: "Método de Pago", width: 12, get: (f) => f.metodo_pago },
+      { header: "Proveedor", width: 17.625, get: (f) => f.proveedor },
+      { header: "Referencia (Proveedor)", width: 11.25, get: (f) => f.referencia },
+      { header: "Referencia de Pago", width: 14, get: (f) => f.referencia_pago },
+      { header: "Concepto de pago", width: 13.625, get: (f) => f.concepto },
+      { header: "Banco", width: 15.5, get: (f) => f.banco },
+      { header: "Cuenta CLABE", width: 18, get: (f) => f.clabe },
+      { header: "No. Cuenta", width: 12.5, get: (f) => f.numero_cuenta },
+      { header: "SWIFT", width: 9, get: (f) => f.swift },
+      { header: "Importe", width: 10.5, get: (f) => f.importe, money: true },
+      { header: "Moneda", width: 10.5, get: (f) => f.moneda },
+      { header: "Notas", width: 8.875, get: (f) => f.notas },
     ];
+    ws.columns = COLS_EXPORT.map((c) => ({ width: c.width }));
 
     const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
     const inicio = fechaDesde || diasOrdenados[0] || "";
@@ -4358,12 +4386,6 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
     const zonas = [...new Set(filasOrdenadas.map((f) => f.zona).filter(Boolean))].sort();
     const ordenMoneda = (m) => (m === "MXP" ? 0 : m === "USD" ? 1 : 2);
-    const headers = [
-      "Día", "Solicitante", "Área", "No. Solicitud (SMI)", "No. SAE", "Folio Compra SAE", "Folio Factura",
-      "Forma de Pago", "Método de Pago", "Proveedor", "Referencia", "Concepto de pago", "Banco",
-      "Cuenta CLABE", "No. Cuenta", "SWIFT", "Importe", "Moneda", "Notas",
-    ];
-
     let fila = 1;
     zonas.forEach((zona) => {
       const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
@@ -4384,9 +4406,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         fila += 2; // una fila en blanco, como en la plantilla
 
         const headerRow = ws.getRow(fila);
-        headers.forEach((h, i) => {
+        COLS_EXPORT.forEach((c, i) => {
           const cell = headerRow.getCell(i + 1);
-          cell.value = h;
+          cell.value = c.header;
           cell.alignment = { horizontal: "center" };
           cell.font = { name: "Calibri", size: 11 };
         });
@@ -4394,17 +4416,12 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
         filasGrupo.forEach((f) => {
           const row = ws.getRow(fila);
-          const valores = [
-            f.dia, f.solicitante, f.area, f.numero_solicitud, f.no_sae, f.folio_compra_sae, f.folio_factura,
-            f.forma_pago, f.metodo_pago, f.proveedor, f.referencia, f.referencia_pago, f.concepto, f.banco,
-            f.clabe, f.numero_cuenta, f.swift, f.importe, f.moneda, f.notas,
-          ];
-          valores.forEach((v, ci) => {
+          COLS_EXPORT.forEach((c, ci) => {
             const cell = row.getCell(ci + 1);
-            cell.value = v;
+            cell.value = c.get(f);
             cell.alignment = { horizontal: "center" };
             cell.font = { name: "Calibri", size: 11 };
-            if (ci === 16) cell.numFmt = '"$"#,##0.00'; // columna Importe
+            if (c.money) cell.numFmt = '"$"#,##0.00';
           });
           fila += 1;
         });

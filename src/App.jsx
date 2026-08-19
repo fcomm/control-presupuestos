@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.50.0";
+const APP_VERSION = "1.51.0";
 const CHANGELOG = [
+  { v: "1.51.0", desc: "Transacciones: nuevo campo 'Referencia de Pago' (folio SPEI, número de cheque, etc.) disponible en el alta, la edición rápida, la carga masiva y como columna del Reporte de Pagos, además de entrar en ambos buscadores. La columna 'Referencia' del reporte pasa a llamarse 'Referencia (Proveedor)' para distinguirla, ya que ese dato viene del catálogo de proveedores y no del pago. Requiere correr la migración SQL 03-referencia-pago.sql" },
   { v: "1.50.0", desc: "Dashboard: el panel comparativo estrena filtrado en cascada de tres niveles — Año (YTD o un año con datos), Periodo (todo el año o Desde-Hasta), y las listas de mes, que solo aparecen cuando eligen rango. YTD va del inicio del año en curso al mes actual. Reemplaza el selector de periodos y el botón YTD de las versiones anteriores" },
   { v: "1.49.0", desc: "Dashboard: botón YTD en el panel comparativo — fija el rango del inicio del año en curso al mes actual (a diferencia del rango por default, que corta en el mes cerrado anterior); se ilumina cuando el rango seleccionado es exactamente ese, y se deshabilita si no hay partidas del año en curso. Además corrige el componente de botón, que descartaba en silencio los estilos que recibía: los botones de acceso y el de Cerrar de los menús desplegables recuperan su ancho completo, y varios márgenes vuelven a aplicarse" },
   { v: "1.48.0", desc: "Dashboard: el panel comparativo cambia sus filtros de Mes/Año a un rango Desde/Hasta por periodo completo (ej. de 'Enero 2026' a 'Julio 2026'), lo que permite rangos que cruzan el cierre de año — imposible de expresar antes. Arranca por default en el último mes cerrado (el inmediato previo al actual). Estos filtros ahora son propios del panel y ya no se comparten con el resto del Dashboard" },
@@ -1088,6 +1089,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = []) {
       folioFactura: findCol(headers, ["folio", "factura"]),
       formaPago: findExactCol(headers, ["forma de pago", "forma pago"]),
       metodoPago: findExactCol(headers, ["metodo de pago", "metodo pago"]),
+      referenciaPago: findCol(headers, ["referencia", "pago"], ["referencia", "transferencia"], ["referencia bancaria"]),
       folio: findCol(headers, ["a partida"]) !== -1 ? findCol(headers, ["a partida"]) : findExactCol(headers, ["partida", "folio"]),
     };
 
@@ -1141,6 +1143,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = []) {
         folio_factura: (col.folioFactura !== -1 && row[col.folioFactura]) ? String(row[col.folioFactura]).trim() : "",
         forma_pago: (col.formaPago !== -1 && row[col.formaPago]) ? String(row[col.formaPago]).trim() : "",
         metodo_pago: (col.metodoPago !== -1 && row[col.metodoPago]) ? String(row[col.metodoPago]).trim() : "",
+        referencia_pago: (col.referenciaPago !== -1 && row[col.referenciaPago]) ? String(row[col.referenciaPago]).trim() : "",
       });
       count++;
     }
@@ -2856,6 +2859,9 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
             {METODOS_PAGO.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
           </Select>
         </Field>
+        <Field label="Referencia de Pago">
+          <TextInput value={form.referencia_pago || ""} onChange={(e) => setForm({ ...form, referencia_pago: e.target.value })} placeholder="Folio SPEI, cheque, etc." />
+        </Field>
         <Field label="Importe">
           <TextInput type="number" step="0.01" value={form.importe ?? ""} onChange={(e) => setForm({ ...form, importe: e.target.value })} />
         </Field>
@@ -3524,7 +3530,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const blank = {
     partida_id: partidasUnidad[0]?.id || "", unidad_detectada: unidad, dia: "", solicitante: "", smi: "", proyecto: "", zona: "", area: "",
     proveedor: "", proveedor_id: "", cuenta_id: "", concepto_detallado: "", importe: "", moneda: "MXP", status: "No Pagado", fecha_pago: "",
-    folio_compra_sae: "", folio_factura: "", forma_pago: "", metodo_pago: "",
+    folio_compra_sae: "", folio_factura: "", forma_pago: "", metodo_pago: "", referencia_pago: "",
   };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
@@ -3850,7 +3856,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     // factura (son específicos de cada pago, no algo que tenga sentido clonar).
     const { id, folio_transaccion, created_by, updated_by, updated_at, created_at, reportado_at, ...resto } = t;
     const limpio = Object.fromEntries(Object.entries(resto).filter(([k]) => !k.startsWith("_")));
-    setForm({ ...limpio, status: "No Pagado", fecha_pago: "", folio_compra_sae: "", folio_factura: "" });
+    setForm({ ...limpio, status: "No Pagado", fecha_pago: "", folio_compra_sae: "", folio_factura: "", referencia_pago: "" });
     setEditId(null);
     setNotaPrivada("");
     setModalOpen(true);
@@ -4205,6 +4211,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 {METODOS_PAGO.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
               </Select>
             </Field>
+            <Field label="Referencia de Pago">
+              <TextInput value={form.referencia_pago} onChange={(e) => setForm({ ...form, referencia_pago: e.target.value })} placeholder="Folio SPEI, cheque, etc." />
+            </Field>
             <Field label="Importe">
               <TextInput type="number" step="0.01" value={form.importe} onChange={(e) => setForm({ ...form, importe: e.target.value })} placeholder="0.00" />
             </Field>
@@ -4256,7 +4265,8 @@ const COLUMNAS_REPORTE = [
   { key: "forma_pago", label: "Forma de Pago" },
   { key: "metodo_pago", label: "Método de Pago" },
   { key: "proveedor", label: "Proveedor" },
-  { key: "referencia", label: "Referencia" },
+  { key: "referencia", label: "Referencia (Proveedor)" },
+  { key: "referencia_pago", label: "Referencia de Pago" },
   { key: "concepto", label: "Concepto de pago" },
   { key: "banco", label: "Banco" },
   { key: "clabe", label: "Cuenta CLABE" },
@@ -4294,6 +4304,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       metodo_pago_label: METODOS_PAGO.find((m) => m.value === t.metodo_pago)?.label || t.metodo_pago || "",
       proveedor: proveedor?.nombre || t.proveedor || "",
       referencia: proveedor?.referencia || "",
+      referencia_pago: t.referencia_pago || "",
       notas: proveedor?.notas || "",
       concepto: t.concepto_detallado || "",
       banco: cuenta?.banco || "",
@@ -4316,7 +4327,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     if (fechaHasta && (!f.dia || f.dia > fechaHasta)) return false;
     if (!buscar.trim()) return true;
     const q = buscar.trim().toLowerCase();
-    return [f.solicitante, f.proveedor, f.concepto, f.folio_factura, f.folio_compra_sae, f.no_sae]
+    return [f.solicitante, f.proveedor, f.concepto, f.folio_factura, f.folio_compra_sae, f.no_sae, f.referencia_pago]
       .some((v) => (v || "").toString().toLowerCase().includes(q));
   });
   const filtrosFechaActivos = fechaDesde || fechaHasta;
@@ -4385,7 +4396,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           const row = ws.getRow(fila);
           const valores = [
             f.dia, f.solicitante, f.area, f.numero_solicitud, f.no_sae, f.folio_compra_sae, f.folio_factura,
-            f.forma_pago, f.metodo_pago, f.proveedor, f.referencia, f.concepto, f.banco,
+            f.forma_pago, f.metodo_pago, f.proveedor, f.referencia, f.referencia_pago, f.concepto, f.banco,
             f.clabe, f.numero_cuenta, f.swift, f.importe, f.moneda, f.notas,
           ];
           valores.forEach((v, ci) => {

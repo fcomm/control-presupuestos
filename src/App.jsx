@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.51.1";
+const APP_VERSION = "1.51.2";
 const CHANGELOG = [
+  { v: "1.51.2", desc: "Reporte de Pagos: se retira la columna 'Referencia (Proveedor)', que traía un dato del catálogo de proveedores y no del pago. Sale de la tabla y de la exportación a Excel. El campo sigue existiendo en el catálogo de Proveedores" },
   { v: "1.51.1", desc: "Fix: la exportación a Excel del Reporte de Pagos salía corrida — los encabezados y los anchos seguían siendo 19 columnas mientras las filas ya traían 20, y el formato de moneda caía sobre SWIFT en lugar de Importe. El layout de la exportación (encabezado, ancho y valor) queda unificado en un solo arreglo para que no pueda volver a desalinearse. Además, las columnas nuevas ahora aparecen en su posición natural dentro de la tabla en vez de irse hasta el extremo derecho, que era lo que escondía 'Referencia de Pago' si ya tenías un orden de columnas guardado" },
   { v: "1.51.0", desc: "Transacciones: nuevo campo 'Referencia de Pago' (folio SPEI, número de cheque, etc.) disponible en el alta, la edición rápida, la carga masiva y como columna del Reporte de Pagos, además de entrar en ambos buscadores. La columna 'Referencia' del reporte pasa a llamarse 'Referencia (Proveedor)' para distinguirla, ya que ese dato viene del catálogo de proveedores y no del pago. Requiere correr la migración SQL 03-referencia-pago.sql" },
   { v: "1.50.0", desc: "Dashboard: el panel comparativo estrena filtrado en cascada de tres niveles — Año (YTD o un año con datos), Periodo (todo el año o Desde-Hasta), y las listas de mes, que solo aparecen cuando eligen rango. YTD va del inicio del año en curso al mes actual. Reemplaza el selector de periodos y el botón YTD de las versiones anteriores" },
@@ -4273,7 +4274,6 @@ const COLUMNAS_REPORTE = [
   { key: "forma_pago", label: "Forma de Pago" },
   { key: "metodo_pago", label: "Método de Pago" },
   { key: "proveedor", label: "Proveedor" },
-  { key: "referencia", label: "Referencia (Proveedor)" },
   { key: "referencia_pago", label: "Referencia de Pago" },
   { key: "concepto", label: "Concepto de pago" },
   { key: "banco", label: "Banco" },
@@ -4311,7 +4311,6 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       metodo_pago: t.metodo_pago || "",
       metodo_pago_label: METODOS_PAGO.find((m) => m.value === t.metodo_pago)?.label || t.metodo_pago || "",
       proveedor: proveedor?.nombre || t.proveedor || "",
-      referencia: proveedor?.referencia || "",
       referencia_pago: t.referencia_pago || "",
       notas: proveedor?.notas || "",
       concepto: t.concepto_detallado || "",
@@ -4367,7 +4366,6 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       { header: "Forma de Pago", width: 15, get: (f) => f.forma_pago },
       { header: "Método de Pago", width: 12, get: (f) => f.metodo_pago },
       { header: "Proveedor", width: 17.625, get: (f) => f.proveedor },
-      { header: "Referencia (Proveedor)", width: 11.25, get: (f) => f.referencia },
       { header: "Referencia de Pago", width: 14, get: (f) => f.referencia_pago },
       { header: "Concepto de pago", width: 13.625, get: (f) => f.concepto },
       { header: "Banco", width: 15.5, get: (f) => f.banco },

@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.47.2";
+const APP_VERSION = "1.48.0";
 const CHANGELOG = [
+  { v: "1.48.0", desc: "Dashboard: el panel comparativo cambia sus filtros de Mes/Año a un rango Desde/Hasta por periodo completo (ej. de 'Enero 2026' a 'Julio 2026'), lo que permite rangos que cruzan el cierre de año — imposible de expresar antes. Arranca por default en el último mes cerrado (el inmediato previo al actual). Estos filtros ahora son propios del panel y ya no se comparten con el resto del Dashboard" },
   { v: "1.47.2", desc: "Dashboard: el botón 'Contraer todo' del panel comparativo pasa a la barra de filtros (a la izquierda de Proyecto) y ahora gobierna las dos tablas a la vez en vez de una cada uno. Además alterna: si ya está todo contraído, el botón dice 'Expandir todo'" },
   { v: "1.47.1", desc: "Fix: en el panel 'Presupuestado vs. pagado real', la tabla de Pagado real solo mostraba columnas de los meses que ya tenían algún pago — si filtrabas Agosto/Septiembre/Octubre y solo había pagos en Agosto, las otras dos columnas desaparecían y las dos tablas dejaban de ser comparables. Ahora ambas comparten el mismo eje de meses (el mes filtrado aparece en las dos, en ceros si no hay pagos) y la misma regla de etiquetado de año" },
   { v: "1.47.0", desc: "Nueva pestaña Vehículos con tres vistas: Dashboard (disponibilidad de la flotilla, estatus por compañía, composición por tipo, distribución por ubicación y unidades con más SMI abiertas), Flotilla (tabla completa con búsqueda, columnas configurables y las SMI de cada unidad al expandir el renglón) y Mantenimientos (captura de folio, fecha, taller y costo). Incluye las compañías IZ2 y JEF, que solo existen en la flotilla, y avisa de posibles duplicados por VIN, placas o número de motor" },
@@ -1536,17 +1537,11 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
       </Panel>
 
       <ResumenComparativoPanel
-        partidasUnidad={partidasFiltradasMes}
-        transacciones={transFiltradasMes}
+        partidasUnidad={partidasUnidad}
+        transacciones={transUnidad}
         proyectosUnidad={proyectosUnidad}
         proyectoKpi={proyectoKpi}
         setProyectoKpi={setProyectoKpi}
-        mesesDisponibles={mesesDisponibles}
-        mesesSeleccionados={mesesSeleccionados}
-        setMesesSeleccionados={setMesesSeleccionados}
-        aniosDisponibles={aniosDisponibles}
-        aniosSeleccionados={aniosSeleccionados}
-        setAniosSeleccionados={setAniosSeleccionados}
         monedaResumen={monedaResumen}
         setMonedaResumen={setMonedaResumen}
       />
@@ -1624,17 +1619,57 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 }
 
 // Combina "Presupuestado" y "Pagado real" en un solo marco, con una barra de
-// filtros compartida (Proyecto/Mes/Año/Moneda) que aplica a ambas tablas.
+// filtros PROPIA (Proyecto/Desde/Hasta/Moneda). El rango se expresa en periodos
+// completos (mes + año), no en meses sueltos: con datos de 2025 y 2026 en la
+// misma base, "de Agosto a Octubre" sería ambiguo, y un rango que cruza
+// diciembre es imposible de expresar con una lista de meses.
 function ResumenComparativoPanel({
   partidasUnidad, transacciones, proyectosUnidad,
   proyectoKpi, setProyectoKpi,
-  mesesDisponibles, mesesSeleccionados, setMesesSeleccionados,
-  aniosDisponibles, aniosSeleccionados, setAniosSeleccionados,
   monedaResumen, setMonedaResumen,
 }) {
-  const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
-  const partidasMoneda = partidasUnidad.filter((p) => (p.moneda || "MXP") === monedaResumen);
-  const pagadasMoneda = transacciones.filter((t) => t.status === "Pagado" && (t.moneda || "MXP") === monedaResumen && !!partidaDe(t));
+  // Clave ordenable de un periodo: año * 12 + índice del mes.
+  const clavePeriodo = (anio, mes) => {
+    const i = MESES.indexOf(mes);
+    return (anio && i >= 0) ? Number(anio) * 12 + i : null;
+  };
+  const etiquetaPeriodo = (clave) => `${MESES[clave % 12]} ${Math.floor(clave / 12)}`;
+
+  const periodos = [...new Set(
+    partidasUnidad.map((p) => clavePeriodo(p.anio, p.mes)).filter((c) => c !== null)
+  )].sort((a, b) => a - b);
+
+  // Default: hasta el mes inmediato previo al actual (el último mes cerrado),
+  // desde enero de ese mismo año. Ambos se recortan a lo que exista en datos.
+  const hoy = new Date();
+  const clavePrevio = hoy.getFullYear() * 12 + (hoy.getMonth() - 1);
+  const defaultHasta = periodos.length
+    ? (periodos.filter((c) => c <= clavePrevio).pop() ?? periodos[0])
+    : null;
+  const defaultDesde = periodos.length
+    ? (periodos.find((c) => c >= Math.floor(defaultHasta / 12) * 12) ?? periodos[0])
+    : null;
+
+  const [desdeGuardado, setDesde] = useSessionState("ss-dashboard-rango-desde", null);
+  const [hastaGuardado, setHasta] = useSessionState("ss-dashboard-rango-hasta", null);
+  // Si lo guardado ya no existe en los datos (cambió de unidad, se borró una
+  // partida), se cae al default en vez de dejar el panel vacío sin explicación.
+  const desde = periodos.includes(desdeGuardado) ? desdeGuardado : defaultDesde;
+  const hasta = periodos.includes(hastaGuardado) ? hastaGuardado : defaultHasta;
+
+  const cambiarDesde = (v) => { setDesde(v); if (hasta !== null && v > hasta) setHasta(v); };
+  const cambiarHasta = (v) => { setHasta(v); if (desde !== null && v < desde) setDesde(v); };
+
+  const enRango = (p) => {
+    const c = clavePeriodo(p.anio, p.mes);
+    return c !== null && (desde === null || c >= desde) && (hasta === null || c <= hasta);
+  };
+  const partidasRango = partidasUnidad.filter(enRango);
+  const idsRango = new Set(partidasRango.map((p) => p.id));
+
+  const partidaDe = (t) => partidasRango.find((p) => p.id === t.partida_id);
+  const partidasMoneda = partidasRango.filter((p) => (p.moneda || "MXP") === monedaResumen);
+  const pagadasMoneda = transacciones.filter((t) => t.status === "Pagado" && (t.moneda || "MXP") === monedaResumen && idsRango.has(t.partida_id));
 
   // Eje de meses COMPARTIDO por las dos tablas. Antes cada una lo armaba con
   // sus propios datos, así que un mes filtrado sin pagos simplemente perdía su
@@ -1722,7 +1757,7 @@ function ResumenComparativoPanel({
   return (
     <Panel
       title="Presupuestado vs. pagado real, por proyecto"
-      subtitle="Los mismos filtros aplican a ambas tablas de abajo"
+      subtitle="Filtros propios de este panel — aplican a las dos tablas de abajo"
       right={
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "flex-end" }}>
@@ -1736,11 +1771,15 @@ function ResumenComparativoPanel({
               {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
             </Select>
           </Field>
-          <Field label="Mes">
-            <MesMultiSelect mesesDisponibles={mesesDisponibles} seleccionados={mesesSeleccionados} onChange={setMesesSeleccionados} />
+          <Field label="Desde">
+            <Select value={desde ?? ""} onChange={(e) => cambiarDesde(Number(e.target.value))} style={{ width: 150 }} disabled={!periodos.length}>
+              {periodos.map((c) => <option key={c} value={c}>{etiquetaPeriodo(c)}</option>)}
+            </Select>
           </Field>
-          <Field label="Año">
-            <AnioMultiSelect aniosDisponibles={aniosDisponibles} seleccionados={aniosSeleccionados} onChange={setAniosSeleccionados} />
+          <Field label="Hasta">
+            <Select value={hasta ?? ""} onChange={(e) => cambiarHasta(Number(e.target.value))} style={{ width: 150 }} disabled={!periodos.length}>
+              {periodos.map((c) => <option key={c} value={c}>{etiquetaPeriodo(c)}</option>)}
+            </Select>
           </Field>
           <Field label="Moneda">
             <SlidingToggle opciones={["MXP", "USD"]} value={monedaResumen} onChange={setMonedaResumen} />

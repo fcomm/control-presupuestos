@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.52.1";
+const APP_VERSION = "1.53.0";
 const CHANGELOG = [
+  { v: "1.53.0", desc: "Partidas: botón 'Exportar a Excel'. Descarga las partidas que estén a la vista (respeta los filtros) con Unidad, Folio, Mes, Año, Concepto, Rubro, Categoría, Proyecto, Moneda, Monto, Usado, Disponible, SMI y Recurrente. Antes lo único descargable desde esta pestaña era la plantilla vacía" },
   { v: "1.52.1", desc: "Partidas: se rediseña el bloque de transacciones vinculadas, que se confundía con las bandas de la propia tabla — su encabezado usaba exactamente el mismo estilo que los encabezados de columna. Ahora es una tarjeta blanca embutida, con un riel de color que la ata a su partida y una línea de resumen que dice cuántas transacciones son y cuánto suman por moneda" },
   { v: "1.52.0", desc: "Partidas: botón 'Duplicar' en cada fila — abre el formulario prellenado con los datos de la original para revisar y guardar como partida nueva. El folio se deja vacío para que se genere uno propio, y la marca de recurrente no se hereda (si se heredara, el duplicado generaría una segunda serie en todos los meses restantes del año). Los botones de fila pasan a íconos compactos (✎/⧉/✕) con tooltip, igual que en Transacciones" },
   { v: "1.51.2", desc: "Reporte de Pagos: se retira la columna 'Referencia (Proveedor)', que traía un dato del catálogo de proveedores y no del pago. Sale de la tabla y de la exportación a Excel. El campo sigue existiendo en el catálogo de Proveedores" },
@@ -2967,6 +2968,56 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
 
   const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
+  // Exporta las partidas que están a la vista (con los filtros aplicados).
+  // Encabezado, ancho y valor viven juntos en un solo arreglo para que agregar
+  // una columna no pueda desalinear el archivo.
+  const exportarExcel = async () => {
+    const COLS = [
+      { header: "Unidad",    width: 9,  get: (p) => p.unidad },
+      { header: "Folio",     width: 16, get: (p) => p.folio || "" },
+      { header: "Mes",       width: 11, get: (p) => p.mes },
+      { header: "Año",       width: 7,  get: (p) => p.anio },
+      { header: "Concepto",  width: 50, get: (p) => p.concepto },
+      { header: "Rubro",     width: 26, get: (p) => p.rubro },
+      { header: "Categoria", width: 30, get: (p) => p.categoria },
+      { header: "Proyecto",  width: 17, get: (p) => p.proyecto || "" },
+      { header: "Moneda",    width: 9,  get: (p) => p.moneda || "MXP" },
+      { header: "Monto",     width: 15, get: (p) => Number(p.monto_estimado) || 0, money: true },
+      { header: "Usado",     width: 15, get: (p) => usadoDe(p), money: true },
+      { header: "Disponible",width: 15, get: (p) => (Number(p.monto_estimado) || 0) - usadoDe(p), money: true },
+      { header: "SMI",       width: 10, get: (p) => p.smi || "" },
+      { header: "Recurrente",width: 12, get: (p) => (p.es_recurrente ? "Sí" : "No") },
+    ];
+    const wbx = new ExcelJS.Workbook();
+    const ws = wbx.addWorksheet(`RawData-${unidad}`);
+    ws.columns = COLS.map((c) => ({ width: c.width }));
+    const hr = ws.addRow(COLS.map((c) => c.header));
+    hr.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
+    });
+    partidasOrdenadas.forEach((p) => {
+      const row = ws.addRow(COLS.map((c) => c.get(p)));
+      COLS.forEach((c, ci) => {
+        const cell = row.getCell(ci + 1);
+        cell.font = { name: "Calibri", size: 11 };
+        if (c.money) cell.numFmt = '"$"#,##0.00';
+        // El folio se fuerza a texto: si Excel lo interpreta como número,
+        // se pierden ceros y el archivo deja de servir para reimportar.
+        if (c.header === "Folio") cell.alignment = { horizontal: "left" };
+      });
+    });
+    ws.views = [{ state: "frozen", ySplit: 1 }];
+    const buf = await wbx.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Partidas_${unidad}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   const COLUMNAS_PARTIDA = [
     { key: "mes", label: "Mes", render: (p) => p.mes },
     { key: "anio", label: "Año", render: (p) => p.anio },
@@ -3203,6 +3254,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                 {generandoRecurrentes ? "Generando…" : `Generar recurrentes pendientes (${faltantesRecurrentes.length})`}
               </Button>
             )}
+            <Button variant="ghost" onClick={exportarExcel}>Exportar a Excel</Button>
             <Button onClick={openNew}>+ Nueva partida</Button>
           </div>
         }

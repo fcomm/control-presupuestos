@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.53.0";
+const APP_VERSION = "1.53.1";
 const CHANGELOG = [
+  { v: "1.53.1", desc: "Partidas: se agrega 'Exportar las 3', que baja OSB, CTM e ISE en hojas separadas de un mismo archivo respetando los filtros de mes y año. El correo de pagos llega con las tres compañías mezcladas, así que un export de una sola no alcanzaba para proponer las asignaciones. Los filtros de rubro y proyecto solo se aplican a la compañía activa, porque esos valores no siempre existen en las otras dos" },
   { v: "1.53.0", desc: "Partidas: botón 'Exportar a Excel'. Descarga las partidas que estén a la vista (respeta los filtros) con Unidad, Folio, Mes, Año, Concepto, Rubro, Categoría, Proyecto, Moneda, Monto, Usado, Disponible, SMI y Recurrente. Antes lo único descargable desde esta pestaña era la plantilla vacía" },
   { v: "1.52.1", desc: "Partidas: se rediseña el bloque de transacciones vinculadas, que se confundía con las bandas de la propia tabla — su encabezado usaba exactamente el mismo estilo que los encabezados de columna. Ahora es una tarjeta blanca embutida, con un riel de color que la ata a su partida y una línea de resumen que dice cuántas transacciones son y cuánto suman por moneda" },
   { v: "1.52.0", desc: "Partidas: botón 'Duplicar' en cada fila — abre el formulario prellenado con los datos de la original para revisar y guardar como partida nueva. El folio se deja vacío para que se genere uno propio, y la marca de recurrente no se hereda (si se heredara, el duplicado generaría una segunda serie en todos los meses restantes del año). Los botones de fila pasan a íconos compactos (✎/⧉/✕) con tooltip, igual que en Transacciones" },
@@ -2927,7 +2928,11 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const mesesDisponiblesFiltro = MESES.filter((m) => partidasUnidad.some((p) => p.mes === m));
   const aniosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.anio).filter(Boolean))].sort((a, b) => a - b);
 
-  const partidasFiltradas = partidasUnidad.filter((p) => {
+  // Los filtros de la tabla, extraídos como función para poder aplicarlos
+  // también a otras compañías al exportar las tres de un jalón.
+  // Nota: el filtro de rubro y el de proyecto se saltan cuando el valor
+  // elegido no existe en la otra compañía, en vez de devolver cero filas.
+  const aplicarFiltrosPartidas = (lista, estricto = true) => lista.filter((p) => {
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const enTexto = [p.concepto, p.folio, p.smi, p.categoria].some((v) => (v || "").toLowerCase().includes(q));
@@ -2935,10 +2940,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     }
     if (filtrosMes.length && !filtrosMes.includes(p.mes)) return false;
     if (filtrosAnio.length && !filtrosAnio.includes(p.anio)) return false;
-    if (filtros.rubro !== "Todos" && p.rubro !== filtros.rubro) return false;
-    if (filtros.proyecto !== "Todos" && p.proyecto !== filtros.proyecto) return false;
+    if (estricto) {
+      if (filtros.rubro !== "Todos" && p.rubro !== filtros.rubro) return false;
+      if (filtros.proyecto !== "Todos" && p.proyecto !== filtros.proyecto) return false;
+    }
     return true;
   });
+  const partidasFiltradas = aplicarFiltrosPartidas(partidasUnidad);
   const filtrosActivos = filtros.texto.trim() || filtrosMes.length > 0 || filtrosAnio.length > 0 || filtros.rubro !== "Todos" || filtros.proyecto !== "Todos";
   const limpiarFiltros = () => setFiltros({ texto: "", mes: [], anio: [], rubro: "Todos", proyecto: "Todos" });
 
@@ -2971,7 +2979,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   // Exporta las partidas que están a la vista (con los filtros aplicados).
   // Encabezado, ancho y valor viven juntos en un solo arreglo para que agregar
   // una columna no pueda desalinear el archivo.
-  const exportarExcel = async () => {
+  const exportarExcel = async (todasLasCompanias = false) => {
     const COLS = [
       { header: "Unidad",    width: 9,  get: (p) => p.unidad },
       { header: "Folio",     width: 16, get: (p) => p.folio || "" },
@@ -2988,32 +2996,47 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       { header: "SMI",       width: 10, get: (p) => p.smi || "" },
       { header: "Recurrente",width: 12, get: (p) => (p.es_recurrente ? "Sí" : "No") },
     ];
+    // Con todasLasCompanias, se ignora el selector global de compañía y se
+    // exportan las tres en hojas separadas, aplicando los MISMOS filtros de mes,
+    // año, rubro y proyecto que estén puestos. Es lo que necesita el preparador
+    // de transacciones, porque el correo de pagos llega mezclado.
+    const hojas = todasLasCompanias
+      ? UNIDAD_KEYS.map((u) => ({
+          unidad: u,
+          filas: aplicarFiltrosPartidas(partidas.filter((p) => p.unidad === u), u === unidad),
+        })).filter((h) => h.filas.length)
+      : [{ unidad, filas: partidasOrdenadas }];
+
+    if (!hojas.length) { alert("No hay partidas que exportar con los filtros actuales."); return; }
+
     const wbx = new ExcelJS.Workbook();
-    const ws = wbx.addWorksheet(`RawData-${unidad}`);
-    ws.columns = COLS.map((c) => ({ width: c.width }));
-    const hr = ws.addRow(COLS.map((c) => c.header));
-    hr.eachCell((cell) => {
-      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
-    });
-    partidasOrdenadas.forEach((p) => {
-      const row = ws.addRow(COLS.map((c) => c.get(p)));
-      COLS.forEach((c, ci) => {
-        const cell = row.getCell(ci + 1);
-        cell.font = { name: "Calibri", size: 11 };
-        if (c.money) cell.numFmt = '"$"#,##0.00';
-        // El folio se fuerza a texto: si Excel lo interpreta como número,
-        // se pierden ceros y el archivo deja de servir para reimportar.
-        if (c.header === "Folio") cell.alignment = { horizontal: "left" };
+    hojas.forEach(({ unidad: u, filas }) => {
+      const ws = wbx.addWorksheet(`RawData-${u}`);
+      ws.columns = COLS.map((c) => ({ width: c.width }));
+      const hr = ws.addRow(COLS.map((c) => c.header));
+      hr.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
       });
+      filas.forEach((p) => {
+        const row = ws.addRow(COLS.map((c) => c.get(p)));
+        COLS.forEach((c, ci) => {
+          const cell = row.getCell(ci + 1);
+          cell.font = { name: "Calibri", size: 11 };
+          if (c.money) cell.numFmt = '"$"#,##0.00';
+          // El folio se fuerza a texto: si Excel lo interpreta como número,
+          // se pierden ceros y el archivo deja de servir para reimportar.
+          if (c.header === "Folio") cell.alignment = { horizontal: "left" };
+        });
+      });
+      ws.views = [{ state: "frozen", ySplit: 1 }];
     });
-    ws.views = [{ state: "frozen", ySplit: 1 }];
     const buf = await wbx.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Partidas_${unidad}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `Partidas_${todasLasCompanias ? "OSB-CTM-ISE" : unidad}_${new Date().toISOString().slice(0, 10)}.xlsx`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
@@ -3254,7 +3277,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                 {generandoRecurrentes ? "Generando…" : `Generar recurrentes pendientes (${faltantesRecurrentes.length})`}
               </Button>
             )}
-            <Button variant="ghost" onClick={exportarExcel}>Exportar a Excel</Button>
+            <Button variant="ghost" onClick={() => exportarExcel(false)}>Exportar {unidad}</Button>
+            <Button variant="ghost" onClick={() => exportarExcel(true)} title="Las tres compañías en hojas separadas, con los mismos filtros — para el preparador de transacciones">Exportar las 3</Button>
             <Button onClick={openNew}>+ Nueva partida</Button>
           </div>
         }

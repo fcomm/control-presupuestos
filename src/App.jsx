@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.51.2";
+const APP_VERSION = "1.52.0";
 const CHANGELOG = [
+  { v: "1.52.0", desc: "Partidas: botón 'Duplicar' en cada fila — abre el formulario prellenado con los datos de la original para revisar y guardar como partida nueva. El folio se deja vacío para que se genere uno propio, y la marca de recurrente no se hereda (si se heredara, el duplicado generaría una segunda serie en todos los meses restantes del año). Los botones de fila pasan a íconos compactos (✎/⧉/✕) con tooltip, igual que en Transacciones" },
   { v: "1.51.2", desc: "Reporte de Pagos: se retira la columna 'Referencia (Proveedor)', que traía un dato del catálogo de proveedores y no del pago. Sale de la tabla y de la exportación a Excel. El campo sigue existiendo en el catálogo de Proveedores" },
   { v: "1.51.1", desc: "Fix: la exportación a Excel del Reporte de Pagos salía corrida — los encabezados y los anchos seguían siendo 19 columnas mientras las filas ya traían 20, y el formato de moneda caía sobre SWIFT en lugar de Importe. El layout de la exportación (encabezado, ancho y valor) queda unificado en un solo arreglo para que no pueda volver a desalinearse. Además, las columnas nuevas ahora aparecen en su posición natural dentro de la tabla en vez de irse hasta el extremo derecho, que era lo que escondía 'Referencia de Pago' si ya tenías un orden de columnas guardado" },
   { v: "1.51.0", desc: "Transacciones: nuevo campo 'Referencia de Pago' (folio SPEI, número de cheque, etc.) disponible en el alta, la edición rápida, la carga masiva y como columna del Reporte de Pagos, además de entrar en ambos buscadores. La columna 'Referencia' del reporte pasa a llamarse 'Referencia (Proveedor)' para distinguirla, ya que ese dato viene del catálogo de proveedores y no del pago. Requiere correr la migración SQL 03-referencia-pago.sql" },
@@ -3038,9 +3039,10 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             <td key={c.key} style={i === 0 && depth ? { ...tdStyle, paddingLeft: 14 + depth * 26 } : tdStyle}>{c.render(p)}</td>
           ))}
           <td style={tdStyle}>
-            <div style={{ display: "flex", gap: 6 }}>
-              <Button variant="ghost" onClick={() => startEdit(p)}>Editar</Button>
-              <Button variant="danger" onClick={() => remove(p.id)}>Eliminar</Button>
+            <div style={{ display: "flex", gap: 4 }}>
+              <IconButton icon="✎" label="Editar" tone={T.accent} onClick={() => startEdit(p)} />
+              <IconButton icon="⧉" label="Duplicar" tone={T.textDim} onClick={() => duplicar(p)} />
+              <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => remove(p.id)} />
             </div>
           </td>
         </tr>
@@ -3100,6 +3102,18 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   };
 
   const openNew = () => { setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" }); setEditId(null); setModalOpen(true); };
+  const duplicar = (p) => {
+    // Copia la partida como registro NUEVO. Se limpian dos cosas a propósito:
+    //  - folio: submit() respeta el que venga en el formulario, así que heredarlo
+    //    haría chocar el duplicado con la original. Vacío, se genera uno nuevo.
+    //  - es_recurrente: si se heredara, "Generar recurrentes pendientes" crearía
+    //    una segunda serie completa en todos los meses que faltan del año.
+    const { id, folio, created_at, updated_at, created_by, updated_by, es_recurrente, ...resto } = p;
+    const limpio = Object.fromEntries(Object.entries(resto).filter(([k]) => !k.startsWith("_")));
+    setForm({ ...limpio, folio: "", es_recurrente: false });
+    setEditId(null);
+    setModalOpen(true);
+  };
   const startEdit = (p) => { setForm(p); setEditId(p.id); setModalOpen(true); };
 
   const [generandoRecurrentes, setGenerandoRecurrentes] = useState(false);

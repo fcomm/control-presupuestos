@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.52.0";
+const APP_VERSION = "1.52.1";
 const CHANGELOG = [
+  { v: "1.52.1", desc: "Partidas: se rediseña el bloque de transacciones vinculadas, que se confundía con las bandas de la propia tabla — su encabezado usaba exactamente el mismo estilo que los encabezados de columna. Ahora es una tarjeta blanca embutida, con un riel de color que la ata a su partida y una línea de resumen que dice cuántas transacciones son y cuánto suman por moneda" },
   { v: "1.52.0", desc: "Partidas: botón 'Duplicar' en cada fila — abre el formulario prellenado con los datos de la original para revisar y guardar como partida nueva. El folio se deja vacío para que se genere uno propio, y la marca de recurrente no se hereda (si se heredara, el duplicado generaría una segunda serie en todos los meses restantes del año). Los botones de fila pasan a íconos compactos (✎/⧉/✕) con tooltip, igual que en Transacciones" },
   { v: "1.51.2", desc: "Reporte de Pagos: se retira la columna 'Referencia (Proveedor)', que traía un dato del catálogo de proveedores y no del pago. Sale de la tabla y de la exportación a Excel. El campo sigue existiendo en el catálogo de Proveedores" },
   { v: "1.51.1", desc: "Fix: la exportación a Excel del Reporte de Pagos salía corrida — los encabezados y los anchos seguían siendo 19 columnas mientras las filas ya traían 20, y el formato de moneda caía sobre SWIFT en lugar de Importe. El layout de la exportación (encabezado, ancho y valor) queda unificado en un solo arreglo para que no pueda volver a desalinearse. Además, las columnas nuevas ahora aparecen en su posición natural dentro de la tabla en vez de irse hasta el extremo derecho, que era lo que escondía 'Referencia de Pago' si ya tenías un orden de columnas guardado" },
@@ -3048,24 +3049,46 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         </tr>
         {expandido && (
           <tr>
-            <td colSpan={columnasVisibles.length + 3} style={{ padding: "0 0 0 40px", background: T.panelAlt, borderBottom: `1px solid ${T.border}` }}>
-              <table style={{ ...tableStyle, margin: "8px 0" }}>
-                <thead>
-                  <tr>{["Concepto","Monto","Status",""].map((h) => <th key={h} style={{ ...thStyle, background: "transparent" }}>{h}</th>)}</tr>
-                </thead>
-                <tbody>
-                  {transDeEsta.map((t) => (
-                    <tr key={t.id}>
-                      <td style={{ ...tdStyle, color: T.textDim }}>{t.concepto_detallado || "—"}</td>
-                      <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</td>
-                      <td style={tdStyle}>{t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—"}</td>
-                      <td style={tdStyle}>
-                        <IconButton icon="✎" label="Editar transacción" tone={T.accent} onClick={() => setTransaccionEditando(t)} />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            {/* Cajón embutido. Tres señales de anidamiento, cada una haciendo un
+                trabajo distinto: el riel de acento ata el bloque a su fila padre,
+                la tarjeta blanca sobre el gris lo separa como otra superficie, y
+                el resumen en minúsculas evita el choque con los encabezados de
+                columna y las píldoras de agrupamiento, que ya usan mayúsculas. */}
+            <td colSpan={columnasVisibles.length + 3} style={{ padding: 0, background: T.panelAlt, borderBottom: `1px solid ${T.border}` }}>
+              <div style={{ padding: "10px 14px 12px 40px" }}>
+                <div style={{ borderLeft: `3px solid ${T.accent}`, borderRadius: "0 6px 6px 0", background: T.panel, boxShadow: "0 1px 2px rgba(35,42,49,0.06)", overflow: "hidden" }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "8px 12px 6px", borderBottom: `1px solid ${T.borderSoft}` }}>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>
+                      {transDeEsta.length === 1 ? "1 transacción vinculada" : `${transDeEsta.length} transacciones vinculadas`}
+                    </span>
+                    <span style={{ fontSize: 11.5, color: T.textFaint, fontFamily: T.fontMono }}>
+                      {[...new Set(transDeEsta.map((t) => t.moneda || "MXP"))]
+                        .map((m) => money(transDeEsta.filter((t) => (t.moneda || "MXP") === m).reduce((a, t) => a + (Number(t.importe) || 0), 0), m))
+                        .join("  ·  ")}
+                    </span>
+                  </div>
+                  <table style={{ ...tableStyle, fontSize: 11.5 }}>
+                    <tbody>
+                      {transDeEsta.map((t, idx) => (
+                        <tr key={t.id}>
+                          <td style={{ ...tdStyle, padding: "7px 12px", color: T.textDim, borderBottom: idx === transDeEsta.length - 1 ? "none" : `1px solid ${T.borderSoft}` }}>
+                            {t.concepto_detallado || "—"}
+                          </td>
+                          <td style={{ ...tdStyle, padding: "7px 12px", fontFamily: T.fontMono, textAlign: "right", whiteSpace: "nowrap", borderBottom: idx === transDeEsta.length - 1 ? "none" : `1px solid ${T.borderSoft}` }}>
+                            {money(t.importe, t.moneda)}
+                          </td>
+                          <td style={{ ...tdStyle, padding: "7px 12px", width: 110, borderBottom: idx === transDeEsta.length - 1 ? "none" : `1px solid ${T.borderSoft}` }}>
+                            {t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—"}
+                          </td>
+                          <td style={{ ...tdStyle, padding: "7px 12px", width: 44, borderBottom: idx === transDeEsta.length - 1 ? "none" : `1px solid ${T.borderSoft}` }}>
+                            <IconButton icon="✎" label="Editar transacción" tone={T.accent} onClick={() => setTransaccionEditando(t)} />
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
             </td>
           </tr>
         )}

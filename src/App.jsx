@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.53.1";
+const APP_VERSION = "1.54.0";
 const CHANGELOG = [
+  { v: "1.54.0", desc: "Carga masiva de transacciones: ahora resuelve sola la cuenta bancaria. Si el proveedor empatado tiene una única cuenta en la divisa del pago, se asigna; con varias se deja vacía a propósito, porque elegir la equivocada manda el dinero a otro lado. Antes toda transacción importada quedaba sin cuenta y había que elegirla a mano. Además, Proveedores estrena 'Exportar las 3', con una fila por cuenta bancaria (CLABE y número forzados a texto) para poder cotejarlas fuera de la app" },
   { v: "1.53.1", desc: "Partidas: se agrega 'Exportar las 3', que baja OSB, CTM e ISE en hojas separadas de un mismo archivo respetando los filtros de mes y año. El correo de pagos llega con las tres compañías mezcladas, así que un export de una sola no alcanzaba para proponer las asignaciones. Los filtros de rubro y proyecto solo se aplican a la compañía activa, porque esos valores no siempre existen en las otras dos" },
   { v: "1.53.0", desc: "Partidas: botón 'Exportar a Excel'. Descarga las partidas que estén a la vista (respeta los filtros) con Unidad, Folio, Mes, Año, Concepto, Rubro, Categoría, Proyecto, Moneda, Monto, Usado, Disponible, SMI y Recurrente. Antes lo único descargable desde esta pestaña era la plantilla vacía" },
   { v: "1.52.1", desc: "Partidas: se rediseña el bloque de transacciones vinculadas, que se confundía con las bandas de la propia tabla — su encabezado usaba exactamente el mismo estilo que los encabezados de columna. Ahora es una tarjeta blanca embutida, con un riel de color que la ata a su partida y una línea de resumen que dice cuántas transacciones son y cuánto suman por moneda" },
@@ -1062,11 +1063,11 @@ function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
   return { rows, sheetsFound, nuevas, actualizaciones, sinCompania };
 }
 
-function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = []) {
+function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = [], cuentas = []) {
   const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
   const rows = [];
   const sheetsFound = [];
-  let matched = 0, unmatched = 0;
+  let matched = 0, unmatched = 0, conCuenta = 0, sinCuenta = 0;
 
   wb.SheetNames.forEach((sheetName) => {
     const ws = wb.Sheets[sheetName];
@@ -1128,8 +1129,23 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = []) {
                 (!unidad_detectada || pv.unidad === unidad_detectada)
       ) : null;
 
+      // La cuenta bancaria vive en el catálogo del proveedor, no en la
+      // transacción. Si el proveedor tiene UNA sola cuenta en la divisa del
+      // pago, se asigna sola; con varias se deja vacía a propósito, porque
+      // elegir la equivocada manda el dinero a otro lado.
+      const monedaFila = (col.moneda !== -1 && row[col.moneda]) ? String(row[col.moneda]).trim().toUpperCase() : "MXP";
+      const cuentasDelProv = proveedorMatch
+        ? cuentas.filter((c) => c.proveedor_id === proveedorMatch.id)
+        : [];
+      const cuentasDivisa = cuentasDelProv.filter((c) => (c.divisa || "MXP").toUpperCase() === monedaFila);
+      const cuentaElegida = cuentasDivisa.length === 1 ? cuentasDivisa[0]
+                          : (cuentasDelProv.length === 1 && !cuentasDivisa.length ? null : null);
+      if (cuentaElegida) conCuenta++; else if (proveedorMatch) sinCuenta++;
+
       rows.push({
         id: uid(),
+        cuenta_id: cuentaElegida ? cuentaElegida.id : "",
+        _cuentasDisponibles: cuentasDelProv.length,
         partida_id: partida ? partida.id : "",
         folio_original: folio,
         unidad_detectada: partida ? partida.unidad : unidad_detectada,
@@ -1156,7 +1172,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = []) {
     if (count) sheetsFound.push({ sheetName, count });
   });
 
-  return { rows, sheetsFound, matched, unmatched };
+  return { rows, sheetsFound, matched, unmatched, conCuenta, sinCuenta };
 }
 
 /* ----------------------------------------------------------------------
@@ -3472,7 +3488,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
 /* ----------------------------------------------------------------------
    TABS: TRANSACCIONES
 ---------------------------------------------------------------------- */
-function ImportarTransaccionesPanel({ partidas, proveedores, transaccionesApi }) {
+function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], transaccionesApi }) {
   const inputRef = useRef(null);
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
@@ -3541,12 +3557,12 @@ function ImportarTransaccionesPanel({ partidas, proveedores, transaccionesApi })
     setError(""); setStatus(""); setPreview(null);
     try {
       const buf = await file.arrayBuffer();
-      const { rows, sheetsFound, matched, unmatched } = parseTransaccionesWorkbook(buf, partidas, proveedores);
+      const { rows, sheetsFound, matched, unmatched, conCuenta, sinCuenta } = parseTransaccionesWorkbook(buf, partidas, proveedores, cuentas);
       if (!rows.length) {
         setError('No encontré una hoja con columnas "Día", "Importe" y "A Partida" en este archivo.');
         return;
       }
-      setPreview({ rows, sheetsFound, matched, unmatched, fileName: file.name });
+      setPreview({ rows, sheetsFound, matched, unmatched, conCuenta, sinCuenta, fileName: file.name });
     } catch (err) {
       setError("No pude leer el archivo. Verifica que sea un .xlsx válido.");
     } finally {
@@ -3558,10 +3574,18 @@ function ImportarTransaccionesPanel({ partidas, proveedores, transaccionesApi })
     if (!preview) return;
     setImporting(true);
     try {
-      const toInsert = preview.rows.map((r) => ({ ...r, partida_id: r.partida_id || null, proveedor_id: r.proveedor_id || null }));
+      // _cuentasDisponibles es un dato de pantalla, no de la tabla: se descarta
+      // antes de insertar o Supabase rechaza la columna desconocida.
+      const toInsert = preview.rows.map(({ _cuentasDisponibles, ...r }) => ({
+        ...r,
+        partida_id: r.partida_id || null,
+        proveedor_id: r.proveedor_id || null,
+        cuenta_id: r.cuenta_id || null,
+      }));
       await transaccionesApi.bulkInsert(toInsert);
       const vinculadas = preview.rows.filter((r) => r.partida_id).length;
-      setStatus(`Importadas ${preview.rows.length} transacciones (${vinculadas} vinculadas, ${preview.rows.length - vinculadas} sin partida).`);
+      const conCta = preview.rows.filter((r) => r.cuenta_id).length;
+      setStatus(`Importadas ${preview.rows.length} transacciones (${vinculadas} con partida, ${conCta} con cuenta bancaria asignada).`);
       setPreview(null);
     } catch (err) {
       setError("Ocurrió un error al importar en Supabase: " + (err.message || err));
@@ -4243,7 +4267,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         </Panel>
       )}
 
-      <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} transaccionesApi={transaccionesApi} />
+      <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />
 
       {modalOpen && (
         <Modal
@@ -5333,12 +5357,75 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
     cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
   };
 
+  // Exporta las tres compañías con UNA FILA POR CUENTA BANCARIA (un proveedor
+  // con dos cuentas ocupa dos renglones). Así el preparador de transacciones
+  // puede comparar la CLABE que viene en el correo contra la registrada.
+  const exportarProveedores = async () => {
+    const COLS = [
+      { header: "Unidad",     width: 9,  get: (p, c) => p.unidad },
+      { header: "Proveedor",  width: 38, get: (p, c) => p.nombre || "" },
+      { header: "RFC",        width: 16, get: (p, c) => p.rfc || "" },
+      { header: "Id SAE",     width: 11, get: (p, c) => p.id_sae || "" },
+      { header: "Banco",      width: 20, get: (p, c) => c?.banco || "" },
+      { header: "CLABE",      width: 22, get: (p, c) => c?.clabe || "" },
+      { header: "No. Cuenta", width: 18, get: (p, c) => c?.numero_cuenta || "" },
+      { header: "SWIFT",      width: 12, get: (p, c) => c?.swift || "" },
+      { header: "Divisa",     width: 9,  get: (p, c) => c?.divisa || "" },
+      { header: "Cuentas",    width: 9,  get: (p, c, n) => n },
+    ];
+    const wbx = new ExcelJS.Workbook();
+    UNIDAD_KEYS.forEach((u) => {
+      const delaUnidad = proveedoresApi.rows.filter((p) => p.unidad === u);
+      if (!delaUnidad.length) return;
+      const ws = wbx.addWorksheet(`Proveedores-${u}`);
+      ws.columns = COLS.map((c) => ({ width: c.width }));
+      const hr = ws.addRow(COLS.map((c) => c.header));
+      hr.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
+      });
+      delaUnidad.forEach((p) => {
+        const ctas = cuentasApi.rows.filter((c) => c.proveedor_id === p.id);
+        // Sin cuentas se escribe un renglón igual, para que el preparador
+        // pueda marcar "este proveedor no tiene cuenta registrada".
+        (ctas.length ? ctas : [null]).forEach((c) => {
+          const row = ws.addRow(COLS.map((col) => col.get(p, c, ctas.length)));
+          COLS.forEach((col, ci) => {
+            const cell = row.getCell(ci + 1);
+            cell.font = { name: "Calibri", size: 11 };
+            // CLABE y cuenta SIEMPRE como texto: si Excel las toma por número,
+            // pierde el cero inicial y los últimos dígitos.
+            if (col.header === "CLABE" || col.header === "No. Cuenta") {
+              cell.numFmt = "@";
+              cell.alignment = { horizontal: "left" };
+            }
+          });
+        });
+      });
+      ws.views = [{ state: "frozen", ySplit: 1 }];
+    });
+    if (!wbx.worksheets.length) { alert("No hay proveedores que exportar."); return; }
+    const buf = await wbx.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `Proveedores_OSB-CTM-ISE_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
     <Panel
       title={`Catálogo de proveedores — ${unidad}`}
       subtitle={`${proveedoresUnidad.length} registrados — cada compañía tiene el suyo. Un proveedor puede tener varias cuentas bancarias`}
-      right={<Button onClick={openNew}>+ Nuevo proveedor</Button>}
+      right={
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="ghost" onClick={exportarProveedores} title="Las tres compañías con sus cuentas bancarias, para el preparador de transacciones">Exportar las 3</Button>
+          <Button onClick={openNew}>+ Nuevo proveedor</Button>
+        </div>
+      }
     >
       <div style={{ marginBottom: 14 }}>
         <Field label="Buscar">

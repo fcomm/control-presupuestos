@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.54.0";
+const APP_VERSION = "1.55.0";
 const CHANGELOG = [
+  { v: "1.55.0", desc: "Reporte de Pagos: nuevo botón 'Columnas del PDF' para elegir qué lleva la solicitud que se manda a Pagos. Antes eran siete columnas fijas en el código; ahora hay dieciséis disponibles —entre ellas No. Cuenta, SWIFT, Referencia de Pago, Área y Folio Factura— y se recuerda la selección. Día, Solicitante, Proveedor, Concepto e Importe no se pueden quitar porque el área de Pagos las necesita siempre" },
   { v: "1.54.0", desc: "Carga masiva de transacciones: ahora resuelve sola la cuenta bancaria. Si el proveedor empatado tiene una única cuenta en la divisa del pago, se asigna; con varias se deja vacía a propósito, porque elegir la equivocada manda el dinero a otro lado. Antes toda transacción importada quedaba sin cuenta y había que elegirla a mano. Además, Proveedores estrena 'Exportar las 3', con una fila por cuenta bancaria (CLABE y número forzados a texto) para poder cotejarlas fuera de la app" },
   { v: "1.53.1", desc: "Partidas: se agrega 'Exportar las 3', que baja OSB, CTM e ISE en hojas separadas de un mismo archivo respetando los filtros de mes y año. El correo de pagos llega con las tres compañías mezcladas, así que un export de una sola no alcanzaba para proponer las asignaciones. Los filtros de rubro y proyecto solo se aplican a la compañía activa, porque esos valores no siempre existen en las otras dos" },
   { v: "1.53.0", desc: "Partidas: botón 'Exportar a Excel'. Descarga las partidas que estén a la vista (respeta los filtros) con Unidad, Folio, Mes, Año, Concepto, Rubro, Categoría, Proyecto, Moneda, Monto, Usado, Disponible, SMI y Recurrente. Antes lo único descargable desde esta pestaña era la plantilla vacía" },
@@ -2059,7 +2060,7 @@ function useColumnVisibility(storageKey, columns) {
 }
 
 // Botón "Columnas" con un panel de checkboxes para mostrar/ocultar cada una.
-function ColumnVisibilityControl({ columns, hidden, onToggle, onShowAll }) {
+function ColumnVisibilityControl({ columns, hidden, onToggle, onShowAll, etiqueta = "Columnas" }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useEffect(() => {
@@ -2072,7 +2073,7 @@ function ColumnVisibilityControl({ columns, hidden, onToggle, onShowAll }) {
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <Button variant={ocultas ? "primary" : "ghost"} onClick={() => setOpen((o) => !o)}>
-        Columnas{ocultas ? ` (${columns.length - ocultas}/${columns.length})` : ""}
+        {etiqueta}{ocultas ? ` (${columns.length - ocultas}/${columns.length})` : ""}
       </Button>
       {open && (
         <div style={{
@@ -2082,7 +2083,7 @@ function ColumnVisibilityControl({ columns, hidden, onToggle, onShowAll }) {
           boxShadow: "0 8px 24px rgba(35,42,49,0.14)",
         }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>Columnas visibles</span>
+            <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>{etiqueta === "Columnas" ? "Columnas visibles" : etiqueta}</span>
             {ocultas > 0 && (
               <button
                 type="button"
@@ -2095,8 +2096,10 @@ function ColumnVisibilityControl({ columns, hidden, onToggle, onShowAll }) {
           </div>
           {columns.map((c) => (
             <label key={c.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0", fontSize: 12.5, color: T.text, cursor: "pointer" }}>
-              <input type="checkbox" checked={!hidden.has(c.key)} onChange={() => onToggle(c.key)} />
-              {c.label}
+              {/* Las columnas fijas se muestran marcadas y deshabilitadas: se ve
+                  que están, y se ve que no son opcionales. */}
+              <input type="checkbox" checked={!hidden.has(c.key)} disabled={c.fija} onChange={() => onToggle(c.key)} />
+              <span style={{ color: c.fija ? T.textFaint : T.text }}>{c.label}{c.fija ? " (siempre)" : ""}</span>
             </label>
           ))}
         </div>
@@ -4400,6 +4403,31 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 /* ----------------------------------------------------------------------
    TAB: REPORTE DE PAGOS
 ---------------------------------------------------------------------- */
+// Columnas que puede llevar el PDF de solicitud de pagos. `fija: true` son
+// las que el área de Pagos necesita siempre y no se pueden quitar; el resto
+// se elige desde el botón "Columnas del PDF".
+const COLUMNAS_PDF = [
+  { key: "dia",            label: "Día",              fija: true,  get: (f) => f.dia || "" },
+  { key: "solicitante",    label: "Solicitante",      fija: true,  get: (f) => f.solicitante || "" },
+  { key: "area",           label: "Área",             get: (f) => f.area || "" },
+  { key: "numero_solicitud", label: "No. Solicitud",  get: (f) => f.numero_solicitud || "" },
+  { key: "folio_factura",  label: "Folio Factura",    get: (f) => f.folio_factura || "" },
+  { key: "forma_pago",     label: "Forma de Pago",    get: (f) => f.forma_pago || "" },
+  { key: "metodo_pago",    label: "Método de Pago",   get: (f) => f.metodo_pago || "" },
+  { key: "proveedor",      label: "Proveedor",        fija: true,  ancho: "left", get: (f) => f.proveedor || "" },
+  { key: "concepto",       label: "Concepto de pago", fija: true,  ancho: "left", get: (f) => f.concepto || "" },
+  { key: "banco",          label: "Banco",            get: (f) => f.banco || "" },
+  { key: "clabe",          label: "Cuenta CLABE",     get: (f) => f.clabe || "" },
+  { key: "numero_cuenta",  label: "No. Cuenta",       get: (f) => f.numero_cuenta || "" },
+  { key: "swift",          label: "SWIFT",            get: (f) => f.swift || "" },
+  { key: "referencia_pago", label: "Referencia de Pago", get: (f) => f.referencia_pago || "" },
+  { key: "importe",        label: "Importe",          fija: true,  get: (f) => money(f.importe, f.moneda) },
+  { key: "notas",          label: "Notas",            ancho: "left", get: (f) => f.notas || "" },
+];
+// Las que trae marcadas la primera vez: el formato que se venía usando.
+const PDF_OCULTAS_INICIAL = ["area", "numero_solicitud", "folio_factura", "forma_pago",
+  "metodo_pago", "numero_cuenta", "swift", "referencia_pago", "notas"];
+
 const COLUMNAS_REPORTE = [
   { key: "dia", label: "Día" },
   { key: "solicitante", label: "Solicitante" },
@@ -4479,6 +4507,28 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   const filasOrdenadas = sortRows(filasFiltradas, sort, { importe: (r) => r.importe });
 
   const colVisibility = useColumnVisibility("colv-reporte", COLUMNAS_REPORTE);
+  const [pdfOcultas, setPdfOcultas] = useState(() => {
+    try {
+      const raw = localStorage.getItem("colv-reporte-pdf");
+      return new Set(raw ? JSON.parse(raw) : PDF_OCULTAS_INICIAL);
+    } catch { return new Set(PDF_OCULTAS_INICIAL); }
+  });
+  const guardarPdfOcultas = (next) => {
+    setPdfOcultas(next);
+    try { localStorage.setItem("colv-reporte-pdf", JSON.stringify([...next])); } catch {}
+  };
+  const pdfVis = {
+    hidden: pdfOcultas,
+    toggle: (k) => {
+      const col = COLUMNAS_PDF.find((c) => c.key === k);
+      if (col && col.fija) return; // las fijas no se pueden ocultar
+      const next = new Set(pdfOcultas);
+      next.has(k) ? next.delete(k) : next.add(k);
+      guardarPdfOcultas(next);
+    },
+    showAll: () => guardarPdfOcultas(new Set()),
+  };
+  const columnasPDF = COLUMNAS_PDF.filter((c) => !pdfOcultas.has(c.key));
   const colWidths = useColumnWidths("colw-reporte");
   const { ordered: columnas, moveColumn } = useColumnOrder("colo-reporte", colVisibility.visible);
   const dragKeyRef = useRef(null);
@@ -4628,15 +4678,15 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
           autoTable(doc, {
             startY: cursorY + 28,
-            head: [["Día", "Solicitante", "Proveedor", "Concepto de pago", "Banco", "Cuenta CLABE", "Importe"]],
-            body: filasGrupo.map((f) => [
-              f.dia || "", f.solicitante || "", f.proveedor || "", f.concepto || "",
-              f.banco || "", f.clabe || "", money(f.importe, f.moneda),
-            ]),
+            head: [columnasPDF.map((c) => c.label)],
+            body: filasGrupo.map((f) => columnasPDF.map((c) => c.get(f))),
             styles: { fontSize: 8, cellPadding: 4 },
             headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
             bodyStyles: { halign: "center" },
-            columnStyles: { 2: { halign: "left" }, 3: { halign: "left" } },
+            // Los textos largos se alinean a la izquierda; lo demás centrado.
+            columnStyles: Object.fromEntries(
+              columnasPDF.map((c, i) => [i, { halign: c.ancho === "left" ? "left" : "center" }])
+            ),
             margin: { bottom: margenInferior },
           });
 
@@ -4706,6 +4756,13 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               hidden={colVisibility.hidden}
               onToggle={colVisibility.toggle}
               onShowAll={colVisibility.showAll}
+            />
+            <ColumnVisibilityControl
+              columns={COLUMNAS_PDF}
+              hidden={pdfVis.hidden}
+              onToggle={pdfVis.toggle}
+              onShowAll={pdfVis.showAll}
+              etiqueta="Columnas del PDF"
             />
             <Button onClick={exportarExcel}>Exportar a Excel</Button>
             <Button onClick={generarReportePDF} disabled={generandoReporte}>

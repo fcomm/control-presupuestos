@@ -67,7 +67,11 @@ const MTTO_ESTATUS = ["Solicitado", "En proceso", "Concluido", "Cancelado"];
 const MTTO_TIPOS = ["Preventivo", "Correctivo"];
 
 const MONEDAS = ["MXP", "USD"];
-const ZONAS = ["Queretaro", "Poza Rica", "Paraiso", "Altamira", "Cerro Azul", "CDMX", "Guaymas", "Torreon", "Rosarito", "Agua Dulce", "Cotaxtla"];
+// Respaldo de las zonas. El catálogo real vive en la tabla `zonas` de
+// Supabase; esta lista solo se usa si esa tabla todavía no existe o viene
+// vacía, para que subir el frontend antes de correr la migración no deje
+// el selector de Zona sin opciones.
+const ZONAS_RESPALDO = ["Queretaro", "Poza Rica", "Paraiso", "Altamira", "Cerro Azul", "CDMX", "Guaymas", "Torreon", "Rosarito", "Agua Dulce", "Cotaxtla"];
 
 // Catálogos oficiales del SAT (CFDI)
 const FORMAS_PAGO = [
@@ -108,8 +112,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.56.0";
+const APP_VERSION = "1.57.0";
 const CHANGELOG = [
+  { v: "1.57.0", desc: "Catálogo de zonas editable: hasta ahora eran una lista fija en el código y solo se podían ver. Ahora se dan de alta, renombran, desactivan o eliminan desde Catálogo, y alimentan el selector de Zona al capturar. El panel avisa además de las zonas que aparecen en transacciones sin estar dadas de alta —llegan por carga masiva— y permite agregarlas de un clic. Requiere correr la migración 06-catalogo-zonas.sql" },
   { v: "1.56.0", desc: "Reporte de Pagos: botón 'Vista previa PDF' que abre el documento REAL en un visor antes de generarlo — sin descargarlo y sin marcar nada como enviado a Pagos. Avisa cuando la tabla se pasa del ancho de la hoja, que es lo que ocurre al activar muchas columnas: autoTable no falla, apreta las columnas y parte el texto sin decir nada. La exportación a Excel muestra ahora un resumen (filas, columnas incluidas y excluidas, y las primeras filas) antes de descargar" },
   { v: "1.55.2", desc: "Fix: el selector 'Columnas del Excel' mostraba las casillas sin nombre. El panel leía únicamente la propiedad `label`, pero las columnas de exportación se definen con `header`; ahora acepta cualquiera de las dos" },
   { v: "1.55.1", desc: "Reporte de Pagos: la exportación a Excel estrena su propio selector 'Columnas del Excel', independiente del de pantalla y del PDF. Antes bajaba siempre las 19 columnas. Los tres selectores comparten ahora la misma implementación, así que se comportan igual" },
@@ -3679,7 +3684,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
   );
 }
 
-function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session }) {
+function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
@@ -4320,7 +4325,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <Field label="Zona">
               <Select value={form.zona} onChange={(e) => setForm({ ...form, zona: e.target.value })}>
                 <option value="">— Sin especificar —</option>
-                {ZONAS.map((z) => <option key={z}>{z}</option>)}
+                {zonas.map((z) => <option key={z}>{z}</option>)}
+                {/* Si la transacción trae una zona que ya no está en el
+                    catálogo, se agrega como opción para no perderla al editar. */}
+                {form.zona && !zonas.includes(form.zona) && <option key={form.zona}>{form.zona}</option>}
               </Select>
             </Field>
             <Field label="Proveedor (catálogo)">
@@ -5240,7 +5248,165 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
   );
 }
 
-function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi, cuentasApi, perfilesApi }) {
+/**
+ * Catálogo de zonas. Se pueden dar de alta, renombrar, desactivar y borrar.
+ *
+ * Desactivar y borrar no son lo mismo, y la diferencia importa:
+ *   · Desactivar la saca del selector pero la deja como referencia.
+ *   · Borrar la quita del catálogo — las transacciones que ya la usaban
+ *     conservan el texto, porque `transacciones.zona` no es llave foránea.
+ *     Por eso se avisa cuántas quedarían con una zona fuera de catálogo.
+ */
+function ZonasPanel({ zonasApi, transacciones = [] }) {
+  const [nueva, setNueva] = useState("");
+  const [editandoId, setEditandoId] = useState(null);
+  const [borrador, setBorrador] = useState("");
+
+  const zonas = [...zonasApi.rows].sort(
+    (a, b) => (a.orden ?? 999) - (b.orden ?? 999) || String(a.nombre).localeCompare(String(b.nombre))
+  );
+  const usos = (nombre) => transacciones.filter(
+    (t) => String(t.zona || "").trim().toLowerCase() === String(nombre).trim().toLowerCase()
+  ).length;
+
+  // Zonas que aparecen en transacciones pero no están dadas de alta: llegan
+  // por carga masiva o desde los correos, y sin esto pasarían inadvertidas.
+  const enCatalogo = new Set(zonas.map((z) => String(z.nombre).trim().toLowerCase()));
+  const huerfanas = [...new Set(
+    transacciones.map((t) => String(t.zona || "").trim()).filter(Boolean)
+      .filter((z) => !enCatalogo.has(z.toLowerCase()))
+  )].sort();
+
+  const agregar = async () => {
+    const nombre = nueva.trim();
+    if (!nombre) return;
+    if (enCatalogo.has(nombre.toLowerCase())) { alert(`"${nombre}" ya está en el catálogo.`); return; }
+    try {
+      await zonasApi.insert({ id: uid(), nombre, activa: true, orden: (zonas[zonas.length - 1]?.orden ?? zonas.length) + 1 });
+      setNueva("");
+    } catch (err) { alert("No se pudo agregar: " + (err.message || err)); }
+  };
+
+  const guardar = async (id) => {
+    const nombre = borrador.trim();
+    if (!nombre) return;
+    try {
+      await zonasApi.update(id, { nombre });
+      setEditandoId(null);
+    } catch (err) { alert("No se pudo actualizar: " + (err.message || err)); }
+  };
+
+  const alternarActiva = (z) =>
+    zonasApi.update(z.id, { activa: z.activa === false })
+      .catch((err) => alert("No se pudo actualizar: " + (err.message || err)));
+
+  const borrar = (z) => {
+    const n = usos(z.nombre);
+    const aviso = n
+      ? `\n\nOJO: ${n} transacción(es) usan esta zona. No se van a modificar —conservan el texto— pero quedarán con una zona que ya no existe en el catálogo. Si solo quieres sacarla del selector, mejor desactívala.`
+      : "";
+    if (!confirm(`¿Eliminar la zona "${z.nombre}"?${aviso}`)) return;
+    zonasApi.remove(z.id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+  };
+
+  return (
+    <Panel
+      title="Catálogo de zonas"
+      subtitle={`${zonas.filter((z) => z.activa !== false).length} activas — alimentan el selector de Zona al capturar transacciones`}
+    >
+      <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>
+        <Field label="Nueva zona">
+          <TextInput
+            value={nueva}
+            onChange={(e) => setNueva(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter") agregar(); }}
+            placeholder="Nombre de la zona"
+            style={{ width: 240 }}
+          />
+        </Field>
+        <Button onClick={agregar} disabled={!nueva.trim()}>+ Agregar</Button>
+      </div>
+
+      {!zonasApi.rows.length && (
+        <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
+          <b>La tabla de zonas está vacía</b>
+          Mientras tanto el selector usa la lista de respaldo. Corre la migración
+          <code style={{ fontFamily: T.fontMono, margin: "0 4px" }}>06-catalogo-zonas.sql</code>
+          para poblarla con las 11 originales.
+        </div>
+      )}
+
+      {huerfanas.length > 0 && (
+        <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
+          <b>Zonas en uso que no están en el catálogo</b>
+          Aparecen en transacciones pero nadie las dio de alta, así que no salen en el selector:
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+            {huerfanas.map((h) => (
+              <Button key={h} variant="ghost" style={{ padding: "3px 9px", fontSize: 11 }}
+                onClick={() => zonasApi.insert({ id: uid(), nombre: h, activa: true, orden: 900 })
+                  .catch((err) => alert("No se pudo agregar: " + (err.message || err)))}>
+                + {h} <span style={{ color: T.textFaint }}>({usos(h)})</span>
+              </Button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <table style={tableStyle}>
+        <thead>
+          <tr>
+            <th style={thStyle}>Zona</th>
+            <th style={thStyle}>Transacciones</th>
+            <th style={thStyle}>Estado</th>
+            <th style={thStyle}></th>
+          </tr>
+        </thead>
+        <tbody>
+          {zonas.map((z) => (
+            <tr key={z.id} style={{ opacity: z.activa === false ? 0.55 : 1 }}>
+              <td style={tdStyle}>
+                {editandoId === z.id ? (
+                  <TextInput value={borrador} onChange={(e) => setBorrador(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") guardar(z.id); }} style={{ width: 220 }} />
+                ) : z.nombre}
+              </td>
+              <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{usos(z.nombre) || "—"}</td>
+              <td style={tdStyle}>
+                <Pill tone={z.activa === false ? "amber" : "teal"}>{z.activa === false ? "Inactiva" : "Activa"}</Pill>
+              </td>
+              <td style={tdStyle}>
+                <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                  {editandoId === z.id ? (
+                    <>
+                      <Button onClick={() => guardar(z.id)} style={{ padding: "4px 10px", fontSize: 11.5 }}>Guardar</Button>
+                      <Button variant="ghost" onClick={() => setEditandoId(null)} style={{ padding: "4px 10px", fontSize: 11.5 }}>Cancelar</Button>
+                    </>
+                  ) : (
+                    <>
+                      <IconButton icon="✎" label="Renombrar" tone={T.accent}
+                        onClick={() => { setEditandoId(z.id); setBorrador(z.nombre); }} />
+                      <IconButton icon={z.activa === false ? "◻" : "◼"}
+                        label={z.activa === false ? "Activar" : "Desactivar"}
+                        onClick={() => alternarActiva(z)} />
+                      <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => borrar(z)} />
+                    </>
+                  )}
+                </div>
+              </td>
+            </tr>
+          ))}
+          {!zonas.length && (
+            <tr><td colSpan={4} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>
+              Todavía no hay zonas en el catálogo
+            </td></tr>
+          )}
+        </tbody>
+      </table>
+    </Panel>
+  );
+}
+
+function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, transacciones = [], proveedoresApi, cuentasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "" });
   const [editingId, setEditingId] = useState(null);
@@ -5351,11 +5517,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, proveedoresApi, cuentasAp
         </div>
       </Panel>
 
-      <Panel title="Catálogo de zonas" subtitle="Usadas en el selector de Zona al capturar transacciones">
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-          {ZONAS.map((z) => <Pill key={z}>{z}</Pill>)}
-        </div>
-      </Panel>
+      <ZonasPanel zonasApi={zonasApi} transacciones={transacciones} />
 
       <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />
     </div>
@@ -6949,6 +7111,7 @@ function VehiculosTab({ vehiculos, vehiculosApi, mantenimientos, mantenimientosA
 export default function App() {
   const { session, recovery, clearRecovery } = useAuth();
   const proyectosApi = useCollection("proyectos");
+  const zonasApi = useCollection("zonas");
   const partidasApi = useCollection("partidas", "created_at", { withAudit: true });
   const transaccionesApi = useCollection("transacciones", "created_at", { withAudit: true });
   const proveedoresApi = useCollection("proveedores", "created_at", { withAudit: true });
@@ -6985,6 +7148,13 @@ export default function App() {
   }, [proyectosApi.rows, unidadesPermitidas.join(",")]);
 
   const partidas = partidasApi.rows;
+  // Solo las activas, en el orden del catálogo. Si la tabla no responde
+  // —migración pendiente— se cae al respaldo en vez de quedarse en blanco.
+  const zonas = zonasApi.rows.length
+    ? zonasApi.rows.filter((z) => z.activa !== false)
+        .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999) || String(a.nombre).localeCompare(String(b.nombre)))
+        .map((z) => z.nombre)
+    : ZONAS_RESPALDO;
   const transacciones = transaccionesApi.rows;
   const ready = proyectosApi.ready && partidasApi.ready && transaccionesApi.ready;
 
@@ -7104,7 +7274,7 @@ export default function App() {
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
           {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
-          {tab === "transacciones" && <TransaccionesTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
+          {tab === "transacciones" && <TransaccionesTab zonas={zonas} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
           {tab === "vehiculos" && (
@@ -7118,7 +7288,7 @@ export default function App() {
               unidadesPermitidas={miPerfil?.unidades_permitidas || []}
             />
           )}
-          {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
+          {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>
       )}
     </div>

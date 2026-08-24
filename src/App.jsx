@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.55.0";
+const APP_VERSION = "1.55.1";
 const CHANGELOG = [
+  { v: "1.55.1", desc: "Reporte de Pagos: la exportación a Excel estrena su propio selector 'Columnas del Excel', independiente del de pantalla y del PDF. Antes bajaba siempre las 19 columnas. Los tres selectores comparten ahora la misma implementación, así que se comportan igual" },
   { v: "1.55.0", desc: "Reporte de Pagos: nuevo botón 'Columnas del PDF' para elegir qué lleva la solicitud que se manda a Pagos. Antes eran siete columnas fijas en el código; ahora hay dieciséis disponibles —entre ellas No. Cuenta, SWIFT, Referencia de Pago, Área y Folio Factura— y se recuerda la selección. Día, Solicitante, Proveedor, Concepto e Importe no se pueden quitar porque el área de Pagos las necesita siempre" },
   { v: "1.54.0", desc: "Carga masiva de transacciones: ahora resuelve sola la cuenta bancaria. Si el proveedor empatado tiene una única cuenta en la divisa del pago, se asigna; con varias se deja vacía a propósito, porque elegir la equivocada manda el dinero a otro lado. Antes toda transacción importada quedaba sin cuenta y había que elegirla a mano. Además, Proveedores estrena 'Exportar las 3', con una fila por cuenta bancaria (CLABE y número forzados a texto) para poder cotejarlas fuera de la app" },
   { v: "1.53.1", desc: "Partidas: se agrega 'Exportar las 3', que baja OSB, CTM e ISE en hojas separadas de un mismo archivo respetando los filtros de mes y año. El correo de pagos llega con las tres compañías mezcladas, así que un export de una sola no alcanzaba para proponer las asignaciones. Los filtros de rubro y proyecto solo se aplican a la compañía activa, porque esos valores no siempre existen en las otras dos" },
@@ -4403,6 +4404,39 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 /* ----------------------------------------------------------------------
    TAB: REPORTE DE PAGOS
 ---------------------------------------------------------------------- */
+/**
+ * Recuerda qué columnas están ocultas para un destino concreto (pantalla,
+ * PDF, Excel). Cada destino guarda su propia preferencia bajo su llave, de
+ * modo que ocultar algo en el PDF no afecta al Excel.
+ *
+ * Las columnas marcadas `fija` no se pueden ocultar: son las que el
+ * documento necesita para servir de algo.
+ */
+function useVisibilidadColumnas(storageKey, columnas, ocultasIniciales = []) {
+  const [ocultas, setOcultas] = useState(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      return new Set(raw ? JSON.parse(raw) : ocultasIniciales);
+    } catch { return new Set(ocultasIniciales); }
+  });
+  const guardar = (next) => {
+    setOcultas(next);
+    try { localStorage.setItem(storageKey, JSON.stringify([...next])); } catch {}
+  };
+  return {
+    hidden: ocultas,
+    toggle: (k) => {
+      const col = columnas.find((c) => c.key === k);
+      if (col && col.fija) return;
+      const next = new Set(ocultas);
+      next.has(k) ? next.delete(k) : next.add(k);
+      guardar(next);
+    },
+    showAll: () => guardar(new Set()),
+    visibles: columnas.filter((c) => !ocultas.has(c.key)),
+  };
+}
+
 // Columnas que puede llevar el PDF de solicitud de pagos. `fija: true` son
 // las que el área de Pagos necesita siempre y no se pueden quitar; el resto
 // se elige desde el botón "Columnas del PDF".
@@ -4427,6 +4461,31 @@ const COLUMNAS_PDF = [
 // Las que trae marcadas la primera vez: el formato que se venía usando.
 const PDF_OCULTAS_INICIAL = ["area", "numero_solicitud", "folio_factura", "forma_pago",
   "metodo_pago", "numero_cuenta", "swift", "referencia_pago", "notas"];
+
+// Columnas del Excel del Reporte de Pagos. Encabezado, ancho y valor viven
+// juntos: cuando eran arreglos paralelos, agregar una columna a uno y
+// olvidar los otros corría todo el archivo en silencio.
+const COLUMNAS_EXCEL = [
+  { key: "dia",              header: "Día",                 width: 8.875, fija: true, get: (f) => f.dia },
+  { key: "solicitante",      header: "Solicitante",         width: 10,    fija: true, get: (f) => f.solicitante },
+  { key: "area",             header: "Área",                width: 8.125, get: (f) => f.area },
+  { key: "numero_solicitud", header: "No. Solicitud (SMI)", width: 10.125, get: (f) => f.numero_solicitud },
+  { key: "no_sae",           header: "No. SAE",             width: 10.125, get: (f) => f.no_sae },
+  { key: "folio_compra_sae", header: "Folio Compra SAE",    width: 8.625, get: (f) => f.folio_compra_sae },
+  { key: "folio_factura",    header: "Folio Factura",       width: 8.25,  get: (f) => f.folio_factura },
+  { key: "forma_pago",       header: "Forma de Pago",       width: 15,    get: (f) => f.forma_pago },
+  { key: "metodo_pago",      header: "Método de Pago",      width: 12,    get: (f) => f.metodo_pago },
+  { key: "proveedor",        header: "Proveedor",           width: 17.625, fija: true, get: (f) => f.proveedor },
+  { key: "referencia_pago",  header: "Referencia de Pago",  width: 14,    get: (f) => f.referencia_pago },
+  { key: "concepto",         header: "Concepto de pago",    width: 13.625, fija: true, get: (f) => f.concepto },
+  { key: "banco",            header: "Banco",               width: 15.5,  get: (f) => f.banco },
+  { key: "clabe",            header: "Cuenta CLABE",        width: 18,    get: (f) => f.clabe },
+  { key: "numero_cuenta",    header: "No. Cuenta",          width: 12.5,  get: (f) => f.numero_cuenta },
+  { key: "swift",            header: "SWIFT",               width: 9,     get: (f) => f.swift },
+  { key: "importe",          header: "Importe",             width: 10.5,  fija: true, money: true, get: (f) => f.importe },
+  { key: "moneda",           header: "Moneda",              width: 10.5,  get: (f) => f.moneda },
+  { key: "notas",            header: "Notas",               width: 8.875, get: (f) => f.notas },
+];
 
 const COLUMNAS_REPORTE = [
   { key: "dia", label: "Día" },
@@ -4507,28 +4566,10 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   const filasOrdenadas = sortRows(filasFiltradas, sort, { importe: (r) => r.importe });
 
   const colVisibility = useColumnVisibility("colv-reporte", COLUMNAS_REPORTE);
-  const [pdfOcultas, setPdfOcultas] = useState(() => {
-    try {
-      const raw = localStorage.getItem("colv-reporte-pdf");
-      return new Set(raw ? JSON.parse(raw) : PDF_OCULTAS_INICIAL);
-    } catch { return new Set(PDF_OCULTAS_INICIAL); }
-  });
-  const guardarPdfOcultas = (next) => {
-    setPdfOcultas(next);
-    try { localStorage.setItem("colv-reporte-pdf", JSON.stringify([...next])); } catch {}
-  };
-  const pdfVis = {
-    hidden: pdfOcultas,
-    toggle: (k) => {
-      const col = COLUMNAS_PDF.find((c) => c.key === k);
-      if (col && col.fija) return; // las fijas no se pueden ocultar
-      const next = new Set(pdfOcultas);
-      next.has(k) ? next.delete(k) : next.add(k);
-      guardarPdfOcultas(next);
-    },
-    showAll: () => guardarPdfOcultas(new Set()),
-  };
-  const columnasPDF = COLUMNAS_PDF.filter((c) => !pdfOcultas.has(c.key));
+  const pdfVis = useVisibilidadColumnas("colv-reporte-pdf", COLUMNAS_PDF, PDF_OCULTAS_INICIAL);
+  const columnasPDF = pdfVis.visibles;
+  const excelVis = useVisibilidadColumnas("colv-reporte-excel", COLUMNAS_EXCEL);
+  const columnasExcel = excelVis.visibles;
   const colWidths = useColumnWidths("colw-reporte");
   const { ordered: columnas, moveColumn } = useColumnOrder("colo-reporte", colVisibility.visible);
   const dragKeyRef = useRef(null);
@@ -4539,31 +4580,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   const exportarExcel = async () => {
     const wbx = new ExcelJS.Workbook();
     const ws = wbx.addWorksheet("Reporte de pagos");
-    // Layout de la exportación en UN solo lugar: encabezado, ancho y valor van
-    // juntos. Antes eran tres arreglos paralelos, y agregar una columna a uno
-    // sin tocar los otros corría todo el archivo en silencio.
-    const COLS_EXPORT = [
-      { header: "Día", width: 8.875, get: (f) => f.dia },
-      { header: "Solicitante", width: 10, get: (f) => f.solicitante },
-      { header: "Área", width: 8.125, get: (f) => f.area },
-      { header: "No. Solicitud (SMI)", width: 10.125, get: (f) => f.numero_solicitud },
-      { header: "No. SAE", width: 10.125, get: (f) => f.no_sae },
-      { header: "Folio Compra SAE", width: 8.625, get: (f) => f.folio_compra_sae },
-      { header: "Folio Factura", width: 8.25, get: (f) => f.folio_factura },
-      { header: "Forma de Pago", width: 15, get: (f) => f.forma_pago },
-      { header: "Método de Pago", width: 12, get: (f) => f.metodo_pago },
-      { header: "Proveedor", width: 17.625, get: (f) => f.proveedor },
-      { header: "Referencia de Pago", width: 14, get: (f) => f.referencia_pago },
-      { header: "Concepto de pago", width: 13.625, get: (f) => f.concepto },
-      { header: "Banco", width: 15.5, get: (f) => f.banco },
-      { header: "Cuenta CLABE", width: 18, get: (f) => f.clabe },
-      { header: "No. Cuenta", width: 12.5, get: (f) => f.numero_cuenta },
-      { header: "SWIFT", width: 9, get: (f) => f.swift },
-      { header: "Importe", width: 10.5, get: (f) => f.importe, money: true },
-      { header: "Moneda", width: 10.5, get: (f) => f.moneda },
-      { header: "Notas", width: 8.875, get: (f) => f.notas },
-    ];
-    ws.columns = COLS_EXPORT.map((c) => ({ width: c.width }));
+    ws.columns = columnasExcel.map((c) => ({ width: c.width }));
 
     const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
     const inicio = fechaDesde || diasOrdenados[0] || "";
@@ -4591,7 +4608,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         fila += 2; // una fila en blanco, como en la plantilla
 
         const headerRow = ws.getRow(fila);
-        COLS_EXPORT.forEach((c, i) => {
+        columnasExcel.forEach((c, i) => {
           const cell = headerRow.getCell(i + 1);
           cell.value = c.header;
           cell.alignment = { horizontal: "center" };
@@ -4601,7 +4618,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
         filasGrupo.forEach((f) => {
           const row = ws.getRow(fila);
-          COLS_EXPORT.forEach((c, ci) => {
+          columnasExcel.forEach((c, ci) => {
             const cell = row.getCell(ci + 1);
             cell.value = c.get(f);
             cell.alignment = { horizontal: "center" };
@@ -4763,6 +4780,13 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               onToggle={pdfVis.toggle}
               onShowAll={pdfVis.showAll}
               etiqueta="Columnas del PDF"
+            />
+            <ColumnVisibilityControl
+              columns={COLUMNAS_EXCEL}
+              hidden={excelVis.hidden}
+              onToggle={excelVis.toggle}
+              onShowAll={excelVis.showAll}
+              etiqueta="Columnas del Excel"
             />
             <Button onClick={exportarExcel}>Exportar a Excel</Button>
             <Button onClick={generarReportePDF} disabled={generandoReporte}>

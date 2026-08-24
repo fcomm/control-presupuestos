@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.55.1";
+const APP_VERSION = "1.55.2";
 const CHANGELOG = [
+  { v: "1.55.2", desc: "Fix: el selector 'Columnas del Excel' mostraba las casillas sin nombre. El panel leía únicamente la propiedad `label`, pero las columnas de exportación se definen con `header`; ahora acepta cualquiera de las dos" },
   { v: "1.55.1", desc: "Reporte de Pagos: la exportación a Excel estrena su propio selector 'Columnas del Excel', independiente del de pantalla y del PDF. Antes bajaba siempre las 19 columnas. Los tres selectores comparten ahora la misma implementación, así que se comportan igual" },
   { v: "1.55.0", desc: "Reporte de Pagos: nuevo botón 'Columnas del PDF' para elegir qué lleva la solicitud que se manda a Pagos. Antes eran siete columnas fijas en el código; ahora hay dieciséis disponibles —entre ellas No. Cuenta, SWIFT, Referencia de Pago, Área y Folio Factura— y se recuerda la selección. Día, Solicitante, Proveedor, Concepto e Importe no se pueden quitar porque el área de Pagos las necesita siempre" },
   { v: "1.54.0", desc: "Carga masiva de transacciones: ahora resuelve sola la cuenta bancaria. Si el proveedor empatado tiene una única cuenta en la divisa del pago, se asigna; con varias se deja vacía a propósito, porque elegir la equivocada manda el dinero a otro lado. Antes toda transacción importada quedaba sin cuenta y había que elegirla a mano. Además, Proveedores estrena 'Exportar las 3', con una fila por cuenta bancaria (CLABE y número forzados a texto) para poder cotejarlas fuera de la app" },
@@ -2100,7 +2101,12 @@ function ColumnVisibilityControl({ columns, hidden, onToggle, onShowAll, etiquet
               {/* Las columnas fijas se muestran marcadas y deshabilitadas: se ve
                   que están, y se ve que no son opcionales. */}
               <input type="checkbox" checked={!hidden.has(c.key)} disabled={c.fija} onChange={() => onToggle(c.key)} />
-              <span style={{ color: c.fija ? T.textFaint : T.text }}>{c.label}{c.fija ? " (siempre)" : ""}</span>
+              {/* Las columnas de la tabla usan `label` y las de exportación `header`.
+                  Se aceptan ambos: al leer solo uno, el otro juego de columnas
+                  salía con las casillas en blanco, sin nombre. */}
+              <span style={{ color: c.fija ? T.textFaint : T.text }}>
+                {c.label || c.header || c.key}{c.fija ? " (siempre)" : ""}
+              </span>
             </label>
           ))}
         </div>

@@ -112,8 +112,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.57.0";
+const APP_VERSION = "1.58.0";
 const CHANGELOG = [
+  { v: "1.58.0", desc: "Dashboard: el panel comparativo muestra pesos y dólares en la MISMA tabla, con la moneda como primer nivel de agrupación arriba del proyecto, y desaparece el selector que obligaba a alternar. Cada moneda tiene su propia fila de total; no hay total general único porque sumarlas exigiría fijar un tipo de cambio. Se prefirió agrupar por moneda antes que duplicar las columnas por mes, que habría llevado el panel de 9 a 17 columnas de dinero" },
   { v: "1.57.0", desc: "Catálogo de zonas editable: hasta ahora eran una lista fija en el código y solo se podían ver. Ahora se dan de alta, renombran, desactivan o eliminan desde Catálogo, y alimentan el selector de Zona al capturar. El panel avisa además de las zonas que aparecen en transacciones sin estar dadas de alta —llegan por carga masiva— y permite agregarlas de un clic. Requiere correr la migración 06-catalogo-zonas.sql" },
   { v: "1.56.0", desc: "Reporte de Pagos: botón 'Vista previa PDF' que abre el documento REAL en un visor antes de generarlo — sin descargarlo y sin marcar nada como enviado a Pagos. Avisa cuando la tabla se pasa del ancho de la hoja, que es lo que ocurre al activar muchas columnas: autoTable no falla, apreta las columnas y parte el texto sin decir nada. La exportación a Excel muestra ahora un resumen (filas, columnas incluidas y excluidas, y las primeras filas) antes de descargar" },
   { v: "1.55.2", desc: "Fix: el selector 'Columnas del Excel' mostraba las casillas sin nombre. El panel leía únicamente la propiedad `label`, pero las columnas de exportación se definen con `header`; ahora acepta cualquiera de las dos" },
@@ -1359,7 +1360,6 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   const [mesesSeleccionados, setMesesSeleccionados] = useSessionState("ss-dashboard-meses", []);
   const aniosDisponibles = [...new Set(partidasUnidad.map((p) => p.anio).filter(Boolean))].sort((a, b) => a - b);
   const [aniosSeleccionados, setAniosSeleccionados] = useSessionState("ss-dashboard-anios", []);
-  const [monedaResumen, setMonedaResumen] = useSessionState("ss-dashboard-moneda-resumen", "MXP");
   const partidasFiltradasMes = partidasUnidad.filter((p) =>
     (!mesesSeleccionados.length || mesesSeleccionados.includes(p.mes)) &&
     (!aniosSeleccionados.length || aniosSeleccionados.includes(p.anio))
@@ -1579,8 +1579,6 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
         proyectosUnidad={proyectosUnidad}
         proyectoKpi={proyectoKpi}
         setProyectoKpi={setProyectoKpi}
-        monedaResumen={monedaResumen}
-        setMonedaResumen={setMonedaResumen}
       />
 
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -1663,7 +1661,6 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 function ResumenComparativoPanel({
   partidasUnidad, transacciones, proyectosUnidad,
   proyectoKpi, setProyectoKpi,
-  monedaResumen, setMonedaResumen,
 }) {
   // Filtrado en cascada de tres niveles:
   //   1. Año     -> "YTD" o un año concreto con datos
@@ -1710,13 +1707,17 @@ function ResumenComparativoPanel({
   const idsRango = new Set(partidasRango.map((p) => p.id));
 
   const partidaDe = (t) => partidasRango.find((p) => p.id === t.partida_id);
-  const partidasMoneda = partidasRango.filter((p) => (p.moneda || "MXP") === monedaResumen);
-  const pagadasMoneda = transacciones.filter((t) => t.status === "Pagado" && (t.moneda || "MXP") === monedaResumen && idsRango.has(t.partida_id));
+  const monedaDe = (x) => (x.moneda || "MXP") === "USD" ? "USD" : "MXP";
 
-  // Eje de meses COMPARTIDO por las dos tablas. Antes cada una lo armaba con
-  // sus propios datos, así que un mes filtrado sin pagos simplemente perdía su
-  // columna en "Pagado real" y las tablas dejaban de cuadrar. Ahora la columna
-  // aparece en ambas (en ceros si no hay nada), que es el punto del panel.
+  // Ya NO se filtra por moneda: las dos conviven en la misma tabla. La
+  // moneda entra como primer nivel de agrupación, arriba del proyecto, para
+  // que cada rama tenga su propio subtotal y ninguna suma cruce monedas.
+  // Duplicar las columnas por mes era la otra vía, pero llevaba el panel de
+  // 9 a 17 columnas de dinero — ilegible de un vistazo, que es justo para lo
+  // que se usa.
+  const partidasMoneda = partidasRango;
+  const pagadasMoneda = transacciones.filter((t) => t.status === "Pagado" && idsRango.has(t.partida_id));
+
   const aniosPresentes = [...new Set([
     ...partidasMoneda.map((p) => p.anio),
     ...pagadasMoneda.map((t) => partidaDe(t)?.anio),
@@ -1725,10 +1726,7 @@ function ResumenComparativoPanel({
 
   const etiquetaColumna = (mes, anio) => (multiAnio && anio) ? `${mes} ${anio}` : mes;
   const columnaDePptado = (p) => etiquetaColumna(p.mes, p.anio);
-  const columnaDePagado = (t) => {
-    const p = partidaDe(t);
-    return p ? etiquetaColumna(p.mes, p.anio) : null;
-  };
+  const columnaDePagado = (t) => { const p = partidaDe(t); return p ? etiquetaColumna(p.mes, p.anio) : null; };
 
   const columnas = [...new Set([
     ...partidasMoneda.map(columnaDePptado),
@@ -1746,7 +1744,8 @@ function ResumenComparativoPanel({
 
   let partidasResueltas = partidasMoneda.flatMap((p) =>
     resolverProrrateo(p.proyecto, proyectosUnidad).map(({ proyecto, fraccion }) => ({
-      ...p, proyecto, monto_estimado: (Number(p.monto_estimado) || 0) * fraccion, _columna: columnaDePptado(p),
+      ...p, proyecto, moneda: monedaDe(p),
+      monto_estimado: (Number(p.monto_estimado) || 0) * fraccion, _columna: columnaDePptado(p),
     }))
   );
   if (proyectoKpi !== "Todos") partidasResueltas = partidasResueltas.filter((p) => p.proyecto === proyectoKpi);
@@ -1755,31 +1754,37 @@ function ResumenComparativoPanel({
     const p = partidaDe(t);
     return resolverProrrateo(p.proyecto, proyectosUnidad).map(({ proyecto, fraccion }) => ({
       proyecto, rubro: p.rubro, concepto: t.concepto_detallado || t.proveedor || "—",
+      moneda: monedaDe(t),
       importe: (Number(t.importe) || 0) * fraccion, _columna: columnaDePagado(t),
     }));
   });
   if (proyectoKpi !== "Todos") filasPagadoResueltas = filasPagadoResueltas.filter((f) => f.proyecto === proyectoKpi);
 
-  const pivotPptado = pivotearPorMes(partidasResueltas, ["proyecto", "rubro", "concepto"], columnas, "monto_estimado", "_columna");
-  const totalPptado = columnas.reduce((acc, m) => { acc[m] = 0; return acc; }, {});
-  let granTotalPptado = 0;
-  partidasResueltas.forEach((p) => {
-    const v = Number(p.monto_estimado) || 0;
-    if (totalPptado[p._columna] !== undefined) totalPptado[p._columna] += v;
-    granTotalPptado += v;
-  });
+  const AGRUPACION = ["moneda", "proyecto", "rubro", "concepto"];
+  const pivotPptado = pivotearPorMes(partidasResueltas, AGRUPACION, columnas, "monto_estimado", "_columna");
+  const pivotPagado = pivotearPorMes(filasPagadoResueltas, AGRUPACION, columnas, "importe", "_columna");
 
-  const pivotPagado = pivotearPorMes(filasPagadoResueltas, ["proyecto", "rubro", "concepto"], columnas, "importe", "_columna");
-  const totalPagado = columnas.reduce((acc, m) => { acc[m] = 0; return acc; }, {});
-  let granTotalPagado = 0;
-  filasPagadoResueltas.forEach((f) => {
-    const v = Number(f.importe) || 0;
-    if (totalPagado[f._columna] !== undefined) totalPagado[f._columna] += v;
-    granTotalPagado += v;
-  });
+  /**
+   * Totales POR MONEDA. No hay un "total general" único a propósito: sumar
+   * pesos con dólares exigiría un tipo de cambio, y ese número acabaría
+   * discutiéndose en lugar del gasto.
+   */
+  const totalesPorMoneda = (filas, campo) => ["MXP", "USD"].map((mon) => {
+    const delMon = filas.filter((f) => f.moneda === mon);
+    if (!delMon.length) return null;
+    const porColumna = columnas.reduce((acc, m) => { acc[m] = 0; return acc; }, {});
+    let gran = 0;
+    delMon.forEach((f) => {
+      const v = Number(f[campo]) || 0;
+      if (porColumna[f._columna] !== undefined) porColumna[f._columna] += v;
+      gran += v;
+    });
+    return { moneda: mon, porColumna, gran };
+  }).filter(Boolean);
 
-  // Un solo control para las dos tablas: si queda algo abierto en cualquiera de
-  // las dos, contrae ambas; si ya están todas cerradas, las abre.
+  const totalesPptado = totalesPorMoneda(partidasResueltas, "monto_estimado");
+  const totalesPagado = totalesPorMoneda(filasPagadoResueltas, "importe");
+
   const rutasPptado = collectGroupPaths(pivotPptado);
   const rutasPagado = collectGroupPaths(pivotPagado);
   const todoContraido =
@@ -1799,7 +1804,7 @@ function ResumenComparativoPanel({
   return (
     <Panel
       title="Presupuestado vs. pagado real, por proyecto"
-      subtitle="Filtros propios de este panel — aplican a las dos tablas de abajo"
+      subtitle="Pesos y dólares en la misma tabla, agrupados por moneda — no se suman entre sí"
       right={
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "flex-end" }}>
@@ -1840,65 +1845,56 @@ function ResumenComparativoPanel({
               </Field>
             </>
           )}
-          <Field label="Moneda">
-            <SlidingToggle opciones={["MXP", "USD"]} value={monedaResumen} onChange={setMonedaResumen} />
-          </Field>
         </div>
       }
     >
-      <div style={{ marginBottom: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>Presupuestado por rubro</div>
-      </div>
-      {!partidasMoneda.length ? (
-        <div style={{ textAlign: "center", color: T.textFaint, fontSize: 12.5, padding: 24 }}>Sin partidas en {monedaResumen} para estos filtros</div>
-      ) : (
-        <div style={{ overflowX: "auto", marginBottom: 28 }}>
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th style={thStyle}>Proyecto</th>
-                {columnas.map((m) => <th key={m} style={{ ...thStyle, textAlign: "right" }}>{m}</th>)}
-                <th style={{ ...thStyle, textAlign: "right" }}>Total general</th>
-              </tr>
-            </thead>
-            <tbody>
-              {buildPivotTrs(pivotPptado, "", collapsedPptado, togglePptado, columnas, 0)}
-              <tr style={{ background: T.panelAlt }}>
-                <td style={{ ...tdStyle, fontWeight: 700 }}>Total general</td>
-                {columnas.map((m) => <td key={m} style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>{money(totalPptado[m], monedaResumen)}</td>)}
-                <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>{money(granTotalPptado, monedaResumen)}</td>
-              </tr>
-            </tbody>
-          </table>
+      {[
+        { titulo: "Presupuestado por rubro", pivot: pivotPptado, colapsadas: collapsedPptado,
+          toggle: togglePptado, totales: totalesPptado, vacio: !partidasResueltas.length },
+        { titulo: "Pagado real (Status = Pagado)", pivot: pivotPagado, colapsadas: collapsedPagado,
+          toggle: togglePagado, totales: totalesPagado, vacio: !filasPagadoResueltas.length },
+      ].map((t, i) => (
+        <div key={t.titulo} style={{ marginBottom: i === 0 ? 28 : 0 }}>
+          <div style={{ marginBottom: 8 }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>{t.titulo}</div>
+          </div>
+          {t.vacio ? (
+            <div style={{ textAlign: "center", color: T.textFaint, fontSize: 12.5, padding: 24 }}>
+              Sin movimientos para estos filtros
+            </div>
+          ) : (
+            <div style={{ overflowX: "auto" }}>
+              <table style={tableStyle}>
+                <thead>
+                  <tr>
+                    <th style={thStyle}>Moneda / Proyecto</th>
+                    {columnas.map((m) => <th key={m} style={{ ...thStyle, textAlign: "right" }}>{m}</th>)}
+                    <th style={{ ...thStyle, textAlign: "right" }}>Total</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {buildPivotTrs(t.pivot, "", t.colapsadas, t.toggle, columnas, 0)}
+                  {/* Una fila de total POR MONEDA en lugar de un total general:
+                      un solo número exigiría convertir, y la app no convierte. */}
+                  {t.totales.map((tot) => (
+                    <tr key={tot.moneda} style={{ background: T.panelAlt }}>
+                      <td style={{ ...tdStyle, fontWeight: 700 }}>Total {tot.moneda}</td>
+                      {columnas.map((m) => (
+                        <td key={m} style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>
+                          {money(tot.porColumna[m], tot.moneda)}
+                        </td>
+                      ))}
+                      <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>
+                        {money(tot.gran, tot.moneda)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </div>
-      )}
-
-      <div style={{ marginBottom: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, color: T.text }}>Pagado real (Status = Pagado)</div>
-      </div>
-      {!pagadasMoneda.length ? (
-        <div style={{ textAlign: "center", color: T.textFaint, fontSize: 12.5, padding: 24 }}>Sin pagos en {monedaResumen} para estos filtros</div>
-      ) : (
-        <div style={{ overflowX: "auto" }}>
-          <table style={tableStyle}>
-            <thead>
-              <tr>
-                <th style={thStyle}>Proyecto</th>
-                {columnas.map((m) => <th key={m} style={{ ...thStyle, textAlign: "right" }}>{m}</th>)}
-                <th style={{ ...thStyle, textAlign: "right" }}>Total general</th>
-              </tr>
-            </thead>
-            <tbody>
-              {buildPivotTrs(pivotPagado, "", collapsedPagado, togglePagado, columnas, 0)}
-              <tr style={{ background: T.panelAlt }}>
-                <td style={{ ...tdStyle, fontWeight: 700 }}>Total general</td>
-                {columnas.map((m) => <td key={m} style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>{money(totalPagado[m], monedaResumen)}</td>)}
-                <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>{money(granTotalPagado, monedaResumen)}</td>
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      )}
+      ))}
     </Panel>
   );
 }

@@ -108,8 +108,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.55.2";
+const APP_VERSION = "1.56.0";
 const CHANGELOG = [
+  { v: "1.56.0", desc: "Reporte de Pagos: botón 'Vista previa PDF' que abre el documento REAL en un visor antes de generarlo — sin descargarlo y sin marcar nada como enviado a Pagos. Avisa cuando la tabla se pasa del ancho de la hoja, que es lo que ocurre al activar muchas columnas: autoTable no falla, apreta las columnas y parte el texto sin decir nada. La exportación a Excel muestra ahora un resumen (filas, columnas incluidas y excluidas, y las primeras filas) antes de descargar" },
   { v: "1.55.2", desc: "Fix: el selector 'Columnas del Excel' mostraba las casillas sin nombre. El panel leía únicamente la propiedad `label`, pero las columnas de exportación se definen con `header`; ahora acepta cualquiera de las dos" },
   { v: "1.55.1", desc: "Reporte de Pagos: la exportación a Excel estrena su propio selector 'Columnas del Excel', independiente del de pantalla y del PDF. Antes bajaba siempre las 19 columnas. Los tres selectores comparten ahora la misma implementación, así que se comportan igual" },
   { v: "1.55.0", desc: "Reporte de Pagos: nuevo botón 'Columnas del PDF' para elegir qué lleva la solicitud que se manda a Pagos. Antes eran siete columnas fijas en el código; ahora hay dieciséis disponibles —entre ellas No. Cuenta, SWIFT, Referencia de Pago, Área y Folio Factura— y se recuerda la selección. Día, Solicitante, Proveedor, Concepto e Importe no se pueden quitar porque el área de Pagos las necesita siempre" },
@@ -4576,6 +4577,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   const columnasPDF = pdfVis.visibles;
   const excelVis = useVisibilidadColumnas("colv-reporte-excel", COLUMNAS_EXCEL);
   const columnasExcel = excelVis.visibles;
+  const [previewPDF, setPreviewPDF] = useState(null);
   const colWidths = useColumnWidths("colw-reporte");
   const { ordered: columnas, moveColumn } = useColumnOrder("colo-reporte", colVisibility.visible);
   const dragKeyRef = useRef(null);
@@ -4584,6 +4586,23 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
 
   const exportarExcel = async () => {
+    // Resumen en vez de vista previa: renderizar una tabla que IMITE la hoja
+    // sería una segunda implementación del layout, y en cuanto se desincronice
+    // el preview estaría mintiendo. Esto responde la misma pregunta —¿va lo
+    // que necesito?— con datos del archivo real.
+    const ocultas = COLUMNAS_EXCEL.filter((c) => excelVis.hidden.has(c.key));
+    const muestra = filasOrdenadas.slice(0, 3)
+      .map((f, i) => `  ${i + 1}. ` + columnasExcel.slice(0, 5).map((c) => String(c.get(f) ?? "—")).join(" · "))
+      .join("\n");
+    const okExcel = confirm(
+      `Se va a descargar un Excel con:\n\n` +
+      `  ${filasOrdenadas.length} transacción(es)\n` +
+      `  ${columnasExcel.length} de ${COLUMNAS_EXCEL.length} columnas\n` +
+      (ocultas.length ? `  Fuera: ${ocultas.map((c) => c.header).join(", ")}\n` : "") +
+      `\nPrimeras filas (5 columnas):\n${muestra}\n\n¿Descargar?`
+    );
+    if (!okExcel) return;
+
     const wbx = new ExcelJS.Workbook();
     const ws = wbx.addWorksheet("Reporte de pagos");
     ws.columns = columnasExcel.map((c) => ({ width: c.width }));
@@ -4651,18 +4670,29 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   };
 
   const [generandoReporte, setGenerandoReporte] = useState(false);
-  const generarReportePDF = async () => {
-    if (!filasOrdenadas.length) {
-      alert("No hay transacciones en el filtro actual para generar el reporte.");
-      return;
-    }
-    const confirmado = confirm(
-      `Esto va a generar un PDF con las ${filasOrdenadas.length} transacción(es) que tienes filtradas ahora, y las va a marcar como "Enviadas a Pagos". ¿Continuar?`
-    );
-    if (!confirmado) return;
+  /**
+   * Estima si la tabla cabe a lo ancho de la hoja. autoTable no falla cuando
+   * se pasa: reparte el sobrante partiendo palabras, y el resultado se vuelve
+   * ilegible sin previo aviso. Vale más advertirlo antes de mandarlo a Pagos.
+   */
+  const anchoEstimadoPDF = () => {
+    // Carta horizontal son 792 pt; quedan ~712 descontando márgenes.
+    const disponible = 712;
+    const usado = columnasPDF.reduce((suma, c) => {
+      const largos = filasOrdenadas.map((f) => String(c.get(f) ?? "").length);
+      const max = Math.max(c.label.length, ...(largos.length ? largos : [0]));
+      // A 8 pt, cada carácter mide ~4.4 pt; más 8 pt de relleno por celda.
+      return suma + Math.min(max * 4.4, 140) + 8;
+    }, 0);
+    return { usado: Math.round(usado), disponible, cabe: usado <= disponible };
+  };
 
-    setGenerandoReporte(true);
-    try {
+  /**
+   * Construye el documento y lo devuelve SIN guardarlo. La vista previa y el
+   * archivo final salen los dos de aquí: con dos generadores distintos, el
+   * preview acabaría mostrando algo que no es lo que se descarga.
+   */
+  const construirPDF = () => {
       const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
       const inicio = fechaDesde || diasOrdenados[0] || "";
       const fin = fechaHasta || diasOrdenados[diasOrdenados.length - 1] || "";
@@ -4717,7 +4747,52 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         });
       });
 
+      return doc;
+  };
+
+  /**
+   * Muestra el PDF real en un visor, sin guardarlo y —lo importante— sin
+   * marcar nada como enviado a Pagos. Es para revisar antes de comprometerse.
+   */
+  const vistaPreviaPDF = () => {
+    if (!filasOrdenadas.length) {
+      alert("No hay transacciones en el filtro actual para previsualizar.");
+      return;
+    }
+    try {
+      const doc = construirPDF();
+      const url = URL.createObjectURL(doc.output("blob"));
+      setPreviewPDF({ url, paginas: doc.internal.getNumberOfPages(), ancho: anchoEstimadoPDF() });
+    } catch (err) {
+      alert("No se pudo generar la vista previa: " + (err.message || err));
+    }
+  };
+
+  const cerrarPreviewPDF = () => {
+    if (previewPDF) URL.revokeObjectURL(previewPDF.url);
+    setPreviewPDF(null);
+  };
+
+  const generarReportePDF = async () => {
+    if (!filasOrdenadas.length) {
+      alert("No hay transacciones en el filtro actual para generar el reporte.");
+      return;
+    }
+    const ancho = anchoEstimadoPDF();
+    const aviso = ancho.cabe ? "" :
+      `\n\nOJO: con ${columnasPDF.length} columnas la tabla se pasa del ancho de la hoja ` +
+      `(~${ancho.usado} pt contra ${ancho.disponible} disponibles). Las columnas se van a apretar ` +
+      `y el texto se va a partir. Considera quitar algunas en "Columnas del PDF".`;
+    const confirmado = confirm(
+      `Esto va a generar un PDF con las ${filasOrdenadas.length} transacción(es) que tienes filtradas ahora, y las va a marcar como "Enviadas a Pagos". ¿Continuar?${aviso}`
+    );
+    if (!confirmado) return;
+
+    setGenerandoReporte(true);
+    try {
+      const doc = construirPDF();
       doc.save(`reporte-pagos-${unidad}-${new Date().toISOString().slice(0, 10)}.pdf`);
+      cerrarPreviewPDF();
 
       for (const f of filasOrdenadas) {
         await transaccionesApi.update(f.id, { enviado_pagos_at: new Date().toISOString() });
@@ -4795,6 +4870,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               etiqueta="Columnas del Excel"
             />
             <Button onClick={exportarExcel}>Exportar a Excel</Button>
+            <Button variant="ghost" onClick={vistaPreviaPDF} disabled={generandoReporte}>
+              Vista previa PDF
+            </Button>
             <Button onClick={generarReportePDF} disabled={generandoReporte}>
               {generandoReporte ? "Generando…" : "Generar reporte (PDF)"}
             </Button>
@@ -4856,6 +4934,38 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           </table>
         </div>
       </Panel>
+      {previewPDF && (
+        <Modal onClose={cerrarPreviewPDF} width={1100}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, height: "80vh" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700 }}>Vista previa del reporte</div>
+                <div style={{ fontSize: 11.5, color: T.textFaint }}>
+                  {filasOrdenadas.length} transacción(es) · {columnasPDF.length} columnas · {previewPDF.paginas} página(s)
+                  {" · "}Nada se ha marcado como enviado a Pagos todavía
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <Button variant="ghost" onClick={cerrarPreviewPDF}>Cerrar</Button>
+                <Button onClick={() => { cerrarPreviewPDF(); generarReportePDF(); }}>
+                  Generar y marcar como enviado
+                </Button>
+              </div>
+            </div>
+            {!previewPDF.ancho.cabe && (
+              <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "8px 12px", borderRadius: "0 6px 6px 0", fontSize: 12 }}>
+                <b>La tabla se pasa del ancho de la hoja</b> (~{previewPDF.ancho.usado} pt contra {previewPDF.ancho.disponible} disponibles).
+                Las columnas se aprietan y el texto se parte. Quita algunas en "Columnas del PDF".
+              </div>
+            )}
+            <iframe
+              title="Vista previa del reporte"
+              src={previewPDF.url}
+              style={{ flex: 1, width: "100%", border: `1px solid ${T.border}`, borderRadius: 6 }}
+            />
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

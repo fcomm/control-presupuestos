@@ -112,8 +112,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.61.0";
+const APP_VERSION = "1.61.1";
 const CHANGELOG = [
+  { v: "1.61.1", desc: "Fix: el Dashboard se quedaba en blanco un instante después de cargar. Al unificar los filtros, el bloque que arma los controles quedó por encima de la declaración del filtro de Proyecto que usa; como el JSX se construye al evaluarse ese const, el render fallaba por zona muerta temporal en cuanto llegaban los datos" },
   { v: "1.61.0", desc: "Dashboard: un solo juego de filtros para toda la pestaña. Los de 'Presupuestado vs. pagado real' ahora gobiernan también las gráficas de abajo, y 'Presupuesto vs. ejecutado por proyecto' pierde los suyos. Antes había dos juegos en la misma pantalla y no se veía cuál mandaba sobre qué; de paso, las gráficas ganan el rango Desde-Hasta y YTD, que solo tenía el panel de arriba" },
   { v: "1.60.0", desc: "Ya no se puede vincular una transacción a una partida de otra moneda. En el formulario el selector de partida solo ofrece las de la moneda del gasto, y al cambiar la moneda se suelta la partida si deja de cuadrar; el guardado lo verifica de todos modos. La carga masiva —por donde entran casi todas las transacciones— también rechaza esos vínculos: la fila se importa sin partida y el preview dice cuántas fueron y por qué. Comparar un gasto contra un presupuesto en otra moneda no significa nada, y con prorrateo un solo movimiento mal capturado pinta un bloque entero de esa moneda en el Dashboard" },
   { v: "1.59.1", desc: "Dashboard: 'Presupuesto vs. ejecutado por proyecto' gana una tercera barra. La que decía 'Ejecutado' suma todas las transacciones vinculadas, pagadas o no, y se leía como si ya se hubieran pagado; ahora se llama 'Comprometido' y a su lado va 'Pagado', que solo cuenta las de status Pagado. Además, al guardar una transacción cuya moneda no coincide con la de su partida se pide confirmación: no se bloquea, pero un solo gasto mal capturado puede pintar un bloque entero de dólares en el Dashboard si la partida trae prorrateo" },
@@ -1386,6 +1387,11 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
        2. Periodo -> todo el año, o un rango de meses (no aplica en YTD)
        3. Desde/Hasta -> meses sueltos, porque el año ya quedó fijo arriba
      ----------------------------------------------------------------- */
+  // Filtro de Proyecto. Va ANTES de `controlesFiltro`: ese const arma su JSX
+  // al evaluarse, así que si la declaración quedara más abajo, el propio
+  // render fallaría por zona muerta temporal y la pantalla saldría en blanco.
+  const [proyectoKpi, setProyectoKpi] = useSessionState("ss-dashboard-proyecto", "Todos");
+
   const hoy = new Date();
   const anioActual = hoy.getFullYear();
   const mesActualIdx = hoy.getMonth();
@@ -1542,10 +1548,6 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   }, [partidasUnidad, transUnidad]);
 
 
-  // Filtro de Proyecto para los cuadros de montos — usa los importes YA prorrateados
-  // (porProyectoPorMoneda), así que si una partida es "Desh Gral" y filtras por "Desh Marfo",
-  // sí cuenta su parte correspondiente.
-  const [proyectoKpi, setProyectoKpi] = useSessionState("ss-dashboard-proyecto", "Todos");
   // Si el proyecto guardado no existe en ESTA compañía (ej. veníamos de otra
   // unidad), se regresa solo a "Todos" en vez de quedarse "huérfano" en $0.00.
   useEffect(() => {

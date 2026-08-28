@@ -112,8 +112,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.58.0";
+const APP_VERSION = "1.58.1";
 const CHANGELOG = [
+  { v: "1.58.1", desc: "Fix: en el panel comparativo, las filas 'Total MXP' y 'Total USD' del final duplicaban cifras que la propia fila de cada moneda ya mostraba, y alejaban el total de los datos que resume. Se retiran: el total de cada moneda queda justo encima de su lista. Además las cifras en dólares ya se formatean como USD dentro de la tabla, en vez de imprimirse igual que los pesos" },
   { v: "1.58.0", desc: "Dashboard: el panel comparativo muestra pesos y dólares en la MISMA tabla, con la moneda como primer nivel de agrupación arriba del proyecto, y desaparece el selector que obligaba a alternar. Cada moneda tiene su propia fila de total; no hay total general único porque sumarlas exigiría fijar un tipo de cambio. Se prefirió agrupar por moneda antes que duplicar las columnas por mes, que habría llevado el panel de 9 a 17 columnas de dinero" },
   { v: "1.57.0", desc: "Catálogo de zonas editable: hasta ahora eran una lista fija en el código y solo se podían ver. Ahora se dan de alta, renombran, desactivan o eliminan desde Catálogo, y alimentan el selector de Zona al capturar. El panel avisa además de las zonas que aparecen en transacciones sin estar dadas de alta —llegan por carga masiva— y permite agregarlas de un clic. Requiere correr la migración 06-catalogo-zonas.sql" },
   { v: "1.56.0", desc: "Reporte de Pagos: botón 'Vista previa PDF' que abre el documento REAL en un visor antes de generarlo — sin descargarlo y sin marcar nada como enviado a Pagos. Avisa cuando la tabla se pasa del ancho de la hoja, que es lo que ocurre al activar muchas columnas: autoTable no falla, apreta las columnas y parte el texto sin decir nada. La exportación a Excel muestra ahora un resumen (filas, columnas incluidas y excluidas, y las primeras filas) antes de descargar" },
@@ -1761,29 +1762,11 @@ function ResumenComparativoPanel({
   if (proyectoKpi !== "Todos") filasPagadoResueltas = filasPagadoResueltas.filter((f) => f.proyecto === proyectoKpi);
 
   const AGRUPACION = ["moneda", "proyecto", "rubro", "concepto"];
+  // La moneda es el primer nivel, así que la ruta siempre empieza por ella:
+  // "/moneda:USD/proyecto:Desh Gral/..."
+  const monedaDeRuta = (ruta) => (String(ruta).match(/^\/moneda:(MXP|USD)\b/) || [])[1] || "MXP";
   const pivotPptado = pivotearPorMes(partidasResueltas, AGRUPACION, columnas, "monto_estimado", "_columna");
   const pivotPagado = pivotearPorMes(filasPagadoResueltas, AGRUPACION, columnas, "importe", "_columna");
-
-  /**
-   * Totales POR MONEDA. No hay un "total general" único a propósito: sumar
-   * pesos con dólares exigiría un tipo de cambio, y ese número acabaría
-   * discutiéndose en lugar del gasto.
-   */
-  const totalesPorMoneda = (filas, campo) => ["MXP", "USD"].map((mon) => {
-    const delMon = filas.filter((f) => f.moneda === mon);
-    if (!delMon.length) return null;
-    const porColumna = columnas.reduce((acc, m) => { acc[m] = 0; return acc; }, {});
-    let gran = 0;
-    delMon.forEach((f) => {
-      const v = Number(f[campo]) || 0;
-      if (porColumna[f._columna] !== undefined) porColumna[f._columna] += v;
-      gran += v;
-    });
-    return { moneda: mon, porColumna, gran };
-  }).filter(Boolean);
-
-  const totalesPptado = totalesPorMoneda(partidasResueltas, "monto_estimado");
-  const totalesPagado = totalesPorMoneda(filasPagadoResueltas, "importe");
 
   const rutasPptado = collectGroupPaths(pivotPptado);
   const rutasPagado = collectGroupPaths(pivotPagado);
@@ -1850,9 +1833,9 @@ function ResumenComparativoPanel({
     >
       {[
         { titulo: "Presupuestado por rubro", pivot: pivotPptado, colapsadas: collapsedPptado,
-          toggle: togglePptado, totales: totalesPptado, vacio: !partidasResueltas.length },
+          toggle: togglePptado, vacio: !partidasResueltas.length },
         { titulo: "Pagado real (Status = Pagado)", pivot: pivotPagado, colapsadas: collapsedPagado,
-          toggle: togglePagado, totales: totalesPagado, vacio: !filasPagadoResueltas.length },
+          toggle: togglePagado, vacio: !filasPagadoResueltas.length },
       ].map((t, i) => (
         <div key={t.titulo} style={{ marginBottom: i === 0 ? 28 : 0 }}>
           <div style={{ marginBottom: 8 }}>
@@ -1873,22 +1856,12 @@ function ResumenComparativoPanel({
                   </tr>
                 </thead>
                 <tbody>
-                  {buildPivotTrs(t.pivot, "", t.colapsadas, t.toggle, columnas, 0)}
-                  {/* Una fila de total POR MONEDA en lugar de un total general:
-                      un solo número exigiría convertir, y la app no convierte. */}
-                  {t.totales.map((tot) => (
-                    <tr key={tot.moneda} style={{ background: T.panelAlt }}>
-                      <td style={{ ...tdStyle, fontWeight: 700 }}>Total {tot.moneda}</td>
-                      {columnas.map((m) => (
-                        <td key={m} style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>
-                          {money(tot.porColumna[m], tot.moneda)}
-                        </td>
-                      ))}
-                      <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", fontWeight: 700 }}>
-                        {money(tot.gran, tot.moneda)}
-                      </td>
-                    </tr>
-                  ))}
+                  {/* No hay filas de "Total" al final: la fila de cada moneda
+                      YA es su total —buildPivotTrs suma cada grupo— y queda
+                      justo encima de su propia lista, que es donde sirve.
+                      Ponerlas otra vez abajo duplicaba las cifras y alejaba
+                      el total de los datos que resume. */}
+                  {buildPivotTrs(t.pivot, "", t.colapsadas, t.toggle, columnas, 0, monedaDeRuta)}
                 </tbody>
               </table>
             </div>
@@ -2536,18 +2509,25 @@ function pivotearPorMes(rows, keys, meses, montoKey = "monto_estimado", colKey =
 
 // Renders a pivotearPorMes tree as <tr> rows: bold collapsible rows for every level except
 // the deepest, which renders as a plain (non-collapsible) leaf row.
-function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth) {
+/**
+ * `resolverMoneda` recibe la ruta del grupo y devuelve la moneda con la que
+ * se formatean sus cifras. Se usa cuando la moneda es un nivel de
+ * agrupación: sin esto, los dólares se imprimirían con formato de pesos y
+ * las dos ramas se verían idénticas.
+ */
+function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth, resolverMoneda) {
   let out = [];
   node.entries.forEach((entry) => {
     const groupPath = `${path}/${node.key}:${entry.value}`;
     const esHoja = entry.child.type === "rows";
+    const mon = resolverMoneda ? resolverMoneda(groupPath) : undefined;
     const cellStyle = { ...tdStyle, fontFamily: T.fontMono, textAlign: "right" };
     if (esHoja) {
       out.push(
         <tr key={groupPath}>
           <td style={{ ...tdStyle, paddingLeft: 14 + depth * 22 }}>{entry.value}</td>
-          {meses.map((m) => <td key={m} style={cellStyle}>{entry.child.mesSums[m] ? money(entry.child.mesSums[m]) : "—"}</td>)}
-          <td style={{ ...cellStyle, fontWeight: 600 }}>{money(entry.child.total)}</td>
+          {meses.map((m) => <td key={m} style={cellStyle}>{entry.child.mesSums[m] ? money(entry.child.mesSums[m], mon) : "—"}</td>)}
+          <td style={{ ...cellStyle, fontWeight: 600 }}>{money(entry.child.total, mon)}</td>
         </tr>
       );
     } else {
@@ -2557,11 +2537,11 @@ function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth) {
           <td style={{ ...tdStyle, paddingLeft: 14 + depth * 22, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ color: T.textFaint, fontSize: 10 }}>{isCollapsed ? "▶" : "▼"}</span>{entry.value}
           </td>
-          {meses.map((m) => <td key={m} style={{ ...cellStyle, fontWeight: 600 }}>{entry.child.mesSums[m] ? money(entry.child.mesSums[m]) : "—"}</td>)}
-          <td style={{ ...cellStyle, fontWeight: 600 }}>{money(entry.child.total)}</td>
+          {meses.map((m) => <td key={m} style={{ ...cellStyle, fontWeight: 600 }}>{entry.child.mesSums[m] ? money(entry.child.mesSums[m], mon) : "—"}</td>)}
+          <td style={{ ...cellStyle, fontWeight: 600 }}>{money(entry.child.total, mon)}</td>
         </tr>
       );
-      if (!isCollapsed) out = out.concat(buildPivotTrs(entry.child, groupPath, collapsed, toggleGroup, meses, depth + 1));
+      if (!isCollapsed) out = out.concat(buildPivotTrs(entry.child, groupPath, collapsed, toggleGroup, meses, depth + 1, resolverMoneda));
     }
   });
   return out;

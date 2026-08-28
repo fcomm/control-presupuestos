@@ -112,8 +112,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.61.1";
+const APP_VERSION = "1.62.0";
 const CHANGELOG = [
+  { v: "1.62.0", desc: "Partidas: nuevo campo Zona, alimentado por el catálogo de zonas. Es opcional — vacío significa 'cualquier zona', para que Nómina o los servicios legales no tengan que fingir una. Disponible en el formulario, la tabla, Agrupar por, el buscador, la carga masiva y la exportación; también entra en la detección de duplicados al importar, de modo que dos partidas iguales de zonas distintas dejan de contarse como la misma. Requiere correr 08-zona-en-partidas.sql" },
   { v: "1.61.1", desc: "Fix: el Dashboard se quedaba en blanco un instante después de cargar. Al unificar los filtros, el bloque que arma los controles quedó por encima de la declaración del filtro de Proyecto que usa; como el JSX se construye al evaluarse ese const, el render fallaba por zona muerta temporal en cuanto llegaban los datos" },
   { v: "1.61.0", desc: "Dashboard: un solo juego de filtros para toda la pestaña. Los de 'Presupuestado vs. pagado real' ahora gobiernan también las gráficas de abajo, y 'Presupuesto vs. ejecutado por proyecto' pierde los suyos. Antes había dos juegos en la misma pantalla y no se veía cuál mandaba sobre qué; de paso, las gráficas ganan el rango Desde-Hasta y YTD, que solo tenía el panel de arriba" },
   { v: "1.60.0", desc: "Ya no se puede vincular una transacción a una partida de otra moneda. En el formulario el selector de partida solo ofrece las de la moneda del gasto, y al cambiar la moneda se suelta la partida si deja de cuadrar; el guardado lo verifica de todos modos. La carga masiva —por donde entran casi todas las transacciones— también rechaza esos vínculos: la fila se importa sin partida y el preview dice cuántas fueron y por qué. Comparar un gasto contra un presupuesto en otra moneda no significa nada, y con prorrateo un solo movimiento mal capturado pinta un bloque entero de esa moneda en el Dashboard" },
@@ -910,6 +911,7 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
       proyecto: findCol(headers, ["proyecto"]),
       rubro: findCol(headers, ["rubro"]),
       categoria: findCol(headers, ["categoria"]),
+      zona: findCol(headers, ["zona"]),
       folio: findExactCol(headers, ["id", "folio", "a partida", "partida", "no. partida"]),
     };
 
@@ -950,6 +952,7 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
         concepto: String(concepto).trim(),
         rubro: (col.rubro !== -1 && row[col.rubro]) ? String(row[col.rubro]).trim() : "Otros",
         categoria: (col.categoria !== -1 && row[col.categoria]) ? String(row[col.categoria]).trim() : "Diversos",
+        zona: (col.zona !== -1 && row[col.zona]) ? String(row[col.zona]).trim() : "",
         proyecto: (col.proyecto !== -1 && row[col.proyecto]) ? String(row[col.proyecto]).trim() : "",
         monto_estimado: monto,
         moneda,
@@ -2875,14 +2878,14 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
   );
 }
 
-function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi }) {
+function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, zonas = ZONAS_RESPALDO }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadores = marcadoresDisponibles(proyectosUnidad);
   const anioDefault = (() => {
     const anios = partidas.filter((p) => p.unidad === unidad).map((p) => p.anio).filter(Boolean);
     return anios.length ? Math.max(...anios) : new Date().getFullYear();
   })();
-  const blank = { unidad, mes: "Agosto", anio: anioDefault, smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: RUBROS[0].categorias[0], proyecto: marcadores[0] || "", monto_estimado: "", moneda: "MXP", folio: "", es_recurrente: false };
+  const blank = { unidad, mes: "Agosto", anio: anioDefault, smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: RUBROS[0].categorias[0], proyecto: marcadores[0] || "", zona: "", monto_estimado: "", moneda: "MXP", folio: "", es_recurrente: false };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -2906,7 +2909,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const aplicarFiltrosPartidas = (lista, estricto = true) => lista.filter((p) => {
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
-      const enTexto = [p.concepto, p.folio, p.smi, p.categoria].some((v) => (v || "").toLowerCase().includes(q));
+      const enTexto = [p.concepto, p.folio, p.smi, p.categoria, p.zona].some((v) => (v || "").toLowerCase().includes(q));
       if (!enTexto) return false;
     }
     if (filtrosMes.length && !filtrosMes.includes(p.mes)) return false;
@@ -2933,6 +2936,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     { value: "mes", label: "Mes" },
     { value: "rubro", label: "Rubro" },
     { value: "categoria", label: "Categoría" },
+    { value: "zona", label: "Zona" },
     { value: "proyecto", label: "Proyecto" },
   ];
   const [groupBys, setGroupBys] = useSessionState("ss-partidas-groupbys", []);
@@ -2959,6 +2963,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       { header: "Concepto",  width: 50, get: (p) => p.concepto },
       { header: "Rubro",     width: 26, get: (p) => p.rubro },
       { header: "Categoria", width: 30, get: (p) => p.categoria },
+      { header: "Zona",      width: 16, get: (p) => p.zona || "" },
       { header: "Proyecto",  width: 17, get: (p) => p.proyecto || "" },
       { header: "Moneda",    width: 9,  get: (p) => p.moneda || "MXP" },
       { header: "Monto",     width: 15, get: (p) => Number(p.monto_estimado) || 0, money: true },
@@ -3026,6 +3031,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     },
     { key: "rubro", label: "Rubro", render: (p) => <Pill>{p.rubro}</Pill> },
     { key: "categoria", label: "Categoría", render: (p) => <span style={{ color: T.textDim }}>{p.categoria}</span> },
+    { key: "zona", label: "Zona", render: (p) => p.zona ? <Pill>{p.zona}</Pill> : <span style={{ color: T.textFaint }}>Cualquiera</span> },
     { key: "proyecto", label: "Proyecto", render: (p) => p.proyecto },
     { key: "folio", label: "Folio", render: (p) => <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</span> },
     {
@@ -3197,7 +3203,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       const yaExiste = partidasUnidad.some((p) =>
         p.anio === base.anio && p.mes === MESES[i] &&
         p.proyecto === base.proyecto && p.rubro === base.rubro &&
-        p.categoria === base.categoria && p.concepto === base.concepto
+        p.categoria === base.categoria && p.concepto === base.concepto && (p.zona || "") === (base.zona || "")
       );
       if (!yaExiste) meses.push({ base, mes: MESES[i] });
     }
@@ -3218,7 +3224,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         folios = [...folios, folio];
         await partidasApi.insert({
           id: uid(), unidad, mes, anio: base.anio, smi: base.smi || "",
-          concepto: base.concepto, rubro: base.rubro, categoria: base.categoria,
+          concepto: base.concepto, rubro: base.rubro, categoria: base.categoria, zona: base.zona || "",
           proyecto: base.proyecto, monto_estimado: base.monto_estimado, moneda: base.moneda,
           folio, es_recurrente: true,
         });
@@ -3380,6 +3386,17 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             </Field>
             <Field label="Concepto" style={{ gridColumn: "span 2" }}>
               <TextInput value={form.concepto} onChange={(e) => setForm({ ...form, concepto: e.target.value })} placeholder="Ej. Servicio energía eléctrica base admtva" />
+            </Field>
+            <Field label="Zona">
+              {/* Opcional a propósito: vacío significa que el presupuesto no
+                  está atado a una zona, como Nómina o los servicios legales. */}
+              <Select value={form.zona || ""} onChange={(e) => setForm({ ...form, zona: e.target.value })}>
+                <option value="">— Cualquier zona —</option>
+                {zonas.map((z) => <option key={z}>{z}</option>)}
+                {/* Si la partida trae una zona que salió del catálogo, se
+                    conserva como opción para no perderla al editar. */}
+                {form.zona && !zonas.includes(form.zona) && <option key={form.zona}>{form.zona}</option>}
+              </Select>
             </Field>
             <Field label="Proyecto / marcador de prorrateo">
               <Select value={form.proyecto} onChange={(e) => setForm({ ...form, proyecto: e.target.value })}>
@@ -7237,7 +7254,7 @@ export default function App() {
       ) : (
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
-          {tab === "partidas" && <PartidasTab unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "partidas" && <PartidasTab zonas={zonas} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "transacciones" && <TransaccionesTab zonas={zonas} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}

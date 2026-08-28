@@ -112,8 +112,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.59.0";
+const APP_VERSION = "1.60.0";
 const CHANGELOG = [
+  { v: "1.60.0", desc: "Ya no se puede vincular una transacción a una partida de otra moneda. En el formulario el selector de partida solo ofrece las de la moneda del gasto, y al cambiar la moneda se suelta la partida si deja de cuadrar; el guardado lo verifica de todos modos. La carga masiva —por donde entran casi todas las transacciones— también rechaza esos vínculos: la fila se importa sin partida y el preview dice cuántas fueron y por qué. Comparar un gasto contra un presupuesto en otra moneda no significa nada, y con prorrateo un solo movimiento mal capturado pinta un bloque entero de esa moneda en el Dashboard" },
+  { v: "1.59.1", desc: "Dashboard: 'Presupuesto vs. ejecutado por proyecto' gana una tercera barra. La que decía 'Ejecutado' suma todas las transacciones vinculadas, pagadas o no, y se leía como si ya se hubieran pagado; ahora se llama 'Comprometido' y a su lado va 'Pagado', que solo cuenta las de status Pagado. Además, al guardar una transacción cuya moneda no coincide con la de su partida se pide confirmación: no se bloquea, pero un solo gasto mal capturado puede pintar un bloque entero de dólares en el Dashboard si la partida trae prorrateo" },
   { v: "1.59.0", desc: "Dashboard: se retira el panel 'Resumen financiero'. Sus filtros de Proyecto, Mes y Año se mudan al panel 'Presupuesto vs. ejecutado por proyecto', que es lo que gobiernan junto con la tendencia mensual — si se hubieran ido con el panel, las gráficas habrían quedado sin forma de filtrarse" },
   { v: "1.58.1", desc: "Fix: en el panel comparativo, las filas 'Total MXP' y 'Total USD' del final duplicaban cifras que la propia fila de cada moneda ya mostraba, y alejaban el total de los datos que resume. Se retiran: el total de cada moneda queda justo encima de su lista. Además las cifras en dólares ya se formatean como USD dentro de la tabla, en vez de imprimirse igual que los pesos" },
   { v: "1.58.0", desc: "Dashboard: el panel comparativo muestra pesos y dólares en la MISMA tabla, con la moneda como primer nivel de agrupación arriba del proyecto, y desaparece el selector que obligaba a alternar. Cada moneda tiene su propia fila de total; no hay total general único porque sumarlas exigiría fijar un tipo de cambio. Se prefirió agrupar por moneda antes que duplicar las columnas por mes, que habría llevado el panel de 9 a 17 columnas de dinero" },
@@ -1079,7 +1081,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = [], cue
   const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
   const rows = [];
   const sheetsFound = [];
-  let matched = 0, unmatched = 0, conCuenta = 0, sinCuenta = 0;
+  let matched = 0, unmatched = 0, conCuenta = 0, sinCuenta = 0, desajustes = 0;
 
   wb.SheetNames.forEach((sheetName) => {
     const ws = wb.Sheets[sheetName];
@@ -1129,10 +1131,21 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = [], cue
       const prefixMatch = folio ? /^([A-Za-z]+)-/.exec(folio) : null;
       const unidad_detectada = (prefixMatch && UNIDAD_KEYS.includes(prefixMatch[1].toUpperCase())) ? prefixMatch[1].toUpperCase() : sheetUnidad;
 
-      const partida = folio ? partidas.find(
+      const partidaPorFolio = folio ? partidas.find(
         (p) => p.folio && p.folio.trim().toUpperCase() === folio.toUpperCase() &&
                (!unidad_detectada || p.unidad === unidad_detectada)
       ) : null;
+
+      // La carga masiva es por donde entran casi todas las transacciones, así
+      // que el vínculo entre monedas distintas se rechaza aquí también. Sin
+      // esto, bloquear solo el formulario sería inútil: el problema seguiría
+      // entrando por la puerta grande. La fila se importa, pero SIN partida,
+      // para que quede visible y se corrija en vez de perderse.
+      const monNorm = (v) => ((v || "MXP") === "USD" ? "USD" : "MXP");
+      const monedaDeLaFila = (col.moneda !== -1 && row[col.moneda]) ? String(row[col.moneda]).trim().toUpperCase() : "MXP";
+      const desajusteMoneda = !!partidaPorFolio && monNorm(partidaPorFolio.moneda) !== monNorm(monedaDeLaFila);
+      if (desajusteMoneda) desajustes++;
+      const partida = desajusteMoneda ? null : partidaPorFolio;
       if (partida) matched++; else unmatched++;
 
       const proveedorNombre = (col.proveedor !== -1 && row[col.proveedor]) ? String(row[col.proveedor]).trim() : "";
@@ -1156,6 +1169,9 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = [], cue
 
       rows.push({
         id: uid(),
+        _desajusteMoneda: desajusteMoneda
+          ? `${monNorm(monedaDeLaFila)} contra partida ${partidaPorFolio.folio} en ${monNorm(partidaPorFolio.moneda)}`
+          : null,
         cuenta_id: cuentaElegida ? cuentaElegida.id : "",
         _cuentasDisponibles: cuentasDelProv.length,
         partida_id: partida ? partida.id : "",
@@ -1184,7 +1200,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = [], cue
     if (count) sheetsFound.push({ sheetName, count });
   });
 
-  return { rows, sheetsFound, matched, unmatched, conCuenta, sinCuenta };
+  return { rows, sheetsFound, matched, unmatched, conCuenta, sinCuenta, desajustes };
 }
 
 /* ----------------------------------------------------------------------
@@ -1497,8 +1513,13 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
               <YAxis type="category" dataKey="proyecto" width={110} tick={{ fill: T.textDim, fontSize: 11 }} stroke={T.border} />
               <Tooltip content={<ChartTooltip />} />
               <Legend wrapperStyle={{ fontSize: 11, color: T.textDim }} />
+              {/* Tres barras, no dos. "Ejecutado" suma TODAS las transacciones
+                  vinculadas, pagadas o no, y sin la tercera barra se lee como
+                  si ya se hubiera pagado. La diferencia entre ellas es
+                  justamente lo comprometido y pendiente. */}
               <Bar dataKey="presupuestado" name="Presupuestado" fill={T.border} radius={[0,3,3,0]} />
-              <Bar dataKey="ejecutado" name="Ejecutado" fill={T.accent} radius={[0,3,3,0]} />
+              <Bar dataKey="ejecutado" name="Comprometido" fill={T.accent} radius={[0,3,3,0]} />
+              <Bar dataKey="pagado" name="Pagado" fill={T.teal} radius={[0,3,3,0]} />
             </BarChart>
           </ResponsiveContainer>
 
@@ -1512,7 +1533,8 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
                 <Tooltip content={<ChartTooltip />} />
                 <Legend wrapperStyle={{ fontSize: 11, color: T.textDim }} />
                 <Bar dataKey="presupuestado" name="Presupuestado" fill={T.border} radius={[0,3,3,0]} />
-                <Bar dataKey="ejecutado" name="Ejecutado" fill={T.teal} radius={[0,3,3,0]} />
+                <Bar dataKey="ejecutado" name="Comprometido" fill={T.accent} radius={[0,3,3,0]} />
+                <Bar dataKey="pagado" name="Pagado" fill={T.teal} radius={[0,3,3,0]} />
               </BarChart>
             </ResponsiveContainer>
           ) : (
@@ -2685,7 +2707,36 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
 // Modal ligero para editar una transacción sin salir de la vista en la que
 // estás (ej. desde la fila expandida de una partida) — no cambia de pestaña.
 // No incluye el selector de Partida (aquí ya se sabe a cuál pertenece).
-function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, proveedoresApi, cuentasApi, unidad }) {
+/** Normaliza la moneda: vacío o cualquier cosa distinta de USD cuenta como MXP. */
+const monedaNorm = (v) => ((v || "MXP") === "USD" ? "USD" : "MXP");
+const mismaMoneda = (a, b) => monedaNorm(a) === monedaNorm(b);
+
+/**
+ * Impide vincular un gasto a una partida de OTRA moneda.
+ *
+ * Es un bloqueo, no un aviso: la comparación "presupuestado vs. pagado" no
+ * significa nada si el presupuesto está en pesos y el gasto en dólares. Y el
+ * daño no se queda en esa fila — el Dashboard dibuja el bloque de moneda
+ * según la transacción, así que si la partida trae marcador de prorrateo, un
+ * solo movimiento mal capturado pinta una sección entera de dólares repartida
+ * entre todos los proyectos.
+ *
+ * Devuelve true si se puede guardar.
+ */
+function validarMonedaContraPartida(form, partidas) {
+  const partida = partidas.find((p) => p.id === form.partida_id);
+  if (!partida) return true;
+  if (mismaMoneda(form.moneda, partida.moneda)) return true;
+  alert(
+    `No se puede guardar: la transacción está en ${monedaNorm(form.moneda)} y la partida ` +
+    `"${partida.folio || partida.concepto}" es en ${monedaNorm(partida.moneda)}.\n\n` +
+    `Elige una partida en ${monedaNorm(form.moneda)}, o corrige la moneda de la transacción ` +
+    `si el importe está en ${monedaNorm(partida.moneda)}.`
+  );
+  return false;
+}
+
+function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, proveedoresApi, cuentasApi, unidad, partidasUnidad = [] }) {
   const [form, setForm] = useState({ ...transaccion });
   const [saving, setSaving] = useState(false);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
@@ -2697,6 +2748,7 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
       alert("Para marcar esta transacción como Pagada, primero indica la Fecha de Pago.");
       return;
     }
+    if (!validarMonedaContraPartida(form, partidasUnidad)) return;
     setSaving(true);
     try {
       const { id, ...restRaw } = form;
@@ -3370,6 +3422,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       )}
       {transaccionEditando && (
         <TransaccionQuickEditModal
+          partidasUnidad={partidasUnidad}
           transaccion={transaccionEditando}
           onClose={() => setTransaccionEditando(null)}
           transaccionesApi={transaccionesApi}
@@ -3454,12 +3507,12 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
     setError(""); setStatus(""); setPreview(null);
     try {
       const buf = await file.arrayBuffer();
-      const { rows, sheetsFound, matched, unmatched, conCuenta, sinCuenta } = parseTransaccionesWorkbook(buf, partidas, proveedores, cuentas);
+      const { rows, sheetsFound, matched, unmatched, conCuenta, sinCuenta, desajustes } = parseTransaccionesWorkbook(buf, partidas, proveedores, cuentas);
       if (!rows.length) {
         setError('No encontré una hoja con columnas "Día", "Importe" y "A Partida" en este archivo.');
         return;
       }
-      setPreview({ rows, sheetsFound, matched, unmatched, conCuenta, sinCuenta, fileName: file.name });
+      setPreview({ rows, sheetsFound, matched, unmatched, conCuenta, sinCuenta, desajustes, fileName: file.name });
     } catch (err) {
       setError("No pude leer el archivo. Verifica que sea un .xlsx válido.");
     } finally {
@@ -3473,7 +3526,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
     try {
       // _cuentasDisponibles es un dato de pantalla, no de la tabla: se descarta
       // antes de insertar o Supabase rechaza la columna desconocida.
-      const toInsert = preview.rows.map(({ _cuentasDisponibles, ...r }) => ({
+      const toInsert = preview.rows.map(({ _cuentasDisponibles, _desajusteMoneda, ...r }) => ({
         ...r,
         partida_id: r.partida_id || null,
         proveedor_id: r.proveedor_id || null,
@@ -3521,7 +3574,17 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
             <Pill tone="teal">{vinculadasActuales} vinculadas a una partida</Pill>
             {sinVincularActuales > 0 && <Pill tone="red">{sinVincularActuales} sin vincular</Pill>}
+            {preview.desajustes > 0 && <Pill tone="amber">{preview.desajustes} con moneda distinta</Pill>}
           </div>
+          {preview.desajustes > 0 && (
+            <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
+              <b>{preview.desajustes} fila(s) traen un folio de partida en otra moneda</b>
+              No se vincularon a propósito: comparar un gasto en una moneda contra un presupuesto
+              en otra no significa nada, y si la partida tiene prorrateo el importe se reparte entre
+              todos los proyectos del Dashboard. Corrige la moneda en el archivo, o apunta esas
+              filas a una partida de la misma moneda con el selector de cada renglón.
+            </div>
+          )}
           {sinVincularActuales > 0 && (
             <div style={{ fontSize: 11.5, color: T.amber, marginBottom: 12 }}>
               Para las filas sin folio coincidente, elige la partida correcta en el selector de esa fila antes de confirmar — o déjalas sin vincular e impórtalas igual, podrás asignarlas después.
@@ -3854,6 +3917,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       alert("Para marcar esta transacción como Pagada, primero indica la Fecha de Pago.");
       return;
     }
+    if (!validarMonedaContraPartida(form, partidasUnidad)) return;
     const { id, ...restRaw } = form;
     const rest = Object.fromEntries(Object.entries(restRaw).filter(([k]) => !k.startsWith("_")));
     rest.proveedor_id = rest.proveedor_id || null;
@@ -4175,8 +4239,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           <AutoriaCaption record={form} perfilesApi={perfilesApi} />
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
             <Field label="Partida" style={{ gridColumn: "span 4" }}>
+              {/* Solo las partidas de la MISMA moneda. Prevenir es mejor que
+                  rechazar al guardar: la opción equivocada ni se ofrece. */}
               <PartidaPickerButton
-                partidas={partidasUnidad}
+                partidas={partidasUnidad.filter((p) => mismaMoneda(p.moneda, form.moneda))}
                 transacciones={transUnidad}
                 partidasApi={partidasApi}
                 unidad={unidad}
@@ -4264,7 +4330,18 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               <TextInput type="number" step="0.01" value={form.importe} onChange={(e) => setForm({ ...form, importe: e.target.value })} placeholder="0.00" />
             </Field>
             <Field label="Moneda">
-              <Select value={form.moneda} onChange={(e) => setForm({ ...form, moneda: e.target.value })}>
+              <Select
+                value={form.moneda}
+                onChange={(e) => {
+                  // Al cambiar de moneda, la partida elegida puede dejar de ser
+                  // válida. Se suelta en lugar de quedarse como una selección
+                  // que el guardado va a rechazar después.
+                  const nueva = e.target.value;
+                  const actual = partidasUnidad.find((p) => p.id === form.partida_id);
+                  const sigueValida = !actual || mismaMoneda(actual.moneda, nueva);
+                  setForm({ ...form, moneda: nueva, partida_id: sigueValida ? form.partida_id : "" });
+                }}
+              >
                 {MONEDAS.map((m) => <option key={m}>{m}</option>)}
               </Select>
             </Field>

@@ -112,8 +112,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.60.0";
+const APP_VERSION = "1.61.0";
 const CHANGELOG = [
+  { v: "1.61.0", desc: "Dashboard: un solo juego de filtros para toda la pestaña. Los de 'Presupuestado vs. pagado real' ahora gobiernan también las gráficas de abajo, y 'Presupuesto vs. ejecutado por proyecto' pierde los suyos. Antes había dos juegos en la misma pantalla y no se veía cuál mandaba sobre qué; de paso, las gráficas ganan el rango Desde-Hasta y YTD, que solo tenía el panel de arriba" },
   { v: "1.60.0", desc: "Ya no se puede vincular una transacción a una partida de otra moneda. En el formulario el selector de partida solo ofrece las de la moneda del gasto, y al cambiar la moneda se suelta la partida si deja de cuadrar; el guardado lo verifica de todos modos. La carga masiva —por donde entran casi todas las transacciones— también rechaza esos vínculos: la fila se importa sin partida y el preview dice cuántas fueron y por qué. Comparar un gasto contra un presupuesto en otra moneda no significa nada, y con prorrateo un solo movimiento mal capturado pinta un bloque entero de esa moneda en el Dashboard" },
   { v: "1.59.1", desc: "Dashboard: 'Presupuesto vs. ejecutado por proyecto' gana una tercera barra. La que decía 'Ejecutado' suma todas las transacciones vinculadas, pagadas o no, y se leía como si ya se hubieran pagado; ahora se llama 'Comprometido' y a su lado va 'Pagado', que solo cuenta las de status Pagado. Además, al guardar una transacción cuya moneda no coincide con la de su partida se pide confirmación: no se bloquea, pero un solo gasto mal capturado puede pintar un bloque entero de dólares en el Dashboard si la partida trae prorrateo" },
   { v: "1.59.0", desc: "Dashboard: se retira el panel 'Resumen financiero'. Sus filtros de Proyecto, Mes y Año se mudan al panel 'Presupuesto vs. ejecutado por proyecto', que es lo que gobiernan junto con la tendencia mensual — si se hubieran ido con el panel, las gráficas habrían quedado sin forma de filtrarse" },
@@ -1374,17 +1375,108 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   const idsPartidas = new Set(partidasUnidad.map((p) => p.id));
   const transUnidad = transacciones.filter((t) => idsPartidas.has(t.partida_id) || t.unidad_detectada === unidad);
 
-  const mesesDisponibles = MESES.filter((m) => partidasUnidad.some((p) => p.mes === m));
-  const [mesesSeleccionados, setMesesSeleccionados] = useSessionState("ss-dashboard-meses", []);
-  const aniosDisponibles = [...new Set(partidasUnidad.map((p) => p.anio).filter(Boolean))].sort((a, b) => a - b);
-  const [aniosSeleccionados, setAniosSeleccionados] = useSessionState("ss-dashboard-anios", []);
-  const partidasFiltradasMes = partidasUnidad.filter((p) =>
-    (!mesesSeleccionados.length || mesesSeleccionados.includes(p.mes)) &&
-    (!aniosSeleccionados.length || aniosSeleccionados.includes(p.anio))
+  /* -----------------------------------------------------------------
+     FILTRO ÚNICO DEL DASHBOARD
+     Vivía dentro del panel comparativo, pero gobierna también las gráficas
+     de abajo, así que sube aquí. Antes había dos juegos de filtros en la
+     misma pantalla —uno arriba y otro a media página— y no se veía cuál
+     mandaba sobre qué.
+     Cascada de tres niveles:
+       1. Año     -> "YTD" o un año concreto con datos
+       2. Periodo -> todo el año, o un rango de meses (no aplica en YTD)
+       3. Desde/Hasta -> meses sueltos, porque el año ya quedó fijo arriba
+     ----------------------------------------------------------------- */
+  const hoy = new Date();
+  const anioActual = hoy.getFullYear();
+  const mesActualIdx = hoy.getMonth();
+
+  const aniosConDatos = [...new Set(partidasUnidad.map((p) => Number(p.anio)).filter(Boolean))].sort((a, b) => b - a);
+  const hayYTD = partidasUnidad.some((p) => Number(p.anio) === anioActual && MESES.indexOf(p.mes) <= mesActualIdx);
+  const opcionesAnio = [...(hayYTD ? ["YTD"] : []), ...aniosConDatos.map(String)];
+
+  const [anioGuardado, setAnioSel] = useSessionState("ss-dashboard-f1-anio", null);
+  const anioSel = opcionesAnio.includes(anioGuardado) ? anioGuardado : (opcionesAnio[0] ?? null);
+  const esYTD = anioSel === "YTD";
+  const anioEfectivo = esYTD ? anioActual : Number(anioSel);
+
+  const [modoGuardado, setModo] = useSessionState("ss-dashboard-f2-periodo", "todo");
+  const modo = esYTD ? "todo" : (modoGuardado === "rango" ? "rango" : "todo");
+
+  // Solo se listan los meses que existen en datos para ese año, para que no se
+  // pueda elegir un rango que garantiza tablas vacías.
+  const mesesDelAnio = MESES.filter((m) => partidasUnidad.some((p) => Number(p.anio) === anioEfectivo && p.mes === m));
+  const [desdeGuardado, setMesDesde] = useSessionState("ss-dashboard-f3-desde", null);
+  const [hastaGuardado, setMesHasta] = useSessionState("ss-dashboard-f3-hasta", null);
+  const mesDesde = mesesDelAnio.includes(desdeGuardado) ? desdeGuardado : (mesesDelAnio[0] ?? MESES[0]);
+  const mesHasta = mesesDelAnio.includes(hastaGuardado) ? hastaGuardado : (mesesDelAnio[mesesDelAnio.length - 1] ?? MESES[11]);
+  const cambiarDesde = (m) => { setMesDesde(m); if (MESES.indexOf(m) > MESES.indexOf(mesHasta)) setMesHasta(m); };
+  const cambiarHasta = (m) => { setMesHasta(m); if (MESES.indexOf(m) < MESES.indexOf(mesDesde)) setMesDesde(m); };
+
+  // Ventana efectiva de meses (índices inclusivos) que resulta de los 3 filtros.
+  const [iDesde, iHasta] = esYTD
+    ? [0, mesActualIdx]
+    : modo === "rango"
+      ? [MESES.indexOf(mesDesde), MESES.indexOf(mesHasta)]
+      : [0, 11];
+
+  const partidasRango = partidasUnidad.filter((p) => {
+    if (Number(p.anio) !== anioEfectivo) return false;
+    const i = MESES.indexOf(p.mes);
+    return i >= iDesde && i <= iHasta;
+  });
+  const idsRango = new Set(partidasRango.map((p) => p.id));
+
+  // Las gráficas de abajo ya consumían `partidasFiltradasMes`; ahora ese
+  // nombre apunta al rango del filtro único, así que obedecen sin tocarlas.
+  const partidasFiltradasMes = partidasRango;
+
+  // Los controles se arman aquí y se le entregan al panel para que los pinte
+  // en su cabecera. Se dibujan UNA sola vez aunque gobiernen todo el tablero.
+  const controlesFiltro = (
+    <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+      <Field label="Proyecto">
+        <Select value={proyectoKpi} onChange={(e) => setProyectoKpi(e.target.value)} style={{ width: 170 }}>
+          <option>Todos</option>
+          {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
+        </Select>
+      </Field>
+      <Field label="Año">
+        <Select value={anioSel ?? ""} onChange={(e) => setAnioSel(e.target.value)} style={{ width: 110 }} disabled={!opcionesAnio.length}>
+          {opcionesAnio.map((o) => <option key={o} value={o}>{o}</option>)}
+        </Select>
+      </Field>
+      {!esYTD && (
+        <Field label="Periodo">
+          <Select value={modo} onChange={(e) => setModo(e.target.value)} style={{ width: 150 }}>
+            <option value="todo">Todo</option>
+            <option value="rango">Desde - Hasta</option>
+          </Select>
+        </Field>
+      )}
+      {!esYTD && modo === "rango" && (
+        <>
+          <Field label="Desde">
+            <Select value={mesDesde} onChange={(e) => cambiarDesde(e.target.value)} style={{ width: 135 }}>
+              {mesesDelAnio.map((m) => <option key={m} value={m}>{m}</option>)}
+            </Select>
+          </Field>
+          <Field label="Hasta">
+            <Select value={mesHasta} onChange={(e) => cambiarHasta(e.target.value)} style={{ width: 135 }}>
+              {mesesDelAnio.map((m) => <option key={m} value={m}>{m}</option>)}
+            </Select>
+          </Field>
+        </>
+      )}
+    </div>
   );
-  const mesLabel = (mesesSeleccionados.length || aniosSeleccionados.length)
-    ? ` · ${[...mesesSeleccionados, ...aniosSeleccionados].join(", ")}`
-    : "";
+
+  const mesLabel = esYTD
+    ? ` · YTD ${anioActual}`
+    : modo === "rango"
+      ? ` · ${mesDesde} a ${mesHasta} ${anioEfectivo}`
+      : ` · ${anioEfectivo}`;
+
+
   const idsPartidasFiltradas = new Set(partidasFiltradasMes.map((p) => p.id));
   const transFiltradasMes = transUnidad.filter((t) => idsPartidasFiltradas.has(t.partida_id));
 
@@ -1474,7 +1566,9 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
       <ResumenComparativoPanel
-        partidasUnidad={partidasUnidad}
+        partidasRango={partidasRango}
+        idsRango={idsRango}
+        controlesFiltro={controlesFiltro}
         transacciones={transUnidad}
         proyectosUnidad={proyectosUnidad}
         proyectoKpi={proyectoKpi}
@@ -1484,26 +1578,7 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
         <Panel
           title="Presupuesto vs. ejecutado por proyecto"
-          subtitle={`Gastos compartidos ya prorrateados según su marcador${mesLabel}`}
-          right={
-            /* Estos filtros vivían en el panel "Resumen financiero". Al
-               retirarlo se movieron aquí, que es lo que en realidad gobiernan:
-               esta gráfica y la de tendencia mensual. */
-            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-              <Field label="Proyecto">
-                <Select value={proyectoKpi} onChange={(e) => setProyectoKpi(e.target.value)} style={{ width: 180 }}>
-                  <option>Todos</option>
-                  {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
-                </Select>
-              </Field>
-              <Field label="Mes">
-                <MesMultiSelect mesesDisponibles={mesesDisponibles} seleccionados={mesesSeleccionados} onChange={setMesesSeleccionados} />
-              </Field>
-              <Field label="Año">
-                <AnioMultiSelect aniosDisponibles={aniosDisponibles} seleccionados={aniosSeleccionados} onChange={setAniosSeleccionados} />
-              </Field>
-            </div>
-          }
+          subtitle={`Gastos compartidos ya prorrateados según su marcador — obedece los filtros de arriba${mesLabel}`}
         >
           <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>MXP</div>
           <ResponsiveContainer width="100%" height={Math.max(180, porProyecto.length * 34)}>
@@ -1586,54 +1661,15 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 // completos (mes + año), no en meses sueltos: con datos de 2025 y 2026 en la
 // misma base, "de Agosto a Octubre" sería ambiguo, y un rango que cruza
 // diciembre es imposible de expresar con una lista de meses.
+/**
+ * Recibe el rango ya resuelto en lugar de calcularlo. Los filtros de este
+ * panel gobiernan TODO el Dashboard —también las gráficas de abajo—, así que
+ * el estado vive arriba y aquí solo se dibujan los controles.
+ */
 function ResumenComparativoPanel({
-  partidasUnidad, transacciones, proyectosUnidad,
-  proyectoKpi, setProyectoKpi,
+  partidasRango, idsRango, transacciones, proyectosUnidad,
+  proyectoKpi, setProyectoKpi, controlesFiltro,
 }) {
-  // Filtrado en cascada de tres niveles:
-  //   1. Año     -> "YTD" o un año concreto con datos
-  //   2. Periodo -> todo el año, o un rango de meses (no aplica en YTD)
-  //   3. Desde/Hasta -> meses sueltos, porque el año ya quedó fijo arriba
-  const hoy = new Date();
-  const anioActual = hoy.getFullYear();
-  const mesActualIdx = hoy.getMonth();
-
-  const aniosConDatos = [...new Set(partidasUnidad.map((p) => Number(p.anio)).filter(Boolean))].sort((a, b) => b - a);
-  const hayYTD = partidasUnidad.some((p) => Number(p.anio) === anioActual && MESES.indexOf(p.mes) <= mesActualIdx);
-  const opcionesAnio = [...(hayYTD ? ["YTD"] : []), ...aniosConDatos.map(String)];
-
-  const [anioGuardado, setAnioSel] = useSessionState("ss-dashboard-f1-anio", null);
-  const anioSel = opcionesAnio.includes(anioGuardado) ? anioGuardado : (opcionesAnio[0] ?? null);
-  const esYTD = anioSel === "YTD";
-  const anioEfectivo = esYTD ? anioActual : Number(anioSel);
-
-  const [modoGuardado, setModo] = useSessionState("ss-dashboard-f2-periodo", "todo");
-  const modo = esYTD ? "todo" : (modoGuardado === "rango" ? "rango" : "todo");
-
-  // Solo se listan los meses que existen en datos para ese año, para que no se
-  // pueda elegir un rango que garantiza tablas vacías.
-  const mesesDelAnio = MESES.filter((m) => partidasUnidad.some((p) => Number(p.anio) === anioEfectivo && p.mes === m));
-  const [desdeGuardado, setMesDesde] = useSessionState("ss-dashboard-f3-desde", null);
-  const [hastaGuardado, setMesHasta] = useSessionState("ss-dashboard-f3-hasta", null);
-  const mesDesde = mesesDelAnio.includes(desdeGuardado) ? desdeGuardado : (mesesDelAnio[0] ?? MESES[0]);
-  const mesHasta = mesesDelAnio.includes(hastaGuardado) ? hastaGuardado : (mesesDelAnio[mesesDelAnio.length - 1] ?? MESES[11]);
-  const cambiarDesde = (m) => { setMesDesde(m); if (MESES.indexOf(m) > MESES.indexOf(mesHasta)) setMesHasta(m); };
-  const cambiarHasta = (m) => { setMesHasta(m); if (MESES.indexOf(m) < MESES.indexOf(mesDesde)) setMesDesde(m); };
-
-  // Ventana efectiva de meses (índices inclusivos) que resulta de los 3 filtros.
-  const [iDesde, iHasta] = esYTD
-    ? [0, mesActualIdx]
-    : modo === "rango"
-      ? [MESES.indexOf(mesDesde), MESES.indexOf(mesHasta)]
-      : [0, 11];
-
-  const partidasRango = partidasUnidad.filter((p) => {
-    if (Number(p.anio) !== anioEfectivo) return false;
-    const i = MESES.indexOf(p.mes);
-    return i >= iDesde && i <= iHasta;
-  });
-  const idsRango = new Set(partidasRango.map((p) => p.id));
-
   const partidaDe = (t) => partidasRango.find((p) => p.id === t.partida_id);
   const monedaDe = (x) => (x.moneda || "MXP") === "USD" ? "USD" : "MXP";
 
@@ -1722,39 +1758,7 @@ function ResumenComparativoPanel({
               {todoContraido ? "Expandir todo" : "Contraer todo"}
             </Button>
           </div>
-          <Field label="Proyecto">
-            <Select value={proyectoKpi} onChange={(e) => setProyectoKpi(e.target.value)} style={{ width: 190 }}>
-              <option>Todos</option>
-              {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
-            </Select>
-          </Field>
-          <Field label="Año">
-            <Select value={anioSel ?? ""} onChange={(e) => setAnioSel(e.target.value)} style={{ width: 110 }} disabled={!opcionesAnio.length}>
-              {opcionesAnio.map((o) => <option key={o} value={o}>{o}</option>)}
-            </Select>
-          </Field>
-          {!esYTD && (
-            <Field label="Periodo">
-              <Select value={modo} onChange={(e) => setModo(e.target.value)} style={{ width: 150 }}>
-                <option value="todo">Todo</option>
-                <option value="rango">Desde - Hasta</option>
-              </Select>
-            </Field>
-          )}
-          {!esYTD && modo === "rango" && (
-            <>
-              <Field label="Desde">
-                <Select value={mesDesde} onChange={(e) => cambiarDesde(e.target.value)} style={{ width: 135 }}>
-                  {mesesDelAnio.map((m) => <option key={m} value={m}>{m}</option>)}
-                </Select>
-              </Field>
-              <Field label="Hasta">
-                <Select value={mesHasta} onChange={(e) => cambiarHasta(e.target.value)} style={{ width: 135 }}>
-                  {mesesDelAnio.map((m) => <option key={m} value={m}>{m}</option>)}
-                </Select>
-              </Field>
-            </>
-          )}
+          {controlesFiltro}
         </div>
       }
     >

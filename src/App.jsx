@@ -112,8 +112,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.58.1";
+const APP_VERSION = "1.59.0";
 const CHANGELOG = [
+  { v: "1.59.0", desc: "Dashboard: se retira el panel 'Resumen financiero'. Sus filtros de Proyecto, Mes y Año se mudan al panel 'Presupuesto vs. ejecutado por proyecto', que es lo que gobiernan junto con la tendencia mensual — si se hubieran ido con el panel, las gráficas habrían quedado sin forma de filtrarse" },
   { v: "1.58.1", desc: "Fix: en el panel comparativo, las filas 'Total MXP' y 'Total USD' del final duplicaban cifras que la propia fila de cada moneda ya mostraba, y alejaban el total de los datos que resume. Se retiran: el total de cada moneda queda justo encima de su lista. Además las cifras en dólares ya se formatean como USD dentro de la tabla, en vez de imprimirse igual que los pesos" },
   { v: "1.58.0", desc: "Dashboard: el panel comparativo muestra pesos y dólares en la MISMA tabla, con la moneda como primer nivel de agrupación arriba del proyecto, y desaparece el selector que obligaba a alternar. Cada moneda tiene su propia fila de total; no hay total general único porque sumarlas exigiría fijar un tipo de cambio. Se prefirió agrupar por moneda antes que duplicar las columnas por mes, que habría llevado el panel de 9 a 17 columnas de dinero" },
   { v: "1.57.0", desc: "Catálogo de zonas editable: hasta ahora eran una lista fija en el código y solo se podían ver. Ahora se dan de alta, renombran, desactivan o eliminan desde Catálogo, y alimentan el selector de Zona al capturar. El panel avisa además de las zonas que aparecen en transacciones sin estar dadas de alta —llegan por carga masiva— y permite agregarlas de un clic. Requiere correr la migración 06-catalogo-zonas.sql" },
@@ -1432,12 +1433,6 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
     };
   }, [partidasUnidad, transUnidad]);
 
-  const totalPresupuestadoMXN = partidasFiltradasMes.filter((p) => (p.moneda || "MXP") !== "USD").reduce((s, p) => s + (Number(p.monto_estimado) || 0), 0);
-  const totalEjecutadoMXN = transFiltradasMes.filter((t) => (t.moneda || "MXP") !== "USD").reduce((s, t) => s + (Number(t.importe) || 0), 0);
-  const totalPagadoMXN = transFiltradasMes.filter((t) => (t.moneda || "MXP") !== "USD" && t.status === "Pagado").reduce((s, t) => s + (Number(t.importe) || 0), 0);
-  const totalPresupuestadoUSD = partidasFiltradasMes.filter((p) => p.moneda === "USD").reduce((s, p) => s + (Number(p.monto_estimado) || 0), 0);
-  const totalEjecutadoUSD = transFiltradasMes.filter((t) => t.moneda === "USD").reduce((s, t) => s + (Number(t.importe) || 0), 0);
-  const totalPagadoUSD = transFiltradasMes.filter((t) => t.moneda === "USD" && t.status === "Pagado").reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
   // Filtro de Proyecto para los cuadros de montos — usa los importes YA prorrateados
   // (porProyectoPorMoneda), así que si una partida es "Desh Gral" y filtras por "Desh Marfo",
@@ -1451,28 +1446,6 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
     }
   }, [unidad, proyectosUnidad.map((p) => p.nombre).join(","), proyectoKpi]);
 
-  const kpiDataDe = (moneda) => {
-    if (proyectoKpi === "Todos") {
-      return moneda === "USD"
-        ? { presupuestado: totalPresupuestadoUSD, ejecutado: totalEjecutadoUSD, pagado: totalPagadoUSD }
-        : { presupuestado: totalPresupuestadoMXN, ejecutado: totalEjecutadoMXN, pagado: totalPagadoMXN };
-    }
-    return porProyectoPorMoneda[moneda].find((p) => p.proyecto === proyectoKpi) || { presupuestado: 0, ejecutado: 0, pagado: 0 };
-  };
-  const proyectoKpiData = kpiDataDe("MXP");
-  const kpiOcupado = proyectoKpiData.ejecutado;
-  const kpiPagado = proyectoKpiData.pagado;
-  const kpiPorPagar = kpiOcupado - kpiPagado;
-  const kpiDisponible = proyectoKpiData.presupuestado - kpiOcupado;
-
-  const proyectoKpiDataUSD = kpiDataDe("USD");
-  const kpiOcupadoUSD = proyectoKpiDataUSD.ejecutado;
-  const kpiPagadoUSD = proyectoKpiDataUSD.pagado;
-  const kpiPorPagarUSD = kpiOcupadoUSD - kpiPagadoUSD;
-  const kpiDisponibleUSD = proyectoKpiDataUSD.presupuestado - kpiOcupadoUSD;
-
-  const COLORS = [T.accent, T.teal, T.blue, T.amber, T.red, "#8B6FB0", "#B0955B", "#5BA0B0"];
-
   if (!partidasUnidad.length) {
     return (
       <EmptyState
@@ -1484,96 +1457,6 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <Panel
-        title="Resumen financiero"
-        subtitle="Importes prorrateados por partida"
-        right={
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-            <Field label="Proyecto">
-              <Select value={proyectoKpi} onChange={(e) => setProyectoKpi(e.target.value)} style={{ width: 190 }}>
-                <option>Todos</option>
-                {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
-              </Select>
-            </Field>
-            <Field label="Mes">
-              <MesMultiSelect mesesDisponibles={mesesDisponibles} seleccionados={mesesSeleccionados} onChange={setMesesSeleccionados} />
-            </Field>
-            <Field label="Año">
-              <AnioMultiSelect aniosDisponibles={aniosDisponibles} seleccionados={aniosSeleccionados} onChange={setAniosSeleccionados} />
-            </Field>
-          </div>
-        }
-      >
-        {(() => {
-          const filas = [
-            { moneda: "MXN", data: proyectoKpiData, ocupado: kpiOcupado, pagado: kpiPagado, porPagar: kpiPorPagar, disponible: kpiDisponible },
-            { moneda: "USD", data: proyectoKpiDataUSD, ocupado: kpiOcupadoUSD, pagado: kpiPagadoUSD, porPagar: kpiPorPagarUSD, disponible: kpiDisponibleUSD },
-          ];
-          const colIcon = { textAlign: "center", color: T.textFaint, marginBottom: 6, display: "flex", justifyContent: "center" };
-          const colVal = { textAlign: "center", fontFamily: T.fontMono, fontSize: 15, fontWeight: 700 };
-          return (
-            <table style={{ ...tableStyle, tableLayout: "fixed" }}>
-              <colgroup>
-                <col style={{ width: 110 }} />
-                {[0, 1, 2, 3, 4].map((i) => <col key={i} />)}
-              </colgroup>
-              <thead>
-                <tr>
-                  <th style={thStyle}>Moneda</th>
-                  <th style={{ ...thStyle, textAlign: "center" }}>Presupuestado</th>
-                  <th style={{ ...thStyle, textAlign: "center" }}>Ocupado</th>
-                  <th style={{ ...thStyle, textAlign: "center" }}>Pagado</th>
-                  <th style={{ ...thStyle, textAlign: "center" }}>Por Pagar</th>
-                  <th style={{ ...thStyle, textAlign: "center" }}>Disponible</th>
-                </tr>
-              </thead>
-              <tbody>
-                {filas.map((f) => (
-                  <tr key={f.moneda}>
-                    <td style={tdStyle}>
-                      <span style={{
-                        display: "inline-flex", alignItems: "center", justifyContent: "center",
-                        width: 52, height: 52, borderRadius: "50%", background: T.accentBg,
-                        color: T.accent, fontWeight: 700, fontSize: 12.5, fontFamily: T.fontMono,
-                      }}>
-                        {f.moneda}
-                      </span>
-                    </td>
-                    <td style={tdStyle}>
-                      <div style={colIcon}><Wallet size={20} color={T.accent} /></div>
-                      <div style={colVal}>{money(f.data.presupuestado, f.moneda === "USD" ? "USD" : "MXP")}</div>
-                    </td>
-                    <td style={tdStyle}>
-                      <div style={colIcon}><BarChart3 size={20} color={T.red} /></div>
-                      <div style={{ ...colVal, color: f.data.presupuestado && f.ocupado / f.data.presupuestado > 1 ? T.red : T.text }}>
-                        {money(f.ocupado, f.moneda === "USD" ? "USD" : "MXP")}
-                      </div>
-                    </td>
-                    <td style={tdStyle}>
-                      <div style={colIcon}><CheckCircle2 size={20} color={T.teal} /></div>
-                      <div style={{ ...colVal, color: T.teal }}>{money(f.pagado, f.moneda === "USD" ? "USD" : "MXP")}</div>
-                    </td>
-                    <td style={tdStyle}>
-                      <div style={colIcon}><FileEdit size={20} color={T.amber} /></div>
-                      <div style={{ ...colVal, color: T.amber }}>{money(f.porPagar, f.moneda === "USD" ? "USD" : "MXP")}</div>
-                    </td>
-                    <td style={tdStyle}>
-                      <div style={colIcon}>
-                        {f.disponible < 0 ? <ArrowDownCircle size={20} color={T.red} /> : <ArrowUpCircle size={20} color={T.teal} />}
-                      </div>
-                      <div style={{ ...colVal, color: f.disponible < 0 ? T.red : T.teal }}>{money(f.disponible, f.moneda === "USD" ? "USD" : "MXP")}</div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          );
-        })()}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 14, fontSize: 11.5, color: T.textFaint }}>
-          <Info size={14} /> Importes prorrateados por partida
-        </div>
-      </Panel>
-
       <ResumenComparativoPanel
         partidasUnidad={partidasUnidad}
         transacciones={transUnidad}
@@ -1583,7 +1466,29 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
       />
 
       <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-        <Panel title="Presupuesto vs. ejecutado por proyecto" subtitle={`Gastos compartidos ya prorrateados según su marcador${mesLabel}`}>
+        <Panel
+          title="Presupuesto vs. ejecutado por proyecto"
+          subtitle={`Gastos compartidos ya prorrateados según su marcador${mesLabel}`}
+          right={
+            /* Estos filtros vivían en el panel "Resumen financiero". Al
+               retirarlo se movieron aquí, que es lo que en realidad gobiernan:
+               esta gráfica y la de tendencia mensual. */
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+              <Field label="Proyecto">
+                <Select value={proyectoKpi} onChange={(e) => setProyectoKpi(e.target.value)} style={{ width: 180 }}>
+                  <option>Todos</option>
+                  {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
+                </Select>
+              </Field>
+              <Field label="Mes">
+                <MesMultiSelect mesesDisponibles={mesesDisponibles} seleccionados={mesesSeleccionados} onChange={setMesesSeleccionados} />
+              </Field>
+              <Field label="Año">
+                <AnioMultiSelect aniosDisponibles={aniosDisponibles} seleccionados={aniosSeleccionados} onChange={setAniosSeleccionados} />
+              </Field>
+            </div>
+          }
+        >
           <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>MXP</div>
           <ResponsiveContainer width="100%" height={Math.max(180, porProyecto.length * 34)}>
             <BarChart data={porProyecto} layout="vertical" margin={{ left: 8, right: 16 }}>

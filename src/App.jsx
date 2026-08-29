@@ -112,8 +112,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.64.0";
+const APP_VERSION = "1.64.1";
 const CHANGELOG = [
+  { v: "1.64.1", desc: "Fix: en el panel comparativo, el último nivel del agrupamiento no se podía desplegar y sus registros quedaban inalcanzables. No se notaba mientras 'Concepto' fuera el último nivel —ahí cada hoja ya era un registro— pero al agrupar solo por Rubro, sus partidas no había forma de verlas. Ahora esa fila también abre, muestra cuántos registros contiene y los lista debajo" },
   { v: "1.64.0", desc: "Dashboard: el panel comparativo estrena control de Agrupar por, con las mismas opciones que las otras tablas (Proyecto, Rubro, Categoría, Zona, Concepto) y hasta tres niveles. La moneda queda fija como primer nivel — mezclarla dentro de un grupo haría que sus subtotales sumaran pesos con dólares. El agrupamiento gobierna las dos tablas a la vez, porque comparten el eje de columnas para leerse una contra otra y eso solo funciona si sus renglones coinciden. La primera tabla pasa a llamarse simplemente 'Presupuesto', y su encabezado ahora refleja el agrupamiento vigente en lugar de decir siempre 'Proyecto'" },
   { v: "1.63.0", desc: "Partidas: se retira la marca de Recurrente y el botón que generaba automáticamente los meses faltantes hasta diciembre. Estaba creando partidas no deseadas —duplicaba series al copiar una partida, y volvía a generar lo que ya se había ajustado o borrado a mano— y el costo superaba lo que ahorraba. Duplicar una partida sigue siendo la vía para repetir un concepto en otro mes, con control sobre cada copia. La columna es_recurrente se queda en la base sin usarse, así que ningún dato se pierde" },
   { v: "1.62.1", desc: "La plantilla de carga masiva de Partidas gana las columnas Zona y Año. El importador ya las leía desde antes, pero la plantilla no las ofrecía: nadie sabía que existían y todo entraba sin zona y con el año en curso. Las instrucciones explican que Zona es opcional —vacía significa cualquier zona— y cuándo conviene fijar el Año" },
@@ -2461,7 +2462,9 @@ function pivotearPorMes(rows, keys, meses, montoKey = "monto_estimado", colKey =
     if (mesSums[r[colKey]] !== undefined) mesSums[r[colKey]] += v;
     total += v;
   });
-  if (!keys.length) return { type: "rows", mesSums, total };
+  // Se conservan las filas: sin ellas, el último nivel del agrupamiento no
+  // tiene qué desplegar y sus registros quedan inalcanzables.
+  if (!keys.length) return { type: "rows", rows, mesSums, total };
   const [key, ...rest] = keys;
   const buckets = new Map();
   rows.forEach((r) => {
@@ -2495,13 +2498,48 @@ function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth, resolve
     const mon = resolverMoneda ? resolverMoneda(groupPath) : undefined;
     const cellStyle = { ...tdStyle, fontFamily: T.fontMono, textAlign: "right" };
     if (esHoja) {
+      // El último nivel del agrupamiento también se puede desplegar, para ver
+      // los registros que contiene. Antes se dibujaba como hoja muerta: con
+      // "Concepto" al final no se notaba —cada hoja era un registro— pero al
+      // agrupar solo por Rubro, sus partidas quedaban inalcanzables.
+      const filas = entry.child.rows || [];
+      const puedeAbrir = filas.length > 1 || (filas.length === 1 && String(filas[0].concepto || "") !== String(entry.value));
+      const isCollapsed = collapsed.has(groupPath);
       out.push(
-        <tr key={groupPath}>
-          <td style={{ ...tdStyle, paddingLeft: 14 + depth * 22 }}>{entry.value}</td>
+        <tr
+          key={groupPath}
+          onClick={puedeAbrir ? () => toggleGroup(groupPath) : undefined}
+          style={puedeAbrir ? { cursor: "pointer" } : undefined}
+        >
+          <td style={{ ...tdStyle, paddingLeft: 14 + depth * 22, display: "flex", alignItems: "center", gap: 8 }}>
+            {puedeAbrir
+              ? <span style={{ color: T.textFaint, fontSize: 10 }}>{isCollapsed ? "▶" : "▼"}</span>
+              : <span style={{ width: 10 }} />}
+            {entry.value}
+            {puedeAbrir && <span style={{ color: T.textFaint, fontSize: 10.5 }}>({filas.length})</span>}
+          </td>
           {meses.map((m) => <td key={m} style={cellStyle}>{entry.child.mesSums[m] ? money(entry.child.mesSums[m], mon) : "—"}</td>)}
           <td style={{ ...cellStyle, fontWeight: 600 }}>{money(entry.child.total, mon)}</td>
         </tr>
       );
+      if (puedeAbrir && !isCollapsed) {
+        filas.forEach((r, i) => {
+          const etiqueta = r.concepto || r.proveedor || "—";
+          out.push(
+            <tr key={`${groupPath}#${i}`}>
+              <td style={{ ...tdStyle, paddingLeft: 14 + (depth + 1) * 22, color: T.textDim, fontSize: 12 }}>
+                {etiqueta}
+              </td>
+              {meses.map((m) => (
+                <td key={m} style={{ ...cellStyle, color: T.textDim }}>
+                  {r._columna === m ? money(r.monto_estimado ?? r.importe, mon) : "—"}
+                </td>
+              ))}
+              <td style={{ ...cellStyle, color: T.textDim }}>{money(r.monto_estimado ?? r.importe, mon)}</td>
+            </tr>
+          );
+        });
+      }
     } else {
       const isCollapsed = collapsed.has(groupPath);
       out.push(

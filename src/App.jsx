@@ -103,6 +103,48 @@ const METODOS_PAGO = [
   { value: "PPD", label: "PPD - Pago en parcialidades o diferido" },
 ];
 
+
+/* Opciones de agrupamiento. A nivel de módulo por dos razones: no se
+   reconstruyen en cada render, y el saneamiento de las preferencias guardadas
+   puede consultarlas sin caer en zona muerta temporal. */
+const GROUP_OPCIONES = [
+  { value: "anio", label: "Año" },
+  { value: "mes", label: "Mes" },
+  { value: "rubro", label: "Rubro" },
+  { value: "categoria", label: "Categoría" },
+  { value: "zona", label: "Zona" },
+  { value: "proyecto", label: "Proyecto" },
+  ];
+const GROUP_OPCIONES_TRANS = [
+  { value: "dia", label: "Día de Pago Programado" },
+  { value: "zona", label: "Zona" },
+  { value: "area", label: "Área" },
+  { value: "proveedor", label: "Proveedor" },
+  { value: "proyecto", label: "Proyecto (transacción)" },
+  { value: "status", label: "Status" },
+  { value: "moneda", label: "Moneda" },
+  { value: "_proyecto", label: "Proyecto (partida)" },
+  { value: "_rubro", label: "Rubro (partida)" },
+  { value: "_mes", label: "Mes (partida)" },
+  { value: "_vinculo", label: "Vínculo" },
+  ];
+const GROUP_OPCIONES_SINVINC = [
+  { value: "dia", label: "Día de Pago Programado" },
+  { value: "zona", label: "Zona" },
+  { value: "area", label: "Área" },
+  { value: "proveedor", label: "Proveedor" },
+  { value: "proyecto", label: "Proyecto" },
+  { value: "status", label: "Status" },
+  { value: "moneda", label: "Moneda" },
+  ];
+const GROUP_OPCIONES_PANEL = [
+  { value: "proyecto", label: "Proyecto" },
+  { value: "rubro", label: "Rubro" },
+  { value: "categoria", label: "Categoría" },
+  { value: "zona", label: "Zona" },
+  { value: "concepto", label: "Concepto" },
+  ];
+
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
 const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10));
@@ -112,8 +154,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.64.1";
+const APP_VERSION = "1.65.0";
 const CHANGELOG = [
+  { v: "1.65.0", desc: "Los agrupamientos y el orden de las tablas ahora se recuerdan entre sesiones, no solo mientras la pestaña sigue abierta. Los FILTROS siguen viviendo en la sesión a propósito: abrir la app mostrando el periodo que quedó de la última vez haría leer esa cifra como si fuera la actual, y eso en un tablero financiero es un error caro. Lo guardado se limpia al leerse, así que un agrupamiento u orden que apunte a un campo retirado se descarta en vez de dejar la tabla en un estado imposible" },
   { v: "1.64.1", desc: "Fix: en el panel comparativo, el último nivel del agrupamiento no se podía desplegar y sus registros quedaban inalcanzables. No se notaba mientras 'Concepto' fuera el último nivel —ahí cada hoja ya era un registro— pero al agrupar solo por Rubro, sus partidas no había forma de verlas. Ahora esa fila también abre, muestra cuántos registros contiene y los lista debajo" },
   { v: "1.64.0", desc: "Dashboard: el panel comparativo estrena control de Agrupar por, con las mismas opciones que las otras tablas (Proyecto, Rubro, Categoría, Zona, Concepto) y hasta tres niveles. La moneda queda fija como primer nivel — mezclarla dentro de un grupo haría que sus subtotales sumaran pesos con dólares. El agrupamiento gobierna las dos tablas a la vez, porque comparten el eje de columnas para leerse una contra otra y eso solo funciona si sus renglones coinciden. La primera tabla pasa a llamarse simplemente 'Presupuesto', y su encabezado ahora refleja el agrupamiento vigente en lugar de decir siempre 'Proyecto'" },
   { v: "1.63.0", desc: "Partidas: se retira la marca de Recurrente y el botón que generaba automáticamente los meses faltantes hasta diciembre. Estaba creando partidas no deseadas —duplicaba series al copiar una partida, y volvía a generar lo que ya se había ajustado o borrado a mano— y el costo superaba lo que ahorraba. Duplicar una partida sigue siendo la vía para repetir un concepto en otro mes, con control sobre cada copia. La columna es_recurrente se queda en la base sin usarse, así que ningún dato se pierde" },
@@ -1743,16 +1786,10 @@ function ResumenComparativoPanel({
      El mismo agrupamiento gobierna las DOS tablas a propósito. Comparten el
      eje de columnas para poder leerse una contra otra, y eso solo funciona
      si sus renglones también coinciden. */
-  const GROUP_OPCIONES_PANEL = [
-    { value: "proyecto", label: "Proyecto" },
-    { value: "rubro", label: "Rubro" },
-    { value: "categoria", label: "Categoría" },
-    { value: "zona", label: "Zona" },
-    { value: "concepto", label: "Concepto" },
-  ];
-  const [groupBysPanel, setGroupBysPanel] = useSessionState(
-    "ss-dashboard-panel-groupbys",
-    [{ field: "proyecto" }, { field: "rubro" }, { field: "concepto" }]
+  const [groupBysPanel, setGroupBysPanel] = usePrefState(
+    "pref-dashboard-panel-groupbys",
+    [{ field: "proyecto" }, { field: "rubro" }, { field: "concepto" }],
+    sanearGroupBys(GROUP_OPCIONES_PANEL)
   );
   const AGRUPACION = ["moneda", ...groupBysPanel.map((g) => g.field)];
   // La moneda es el primer nivel, así que la ruta siempre empieza por ella:
@@ -1963,6 +2000,50 @@ function useSessionState(key, defaultValue) {
   }, [key, value]);
   return [value, setValue];
 }
+
+/**
+ * Como useSessionState, pero en localStorage: sobrevive a cerrar la pestaña.
+ *
+ * Se reserva para PREFERENCIAS DE TRABAJO —agrupamientos, orden de columnas—
+ * no para filtros. Un filtro persistido es peligroso: la app abriría mostrando
+ * el periodo que quedó de la última vez y esa cifra se leería como si fuera la
+ * actual. El acomodo visual, en cambio, no cambia lo que los números dicen.
+ *
+ * `sanear` limpia lo guardado antes de usarlo. Hace falta porque una
+ * preferencia apunta a campos POR NOMBRE, y los campos cambian: al retirar
+ * `es_recurrente` cualquier orden guardado que lo usara habría quedado
+ * apuntando al vacío.
+ */
+function usePrefState(key, defaultValue, sanear) {
+  const [value, setValue] = useState(() => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (raw === null) return defaultValue;
+      const guardado = JSON.parse(raw);
+      return sanear ? sanear(guardado, defaultValue) : guardado;
+    } catch {
+      return defaultValue;
+    }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify(value)); } catch {}
+  }, [key, value]);
+  return [value, setValue];
+}
+
+/** Descarta niveles de agrupamiento cuyo campo ya no existe en el catálogo. */
+const sanearGroupBys = (opciones) => (guardado, porDefecto) => {
+  if (!Array.isArray(guardado)) return porDefecto;
+  const validos = new Set(opciones.map((o) => o.value));
+  return guardado.filter((g) => g && validos.has(g.field));
+};
+
+/** Si la columna de ordenamiento desapareció, se regresa al orden por defecto. */
+const sanearSort = (claves) => (guardado, porDefecto) => {
+  if (!guardado || typeof guardado !== "object") return porDefecto;
+  if (guardado.key && !claves.includes(guardado.key)) return porDefecto;
+  return guardado;
+};
 
 // Igual que useSessionState, pero para un Set (ej. filas colapsadas) — un Set
 // no se guarda directo como JSON, así que se convierte a/desde arreglo por dentro.
@@ -3004,22 +3085,14 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const filtrosActivos = filtros.texto.trim() || filtrosMes.length > 0 || filtrosAnio.length > 0 || filtros.rubro !== "Todos" || filtros.proyecto !== "Todos";
   const limpiarFiltros = () => setFiltros({ texto: "", mes: [], anio: [], rubro: "Todos", proyecto: "Todos" });
 
-  const [sort, setSort] = useSessionState("ss-partidas-sort", { key: null, dir: "asc" });
+  const [sort, setSort] = usePrefState("pref-partidas-sort", { key: null, dir: "asc" }, sanearSort(["mes","anio","concepto","rubro","categoria","proyecto","zona","folio","monto_estimado","updated_at"]));
   const partidasOrdenadas = sortRows(partidasFiltradas, sort, {
     mes: (r) => MESES.indexOf(r.mes),
     monto_estimado: (r) => Number(r.monto_estimado) || 0,
     anio: (r) => Number(r.anio) || 0,
   });
 
-  const GROUP_OPCIONES = [
-    { value: "anio", label: "Año" },
-    { value: "mes", label: "Mes" },
-    { value: "rubro", label: "Rubro" },
-    { value: "categoria", label: "Categoría" },
-    { value: "zona", label: "Zona" },
-    { value: "proyecto", label: "Proyecto" },
-  ];
-  const [groupBys, setGroupBys] = useSessionState("ss-partidas-groupbys", []);
+  const [groupBys, setGroupBys] = usePrefState("pref-partidas-groupbys", [], sanearGroupBys(GROUP_OPCIONES));
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
   const toggleGroup = (path) => setCollapsedGroups((prev) => {
     const next = new Set(prev);
@@ -3690,7 +3763,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
   const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos" });
-  const [sort, setSort] = useSessionState("ss-transacciones-sort", { key: "dia", dir: "desc" });
+  const [sort, setSort] = usePrefState("pref-transacciones-sort", { key: "dia", dir: "desc" }, sanearSort(["dia","folio_transaccion","partida","proveedor","proyecto","zona","area","concepto_detallado","importe","status","fecha_pago","updated_at"]));
   const [seleccionadas, setSeleccionadas] = useState(new Set());
   const [marcandoReportado, setMarcandoReportado] = useState(false);
   const [marcandoEnviado, setMarcandoEnviado] = useState(false);
@@ -3730,20 +3803,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     return { ...t, _proyecto: p?.proyecto || SIN_DATO, _rubro: p?.rubro || SIN_DATO, _mes: p?.mes || SIN_DATO, _anio: p?.anio || null, _vinculo: t.partida_id ? "Vinculada" : "Sin vincular" };
   });
 
-  const GROUP_OPCIONES_TRANS = [
-    { value: "dia", label: "Día de Pago Programado" },
-    { value: "zona", label: "Zona" },
-    { value: "area", label: "Área" },
-    { value: "proveedor", label: "Proveedor" },
-    { value: "proyecto", label: "Proyecto (transacción)" },
-    { value: "status", label: "Status" },
-    { value: "moneda", label: "Moneda" },
-    { value: "_proyecto", label: "Proyecto (partida)" },
-    { value: "_rubro", label: "Rubro (partida)" },
-    { value: "_mes", label: "Mes (partida)" },
-    { value: "_vinculo", label: "Vínculo" },
-  ];
-  const [groupBys, setGroupBys] = useSessionState("ss-transacciones-groupbys", []);
+  const [groupBys, setGroupBys] = usePrefState("pref-transacciones-groupbys", [], sanearGroupBys(GROUP_OPCIONES_TRANS));
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
   const toggleGroup = (path) => setCollapsedGroups((prev) => {
     const next = new Set(prev);
@@ -3782,17 +3842,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
     { key: "status", label: "Status", render: (t) => t.status || "—" },
   ];
-  const GROUP_OPCIONES_SINVINC = [
-    { value: "dia", label: "Día de Pago Programado" },
-    { value: "zona", label: "Zona" },
-    { value: "area", label: "Área" },
-    { value: "proveedor", label: "Proveedor" },
-    { value: "proyecto", label: "Proyecto" },
-    { value: "status", label: "Status" },
-    { value: "moneda", label: "Moneda" },
-  ];
   const [filtrosSV, setFiltrosSV] = useSessionState("ss-transacciones-sv-filtros", { fechaDesde: "", fechaHasta: "" });
-  const [groupBysSV, setGroupBysSV] = useSessionState("ss-transacciones-sv-groupbys", []);
+  const [groupBysSV, setGroupBysSV] = usePrefState("pref-transacciones-sv-groupbys", [], sanearGroupBys(GROUP_OPCIONES_SINVINC));
   const [collapsedGroupsSV, setCollapsedGroupsSV] = useState(new Set());
   const toggleGroupSV = (path) => setCollapsedGroupsSV((prev) => {
     const next = new Set(prev);
@@ -4568,7 +4619,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   const [buscar, setBuscar] = useSessionState("ss-reporte-buscar", "");
   const [fechaDesde, setFechaDesde] = useSessionState("ss-reporte-desde", "");
   const [fechaHasta, setFechaHasta] = useSessionState("ss-reporte-hasta", "");
-  const [sort, setSort] = useSessionState("ss-reporte-sort", { key: "dia", dir: "desc" });
+  const [sort, setSort] = usePrefState("pref-reporte-sort", { key: "dia", dir: "desc" }, sanearSort(["dia","solicitante","area","numero_solicitud","no_sae","folio_compra_sae","folio_factura","forma_pago","metodo_pago","proveedor","referencia_pago","concepto","banco","clabe","numero_cuenta","swift","importe","moneda","notas"]));
   const filasFiltradas = filas.filter((f) => {
     if (fechaDesde && (!f.dia || f.dia < fechaDesde)) return false;
     if (fechaHasta && (!f.dia || f.dia > fechaHasta)) return false;
@@ -5023,7 +5074,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
   const [buscar, setBuscar] = useSessionState("ss-reporte-direccion-buscar", "");
   const [fechaDesde, setFechaDesde] = useSessionState("ss-reporte-direccion-desde", "");
   const [fechaHasta, setFechaHasta] = useSessionState("ss-reporte-direccion-hasta", "");
-  const [sort, setSort] = useSessionState("ss-reporte-direccion-sort", { key: "dia", dir: "desc" });
+  const [sort, setSort] = usePrefState("pref-reporte-direccion-sort", { key: "dia", dir: "desc" }, sanearSort(["dia","solicitante","proyecto","zona","proveedor","concepto","importe","moneda","a_partida","status"]));
   const filasFiltradas = filas.filter((f) => {
     if (fechaDesde && (!f.dia || f.dia < fechaDesde)) return false;
     if (fechaHasta && (!f.dia || f.dia > fechaHasta)) return false;
@@ -6669,7 +6720,7 @@ const COLUMNAS_VEHICULOS = [
 
 function FlotillaPanel({ vehiculos, vehiculosApi, mantenimientos, ubicaciones, proyectosOpciones, companiasOpciones, perfilesApi, expandido, setExpandido }) {
   const [busqueda, setBusqueda] = useSessionState("veh:busqueda", "");
-  const [sort, setSort] = useSessionState("veh:sort", { key: "no_economico", dir: "asc" });
+  const [sort, setSort] = usePrefState("pref-veh-sort", { key: "no_economico", dir: "asc" }, sanearSort(["no_economico","compania","estatus_funcional","estatus_operacional","estatus_administrativo","ubicacion","placas","vin","marca","modelo","anio","tipo"]));
   const [editando, setEditando] = useState(null); // objeto vehículo, o {} para nuevo
   const { visible, hidden, toggle, showAll } = useColumnVisibility("veh:columnas", COLUMNAS_VEHICULOS);
 
@@ -6855,7 +6906,7 @@ function FlotillaPanel({ vehiculos, vehiculosApi, mantenimientos, ubicaciones, p
 function MantenimientosPanel({ vehiculos, mantenimientos, mantenimientosApi, perfilesApi }) {
   const [estatusFiltro, setEstatusFiltro] = useSessionSetState("veh:mtto:estatus", []);
   const [aniosFiltro, setAniosFiltro] = useSessionSetState("veh:mtto:anios", []);
-  const [sort, setSort] = useSessionState("veh:mtto:sort", { key: "folio", dir: "asc" });
+  const [sort, setSort] = usePrefState("pref-veh-mtto-sort", { key: "folio", dir: "asc" }, sanearSort(["folio","vehiculo","zona","anio","fecha","tipo_mtto","estatus","taller","costo"]));
   const [editando, setEditando] = useState(null);
 
   const porId = useMemo(() => {

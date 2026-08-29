@@ -112,8 +112,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.63.0";
+const APP_VERSION = "1.64.0";
 const CHANGELOG = [
+  { v: "1.64.0", desc: "Dashboard: el panel comparativo estrena control de Agrupar por, con las mismas opciones que las otras tablas (Proyecto, Rubro, Categoría, Zona, Concepto) y hasta tres niveles. La moneda queda fija como primer nivel — mezclarla dentro de un grupo haría que sus subtotales sumaran pesos con dólares. El agrupamiento gobierna las dos tablas a la vez, porque comparten el eje de columnas para leerse una contra otra y eso solo funciona si sus renglones coinciden. La primera tabla pasa a llamarse simplemente 'Presupuesto', y su encabezado ahora refleja el agrupamiento vigente en lugar de decir siempre 'Proyecto'" },
   { v: "1.63.0", desc: "Partidas: se retira la marca de Recurrente y el botón que generaba automáticamente los meses faltantes hasta diciembre. Estaba creando partidas no deseadas —duplicaba series al copiar una partida, y volvía a generar lo que ya se había ajustado o borrado a mano— y el costo superaba lo que ahorraba. Duplicar una partida sigue siendo la vía para repetir un concepto en otro mes, con control sobre cada copia. La columna es_recurrente se queda en la base sin usarse, así que ningún dato se pierde" },
   { v: "1.62.1", desc: "La plantilla de carga masiva de Partidas gana las columnas Zona y Año. El importador ya las leía desde antes, pero la plantilla no las ofrecía: nadie sabía que existían y todo entraba sin zona y con el año en curso. Las instrucciones explican que Zona es opcional —vacía significa cualquier zona— y cuándo conviene fijar el Año" },
   { v: "1.62.0", desc: "Partidas: nuevo campo Zona, alimentado por el catálogo de zonas. Es opcional — vacío significa 'cualquier zona', para que Nómina o los servicios legales no tengan que fingir una. Disponible en el formulario, la tabla, Agrupar por, el buscador, la carga masiva y la exportación; también entra en la detección de duplicados al importar, de modo que dos partidas iguales de zonas distintas dejan de contarse como la misma. Requiere correr 08-zona-en-partidas.sql" },
@@ -1725,13 +1726,34 @@ function ResumenComparativoPanel({
     const p = partidaDe(t);
     return resolverProrrateo(p.proyecto, proyectosUnidad).map(({ proyecto, fraccion }) => ({
       proyecto, rubro: p.rubro, concepto: t.concepto_detallado || t.proveedor || "—",
+      // Se copian de la partida para que las dos tablas puedan agruparse por
+      // los mismos campos; la transacción no los trae por su cuenta.
+      categoria: p.categoria, zona: p.zona || t.zona || "",
       moneda: monedaDe(t),
       importe: (Number(t.importe) || 0) * fraccion, _columna: columnaDePagado(t),
     }));
   });
   if (proyectoKpi !== "Todos") filasPagadoResueltas = filasPagadoResueltas.filter((f) => f.proyecto === proyectoKpi);
 
-  const AGRUPACION = ["moneda", "proyecto", "rubro", "concepto"];
+  /* El agrupamiento es configurable, pero la MONEDA va fija como primer
+     nivel: si no, los pesos y los dólares se mezclarían dentro de un mismo
+     grupo y sus subtotales sumarían monedas distintas.
+
+     El mismo agrupamiento gobierna las DOS tablas a propósito. Comparten el
+     eje de columnas para poder leerse una contra otra, y eso solo funciona
+     si sus renglones también coinciden. */
+  const GROUP_OPCIONES_PANEL = [
+    { value: "proyecto", label: "Proyecto" },
+    { value: "rubro", label: "Rubro" },
+    { value: "categoria", label: "Categoría" },
+    { value: "zona", label: "Zona" },
+    { value: "concepto", label: "Concepto" },
+  ];
+  const [groupBysPanel, setGroupBysPanel] = useSessionState(
+    "ss-dashboard-panel-groupbys",
+    [{ field: "proyecto" }, { field: "rubro" }, { field: "concepto" }]
+  );
+  const AGRUPACION = ["moneda", ...groupBysPanel.map((g) => g.field)];
   // La moneda es el primer nivel, así que la ruta siempre empieza por ella:
   // "/moneda:USD/proyecto:Desh Gral/..."
   const monedaDeRuta = (ruta) => (String(ruta).match(/^\/moneda:(MXP|USD)\b/) || [])[1] || "MXP";
@@ -1760,7 +1782,13 @@ function ResumenComparativoPanel({
       subtitle="Pesos y dólares en la misma tabla, agrupados por moneda — no se suman entre sí"
       right={
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-          <div style={{ display: "flex", alignItems: "flex-end" }}>
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+            <GroupByControl
+              options={GROUP_OPCIONES_PANEL}
+              value={groupBysPanel}
+              onChange={setGroupBysPanel}
+              maxLevels={3}
+            />
             <Button variant="ghost" onClick={toggleTodo} style={{ height: 34 }}>
               {todoContraido ? "Expandir todo" : "Contraer todo"}
             </Button>
@@ -1770,7 +1798,7 @@ function ResumenComparativoPanel({
       }
     >
       {[
-        { titulo: "Presupuestado por rubro", pivot: pivotPptado, colapsadas: collapsedPptado,
+        { titulo: "Presupuesto", pivot: pivotPptado, colapsadas: collapsedPptado,
           toggle: togglePptado, vacio: !partidasResueltas.length },
         { titulo: "Pagado real (Status = Pagado)", pivot: pivotPagado, colapsadas: collapsedPagado,
           toggle: togglePagado, vacio: !filasPagadoResueltas.length },
@@ -1788,7 +1816,13 @@ function ResumenComparativoPanel({
               <table style={tableStyle}>
                 <thead>
                   <tr>
-                    <th style={thStyle}>Moneda / Proyecto</th>
+                    <th style={thStyle}>
+                      {/* Refleja el agrupamiento vigente en vez de un texto fijo:
+                          si se agrupa por Zona, decir "Proyecto" sería mentira. */}
+                      {["Moneda", ...groupBysPanel.map((gb) =>
+                        (GROUP_OPCIONES_PANEL.find((o) => o.value === gb.field) || {}).label || gb.field
+                      )].join(" / ")}
+                    </th>
                     {columnas.map((m) => <th key={m} style={{ ...thStyle, textAlign: "right" }}>{m}</th>)}
                     <th style={{ ...thStyle, textAlign: "right" }}>Total</th>
                   </tr>

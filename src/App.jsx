@@ -154,8 +154,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.66.0";
+const APP_VERSION = "1.67.0";
 const CHANGELOG = [
+  { v: "1.67.0", desc: "Transacciones: se retira el botón 'Borrar todas', que eliminaba la compañía entera con una sola confirmación. En su lugar, la barra de selección que ya existía gana 'Eliminar seleccionadas', así que hay que elegir explícitamente qué se borra. Sigue conservando las marcadas como Pagadas y avisando cuántas, y la confirmación indica el importe total de lo que se va a eliminar" },
   { v: "1.66.0", desc: "Una transacción marcada como Pagada ya no se puede borrar: hay que cambiarle el status a No Pagado primero, para que quede claro que se está deshaciendo un pago registrado y no solo limpiando un renglón. La regla cubre los tres caminos —el borrado de una fila y los dos masivos—; en los masivos las pagadas se conservan y se avisa cuántas, en vez de abortar toda la operación. Y se hereda a Partidas: una partida con transacciones pagadas no se elimina, porque dejarlas sin vincular haría desaparecer ese gasto del presupuesto por la puerta de atrás. Si solo tiene transacciones sin pagar, se permite pero avisando que quedarán sin partida" },
   { v: "1.65.0", desc: "Los agrupamientos y el orden de las tablas ahora se recuerdan entre sesiones, no solo mientras la pestaña sigue abierta. Los FILTROS siguen viviendo en la sesión a propósito: abrir la app mostrando el periodo que quedó de la última vez haría leer esa cifra como si fuera la actual, y eso en un tablero financiero es un error caro. Lo guardado se limpia al leerse, así que un agrupamiento u orden que apunte a un campo retirado se descarta en vez de dejar la tabla en un estado imposible" },
   { v: "1.64.1", desc: "Fix: en el panel comparativo, el último nivel del agrupamiento no se podía desplegar y sus registros quedaban inalcanzables. No se notaba mientras 'Concepto' fuera el último nivel —ahí cada hoja ya era un registro— pero al agrupar solo por Rubro, sus partidas no había forma de verlas. Ahora esa fila también abre, muestra cuántos registros contiene y los lista debajo" },
@@ -4008,6 +4009,37 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const onColDragStart = (e, key) => { dragKeyRef.current = key; e.dataTransfer.effectAllowed = "move"; };
   const onColDragOver = (e) => e.preventDefault();
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
+  const [eliminando, setEliminando] = useState(false);
+  /**
+   * Borra solo lo seleccionado. Reemplaza al botón "Borrar todas", que
+   * eliminaba TODA la compañía con una sola confirmación — demasiado poder
+   * para un clic, y sin forma de acotar el alcance.
+   *
+   * Las pagadas se conservan y se avisa cuántas: la regla es la misma que en
+   * el borrado de una fila.
+   */
+  const eliminarSeleccionadas = async () => {
+    const todas = [...transUnidad, ...sinVincular].filter((t) => seleccionadas.has(t.id));
+    const pagadas = todas.filter((t) => t.status === "Pagado");
+    const borrables = todas.filter((t) => t.status !== "Pagado");
+    if (!borrables.length) {
+      alert(`Las ${pagadas.length} transacciones seleccionadas están marcadas como Pagadas y no se pueden borrar. Cámbiales el status a "No Pagado" si de verdad hay que eliminarlas.`);
+      return;
+    }
+    const total = borrables.reduce((sum, t) => sum + (Number(t.importe) || 0), 0);
+    const aviso = pagadas.length ? `\n\nSe van a CONSERVAR ${pagadas.length} marcadas como Pagadas.` : "";
+    if (!confirm(`¿Eliminar ${borrables.length} transacción(es) por ${money(total)}? Esto no se puede deshacer.${aviso}`)) return;
+    setEliminando(true);
+    try {
+      for (const t of borrables) {
+        await transaccionesApi.remove(t.id).catch(() => {});
+      }
+      setSeleccionadas(new Set());
+    } finally {
+      setEliminando(false);
+    }
+  };
+
   const renderRowTr = (t, depth = 0, n) => (
     <tr key={t.id}>
       <td style={{ ...tdStyle, width: 36, textAlign: "right", color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{n}</td>
@@ -4161,33 +4193,6 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         subtitle={filtrosActivos ? `${transFiltradas.length} de ${transUnidad.length} registradas` : `${transUnidad.length} registradas`}
         right={
           <div style={{ display: "flex", gap: 8 }}>
-            {(transUnidad.length + sinVincular.length) > 0 && (
-              <Button
-                variant="danger"
-                onClick={async () => {
-                  // El borrado masivo respeta la misma regla que el individual:
-                  // las pagadas se saltan en vez de abortar toda la operación,
-                  // porque el caso de uso es limpiar para reimportar y sería
-                  // absurdo bloquearlo entero por un pago ya registrado.
-                  const todas = [...transUnidad, ...sinVincular];
-                  const pagadas = todas.filter((t) => t.status === "Pagado");
-                  const borrables = todas.filter((t) => t.status !== "Pagado");
-                  if (!borrables.length) {
-                    alert(`Las ${pagadas.length} transacciones de ${unidad} están marcadas como Pagadas y no se pueden borrar. Cámbiales el status a "No Pagado" si de verdad hay que eliminarlas.`);
-                    return;
-                  }
-                  const aviso = pagadas.length
-                    ? `\n\nSe van a CONSERVAR ${pagadas.length} que están marcadas como Pagadas.`
-                    : "";
-                  if (!confirm(`¿Eliminar ${borrables.length} transacciones de ${unidad} (vinculadas y sin vincular)? Esto no se puede deshacer — útil para reimportar desde cero.${aviso}`)) return;
-                  for (const t of borrables) {
-                    await transaccionesApi.remove(t.id).catch(() => {});
-                  }
-                }}
-              >
-                Borrar todas ({transUnidad.length + sinVincular.length})
-              </Button>
-            )}
             <Button onClick={openNew}>+ Nueva transacción</Button>
           </div>
         }
@@ -4256,6 +4261,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </Button>
             <Button variant="ghost" onClick={() => marcarEnviadasPagos(false)} disabled={marcandoEnviado}>Quitar marca</Button>
             <Button variant="ghost" onClick={() => setSeleccionadas(new Set())}>Cancelar selección</Button>
+            <div style={{ width: 1, alignSelf: "stretch", background: T.accent, opacity: 0.3, margin: "0 2px" }} />
+            <Button variant="danger" onClick={eliminarSeleccionadas} disabled={eliminando}>
+              {eliminando ? "Eliminando…" : "Eliminar seleccionadas"}
+            </Button>
           </div>
         )}
 

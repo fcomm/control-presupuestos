@@ -35,21 +35,30 @@ const T = {
   fontMono: "ui-monospace, SFMono-Regular, 'SF Mono', Consolas, 'Liberation Mono', monospace",
 };
 
+// "Diversos" existe en TODOS los rubros a propósito.
+//
+// El diagnóstico de clasificación encontró 81 partidas usando "Diversos"
+// como categoría bajo nueve rubros distintos. Cuando el mismo "error"
+// aparece bajo nueve rubros, no son nueve personas equivocándose igual:
+// es que el catálogo no ofrecía una categoría genérica y tomaban la
+// única que existía, la de Otros. Legitimarla conserva el análisis por
+// rubro, que es lo que de verdad se lee, en vez de forzar a mandar todo
+// gasto sin categoría clara al rubro Otros.
 const RUBROS = [
-  { rubro: "Materiales e Insumos", categorias: ["Material eléctrico","Material mecánico","Ferretería","Instrumentación","Tubería y conexiones","Consumibles industriales","Consumibles de oficina","Papelería","EPP","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación"] },
-  { rubro: "Equipos y Herramientas", categorias: ["Herramienta menor","Herramienta especializada","Equipos de medición","Equipos de cómputo","Equipos de comunicación","Maquinaria","Mobiliario","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación"] },
-  { rubro: "Productos Químicos", categorias: ["Productos químicos de operación","Reactivos","Solventes","Aditivos","Químicos de laboratorio","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación"] },
-  { rubro: "Servicios de Mantenimiento", categorias: ["Mantenimiento vehicular","Mantenimiento de equipos","Mantenimiento de instalaciones","Calibración","Reparaciones"] },
-  { rubro: "Servicios Operativos", categorias: ["Arrendamientos","Maniobras","Transporte y logística","Fletes","Servicios de campo","Laboratorios","Servicios especializados"] },
-  { rubro: "Servicios Administrativos", categorias: ["Mensajería","Limpieza","Vigilancia","Capacitación","Consultoría","Honorarios profesionales","Reclutamiento"] },
-  { rubro: "Servicios Básicos", categorias: ["Energía eléctrica","Agua","Telefonía fija","Telefonía móvil","Internet","Gas","Recolección de residuos"] },
-  { rubro: "Tecnologías de Información", categorias: ["Software","Licencias","Suscripciones","Hosting","Telecomunicaciones","Desarrollo de software","Servicios en la nube","Ciberseguridad"] },
-  { rubro: "Vehículos", categorias: ["Combustible","Casetas","Refacciones","Accesorios","Seguros","Verificación","Tenencias","Placas","Permisos vehiculares","Llantas","Lubricantes"] },
-  { rubro: "Viajes y Viáticos", categorias: ["Hospedaje","Boletos de avión","Transporte terrestre","Alimentación","Renta de vehículos","Viáticos diversos"] },
-  { rubro: "Promoción e Imagen", categorias: ["Publicidad","Merchandising","Eventos","Material publicitario","Uniformes corporativos"] },
-  { rubro: "Cumplimiento Legal", categorias: ["Permisos regulatorios","Licencias","Certificaciones","Estudios","Trámites gubernamentales","Auditorías"] },
-  { rubro: "Gastos Financieros e Impuestos", categorias: ["Comisiones bancarias","Derechos","Impuestos","Gastos notariales","Fianzas"] },
-  { rubro: "Nómina y Personal", categorias: ["Sueldos y salarios","Prestaciones de ley","Prestaciones adicionales","Cuotas IMSS/Infonavit","Impuesto sobre nómina (ISN)","Finiquitos y liquidaciones","Bonos y comisiones"] },
+  { rubro: "Materiales e Insumos", categorias: ["Material eléctrico","Material mecánico","Ferretería","Instrumentación","Tubería y conexiones","Consumibles industriales","Consumibles de oficina","Papelería","EPP","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación","Diversos"] },
+  { rubro: "Equipos y Herramientas", categorias: ["Herramienta menor","Herramienta especializada","Equipos de medición","Equipos de cómputo","Equipos de comunicación","Maquinaria","Mobiliario","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación","Diversos"] },
+  { rubro: "Productos Químicos", categorias: ["Productos químicos de operación","Reactivos","Solventes","Aditivos","Químicos de laboratorio","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación","Diversos"] },
+  { rubro: "Servicios de Mantenimiento", categorias: ["Mantenimiento vehicular","Mantenimiento de equipos","Mantenimiento de instalaciones","Calibración","Reparaciones","Diversos"] },
+  { rubro: "Servicios Operativos", categorias: ["Arrendamientos","Maniobras","Transporte y logística","Fletes","Servicios de campo","Laboratorios","Servicios especializados","Diversos"] },
+  { rubro: "Servicios Administrativos", categorias: ["Mensajería","Limpieza","Vigilancia","Capacitación","Consultoría","Honorarios profesionales","Reclutamiento","Diversos"] },
+  { rubro: "Servicios Básicos", categorias: ["Energía eléctrica","Agua","Telefonía fija","Telefonía móvil","Internet","Gas","Recolección de residuos","Diversos"] },
+  { rubro: "Tecnologías de Información", categorias: ["Software","Licencias","Suscripciones","Hosting","Telecomunicaciones","Desarrollo de software","Servicios en la nube","Ciberseguridad","Diversos"] },
+  { rubro: "Vehículos", categorias: ["Combustible","Casetas","Refacciones","Accesorios","Seguros","Verificación","Tenencias","Placas","Permisos vehiculares","Llantas","Lubricantes","Diversos"] },
+  { rubro: "Viajes y Viáticos", categorias: ["Hospedaje","Boletos de avión","Transporte terrestre","Alimentación","Renta de vehículos","Viáticos diversos","Diversos"] },
+  { rubro: "Promoción e Imagen", categorias: ["Publicidad","Merchandising","Eventos","Material publicitario","Uniformes corporativos","Diversos"] },
+  { rubro: "Cumplimiento Legal", categorias: ["Permisos regulatorios","Licencias","Certificaciones","Estudios","Trámites gubernamentales","Auditorías","Diversos"] },
+  { rubro: "Gastos Financieros e Impuestos", categorias: ["Comisiones bancarias","Derechos","Impuestos","Gastos notariales","Fianzas","Diversos"] },
+  { rubro: "Nómina y Personal", categorias: ["Sueldos y salarios","Prestaciones de ley","Prestaciones adicionales","Cuotas IMSS/Infonavit","Impuesto sobre nómina (ISN)","Finiquitos y liquidaciones","Bonos y comisiones","Diversos"] },
   { rubro: "Otros", categorias: ["Gastos extraordinarios","Donativos","Diversos"] },
 ];
 
@@ -154,8 +163,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.71.0";
+const APP_VERSION = "1.73.0";
 const CHANGELOG = [
+  { v: "1.73.0", desc: "'Diversos' pasa a ser categoría válida en los 15 rubros. El diagnóstico de clasificación encontró 81 partidas usándola bajo nueve rubros distintos: cuando el mismo error aparece en nueve rubros no son nueve equivocaciones, es que el catálogo no ofrecía una categoría genérica y se tomaba la única que existía, la de Otros. Con esto dejan de ser incoherencias sin tocar un solo dato, y el análisis por rubro se conserva. Además la carga masiva de Partidas ahora valida rubro y categoría contra el catálogo: no bloquea, pero marca las filas en el preview y dice a qué rubro sí pertenece esa categoría. Esa validación es la que faltaba — el formulario siempre encadenó rubro y categoría, pero el importador aceptaba cualquier combinación, y por ahí entraron 36 partidas con el marcador de proyecto 'Todos' copiado en ambos campos" },
+  { v: "1.72.0", desc: "El Reporte de Presupuesto Mensual gana un apartado de flotilla: combustible y mantenimiento vehicular juntos, desglosados por zona y con su subtotal. Se agregó porque esos dos gastos viven en rubros distintos —Vehículos y Servicios de Mantenimiento— así que el corte por rubro los separa justo cuando interesa verlos como uno solo; entre los dos suelen ser cerca de la mitad del presupuesto. La clasificación es por palabras clave sobre concepto y categoría, y el reporte indica cuántas partidas cayeron en cada bolsa para poder detectar lo que quedó fuera" },
   { v: "1.71.0", desc: "El Reporte de Presupuesto Mensual pasa de listado a resumen ejecutivo: totales por moneda arriba, y tres cortes —por rubro, por proyecto y por zona— con importe, número de partidas y porcentaje sobre el total de su moneda. Responde cuánto en pesos, cuánto en dólares, en qué se gasta y dónde se reparte, sin obligar a quien lo recibe a sacar el resumen de ochenta renglones. El corte por zona se omite si ninguna partida tiene una asignada, y la hoja pasa a vertical porque ya no hay renglones que requieran el ancho" },
   { v: "1.70.0", desc: "Partidas: nuevo botón 'Reporte de Presupuesto Mensual' que genera un PDF con lo que está a la vista — las columnas visibles en su orden actual, las filas ya filtradas y ordenadas, y el agrupamiento vigente convertido en encabezados de sección con su subtotal" },
   { v: "1.69.0", desc: "Reporte Pagos Dirección: el PDF ahora lleva únicamente las columnas visibles, en el orden en que están en pantalla. Antes tenía sus diez columnas fijas en el código, así que ocultar o reordenar en la tabla no cambiaba nada del documento y lo que se revisaba no era lo que se enviaba. La confirmación indica cuántas columnas llevará y avisa si la tabla se pasa del ancho de la hoja" },
@@ -1028,6 +1039,31 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
           .filter((i) => i !== -1)
       );
 
+      const rubroFila = (col.rubro !== -1 && row[col.rubro]) ? String(row[col.rubro]).trim() : "Otros";
+      const categoriaFila = (col.categoria !== -1 && row[col.categoria]) ? String(row[col.categoria]).trim() : "Diversos";
+
+      /* Validación contra el catálogo. Es la que faltaba: el formulario
+         encadena rubro -> categoría desde siempre, pero la carga masiva
+         aceptaba cualquier combinación, y por ahí entraron 117 partidas con
+         rubros o categorías que no existen —entre ellas 36 con "Todos" en
+         ambos campos, que es el marcador de proyecto corrido de columna.
+         No se bloquea la importación: se marca la fila para que se vea en el
+         preview y se decida. Rechazarla obligaría a rehacer el archivo por
+         un dato que casi siempre es corregible después. */
+      const defRubro = RUBROS.find((r) => normHeader(r.rubro) === normHeader(rubroFila));
+      const avisosClasif = [];
+      if (!defRubro) {
+        avisosClasif.push(`El rubro "${rubroFila}" no existe en el catálogo`);
+      } else if (!defRubro.categorias.some((c) => normHeader(c) === normHeader(categoriaFila))) {
+        const dondeSiVa = RUBROS.filter((r) => r.categorias.some((c) => normHeader(c) === normHeader(categoriaFila)))
+          .map((r) => r.rubro);
+        avisosClasif.push(
+          dondeSiVa.length
+            ? `"${categoriaFila}" no pertenece a ${rubroFila} — sí existe en ${dondeSiVa.join(" / ")}`
+            : `La categoría "${categoriaFila}" no existe en el catálogo`
+        );
+      }
+
       rows.push({
         id: uid(),
         unidad,
@@ -1035,8 +1071,9 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
         anio,
         smi: (col.smi !== -1 && row[col.smi]) ? String(row[col.smi]).trim() : "",
         concepto: String(concepto).trim(),
-        rubro: (col.rubro !== -1 && row[col.rubro]) ? String(row[col.rubro]).trim() : "Otros",
-        categoria: (col.categoria !== -1 && row[col.categoria]) ? String(row[col.categoria]).trim() : "Diversos",
+        rubro: rubroFila,
+        categoria: categoriaFila,
+        _avisoClasificacion: avisosClasif.length ? avisosClasif.join(" · ") : null,
         zona: (col.zona !== -1 && row[col.zona]) ? String(row[col.zona]).trim() : "",
         proyecto: (col.proyecto !== -1 && row[col.proyecto]) ? String(row[col.proyecto]).trim() : "",
         monto_estimado: monto,
@@ -1164,7 +1201,8 @@ function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
   const nuevas = rows.filter((r) => !r._existenteId).length;
   const actualizaciones = rows.filter((r) => r._existenteId).length;
 
-  return { rows, sheetsFound, nuevas, actualizaciones, sinCompania };
+  const conAvisoClasif = rows.filter((r) => r._avisoClasificacion).length;
+  return { rows, sheetsFound, nuevas, actualizaciones, sinCompania, conAvisoClasif };
 }
 
 function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = [], cuentas = []) {
@@ -2823,12 +2861,15 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
     if (!preview) return;
     setImporting(true);
     try {
-      const nuevas = preview.rows.filter((r) => !r._existenteId).map(({ _existenteId, ...rest }) => rest);
+      // _avisoClasificacion es un dato de pantalla, no de la tabla: se
+      // descarta antes de insertar o Supabase rechaza la columna desconocida.
+      const nuevas = preview.rows.filter((r) => !r._existenteId)
+        .map(({ _existenteId, _avisoClasificacion, ...rest }) => rest);
       const actualizaciones = preview.rows.filter((r) => r._existenteId);
 
       if (nuevas.length) await partidasApi.bulkInsert(nuevas);
       for (const r of actualizaciones) {
-        const { id, _existenteId, ...patch } = r;
+        const { id, _existenteId, _avisoClasificacion, ...patch } = r;
         await partidasApi.update(_existenteId, patch);
       }
 
@@ -2871,7 +2912,27 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
             {preview.sheetsIgnored.map((s) => (
               <Pill key={s} tone="dim">{s} (ignorada)</Pill>
             ))}
+            {preview.rows.some((r) => r._avisoClasificacion) && (
+              <Pill tone="amber">
+                {preview.rows.filter((r) => r._avisoClasificacion).length} con rubro o categoría fuera del catálogo
+              </Pill>
+            )}
           </div>
+
+          {/* No bloquea la importación: avisa. Rechazar el archivo entero por
+              una clasificación obligaría a rehacerlo, y casi siempre es más
+              fácil corregirla después desde la tabla. */}
+          {preview.rows.some((r) => r._avisoClasificacion) && (
+            <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
+              <b>Hay filas cuyo rubro o categoría no existe en el catálogo</b>
+              Se van a importar de todas formas, pero conviene revisarlas: el Dashboard agrupa por rubro,
+              y un rubro inventado queda fuera de todos los cortes.
+              <ul style={{ margin: "8px 0 0", paddingLeft: 18, color: T.textDim }}>
+                {[...new Set(preview.rows.filter((r) => r._avisoClasificacion).map((r) => r._avisoClasificacion))]
+                  .slice(0, 6).map((a) => <li key={a}>{a}</li>)}
+              </ul>
+            </div>
+          )}
 
           <div style={{ overflowX: "auto", maxHeight: 220, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
             <table style={tableStyle}>
@@ -3382,6 +3443,55 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
 
       // El orden responde a la pregunta: primero EN QUÉ se gasta, luego DÓNDE.
       seccion("Rubro", cortePor("rubro", "Sin rubro"));
+
+      /* Apartado de flotilla.
+         Combustible y mantenimiento vehicular viven en RUBROS DISTINTOS
+         —Vehículos y Servicios de Mantenimiento—, así que el corte por rubro
+         los separa justo cuando interesa verlos juntos: entre los dos suelen
+         ser la mitad del presupuesto.
+         Se clasifican por palabras clave sobre concepto y categoría, así que
+         el reporte dice cuántas partidas cayó en cada bolsa: si el número no
+         cuadra con lo esperado, hay algo mal escrito o mal capturado. */
+      const CLAVES_FLOTILLA = [
+        { bolsa: "Combustible", claves: ["combustible", "gasolina", "diesel", "diésel"] },
+        { bolsa: "Mantenimiento vehicular", claves: [
+          "mantto unidad", "mantto. unidad", "mantenimiento unidad", "mantto vehic",
+          "mantenimiento vehic", "unidades ligeras", "unidades pesadas",
+          "unidad vehicular", "unidades vehiculares", "llanta", "neumatico", "neumático",
+          "acumulador", "refaccion", "refacción", "verificacion", "verificación",
+        ] },
+      ];
+      const normTexto = (v) => String(v || "")
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+        .replace(/[.,;:()]/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+      const bolsaDe = (p) => {
+        const t = normTexto(p.concepto) + " " + normTexto(p.categoria);
+        for (const { bolsa, claves } of CLAVES_FLOTILLA) {
+          if (claves.some((k) => t.includes(normTexto(k)))) return bolsa;
+        }
+        return null;
+      };
+      const deFlotilla = partidasOrdenadas.filter((p) => bolsaDe(p));
+      if (deFlotilla.length) {
+        const mapa = {};
+        deFlotilla.forEach((p) => {
+          // El desglose es por ZONA: en flotilla la pregunta operativa es
+          // dónde se está gastando, no bajo qué rubro quedó clasificado.
+          const clave = `${bolsaDe(p)} · ${String(p.zona || "").trim() || "Sin zona"}`;
+          const m = monedaDe(p);
+          if (!mapa[clave]) mapa[clave] = { clave, MXP: 0, USD: 0, n: 0 };
+          mapa[clave][m] += Number(p.monto_estimado) || 0;
+          mapa[clave].n++;
+        });
+        const filas = Object.values(mapa).sort((a, b) => a.clave.localeCompare(b.clave));
+
+        // Subtotal de la flotilla completa, que es el número que se busca.
+        const sub = { clave: "TOTAL FLOTILLA", MXP: 0, USD: 0, n: deFlotilla.length };
+        deFlotilla.forEach((p) => { sub[monedaDe(p)] += Number(p.monto_estimado) || 0; });
+        filas.push(sub);
+
+        seccion("Flotilla: combustible y mantenimiento vehicular", filas);
+      }
       seccion("Proyecto", cortePor("proyecto", "Sin proyecto"));
       const porZona = cortePor("zona", "Cualquier zona");
       // Si ninguna partida tiene zona, el corte no aporta nada y se omite.

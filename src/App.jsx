@@ -163,8 +163,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.73.0";
+const APP_VERSION = "1.74.0";
 const CHANGELOG = [
+  { v: "1.74.0", desc: "Las exportaciones a Excel de Partidas y del Reporte Pagos Dirección respetan ahora las columnas visibles, igual que ya lo hacían el PDF y el Reporte de Pagos. En Partidas se conservan siempre Unidad, Usado y Disponible: no existen como columna en pantalla pero sí hacen falta en la hoja. De paso, el reporte de Dirección deja de llevar encabezados, valores y anchos en tres listas paralelas —el formato de moneda se aplicaba por índice fijo, así que mover la columna Importe dejaba el signo de pesos en la de al lado" },
   { v: "1.73.0", desc: "'Diversos' pasa a ser categoría válida en los 15 rubros. El diagnóstico de clasificación encontró 81 partidas usándola bajo nueve rubros distintos: cuando el mismo error aparece en nueve rubros no son nueve equivocaciones, es que el catálogo no ofrecía una categoría genérica y se tomaba la única que existía, la de Otros. Con esto dejan de ser incoherencias sin tocar un solo dato, y el análisis por rubro se conserva. Además la carga masiva de Partidas ahora valida rubro y categoría contra el catálogo: no bloquea, pero marca las filas en el preview y dice a qué rubro sí pertenece esa categoría. Esa validación es la que faltaba — el formulario siempre encadenó rubro y categoría, pero el importador aceptaba cualquier combinación, y por ahí entraron 36 partidas con el marcador de proyecto 'Todos' copiado en ambos campos" },
   { v: "1.72.0", desc: "El Reporte de Presupuesto Mensual gana un apartado de flotilla: combustible y mantenimiento vehicular juntos, desglosados por zona y con su subtotal. Se agregó porque esos dos gastos viven en rubros distintos —Vehículos y Servicios de Mantenimiento— así que el corte por rubro los separa justo cuando interesa verlos como uno solo; entre los dos suelen ser cerca de la mitad del presupuesto. La clasificación es por palabras clave sobre concepto y categoría, y el reporte indica cuántas partidas cayeron en cada bolsa para poder detectar lo que quedó fuera" },
   { v: "1.71.0", desc: "El Reporte de Presupuesto Mensual pasa de listado a resumen ejecutivo: totales por moneda arriba, y tres cortes —por rubro, por proyecto y por zona— con importe, número de partidas y porcentaje sobre el total de su moneda. Responde cuánto en pesos, cuánto en dólares, en qué se gasta y dónde se reparte, sin obligar a quien lo recibe a sacar el resumen de ochenta renglones. El corte por zona se omite si ninguna partida tiene una asignada, y la hoja pasa a vertical porque ya no hay renglones que requieran el ancho" },
@@ -3229,22 +3230,28 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   // Encabezado, ancho y valor viven juntos en un solo arreglo para que agregar
   // una columna no pueda desalinear el archivo.
   const exportarExcel = async (todasLasCompanias = false) => {
-    const COLS = [
+    /* Catálogo completo de lo exportable. `col` amarra cada columna con la de
+       la tabla: las que la tienen se incluyen solo si están visibles, y las
+       que no —Unidad, Usado, Disponible— van siempre, porque no existen en
+       pantalla pero sí hacen falta en la hoja. */
+    const TODAS = [
       { header: "Unidad",    width: 9,  get: (p) => p.unidad },
-      { header: "Folio",     width: 16, get: (p) => p.folio || "" },
-      { header: "Mes",       width: 11, get: (p) => p.mes },
-      { header: "Año",       width: 7,  get: (p) => p.anio },
-      { header: "Concepto",  width: 50, get: (p) => p.concepto },
-      { header: "Rubro",     width: 26, get: (p) => p.rubro },
-      { header: "Categoria", width: 30, get: (p) => p.categoria },
-      { header: "Zona",      width: 16, get: (p) => p.zona || "" },
-      { header: "Proyecto",  width: 17, get: (p) => p.proyecto || "" },
+      { header: "Folio",     width: 16, get: (p) => p.folio || "",        col: "folio" },
+      { header: "Mes",       width: 11, get: (p) => p.mes,                col: "mes" },
+      { header: "Año",       width: 7,  get: (p) => p.anio,               col: "anio" },
+      { header: "Concepto",  width: 50, get: (p) => p.concepto,           col: "concepto" },
+      { header: "Rubro",     width: 26, get: (p) => p.rubro,              col: "rubro" },
+      { header: "Categoria", width: 30, get: (p) => p.categoria,          col: "categoria" },
+      { header: "Zona",      width: 16, get: (p) => p.zona || "",         col: "zona" },
+      { header: "Proyecto",  width: 17, get: (p) => p.proyecto || "",     col: "proyecto" },
       { header: "Moneda",    width: 9,  get: (p) => p.moneda || "MXP" },
-      { header: "Monto",     width: 15, get: (p) => Number(p.monto_estimado) || 0, money: true },
+      { header: "Monto",     width: 15, get: (p) => Number(p.monto_estimado) || 0, money: true, col: "monto_estimado" },
       { header: "Usado",     width: 15, get: (p) => usadoDe(p), money: true },
       { header: "Disponible",width: 15, get: (p) => (Number(p.monto_estimado) || 0) - usadoDe(p), money: true },
       { header: "SMI",       width: 10, get: (p) => p.smi || "" },
     ];
+    const visibles = new Set(columnasVisibles.map((c) => c.key));
+    const COLS = TODAS.filter((c) => !c.col || visibles.has(c.col));
     // Con todasLasCompanias, se ignora el selector global de compañía y se
     // exportan las tres en hojas separadas, aplicando los MISMOS filtros de mes,
     // año, rubro y proyecto que estén puestos. Es lo que necesita el preparador
@@ -5387,17 +5394,22 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 // etiqueta, para que el documento salga de la MISMA definición que la tabla.
 // Antes el PDF tenía sus diez columnas fijas en el código y no había manera de
 // que respetara lo elegido en "Columnas".
+// Cada columna lleva junto todo lo que necesita: cómo se ve en pantalla
+// (`label`), cómo se imprime en el PDF (`pdf`) y cómo se exporta a Excel
+// (`xls` + `width`). Antes eran listas paralelas y el formato de moneda se
+// aplicaba por índice fijo, así que al mover una columna el signo de pesos
+// se quedaba en la anterior.
 const COLUMNAS_REPORTE_DIRECCION = [
-  { key: "dia", label: "Día", pdf: (f) => f.dia || "" },
-  { key: "solicitante", label: "Solicitante", pdf: (f) => f.solicitante || "" },
-  { key: "proyecto", label: "Proyecto", pdf: (f) => f.proyecto || "" },
-  { key: "zona", label: "Zona", pdf: (f) => f.zona || "" },
-  { key: "proveedor", label: "Proveedor", pdf: (f) => f.proveedor || "", izq: true },
-  { key: "concepto", label: "Concepto", pdf: (f) => f.concepto || "", izq: true },
-  { key: "importe", label: "Importe", pdf: (f) => money(f.importe, f.moneda) },
-  { key: "moneda", label: "Moneda", pdf: (f) => f.moneda || "" },
-  { key: "a_partida", label: "A Partida", pdf: (f) => f.a_partida || "" },
-  { key: "status", label: "Status", pdf: (f) => f.status || "" },
+  { key: "dia", label: "Día", pdf: (f) => f.dia || "", xls: (f) => f.dia, width: 12 },
+  { key: "solicitante", label: "Solicitante", pdf: (f) => f.solicitante || "", xls: (f) => f.solicitante, width: 18 },
+  { key: "proyecto", label: "Proyecto", pdf: (f) => f.proyecto || "", xls: (f) => f.proyecto, width: 16 },
+  { key: "zona", label: "Zona", pdf: (f) => f.zona || "", xls: (f) => f.zona, width: 14 },
+  { key: "proveedor", label: "Proveedor", pdf: (f) => f.proveedor || "", izq: true, xls: (f) => f.proveedor, width: 30 },
+  { key: "concepto", label: "Concepto", pdf: (f) => f.concepto || "", izq: true, xls: (f) => f.concepto, width: 38 },
+  { key: "importe", label: "Importe", pdf: (f) => money(f.importe, f.moneda), xls: (f) => f.importe, width: 14, money: true },
+  { key: "moneda", label: "Moneda", pdf: (f) => f.moneda || "", xls: (f) => f.moneda, width: 9 },
+  { key: "a_partida", label: "A Partida", pdf: (f) => f.a_partida || "", xls: (f) => f.a_partida, width: 16 },
+  { key: "status", label: "Status", pdf: (f) => f.status || "", xls: (f) => f.status, width: 12 },
 ];
 
 function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi }) {
@@ -5453,10 +5465,9 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
     const wbx = new ExcelJS.Workbook();
     const ws = wbx.addWorksheet("Reporte pagos direccion");
 
-    ws.columns = [
-      { width: 8.875 }, { width: 17.125 }, { width: 11.375 }, { width: 8.625 }, { width: 23.25 },
-      { width: 41.125 }, { width: 11.125 }, { width: 11.375 }, { width: 11.875 }, { width: 9.625 },
-    ];
+    // Los anchos también salen de la selección: dejarlos fijos en diez
+    // desalinearía la hoja en cuanto se oculte una columna.
+    ws.columns = columnas.filter((c) => c.xls).map((c) => ({ width: c.width || 14 }));
 
     const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
     const inicio = fechaDesde || diasOrdenados[0] || "";
@@ -5480,24 +5491,26 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
     ws.getCell("G4").numFmt = '"$"#,##0.00';
     ws.getCell("G4").font = { name: "Calibri", size: 11 };
 
-    const headers = ["Día", "Solicitante", "Proyecto", "Zona", "Proveedor", "Concepto", "Importe", "Moneda", "A Partida", "Status"];
+    // Las mismas columnas que están a la vista, en su orden. El formato de
+    // moneda viaja con la columna (`money`), no por índice: así mover
+    // Importe de lugar ya no deja el signo de pesos en la columna de al lado.
+    const colsXls = columnas.filter((c) => c.xls);
     const headerRow = ws.getRow(6);
-    headers.forEach((h, i) => {
+    colsXls.forEach((c, i) => {
       const cell = headerRow.getCell(i + 1);
-      cell.value = h;
+      cell.value = c.label;
       cell.alignment = { horizontal: "center" };
       cell.font = { name: "Calibri", size: 11 };
     });
 
     filasOrdenadas.forEach((f, i) => {
       const row = ws.getRow(7 + i);
-      const valores = [f.dia, f.solicitante, f.proyecto, f.zona, f.proveedor, f.concepto, f.importe, f.moneda, f.a_partida, f.status];
-      valores.forEach((v, ci) => {
+      colsXls.forEach((c, ci) => {
         const cell = row.getCell(ci + 1);
-        cell.value = v;
+        cell.value = c.xls(f);
         cell.alignment = { horizontal: "center" };
         cell.font = { name: "Calibri", size: 11 };
-        if (ci === 6) cell.numFmt = '"$"#,##0.00'; // columna Importe
+        if (c.money) cell.numFmt = '"$"#,##0.00';
       });
     });
 

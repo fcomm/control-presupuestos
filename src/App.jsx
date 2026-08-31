@@ -154,8 +154,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.65.0";
+const APP_VERSION = "1.66.0";
 const CHANGELOG = [
+  { v: "1.66.0", desc: "Una transacción marcada como Pagada ya no se puede borrar: hay que cambiarle el status a No Pagado primero, para que quede claro que se está deshaciendo un pago registrado y no solo limpiando un renglón. La regla cubre los tres caminos —el borrado de una fila y los dos masivos—; en los masivos las pagadas se conservan y se avisa cuántas, en vez de abortar toda la operación. Y se hereda a Partidas: una partida con transacciones pagadas no se elimina, porque dejarlas sin vincular haría desaparecer ese gasto del presupuesto por la puerta de atrás. Si solo tiene transacciones sin pagar, se permite pero avisando que quedarán sin partida" },
   { v: "1.65.0", desc: "Los agrupamientos y el orden de las tablas ahora se recuerdan entre sesiones, no solo mientras la pestaña sigue abierta. Los FILTROS siguen viviendo en la sesión a propósito: abrir la app mostrando el periodo que quedó de la última vez haría leer esa cifra como si fuera la actual, y eso en un tablero financiero es un error caro. Lo guardado se limpia al leerse, así que un agrupamiento u orden que apunte a un campo retirado se descarta en vez de dejar la tabla en un estado imposible" },
   { v: "1.64.1", desc: "Fix: en el panel comparativo, el último nivel del agrupamiento no se podía desplegar y sus registros quedaban inalcanzables. No se notaba mientras 'Concepto' fuera el último nivel —ahí cada hoja ya era un registro— pero al agrupar solo por Rubro, sus partidas no había forma de verlas. Ahora esa fila también abre, muestra cuántos registros contiene y los lista debajo" },
   { v: "1.64.0", desc: "Dashboard: el panel comparativo estrena control de Agrupar por, con las mismas opciones que las otras tablas (Proyecto, Rubro, Categoría, Zona, Concepto) y hasta tres niveles. La moneda queda fija como primer nivel — mezclarla dentro de un grupo haría que sus subtotales sumaran pesos con dólares. El agrupamiento gobierna las dos tablas a la vez, porque comparten el eje de columnas para leerse una contra otra y eso solo funciona si sus renglones coinciden. La primera tabla pasa a llamarse simplemente 'Presupuesto', y su encabezado ahora refleja el agrupamiento vigente en lugar de decir siempre 'Proyecto'" },
@@ -2877,6 +2878,28 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
 // Modal ligero para editar una transacción sin salir de la vista en la que
 // estás (ej. desde la fila expandida de una partida) — no cambia de pestaña.
 // No incluye el selector de Partida (aquí ya se sabe a cuál pertenece).
+/**
+ * Una transacción PAGADA no se borra.
+ *
+ * Un pago ejecutado es un hecho contable: ya salió el dinero. Borrarlo hace
+ * que el gasto desaparezca del presupuesto sin que nada lo explique, y lo
+ * reportado a Dirección deja de cuadrar con el banco. Para eliminarla hay que
+ * marcarla primero como No Pagada, que obliga a decidir explícitamente que
+ * ese pago no ocurrió.
+ *
+ * Devuelve true si se puede borrar.
+ */
+function puedeBorrarTransaccion(t) {
+  if (!t || t.status !== "Pagado") return true;
+  alert(
+    `No se puede eliminar: la transacción "${t.concepto_detallado || t.proveedor || t.id}" ` +
+    `(${money(t.importe, t.moneda)}) está marcada como Pagada.\n\n` +
+    `Si de verdad hay que borrarla, primero cámbiale el status a "No Pagado". ` +
+    `Así queda claro que se está deshaciendo un pago registrado, no solo limpiando un renglón.`
+  );
+  return false;
+}
+
 /** Normaliza la moneda: vacío o cualquier cosa distinta de USD cuenta como MXP. */
 const monedaNorm = (v) => ((v || "MXP") === "USD" ? "USD" : "MXP");
 const mismaMoneda = (a, b) => monedaNorm(a) === monedaNorm(b);
@@ -3342,7 +3365,28 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" }); };
   const remove = (id) => {
     const p = partidasUnidad.find((x) => x.id === id);
-    if (!confirm(`¿Eliminar la partida "${p?.concepto || id}" (folio ${p?.folio || "—"})? Esto no se puede deshacer.`)) return;
+    const vinculadas = transacciones.filter((t) => t.partida_id === id);
+    const pagadas = vinculadas.filter((t) => t.status === "Pagado");
+
+    // La regla de las transacciones pagadas se hereda: borrar la partida las
+    // dejaría apuntando a nada, con lo que el gasto desaparecería del
+    // presupuesto sin dejar rastro. Es el mismo daño, por la puerta de atrás.
+    if (pagadas.length) {
+      const total = pagadas.reduce((sum, t) => sum + (Number(t.importe) || 0), 0);
+      alert(
+        `No se puede eliminar la partida "${p?.concepto || id}" (folio ${p?.folio || "—"}).\n\n` +
+        `Tiene ${pagadas.length} transacción(es) marcadas como Pagadas por ${money(total, p?.moneda)}. ` +
+        `Borrarla las dejaría sin partida y ese gasto desaparecería del presupuesto.\n\n` +
+        `Primero reasígnalas a otra partida, o cámbiales el status a "No Pagado".`
+      );
+      return;
+    }
+
+    // Las no pagadas sí dejan borrar, pero se avisa: quedarán sin vincular.
+    const aviso = vinculadas.length
+      ? `\n\nOJO: ${vinculadas.length} transacción(es) sin pagar quedarán sin partida vinculada. Van a aparecer en "Transacciones importadas sin partida vinculada".`
+      : "";
+    if (!confirm(`¿Eliminar la partida "${p?.concepto || id}" (folio ${p?.folio || "—"})? Esto no se puede deshacer.${aviso}`)) return;
     partidasApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
   };
 
@@ -4064,6 +4108,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   };
   const remove = (id) => {
     const t = transUnidad.find((x) => x.id === id) || sinVincular.find((x) => x.id === id);
+    if (!puedeBorrarTransaccion(t)) return;
     if (!confirm(`¿Eliminar la transacción "${t?.concepto_detallado || id}" (${money(t?.importe, t?.moneda)})? Esto no se puede deshacer.`)) return;
     transaccionesApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
   };
@@ -4120,9 +4165,22 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               <Button
                 variant="danger"
                 onClick={async () => {
-                  const total = transUnidad.length + sinVincular.length;
-                  if (!confirm(`¿Eliminar las ${total} transacciones de ${unidad} (vinculadas y sin vincular)? Esto no se puede deshacer — útil para reimportar desde cero.`)) return;
-                  for (const t of [...transUnidad, ...sinVincular]) {
+                  // El borrado masivo respeta la misma regla que el individual:
+                  // las pagadas se saltan en vez de abortar toda la operación,
+                  // porque el caso de uso es limpiar para reimportar y sería
+                  // absurdo bloquearlo entero por un pago ya registrado.
+                  const todas = [...transUnidad, ...sinVincular];
+                  const pagadas = todas.filter((t) => t.status === "Pagado");
+                  const borrables = todas.filter((t) => t.status !== "Pagado");
+                  if (!borrables.length) {
+                    alert(`Las ${pagadas.length} transacciones de ${unidad} están marcadas como Pagadas y no se pueden borrar. Cámbiales el status a "No Pagado" si de verdad hay que eliminarlas.`);
+                    return;
+                  }
+                  const aviso = pagadas.length
+                    ? `\n\nSe van a CONSERVAR ${pagadas.length} que están marcadas como Pagadas.`
+                    : "";
+                  if (!confirm(`¿Eliminar ${borrables.length} transacciones de ${unidad} (vinculadas y sin vincular)? Esto no se puede deshacer — útil para reimportar desde cero.${aviso}`)) return;
+                  for (const t of borrables) {
                     await transaccionesApi.remove(t.id).catch(() => {});
                   }
                 }}
@@ -4249,8 +4307,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <Button
               variant="danger"
               onClick={async () => {
-                if (!confirm(`¿Eliminar las ${sinVincular.length} transacciones sin vincular de ${unidad}? Esto no se puede deshacer.`)) return;
-                for (const t of sinVincular) {
+                const pagadas = sinVincular.filter((t) => t.status === "Pagado");
+                const borrables = sinVincular.filter((t) => t.status !== "Pagado");
+                if (!borrables.length) {
+                  alert(`Las ${pagadas.length} transacciones sin vincular están marcadas como Pagadas y no se pueden borrar.`);
+                  return;
+                }
+                const aviso = pagadas.length ? `\n\nSe van a CONSERVAR ${pagadas.length} marcadas como Pagadas.` : "";
+                if (!confirm(`¿Eliminar ${borrables.length} transacciones sin vincular de ${unidad}? Esto no se puede deshacer.${aviso}`)) return;
+                for (const t of borrables) {
                   await transaccionesApi.remove(t.id).catch(() => {});
                 }
               }}

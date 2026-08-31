@@ -154,6 +154,85 @@ const GROUP_OPCIONES_PANEL = [
   { value: "concepto", label: "Concepto" },
   ];
 
+/* ----------------------------------------------------------------------
+   SUGERENCIA DE CATEGORÍA
+   ---------------------------------------------------------------------- */
+// Palabras que apuntan a una categoría cuando su nombre no aparece tal cual
+// en el concepto. "Gasolina" no contiene la palabra "Combustible", pero
+// cualquiera sabe que va ahí.
+const PISTAS_CATEGORIA = {
+  "Combustible": ["gasolina", "diesel", "diésel", "magna", "premium"],
+  "Llantas": ["llanta", "neumatico", "rin"],
+  "Refacciones": ["acumulador", "bateria", "balata", "amortiguador", "clutch", "filtro"],
+  "Lubricantes": ["aceite", "lubricante", "grasa"],
+  "Energía eléctrica": ["cfe", "luz", "energia", "medidor", "recibo de luz"],
+  "Telefonía fija": ["telefono", "telefonia", "telmex", "linea telefonica"],
+  "Internet": ["internet", "enlace", "fibra", "banda ancha"],
+  "Agua": ["agua", "pipa", "hidraulico", "potable"],
+  "Recolección de residuos": ["residuo", "basura", "desecho", "peligroso"],
+  "Vigilancia": ["vigilancia", "seguridad privada", "guardia", "alarma", "camara"],
+  "Capacitación": ["capacitacion", "curso", "entrenamiento", "certificacion"],
+  "Mensajería": ["mensajeria", "paqueteria", "guia", "envio"],
+  "Arrendamientos": ["arrendamiento", "renta", "alquiler", "multifuncional"],
+  "Papelería": ["papeleria", "hoja", "toner", "tinta", "impresion"],
+  "EPP": ["epp", "bota", "casco", "guante", "chaleco", "lente de seguridad"],
+  "Consumibles industriales": ["limpieza", "consumible", "trapo", "escoba"],
+  "Sueldos y Salarios": ["nomina", "sueldo", "salario", "finiquito", "aguinaldo"],
+  "Impuestos": ["impuesto", "isr", "iva", "predial", "arancel"],
+  "Estudios": ["estudio", "analisis", "laboratorio", "dictamen", "peritaje"],
+  "Mantenimiento de instalaciones": ["mantto electrico", "instalacion", "pintura", "impermeabiliza"],
+  "Herramienta especializada": ["herramienta", "extintor", "respiracion autonoma"],
+  "Equipos de cómputo": ["computo", "laptop", "computadora", "impresora", "monitor"],
+  "Productos químicos de operación": ["quimico", "xileno", "emulsotron", "hipoclorito", "demulsificante"],
+  "Donativos": ["donativo", "donacion", "aportacion"],
+};
+
+// Índice normalizado de las pistas, construido una sola vez.
+const PISTAS_NORM = {};
+
+const normSug = (v) => String(v || "")
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  .replace(/[.,;:()]/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+
+Object.entries(PISTAS_CATEGORIA).forEach(([cat, claves]) => {
+  PISTAS_NORM[normSug(cat)] = claves;
+});
+
+/**
+ * Propone una categoría a partir del concepto, DENTRO del rubro elegido.
+ *
+ * Puntúa cada categoría disponible: primero por sus palabras clave, luego
+ * por las palabras que comparte con el concepto. Se limita al rubro para
+ * no pelear con la decisión que ya tomó quien captura — el rubro se elige,
+ * la categoría se sugiere.
+ *
+ * Devuelve null cuando ninguna alcanza: una sugerencia mala cuesta más que
+ * ninguna, porque se acepta sin pensar.
+ */
+function sugerirCategoria(concepto, categorias) {
+  const t = normSug(concepto);
+  if (!t || !categorias || !categorias.length) return null;
+  const relleno = new Set(["de", "del", "la", "el", "los", "las", "y", "a", "en", "para",
+    "por", "con", "servicio", "servicios", "pago", "pagos", "gastos", "diversos"]);
+  const palabras = new Set(t.split(" ").filter((w) => w.length > 3 && !relleno.has(w)));
+
+  let mejor = null, mejorPts = 0;
+  categorias.forEach((cat) => {
+    if (normSug(cat) === "diversos") return; // el comodín nunca se sugiere
+    let pts = 0;
+    // La búsqueda de pistas va NORMALIZADA, no por llave exacta: la categoría
+    // real es "Sueldos y salarios" y la pista decía "Sueldos y Salarios", así
+    // que con búsqueda exacta la pista se perdía en silencio y ganaba
+    // "Impuesto sobre nómina" por compartir una palabra.
+    (PISTAS_NORM[normSug(cat)] || []).forEach((k) => { if (t.includes(normSug(k))) pts += 60; });
+    normSug(cat).split(" ").forEach((w) => {
+      if (w.length > 3 && !relleno.has(w) && palabras.has(w)) pts += 40;
+    });
+    if (pts > mejorPts) { mejorPts = pts; mejor = cat; }
+  });
+  return mejorPts >= 40 ? mejor : null;
+}
+
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
 const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10));
@@ -163,8 +242,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.74.0";
+const APP_VERSION = "1.75.0";
 const CHANGELOG = [
+  { v: "1.75.0", desc: "Dos cosas sobre rubros y categorías. Al capturar una partida, la app sugiere una categoría a partir del concepto —dentro del rubro elegido— y basta un clic para usarla; se sugiere, no se impone, porque quien captura sabe cosas que el concepto no dice. Y la carga masiva ya no deja entrar combinaciones inválidas: en vez de solo avisar, las repara conservando SIEMPRE el rubro —que es el eje que se lee en el Dashboard— y ajustando la categoría, con el valor original guardado en `extra` para no perderlo. Un rubro inexistente cuya categoría solo vive en un lugar se corrige a ese lugar; si no hay forma de saberlo, cae en Otros / Diversos, que es honesto" },
   { v: "1.74.0", desc: "Las exportaciones a Excel de Partidas y del Reporte Pagos Dirección respetan ahora las columnas visibles, igual que ya lo hacían el PDF y el Reporte de Pagos. En Partidas se conservan siempre Unidad, Usado y Disponible: no existen como columna en pantalla pero sí hacen falta en la hoja. De paso, el reporte de Dirección deja de llevar encabezados, valores y anchos en tres listas paralelas —el formato de moneda se aplicaba por índice fijo, así que mover la columna Importe dejaba el signo de pesos en la de al lado" },
   { v: "1.73.0", desc: "'Diversos' pasa a ser categoría válida en los 15 rubros. El diagnóstico de clasificación encontró 81 partidas usándola bajo nueve rubros distintos: cuando el mismo error aparece en nueve rubros no son nueve equivocaciones, es que el catálogo no ofrecía una categoría genérica y se tomaba la única que existía, la de Otros. Con esto dejan de ser incoherencias sin tocar un solo dato, y el análisis por rubro se conserva. Además la carga masiva de Partidas ahora valida rubro y categoría contra el catálogo: no bloquea, pero marca las filas en el preview y dice a qué rubro sí pertenece esa categoría. Esa validación es la que faltaba — el formulario siempre encadenó rubro y categoría, pero el importador aceptaba cualquier combinación, y por ahí entraron 36 partidas con el marcador de proyecto 'Todos' copiado en ambos campos" },
   { v: "1.72.0", desc: "El Reporte de Presupuesto Mensual gana un apartado de flotilla: combustible y mantenimiento vehicular juntos, desglosados por zona y con su subtotal. Se agregó porque esos dos gastos viven en rubros distintos —Vehículos y Servicios de Mantenimiento— así que el corte por rubro los separa justo cuando interesa verlos como uno solo; entre los dos suelen ser cerca de la mitad del presupuesto. La clasificación es por palabras clave sobre concepto y categoría, y el reporte indica cuántas partidas cayeron en cada bolsa para poder detectar lo que quedó fuera" },
@@ -1040,8 +1120,8 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
           .filter((i) => i !== -1)
       );
 
-      const rubroFila = (col.rubro !== -1 && row[col.rubro]) ? String(row[col.rubro]).trim() : "Otros";
-      const categoriaFila = (col.categoria !== -1 && row[col.categoria]) ? String(row[col.categoria]).trim() : "Diversos";
+      let rubroFila = (col.rubro !== -1 && row[col.rubro]) ? String(row[col.rubro]).trim() : "Otros";
+      let categoriaFila = (col.categoria !== -1 && row[col.categoria]) ? String(row[col.categoria]).trim() : "Diversos";
 
       /* Validación contra el catálogo. Es la que faltaba: el formulario
          encadena rubro -> categoría desde siempre, pero la carga masiva
@@ -1051,17 +1131,48 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
          No se bloquea la importación: se marca la fila para que se vea en el
          preview y se decida. Rechazarla obligaría a rehacer el archivo por
          un dato que casi siempre es corregible después. */
-      const defRubro = RUBROS.find((r) => normHeader(r.rubro) === normHeader(rubroFila));
+      /* Se REPARA, no solo se avisa. Una combinación inválida entra a la base
+         y luego queda fuera de todos los cortes del Dashboard sin que nada lo
+         señale; ese fue el origen de las 117 partidas del diagnóstico.
+
+         El criterio: se conserva el RUBRO, que es el eje que se lee, y se
+         ajusta la categoría. Nunca al revés — inventar un rubro cambiaría de
+         lugar el gasto en el reporte de Dirección.
+
+         El valor original se guarda en `extra` para no perderlo. */
+      let defRubro = RUBROS.find((r) => normHeader(r.rubro) === normHeader(rubroFila));
       const avisosClasif = [];
+      const reparado = {};
+
       if (!defRubro) {
-        avisosClasif.push(`El rubro "${rubroFila}" no existe en el catálogo`);
-      } else if (!defRubro.categorias.some((c) => normHeader(c) === normHeader(categoriaFila))) {
+        // Si la categoría sí existe y pertenece a un solo rubro, ese rubro es
+        // la corrección evidente. Si no, se manda a Otros/Diversos, que es
+        // honesto: "no sabemos", en vez de un rubro inventado.
+        const porCategoria = RUBROS.filter((r) => r.categorias.some((c) => normHeader(c) === normHeader(categoriaFila)));
+        reparado.rubro_original = rubroFila;
+        if (porCategoria.length === 1) {
+          rubroFila = porCategoria[0].rubro;
+          avisosClasif.push(`Rubro "${reparado.rubro_original}" no existe — se usó ${rubroFila}, que es donde vive "${categoriaFila}"`);
+        } else {
+          rubroFila = "Otros";
+          categoriaFila = "Diversos";
+          reparado.categoria_original = categoriaFila;
+          avisosClasif.push(`Rubro "${reparado.rubro_original}" no existe en el catálogo — se usó Otros / Diversos`);
+        }
+        defRubro = RUBROS.find((r) => r.rubro === rubroFila);
+      }
+
+      if (defRubro && !defRubro.categorias.some((c) => normHeader(c) === normHeader(categoriaFila))) {
         const dondeSiVa = RUBROS.filter((r) => r.categorias.some((c) => normHeader(c) === normHeader(categoriaFila)))
           .map((r) => r.rubro);
+        reparado.categoria_original = categoriaFila;
+        // Se sugiere por el concepto antes de caer en Diversos.
+        const sugerida = sugerirCategoria(concepto, defRubro.categorias);
+        categoriaFila = sugerida || "Diversos";
         avisosClasif.push(
           dondeSiVa.length
-            ? `"${categoriaFila}" no pertenece a ${rubroFila} — sí existe en ${dondeSiVa.join(" / ")}`
-            : `La categoría "${categoriaFila}" no existe en el catálogo`
+            ? `"${reparado.categoria_original}" no pertenece a ${rubroFila} (vive en ${dondeSiVa.join(" / ")}) — se usó ${categoriaFila}`
+            : `La categoría "${reparado.categoria_original}" no existe — se usó ${categoriaFila}`
         );
       }
 
@@ -1080,7 +1191,7 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
         monto_estimado: monto,
         moneda,
         folio,
-        extra: buildExtra(row, headers, promotedIdx),
+        extra: { ...buildExtra(row, headers, promotedIdx), ...reparado },
       });
       count++;
     }
@@ -3801,6 +3912,25 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
               <Select value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })}>
                 {categoriasDisponibles.map((c) => <option key={c}>{c}</option>)}
               </Select>
+              {/* Se sugiere, no se impone: quien captura sabe cosas que el
+                  concepto no dice. Solo aparece cuando difiere de lo elegido. */}
+              {(() => {
+                const sug = sugerirCategoria(form.concepto, categoriasDisponibles);
+                if (!sug || sug === form.categoria) return null;
+                return (
+                  <button
+                    type="button"
+                    onClick={() => setForm({ ...form, categoria: sug })}
+                    style={{
+                      marginTop: 5, background: "transparent", border: "none", padding: 0,
+                      color: T.accent, fontSize: 11.5, cursor: "pointer", textAlign: "left",
+                      fontFamily: T.fontUI,
+                    }}
+                  >
+                    Por el concepto, quizá sea <b>{sug}</b> — usar
+                  </button>
+                );
+              })()}
             </Field>
             <Field label="Concepto" style={{ gridColumn: "span 2" }}>
               <TextInput value={form.concepto} onChange={(e) => setForm({ ...form, concepto: e.target.value })} placeholder="Ej. Servicio energía eléctrica base admtva" />

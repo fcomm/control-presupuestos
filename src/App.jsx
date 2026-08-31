@@ -154,8 +154,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.68.0";
+const APP_VERSION = "1.69.0";
 const CHANGELOG = [
+  { v: "1.69.0", desc: "Reporte Pagos Dirección: el PDF ahora lleva únicamente las columnas visibles, en el orden en que están en pantalla. Antes tenía sus diez columnas fijas en el código, así que ocultar o reordenar en la tabla no cambiaba nada del documento y lo que se revisaba no era lo que se enviaba. La confirmación indica cuántas columnas llevará y avisa si la tabla se pasa del ancho de la hoja" },
   { v: "1.68.0", desc: "El selector de partida gana filtros por rubro y por mes, un contador de cuántas se muestran, y el buscador ahora cubre también categoría y zona. Además explica por qué parecen faltar: desde la v1.60 solo se ofrecen las de la moneda del gasto, y eso no se decía en ninguna parte — ahora avisa cuántas se ocultan y que basta cambiar la moneda del formulario. De paso se cierra un hueco: los selectores de la tabla (vincular o cambiar la partida de una transacción existente) no filtraban por moneda, así que por ahí se podía saltar el bloqueo que el formulario sí aplicaba" },
   { v: "1.67.0", desc: "Transacciones: se retira el botón 'Borrar todas', que eliminaba la compañía entera con una sola confirmación. En su lugar, la barra de selección que ya existía gana 'Eliminar seleccionadas', así que hay que elegir explícitamente qué se borra. Sigue conservando las marcadas como Pagadas y avisando cuántas, y la confirmación indica el importe total de lo que se va a eliminar" },
   { v: "1.66.0", desc: "Una transacción marcada como Pagada ya no se puede borrar: hay que cambiarle el status a No Pagado primero, para que quede claro que se está deshaciendo un pago registrado y no solo limpiando un renglón. La regla cubre los tres caminos —el borrado de una fila y los dos masivos—; en los masivos las pagadas se conservan y se avisa cuántas, en vez de abortar toda la operación. Y se hereda a Partidas: una partida con transacciones pagadas no se elimina, porque dejarlas sin vincular haría desaparecer ese gasto del presupuesto por la puerta de atrás. Si solo tiene transacciones sin pagar, se permite pero avisando que quedarán sin partida" },
@@ -5149,17 +5150,21 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 /* ----------------------------------------------------------------------
    TAB: REPORTE DE PAGOS DIRECCIÓN
 ---------------------------------------------------------------------- */
+// Cada columna lleva su forma de imprimirse en el PDF (`pdf`) junto a la
+// etiqueta, para que el documento salga de la MISMA definición que la tabla.
+// Antes el PDF tenía sus diez columnas fijas en el código y no había manera de
+// que respetara lo elegido en "Columnas".
 const COLUMNAS_REPORTE_DIRECCION = [
-  { key: "dia", label: "Día" },
-  { key: "solicitante", label: "Solicitante" },
-  { key: "proyecto", label: "Proyecto" },
-  { key: "zona", label: "Zona" },
-  { key: "proveedor", label: "Proveedor" },
-  { key: "concepto", label: "Concepto" },
-  { key: "importe", label: "Importe" },
-  { key: "moneda", label: "Moneda" },
-  { key: "a_partida", label: "A Partida" },
-  { key: "status", label: "Status" },
+  { key: "dia", label: "Día", pdf: (f) => f.dia || "" },
+  { key: "solicitante", label: "Solicitante", pdf: (f) => f.solicitante || "" },
+  { key: "proyecto", label: "Proyecto", pdf: (f) => f.proyecto || "" },
+  { key: "zona", label: "Zona", pdf: (f) => f.zona || "" },
+  { key: "proveedor", label: "Proveedor", pdf: (f) => f.proveedor || "", izq: true },
+  { key: "concepto", label: "Concepto", pdf: (f) => f.concepto || "", izq: true },
+  { key: "importe", label: "Importe", pdf: (f) => money(f.importe, f.moneda) },
+  { key: "moneda", label: "Moneda", pdf: (f) => f.moneda || "" },
+  { key: "a_partida", label: "A Partida", pdf: (f) => f.a_partida || "" },
+  { key: "status", label: "Status", pdf: (f) => f.status || "" },
 ];
 
 function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi }) {
@@ -5276,13 +5281,34 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
   };
 
   const [generandoReporte, setGenerandoReporte] = useState(false);
+  /**
+   * Estima si la tabla cabe a lo ancho de la hoja. autoTable no falla al
+   * desbordarse: aprieta las columnas y parte las palabras sin avisar, y el
+   * resultado llega ilegible a Dirección.
+   */
+  const anchoEstimadoPDF = () => {
+    const disponible = 712; // carta horizontal menos márgenes
+    const usado = columnas.reduce((suma, c) => {
+      const largos = filasOrdenadas.map((f) => String(c.pdf ? c.pdf(f) : "").length);
+      const max = Math.max(c.label.length, ...(largos.length ? largos : [0]));
+      return suma + Math.min(max * 4.2, 140) + 8;
+    }, 0);
+    return { usado: Math.round(usado), disponible, cabe: usado <= disponible };
+  };
+
   const generarReportePDF = async () => {
     if (!filasOrdenadas.length) {
       alert("No hay transacciones en el filtro actual para generar el reporte.");
       return;
     }
+    const ancho = anchoEstimadoPDF();
+    const avisoAncho = ancho.cabe ? "" :
+      `\n\nOJO: con ${columnas.length} columnas la tabla se pasa del ancho de la hoja ` +
+      `(~${ancho.usado} pt contra ${ancho.disponible} disponibles). Se van a apretar y el texto se va a partir. ` +
+      `Considera ocultar algunas en "Columnas".`;
     const confirmado = confirm(
-      `Esto va a generar un PDF con las ${filasOrdenadas.length} transacción(es) que tienes filtradas ahora, y las va a marcar como "Reportadas". ¿Continuar?`
+      `Esto va a generar un PDF con las ${filasOrdenadas.length} transacción(es) que tienes filtradas ahora, ` +
+      `con las ${columnas.length} columnas visibles, y las va a marcar como "Reportadas". ¿Continuar?${avisoAncho}`
     );
     if (!confirmado) return;
 
@@ -5299,17 +5325,19 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
       doc.setTextColor(120);
       doc.text(`Total a pagar MXP: ${money(totalMXN, "MXP")}   ·   Total a pagar USD: ${money(totalUSD, "USD")}`, 30, 46);
 
+      // Las mismas columnas que están a la vista, y en el mismo orden: si el
+      // PDF mostrara otras, la tabla dejaría de servir para revisar lo que se
+      // va a enviar.
       autoTable(doc, {
         startY: 58,
-        head: [["Día", "Solicitante", "Proyecto", "Zona", "Proveedor", "Concepto", "Importe", "Moneda", "A Partida", "Status"]],
-        body: filasOrdenadas.map((f) => [
-          f.dia || "", f.solicitante || "", f.proyecto || "", f.zona || "", f.proveedor || "",
-          f.concepto || "", money(f.importe, f.moneda), f.moneda || "", f.a_partida || "", f.status || "",
-        ]),
+        head: [columnas.map((c) => c.label)],
+        body: filasOrdenadas.map((f) => columnas.map((c) => (c.pdf ? c.pdf(f) : ""))),
         styles: { fontSize: 7.5, cellPadding: 4 },
         headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
         bodyStyles: { halign: "center" },
-        columnStyles: { 5: { halign: "left" } },
+        columnStyles: Object.fromEntries(
+          columnas.map((c, i) => [i, { halign: c.izq ? "left" : "center" }])
+        ),
       });
 
       doc.save(`reporte-pagos-direccion-${unidad}-${new Date().toISOString().slice(0, 10)}.pdf`);

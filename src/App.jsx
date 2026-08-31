@@ -154,9 +154,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.70.0";
+const APP_VERSION = "1.71.0";
 const CHANGELOG = [
-  { v: "1.70.0", desc: "Partidas: nuevo botón 'Reporte de Presupuesto Mensual' que genera un PDF con lo que está a la vista — las columnas visibles en su orden actual, las filas ya filtradas y ordenadas, y el agrupamiento vigente convertido en encabezados de sección con su subtotal. Los totales van separados por moneda, nunca sumadas entre sí. Avisa si la tabla se pasa del ancho de la hoja antes de generar" },
+  { v: "1.71.0", desc: "El Reporte de Presupuesto Mensual pasa de listado a resumen ejecutivo: totales por moneda arriba, y tres cortes —por rubro, por proyecto y por zona— con importe, número de partidas y porcentaje sobre el total de su moneda. Responde cuánto en pesos, cuánto en dólares, en qué se gasta y dónde se reparte, sin obligar a quien lo recibe a sacar el resumen de ochenta renglones. El corte por zona se omite si ninguna partida tiene una asignada, y la hoja pasa a vertical porque ya no hay renglones que requieran el ancho" },
+  { v: "1.70.0", desc: "Partidas: nuevo botón 'Reporte de Presupuesto Mensual' que genera un PDF con lo que está a la vista — las columnas visibles en su orden actual, las filas ya filtradas y ordenadas, y el agrupamiento vigente convertido en encabezados de sección con su subtotal" },
   { v: "1.69.0", desc: "Reporte Pagos Dirección: el PDF ahora lleva únicamente las columnas visibles, en el orden en que están en pantalla. Antes tenía sus diez columnas fijas en el código, así que ocultar o reordenar en la tabla no cambiaba nada del documento y lo que se revisaba no era lo que se enviaba. La confirmación indica cuántas columnas llevará y avisa si la tabla se pasa del ancho de la hoja" },
   { v: "1.68.0", desc: "El selector de partida gana filtros por rubro y por mes, un contador de cuántas se muestran, y el buscador ahora cubre también categoría y zona. Además explica por qué parecen faltar: desde la v1.60 solo se ofrecen las de la moneda del gasto, y eso no se decía en ninguna parte — ahora avisa cuántas se ocultan y que basta cambiar la moneda del formulario. De paso se cierra un hueco: los selectores de la tabla (vincular o cambiar la partida de una transacción existente) no filtraban por moneda, así que por ahí se podía saltar el bloqueo que el formulario sí aplicaba" },
   { v: "1.67.0", desc: "Transacciones: se retira el botón 'Borrar todas', que eliminaba la compañía entera con una sola confirmación. En su lugar, la barra de selección que ya existía gana 'Eliminar seleccionadas', así que hay que elegir explícitamente qué se borra. Sigue conservando las marcadas como Pagadas y avisando cuántas, y la confirmación indica el importe total de lo que se va a eliminar" },
@@ -3229,8 +3230,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   };
 
   const COLUMNAS_PARTIDA = [
-    { key: "mes", label: "Mes", render: (p) => p.mes, pdf: (p) => p.mes || "" },
-    { key: "anio", label: "Año", render: (p) => p.anio, pdf: (p) => String(p.anio || "") },
+    { key: "mes", label: "Mes", render: (p) => p.mes },
+    { key: "anio", label: "Año", render: (p) => p.anio },
     {
       key: "concepto", label: "Concepto",
       render: (p) => (
@@ -3238,13 +3239,12 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           {p.concepto}
         </span>
       ),
-      pdf: (p) => p.concepto || "", izq: true,
     },
-    { key: "rubro", label: "Rubro", render: (p) => <Pill>{p.rubro}</Pill>, pdf: (p) => p.rubro || "", izq: true },
-    { key: "categoria", label: "Categoría", render: (p) => <span style={{ color: T.textDim }}>{p.categoria}</span>, pdf: (p) => p.categoria || "", izq: true },
-    { key: "zona", label: "Zona", render: (p) => p.zona ? <Pill>{p.zona}</Pill> : <span style={{ color: T.textFaint }}>Cualquiera</span>, pdf: (p) => p.zona || "Cualquiera" },
-    { key: "proyecto", label: "Proyecto", render: (p) => p.proyecto, pdf: (p) => p.proyecto || "" },
-    { key: "folio", label: "Folio", render: (p) => <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</span>, pdf: (p) => p.folio || "" },
+    { key: "rubro", label: "Rubro", render: (p) => <Pill>{p.rubro}</Pill> },
+    { key: "categoria", label: "Categoría", render: (p) => <span style={{ color: T.textDim }}>{p.categoria}</span> },
+    { key: "zona", label: "Zona", render: (p) => p.zona ? <Pill>{p.zona}</Pill> : <span style={{ color: T.textFaint }}>Cualquiera</span> },
+    { key: "proyecto", label: "Proyecto", render: (p) => p.proyecto },
+    { key: "folio", label: "Folio", render: (p) => <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</span> },
     {
       key: "monto_estimado", label: "Monto",
       render: (p) => {
@@ -3260,9 +3260,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           </span>
         );
       },
-      pdf: (p) => money(p.monto_estimado, p.moneda),
     },
-    { key: "updated_at", label: "Última actualización", render: (p) => <span style={{ fontSize: 11, color: T.textFaint }}>{formatFechaHora(p.updated_at) || "—"}</span>, pdf: (p) => formatFechaHora(p.updated_at) || "" },
+    { key: "updated_at", label: "Última actualización", render: (p) => <span style={{ fontSize: 11, color: T.textFaint }}>{formatFechaHora(p.updated_at) || "—"}</span> },
   ];
   const colVisibility = useColumnVisibility("colv-partidas", COLUMNAS_PARTIDA);
   const columnasVisiblesBase = COLUMNAS_PARTIDA.filter((c) => (c.key === "proyecto" || !groupKeys.includes(c.key)) && !colVisibility.hidden.has(c.key));
@@ -3283,112 +3282,112 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const [generandoPDF, setGenerandoPDF] = useState(false);
 
   /**
-   * Reporte de Presupuesto Mensual.
+   * Reporte de Presupuesto Mensual — versión ejecutiva.
    *
-   * Imprime lo que está a la vista: las columnas visibles en su orden actual,
-   * las filas ya filtradas y ordenadas, y el agrupamiento vigente como
-   * encabezados de sección. Si el PDF mostrara otra cosa, la tabla dejaría de
-   * servir para revisar lo que se va a enviar.
+   * No lista partidas: responde cuatro preguntas. Cuánto en pesos, cuánto en
+   * dólares, en dónde se reparte (proyecto y zona) y en qué (rubro). Un
+   * listado de ochenta renglones obliga a que quien lo recibe haga el
+   * resumen; esto se lo da hecho.
    *
-   * Los totales van SEPARADOS POR MONEDA: sumarlas exigiría un tipo de cambio,
-   * y ese número acabaría discutiéndose en lugar del presupuesto.
+   * Cada corte lleva su porcentaje sobre el total de SU moneda. El porcentaje
+   * es lo que hace comparable un rubro contra otro sin tener que dividir
+   * mentalmente, y calcularlo por moneda evita que un renglón en dólares se
+   * vea diminuto junto a los pesos.
    */
   const generarReportePDF = async () => {
     if (!partidasOrdenadas.length) {
       alert("No hay partidas en el filtro actual para generar el reporte.");
       return;
     }
-    const cols = columnasVisibles.filter((c) => c.pdf);
-    if (!cols.length) {
-      alert("No hay columnas visibles que imprimir. Activa alguna en \"Columnas\".");
-      return;
-    }
-
-    // autoTable no falla al desbordarse: aprieta las columnas y parte las
-    // palabras sin avisar. Vale más advertirlo antes de generar.
-    const disponible = 712;
-    const usado = cols.reduce((suma, c) => {
-      const largos = partidasOrdenadas.map((p) => String(c.pdf(p) || "").length);
-      const max = Math.max(c.label.length, ...(largos.length ? largos : [0]));
-      return suma + Math.min(max * 4.2, 150) + 8;
-    }, 0);
-    const avisoAncho = usado <= disponible ? "" :
-      `\n\nOJO: con ${cols.length} columnas la tabla se pasa del ancho de la hoja ` +
-      `(~${Math.round(usado)} pt contra ${disponible}). Se van a apretar y el texto se va a partir. ` +
-      `Considera ocultar algunas en "Columnas".`;
-    if (!confirm(`Generar el Reporte de Presupuesto Mensual con ${partidasOrdenadas.length} partida(s) y ${cols.length} columna(s).${avisoAncho}`)) return;
+    if (!confirm(`Generar el Reporte de Presupuesto Mensual con ${partidasOrdenadas.length} partida(s) resumidas por rubro, proyecto y zona.`)) return;
 
     setGenerandoPDF(true);
     try {
-      const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
-      const totalPorMoneda = (lista) => {
-        const t = {};
-        lista.forEach((p) => {
-          const m = (p.moneda || "MXP") === "USD" ? "USD" : "MXP";
-          t[m] = (t[m] || 0) + (Number(p.monto_estimado) || 0);
+      const monedaDe = (p) => ((p.moneda || "MXP") === "USD" ? "USD" : "MXP");
+      const totales = {};
+      partidasOrdenadas.forEach((p) => {
+        const m = monedaDe(p);
+        totales[m] = (totales[m] || 0) + (Number(p.monto_estimado) || 0);
+      });
+      const monedas = Object.keys(totales).sort();
+
+      /* Agrupa por un campo y devuelve filas ordenadas de mayor a menor. Lo
+         vacío se rotula en vez de omitirse: una partida sin zona sigue siendo
+         presupuesto, y esconderla haría que los cortes no sumaran el total. */
+      const cortePor = (campo, vacio) => {
+        const mapa = {};
+        partidasOrdenadas.forEach((p) => {
+          const clave = String(p[campo] || "").trim() || vacio;
+          const m = monedaDe(p);
+          if (!mapa[clave]) mapa[clave] = { clave, MXP: 0, USD: 0, n: 0 };
+          mapa[clave][m] += Number(p.monto_estimado) || 0;
+          mapa[clave].n++;
         });
-        return t;
+        return Object.values(mapa).sort((a, b) => (b.MXP + b.USD) - (a.MXP + a.USD));
       };
-      const totales = totalPorMoneda(partidasOrdenadas);
+
+      const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
+      const anchoUtil = 552; // carta vertical menos márgenes
       const periodo = [...new Set(partidasOrdenadas.map((p) => `${p.mes} ${p.anio}`))].join(" · ");
 
-      doc.setFontSize(13);
-      doc.text(`Reporte de Presupuesto Mensual — ${unidad}`, 30, 30);
-      doc.setFontSize(9);
+      doc.setFontSize(15);
+      doc.setTextColor(35, 42, 49);
+      doc.text(`Presupuesto Mensual — ${unidad}`, 30, 36);
+      doc.setFontSize(9.5);
       doc.setTextColor(120);
-      doc.text(periodo || "Sin periodo", 30, 46);
-      doc.text(
-        Object.entries(totales).map(([m, v]) => `Total ${m}: ${money(v, m)}`).join("   ·   "),
-        30, 60
-      );
+      doc.text(`${periodo || "Sin periodo"}   ·   ${partidasOrdenadas.length} partidas`, 30, 52);
 
-      // El agrupamiento de la tabla se traduce en filas de encabezado que
-      // abarcan el ancho completo, para no perder la estructura que se ve.
-      const body = [];
-      if (groupKeys.length && grouped) {
-        const etiquetaDe = (campo) =>
-          (GROUP_OPCIONES.find((o) => o.value === campo) || {}).label || campo;
-        (function recorrer(nodo, nivel) {
-          if (nodo.type === "rows") {
-            nodo.rows.forEach((p) => body.push(cols.map((c) => c.pdf(p))));
-            return;
-          }
-          nodo.entries.forEach((e) => {
-            const t = totalPorMoneda(
-              (function hojas(n) {
-                return n.type === "rows" ? n.rows : n.entries.flatMap((x) => hojas(x.child));
-              })(e.child)
-            );
-            const resumen = Object.entries(t).map(([m, v]) => money(v, m)).join(" · ");
-            body.push([{
-              content: `${"    ".repeat(nivel)}${etiquetaDe(nodo.key)}: ${e.value}   (${e.count})   ${resumen}`,
-              colSpan: cols.length,
-              styles: { fillColor: nivel === 0 ? [236, 238, 241] : [246, 247, 249], fontStyle: "bold", halign: "left" },
-            }]);
-            recorrer(e.child, nivel + 1);
+      // Los totales van arriba y en grande: son la respuesta a la primera
+      // pregunta, y quien lo lee no debería tener que buscarlos.
+      let y = 76;
+      monedas.forEach((m, i) => {
+        const x = 30 + i * 270;
+        doc.setFillColor(m === "USD" ? 30 : 62, m === "USD" ? 143 : 92, m === "USD" ? 115 : 118);
+        doc.rect(x, y, 250, 46, "F");
+        doc.setTextColor(255);
+        doc.setFontSize(9);
+        doc.text(`TOTAL ${m}`, x + 12, y + 17);
+        doc.setFontSize(16);
+        doc.text(money(totales[m], m), x + 12, y + 37);
+      });
+      y += 68;
+
+      const seccion = (titulo, filas) => {
+        if (!filas.length) return;
+        const cuerpo = filas.map((f) => {
+          const cel = [f.clave, String(f.n)];
+          monedas.forEach((m) => {
+            const pct = totales[m] ? (f[m] / totales[m]) * 100 : 0;
+            cel.push(f[m] ? `${money(f[m], m)}   ${pct.toFixed(1)}%` : "—");
           });
-        })(grouped, 0);
-      } else {
-        partidasOrdenadas.forEach((p) => body.push(cols.map((c) => c.pdf(p))));
+          return cel;
+        });
+        autoTable(doc, {
+          startY: y,
+          head: [[titulo, "Partidas", ...monedas.map((m) => `Importe ${m}`)]],
+          body: cuerpo,
+          styles: { fontSize: 8.5, cellPadding: 5 },
+          headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "left" },
+          bodyStyles: { halign: "left" },
+          columnStyles: {
+            0: { cellWidth: monedas.length > 1 ? 170 : 240 },
+            1: { halign: "center", cellWidth: 55 },
+            ...Object.fromEntries(monedas.map((_, i) => [i + 2, { halign: "right" }])),
+          },
+          margin: { left: 30, right: 30 },
+          tableWidth: anchoUtil,
+        });
+        y = doc.lastAutoTable.finalY + 22;
+      };
+
+      // El orden responde a la pregunta: primero EN QUÉ se gasta, luego DÓNDE.
+      seccion("Rubro", cortePor("rubro", "Sin rubro"));
+      seccion("Proyecto", cortePor("proyecto", "Sin proyecto"));
+      const porZona = cortePor("zona", "Cualquier zona");
+      // Si ninguna partida tiene zona, el corte no aporta nada y se omite.
+      if (!(porZona.length === 1 && porZona[0].clave === "Cualquier zona")) {
+        seccion("Zona", porZona);
       }
-
-      Object.entries(totales).forEach(([m, v]) => {
-        body.push([{
-          content: `TOTAL ${m}:  ${money(v, m)}`,
-          colSpan: cols.length,
-          styles: { fillColor: [62, 92, 118], textColor: 255, fontStyle: "bold", halign: "right" },
-        }]);
-      });
-
-      autoTable(doc, {
-        startY: 74,
-        head: [cols.map((c) => c.label)],
-        body,
-        styles: { fontSize: 7.5, cellPadding: 4 },
-        headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
-        bodyStyles: { halign: "center" },
-        columnStyles: Object.fromEntries(cols.map((c, i) => [i, { halign: c.izq ? "left" : "center" }])),
-      });
 
       doc.save(`presupuesto-mensual-${unidad}-${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (err) {

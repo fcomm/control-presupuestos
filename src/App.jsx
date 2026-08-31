@@ -154,8 +154,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.69.0";
+const APP_VERSION = "1.70.0";
 const CHANGELOG = [
+  { v: "1.70.0", desc: "Partidas: nuevo botón 'Reporte de Presupuesto Mensual' que genera un PDF con lo que está a la vista — las columnas visibles en su orden actual, las filas ya filtradas y ordenadas, y el agrupamiento vigente convertido en encabezados de sección con su subtotal. Los totales van separados por moneda, nunca sumadas entre sí. Avisa si la tabla se pasa del ancho de la hoja antes de generar" },
   { v: "1.69.0", desc: "Reporte Pagos Dirección: el PDF ahora lleva únicamente las columnas visibles, en el orden en que están en pantalla. Antes tenía sus diez columnas fijas en el código, así que ocultar o reordenar en la tabla no cambiaba nada del documento y lo que se revisaba no era lo que se enviaba. La confirmación indica cuántas columnas llevará y avisa si la tabla se pasa del ancho de la hoja" },
   { v: "1.68.0", desc: "El selector de partida gana filtros por rubro y por mes, un contador de cuántas se muestran, y el buscador ahora cubre también categoría y zona. Además explica por qué parecen faltar: desde la v1.60 solo se ofrecen las de la moneda del gasto, y eso no se decía en ninguna parte — ahora avisa cuántas se ocultan y que basta cambiar la moneda del formulario. De paso se cierra un hueco: los selectores de la tabla (vincular o cambiar la partida de una transacción existente) no filtraban por moneda, así que por ahí se podía saltar el bloqueo que el formulario sí aplicaba" },
   { v: "1.67.0", desc: "Transacciones: se retira el botón 'Borrar todas', que eliminaba la compañía entera con una sola confirmación. En su lugar, la barra de selección que ya existía gana 'Eliminar seleccionadas', así que hay que elegir explícitamente qué se borra. Sigue conservando las marcadas como Pagadas y avisando cuántas, y la confirmación indica el importe total de lo que se va a eliminar" },
@@ -3228,8 +3229,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   };
 
   const COLUMNAS_PARTIDA = [
-    { key: "mes", label: "Mes", render: (p) => p.mes },
-    { key: "anio", label: "Año", render: (p) => p.anio },
+    { key: "mes", label: "Mes", render: (p) => p.mes, pdf: (p) => p.mes || "" },
+    { key: "anio", label: "Año", render: (p) => p.anio, pdf: (p) => String(p.anio || "") },
     {
       key: "concepto", label: "Concepto",
       render: (p) => (
@@ -3237,12 +3238,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           {p.concepto}
         </span>
       ),
+      pdf: (p) => p.concepto || "", izq: true,
     },
-    { key: "rubro", label: "Rubro", render: (p) => <Pill>{p.rubro}</Pill> },
-    { key: "categoria", label: "Categoría", render: (p) => <span style={{ color: T.textDim }}>{p.categoria}</span> },
-    { key: "zona", label: "Zona", render: (p) => p.zona ? <Pill>{p.zona}</Pill> : <span style={{ color: T.textFaint }}>Cualquiera</span> },
-    { key: "proyecto", label: "Proyecto", render: (p) => p.proyecto },
-    { key: "folio", label: "Folio", render: (p) => <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</span> },
+    { key: "rubro", label: "Rubro", render: (p) => <Pill>{p.rubro}</Pill>, pdf: (p) => p.rubro || "", izq: true },
+    { key: "categoria", label: "Categoría", render: (p) => <span style={{ color: T.textDim }}>{p.categoria}</span>, pdf: (p) => p.categoria || "", izq: true },
+    { key: "zona", label: "Zona", render: (p) => p.zona ? <Pill>{p.zona}</Pill> : <span style={{ color: T.textFaint }}>Cualquiera</span>, pdf: (p) => p.zona || "Cualquiera" },
+    { key: "proyecto", label: "Proyecto", render: (p) => p.proyecto, pdf: (p) => p.proyecto || "" },
+    { key: "folio", label: "Folio", render: (p) => <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</span>, pdf: (p) => p.folio || "" },
     {
       key: "monto_estimado", label: "Monto",
       render: (p) => {
@@ -3258,8 +3260,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           </span>
         );
       },
+      pdf: (p) => money(p.monto_estimado, p.moneda),
     },
-    { key: "updated_at", label: "Última actualización", render: (p) => <span style={{ fontSize: 11, color: T.textFaint }}>{formatFechaHora(p.updated_at) || "—"}</span> },
+    { key: "updated_at", label: "Última actualización", render: (p) => <span style={{ fontSize: 11, color: T.textFaint }}>{formatFechaHora(p.updated_at) || "—"}</span>, pdf: (p) => formatFechaHora(p.updated_at) || "" },
   ];
   const colVisibility = useColumnVisibility("colv-partidas", COLUMNAS_PARTIDA);
   const columnasVisiblesBase = COLUMNAS_PARTIDA.filter((c) => (c.key === "proyecto" || !groupKeys.includes(c.key)) && !colVisibility.hidden.has(c.key));
@@ -3276,6 +3279,124 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     next.has(id) ? next.delete(id) : next.add(id);
     return next;
   });
+
+  const [generandoPDF, setGenerandoPDF] = useState(false);
+
+  /**
+   * Reporte de Presupuesto Mensual.
+   *
+   * Imprime lo que está a la vista: las columnas visibles en su orden actual,
+   * las filas ya filtradas y ordenadas, y el agrupamiento vigente como
+   * encabezados de sección. Si el PDF mostrara otra cosa, la tabla dejaría de
+   * servir para revisar lo que se va a enviar.
+   *
+   * Los totales van SEPARADOS POR MONEDA: sumarlas exigiría un tipo de cambio,
+   * y ese número acabaría discutiéndose en lugar del presupuesto.
+   */
+  const generarReportePDF = async () => {
+    if (!partidasOrdenadas.length) {
+      alert("No hay partidas en el filtro actual para generar el reporte.");
+      return;
+    }
+    const cols = columnasVisibles.filter((c) => c.pdf);
+    if (!cols.length) {
+      alert("No hay columnas visibles que imprimir. Activa alguna en \"Columnas\".");
+      return;
+    }
+
+    // autoTable no falla al desbordarse: aprieta las columnas y parte las
+    // palabras sin avisar. Vale más advertirlo antes de generar.
+    const disponible = 712;
+    const usado = cols.reduce((suma, c) => {
+      const largos = partidasOrdenadas.map((p) => String(c.pdf(p) || "").length);
+      const max = Math.max(c.label.length, ...(largos.length ? largos : [0]));
+      return suma + Math.min(max * 4.2, 150) + 8;
+    }, 0);
+    const avisoAncho = usado <= disponible ? "" :
+      `\n\nOJO: con ${cols.length} columnas la tabla se pasa del ancho de la hoja ` +
+      `(~${Math.round(usado)} pt contra ${disponible}). Se van a apretar y el texto se va a partir. ` +
+      `Considera ocultar algunas en "Columnas".`;
+    if (!confirm(`Generar el Reporte de Presupuesto Mensual con ${partidasOrdenadas.length} partida(s) y ${cols.length} columna(s).${avisoAncho}`)) return;
+
+    setGenerandoPDF(true);
+    try {
+      const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+      const totalPorMoneda = (lista) => {
+        const t = {};
+        lista.forEach((p) => {
+          const m = (p.moneda || "MXP") === "USD" ? "USD" : "MXP";
+          t[m] = (t[m] || 0) + (Number(p.monto_estimado) || 0);
+        });
+        return t;
+      };
+      const totales = totalPorMoneda(partidasOrdenadas);
+      const periodo = [...new Set(partidasOrdenadas.map((p) => `${p.mes} ${p.anio}`))].join(" · ");
+
+      doc.setFontSize(13);
+      doc.text(`Reporte de Presupuesto Mensual — ${unidad}`, 30, 30);
+      doc.setFontSize(9);
+      doc.setTextColor(120);
+      doc.text(periodo || "Sin periodo", 30, 46);
+      doc.text(
+        Object.entries(totales).map(([m, v]) => `Total ${m}: ${money(v, m)}`).join("   ·   "),
+        30, 60
+      );
+
+      // El agrupamiento de la tabla se traduce en filas de encabezado que
+      // abarcan el ancho completo, para no perder la estructura que se ve.
+      const body = [];
+      if (groupKeys.length && grouped) {
+        const etiquetaDe = (campo) =>
+          (GROUP_OPCIONES.find((o) => o.value === campo) || {}).label || campo;
+        (function recorrer(nodo, nivel) {
+          if (nodo.type === "rows") {
+            nodo.rows.forEach((p) => body.push(cols.map((c) => c.pdf(p))));
+            return;
+          }
+          nodo.entries.forEach((e) => {
+            const t = totalPorMoneda(
+              (function hojas(n) {
+                return n.type === "rows" ? n.rows : n.entries.flatMap((x) => hojas(x.child));
+              })(e.child)
+            );
+            const resumen = Object.entries(t).map(([m, v]) => money(v, m)).join(" · ");
+            body.push([{
+              content: `${"    ".repeat(nivel)}${etiquetaDe(nodo.key)}: ${e.value}   (${e.count})   ${resumen}`,
+              colSpan: cols.length,
+              styles: { fillColor: nivel === 0 ? [236, 238, 241] : [246, 247, 249], fontStyle: "bold", halign: "left" },
+            }]);
+            recorrer(e.child, nivel + 1);
+          });
+        })(grouped, 0);
+      } else {
+        partidasOrdenadas.forEach((p) => body.push(cols.map((c) => c.pdf(p))));
+      }
+
+      Object.entries(totales).forEach(([m, v]) => {
+        body.push([{
+          content: `TOTAL ${m}:  ${money(v, m)}`,
+          colSpan: cols.length,
+          styles: { fillColor: [62, 92, 118], textColor: 255, fontStyle: "bold", halign: "right" },
+        }]);
+      });
+
+      autoTable(doc, {
+        startY: 74,
+        head: [cols.map((c) => c.label)],
+        body,
+        styles: { fontSize: 7.5, cellPadding: 4 },
+        headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
+        bodyStyles: { halign: "center" },
+        columnStyles: Object.fromEntries(cols.map((c, i) => [i, { halign: c.izq ? "left" : "center" }])),
+      });
+
+      doc.save(`presupuesto-mensual-${unidad}-${new Date().toISOString().slice(0, 10)}.pdf`);
+    } catch (err) {
+      alert("No se pudo generar el reporte: " + (err.message || err));
+    } finally {
+      setGenerandoPDF(false);
+    }
+  };
 
   const renderRowTr = (p, depth = 0, n) => {
     const expandido = expandedIds.has(p.id);
@@ -3432,6 +3553,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         subtitle={filtrosActivos ? `${partidasFiltradas.length} de ${partidasUnidad.length} registradas` : `${partidasUnidad.length} registradas`}
         right={
           <div style={{ display: "flex", gap: 8 }}>
+            <Button variant="ghost" onClick={generarReportePDF} disabled={generandoPDF}>
+              {generandoPDF ? "Generando…" : "Reporte de Presupuesto Mensual"}
+            </Button>
             <Button variant="ghost" onClick={() => exportarExcel(false)}>Exportar {unidad}</Button>
             <Button variant="ghost" onClick={() => exportarExcel(true)} title="Las tres compañías en hojas separadas, con los mismos filtros — para el preparador de transacciones">Exportar las 3</Button>
             <Button onClick={openNew}>+ Nueva partida</Button>

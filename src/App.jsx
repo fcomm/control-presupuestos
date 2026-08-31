@@ -154,8 +154,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.67.0";
+const APP_VERSION = "1.68.0";
 const CHANGELOG = [
+  { v: "1.68.0", desc: "El selector de partida gana filtros por rubro y por mes, un contador de cuántas se muestran, y el buscador ahora cubre también categoría y zona. Además explica por qué parecen faltar: desde la v1.60 solo se ofrecen las de la moneda del gasto, y eso no se decía en ninguna parte — ahora avisa cuántas se ocultan y que basta cambiar la moneda del formulario. De paso se cierra un hueco: los selectores de la tabla (vincular o cambiar la partida de una transacción existente) no filtraban por moneda, así que por ahí se podía saltar el bloqueo que el formulario sí aplicaba" },
   { v: "1.67.0", desc: "Transacciones: se retira el botón 'Borrar todas', que eliminaba la compañía entera con una sola confirmación. En su lugar, la barra de selección que ya existía gana 'Eliminar seleccionadas', así que hay que elegir explícitamente qué se borra. Sigue conservando las marcadas como Pagadas y avisando cuántas, y la confirmación indica el importe total de lo que se va a eliminar" },
   { v: "1.66.0", desc: "Una transacción marcada como Pagada ya no se puede borrar: hay que cambiarle el status a No Pagado primero, para que quede claro que se está deshaciendo un pago registrado y no solo limpiando un renglón. La regla cubre los tres caminos —el borrado de una fila y los dos masivos—; en los masivos las pagadas se conservan y se avisa cuántas, en vez de abortar toda la operación. Y se hereda a Partidas: una partida con transacciones pagadas no se elimina, porque dejarlas sin vincular haría desaparecer ese gasto del presupuesto por la puerta de atrás. Si solo tiene transacciones sin pagar, se permite pero avisando que quedarán sin partida" },
   { v: "1.65.0", desc: "Los agrupamientos y el orden de las tablas ahora se recuerdan entre sesiones, no solo mientras la pestaña sigue abierta. Los FILTROS siguen viviendo en la sesión a propósito: abrir la app mostrando el periodo que quedó de la última vez haría leer esa cifra como si fuera la actual, y eso en un tablero financiero es un error caro. Lo guardado se limpia al leerse, así que un agrupamiento u orden que apunte a un campo retirado se descarta en vez de dejar la tabla en un estado imposible" },
@@ -491,21 +492,31 @@ function opcionesPartidaPorMes(lista) {
 
 // Botón que abre un popup con buscador para elegir una partida — más cómodo
 // que un <select> plano cuando hay muchas. Agrupa por mes, en orden cronológico.
-function PartidaPickerButton({ partidas, transacciones = [], value, onChange, placeholder = "Elegir partida…", allowClear = false, partidasApi, unidad, proyectosOpciones = [] }) {
+function PartidaPickerButton({ partidas, transacciones = [], value, onChange, placeholder = "Elegir partida…", allowClear = false, partidasApi, unidad, proyectosOpciones = [], ocultasPorMoneda = 0, moneda }) {
   const [open, setOpen] = useState(false);
   const [busqueda, setBusqueda] = useState("");
+  const [filtroRubro, setFiltroRubro] = useState("Todos");
+  const [filtroMes, setFiltroMes] = useState("Todos");
   const seleccionada = partidas.find((p) => p.id === value);
 
+  const rubrosDisponibles = [...new Set(partidas.map((p) => p.rubro).filter(Boolean))].sort();
+  const mesesDisponibles = MESES.filter((m) => partidas.some((p) => p.mes === m));
+
   const filtradas = partidas.filter((p) => {
+    if (filtroRubro !== "Todos" && p.rubro !== filtroRubro) return false;
+    if (filtroMes !== "Todos" && p.mes !== filtroMes) return false;
     if (!busqueda.trim()) return true;
     const q = busqueda.trim().toLowerCase();
-    return [p.concepto, p.folio, p.proyecto, p.rubro].some((v) => (v || "").toLowerCase().includes(q));
+    // Se busca también en categoría y zona: con partidas agrupadas por rubro,
+    // el concepto solo no basta para distinguirlas.
+    return [p.concepto, p.folio, p.proyecto, p.rubro, p.categoria, p.zona]
+      .some((v) => (v || "").toLowerCase().includes(q));
   });
   const meses = MESES.filter((m) => filtradas.some((p) => p.mes === m));
   const sinMes = filtradas.filter((p) => !p.mes);
 
   const elegir = (id) => {
-    setOpen(false); setBusqueda(""); setCreando(false);
+    setOpen(false); setBusqueda(""); setFiltroRubro("Todos"); setFiltroMes("Todos"); setCreando(false);
     try { onChange(id); } catch (err) { console.error("Error al elegir partida:", err); }
   };
 
@@ -634,9 +645,31 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
                 autoFocus
                 value={busqueda}
                 onChange={(e) => setBusqueda(e.target.value)}
-                placeholder="Buscar…"
-                style={{ width: "100%", marginBottom: 12 }}
+                placeholder="Buscar por concepto, folio, rubro, categoría, proyecto o zona…"
+                style={{ width: "100%", marginBottom: 8 }}
               />
+              <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <Select value={filtroRubro} onChange={(e) => setFiltroRubro(e.target.value)} style={{ flex: 1, minWidth: 150 }}>
+                  <option>Todos</option>
+                  {rubrosDisponibles.map((r) => <option key={r}>{r}</option>)}
+                </Select>
+                <Select value={filtroMes} onChange={(e) => setFiltroMes(e.target.value)} style={{ width: 140 }}>
+                  <option>Todos</option>
+                  {mesesDisponibles.map((m) => <option key={m}>{m}</option>)}
+                </Select>
+                <span style={{ fontSize: 11.5, color: T.textFaint, fontFamily: T.fontMono, whiteSpace: "nowrap" }}>
+                  {filtradas.length} de {partidas.length}
+                </span>
+              </div>
+              {/* El formulario solo ofrece partidas de la moneda del gasto. Sin
+                  decirlo, parece que faltan partidas — que es exactamente como
+                  se reportó este comportamiento. */}
+              {ocultasPorMoneda > 0 && (
+                <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "8px 11px", borderRadius: "0 6px 6px 0", fontSize: 11.5, marginBottom: 10 }}>
+                  Se ocultan <b>{ocultasPorMoneda}</b> partida(s) de otra moneda. Esta transacción está en <b>{moneda || "MXP"}</b>;
+                  cambia la moneda del formulario si el gasto es en la otra.
+                </div>
+              )}
               <div style={{ maxHeight: 420, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
                 {allowClear && (
                   <button
@@ -3916,8 +3949,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     <tr key={t.id}>
       {columnasSV.map((c) => <td key={c.key} style={{ ...tdStyle, paddingLeft: depth ? 14 + depth * 26 : undefined }}>{c.render(t)}</td>)}
       <td style={tdStyle}>
+        {/* Mismo criterio que el formulario: solo partidas de la moneda de ESTA
+            transacción. Sin esto, vincular desde la tabla se saltaba el bloqueo
+            entre monedas que el formulario sí aplica. */}
         <PartidaPickerButton
-          partidas={partidasUnidad}
+          partidas={partidasUnidad.filter((p) => mismaMoneda(p.moneda, t.moneda))}
+          ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, t.moneda)).length}
+          moneda={t.moneda}
           transacciones={transUnidad}
           partidasApi={partidasApi}
           unidad={unidad}
@@ -3955,7 +3993,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       key: "partida", label: "Partida",
       render: (t) => (
         <PartidaPickerButton
-          partidas={partidasUnidad}
+          partidas={partidasUnidad.filter((p) => mismaMoneda(p.moneda, t.moneda))}
+          ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, t.moneda)).length}
+          moneda={t.moneda}
           transacciones={transUnidad}
           partidasApi={partidasApi}
           unidad={unidad}
@@ -4411,6 +4451,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   rechazar al guardar: la opción equivocada ni se ofrece. */}
               <PartidaPickerButton
                 partidas={partidasUnidad.filter((p) => mismaMoneda(p.moneda, form.moneda))}
+                ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, form.moneda)).length}
+                moneda={form.moneda}
                 transacciones={transUnidad}
                 partidasApi={partidasApi}
                 unidad={unidad}

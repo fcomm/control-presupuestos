@@ -35,31 +35,35 @@ const T = {
   fontMono: "ui-monospace, SFMono-Regular, 'SF Mono', Consolas, 'Liberation Mono', monospace",
 };
 
-// "Diversos" existe en TODOS los rubros a propósito.
+// NO hay categoría "Diversos", y es deliberado.
 //
-// El diagnóstico de clasificación encontró 81 partidas usando "Diversos"
-// como categoría bajo nueve rubros distintos. Cuando el mismo "error"
-// aparece bajo nueve rubros, no son nueve personas equivocándose igual:
-// es que el catálogo no ofrecía una categoría genérica y tomaban la
-// única que existía, la de Otros. Legitimarla conserva el análisis por
-// rubro, que es lo que de verdad se lee, en vez de forzar a mandar todo
-// gasto sin categoría clara al rubro Otros.
+// En la v1.73 se agregó a los 15 rubros porque 81 partidas ya la usaban:
+// el catálogo no ofrecía una opción genérica y la gente tomaba la única
+// que existía. Ese diagnóstico era del pasado y era correcto.
+//
+// Hacia adelante el cálculo cambia. Una opción cómoda que no dice nada se
+// vuelve el camino de menor resistencia, y la clasificación se degrada
+// sola: "Diversos" parece un dato pero no responde "en qué gastamos",
+// que es para lo que existe esta aplicación.
+//
+// Cuando algo no se puede clasificar, el campo se deja VACÍO. Un hueco se
+// ve y pide atención; una etiqueta genérica lo esconde.
 const RUBROS_RESPALDO = [
-  { rubro: "Materiales e Insumos", categorias: ["Material eléctrico","Material mecánico","Ferretería","Instrumentación","Tubería y conexiones","Consumibles industriales","Consumibles de oficina","Papelería","EPP","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación","Diversos"] },
-  { rubro: "Equipos y Herramientas", categorias: ["Herramienta menor","Herramienta especializada","Equipos de medición","Equipos de cómputo","Equipos de comunicación","Maquinaria","Mobiliario","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación","Diversos"] },
-  { rubro: "Productos Químicos", categorias: ["Productos químicos de operación","Reactivos","Solventes","Aditivos","Químicos de laboratorio","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación","Diversos"] },
-  { rubro: "Servicios de Mantenimiento", categorias: ["Mantenimiento vehicular","Mantenimiento de equipos","Mantenimiento de instalaciones","Calibración","Reparaciones","Diversos"] },
-  { rubro: "Servicios Operativos", categorias: ["Arrendamientos","Maniobras","Transporte y logística","Fletes","Servicios de campo","Laboratorios","Servicios especializados","Diversos"] },
-  { rubro: "Servicios Administrativos", categorias: ["Mensajería","Limpieza","Vigilancia","Capacitación","Consultoría","Honorarios profesionales","Reclutamiento","Diversos"] },
-  { rubro: "Servicios Básicos", categorias: ["Energía eléctrica","Agua","Telefonía fija","Telefonía móvil","Internet","Gas","Recolección de residuos","Diversos"] },
-  { rubro: "Tecnologías de Información", categorias: ["Software","Licencias","Suscripciones","Hosting","Telecomunicaciones","Desarrollo de software","Servicios en la nube","Ciberseguridad","Diversos"] },
-  { rubro: "Vehículos", categorias: ["Combustible","Casetas","Refacciones","Accesorios","Seguros","Verificación","Tenencias","Placas","Permisos vehiculares","Llantas","Lubricantes","Diversos"] },
-  { rubro: "Viajes y Viáticos", categorias: ["Hospedaje","Boletos de avión","Transporte terrestre","Alimentación","Renta de vehículos","Viáticos diversos","Diversos"] },
-  { rubro: "Promoción e Imagen", categorias: ["Publicidad","Merchandising","Eventos","Material publicitario","Uniformes corporativos","Diversos"] },
-  { rubro: "Cumplimiento Legal", categorias: ["Permisos regulatorios","Licencias","Certificaciones","Estudios","Trámites gubernamentales","Auditorías","Diversos"] },
-  { rubro: "Gastos Financieros e Impuestos", categorias: ["Comisiones bancarias","Derechos","Impuestos","Gastos notariales","Seguros","Fianzas","Diversos"] },
-  { rubro: "Nómina y Personal", categorias: ["Sueldos y salarios","Prestaciones de ley","Prestaciones adicionales","Cuotas IMSS/Infonavit","Impuesto sobre nómina (ISN)","Finiquitos y liquidaciones","Bonos y comisiones","Diversos"] },
-  { rubro: "Otros", categorias: ["Gastos extraordinarios","Donativos","Diversos"] },
+  { rubro: "Materiales e Insumos", categorias: ["Material eléctrico","Material mecánico","Ferretería","Instrumentación","Tubería y conexiones","Consumibles industriales","Consumibles de oficina","Papelería","EPP","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación"] },
+  { rubro: "Equipos y Herramientas", categorias: ["Herramienta menor","Herramienta especializada","Equipos de medición","Equipos de cómputo","Equipos de comunicación","Maquinaria","Mobiliario","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación"] },
+  { rubro: "Productos Químicos", categorias: ["Productos químicos de operación","Reactivos","Solventes","Aditivos","Químicos de laboratorio","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación"] },
+  { rubro: "Servicios de Mantenimiento", categorias: ["Mantenimiento vehicular","Mantenimiento de equipos","Mantenimiento de instalaciones","Calibración","Reparaciones"] },
+  { rubro: "Servicios Operativos", categorias: ["Arrendamientos","Maniobras","Transporte y logística","Fletes","Servicios de campo","Laboratorios","Servicios especializados"] },
+  { rubro: "Servicios Administrativos", categorias: ["Mensajería","Limpieza","Vigilancia","Capacitación","Consultoría","Honorarios profesionales","Reclutamiento"] },
+  { rubro: "Servicios Básicos", categorias: ["Energía eléctrica","Agua","Telefonía fija","Telefonía móvil","Internet","Gas","Recolección de residuos"] },
+  { rubro: "Tecnologías de Información", categorias: ["Software","Licencias","Suscripciones","Hosting","Telecomunicaciones","Desarrollo de software","Servicios en la nube","Ciberseguridad"] },
+  { rubro: "Vehículos", categorias: ["Combustible","Casetas","Refacciones","Accesorios","Seguros","Verificación","Tenencias","Placas","Permisos vehiculares","Llantas","Lubricantes"] },
+  { rubro: "Viajes y Viáticos", categorias: ["Hospedaje","Boletos de avión","Transporte terrestre","Alimentación","Renta de vehículos","Viáticos diversos"] },
+  { rubro: "Promoción e Imagen", categorias: ["Publicidad","Merchandising","Eventos","Material publicitario","Uniformes corporativos"] },
+  { rubro: "Cumplimiento Legal", categorias: ["Permisos regulatorios","Licencias","Certificaciones","Estudios","Trámites gubernamentales","Auditorías"] },
+  { rubro: "Gastos Financieros e Impuestos", categorias: ["Comisiones bancarias","Derechos","Impuestos","Gastos notariales","Seguros","Fianzas"] },
+  { rubro: "Nómina y Personal", categorias: ["Sueldos y salarios","Prestaciones de ley","Prestaciones adicionales","Cuotas IMSS/Infonavit","Impuesto sobre nómina (ISN)","Finiquitos y liquidaciones","Bonos y comisiones"] },
+  { rubro: "Otros", categorias: ["Gastos extraordinarios","Donativos"] },
 ];
 
 const UNIDADES_BASE = ["OSB", "CTM", "ISE"];
@@ -250,8 +254,7 @@ let RUBROS = RUBROS_RESPALDO;
 let CATEGORIAS_TODAS = [];
 
 function recalcularCategoriasTodas() {
-  CATEGORIAS_TODAS = [...new Set(RUBROS.flatMap((r) => r.categorias))]
-    .filter((c) => c !== "Diversos").sort().concat("Diversos");
+  CATEGORIAS_TODAS = [...new Set(RUBROS.flatMap((r) => r.categorias))].sort();
 }
 recalcularCategoriasTodas();
 
@@ -288,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.78.0";
+const APP_VERSION = "1.79.0";
 const CHANGELOG = [
+  { v: "1.79.0", desc: "Se elimina la categoría 'Diversos' de los 15 rubros y no se puede volver a crear —tampoco Varios, Otros o General. En la v1.73 se agregó porque 81 partidas ya la usaban, y ese diagnóstico del pasado era correcto; hacia adelante el cálculo se invierte: una opción cómoda que no dice nada se vuelve el camino de menor resistencia y la clasificación se degrada sola. Cuando algo no se puede clasificar el campo se deja VACÍO, no con una etiqueta genérica: un hueco se ve y pide corrección, una etiqueta lo esconde. Los rubros nuevos nacen sin categorías, para que se definan las que de verdad hacen falta" },
   { v: "1.78.0", desc: "Los rubros y categorías salen del código y pasan a ser administrables desde Catálogo: se agregan, renombran, desactivan y eliminan sin volver a desplegar. El punto delicado es renombrar — partidas.rubro, partidas.categoria y transacciones.categoria guardan el TEXTO, no un id, así que cambiar el nombre dejaría a los registros existentes apuntando a algo inexistente; por eso el cambio se propaga a los registros en uso, avisando cuántos son. Un rubro o categoría en uso no se puede eliminar, solo desactivar: sale del selector y el histórico se conserva. Todo rubro nuevo nace con la categoría Diversos. Requiere 16-catalogo-editable.sql" },
   { v: "1.77.0", desc: "Las transacciones estrenan campo Categoría: la partida dice en qué rubro se presupuestó, la transacción dice qué se compró. Está en el formulario —con las categorías del rubro de su partida arriba y el resto abajo, más la sugerencia por concepto de un clic—, en la tabla, en Agrupar por y en el buscador. La carga masiva la asigna sola cuando el archivo no la trae, deduciéndola del concepto; sin eso el campo entraría vacío en cada importación y el dato se degradaría desde el primer archivo. No se restringe al rubro de la partida a propósito: con datos reales, 39 de 228 transacciones tenían la categoría correcta para el gasto y una partida de otro rubro, y esa discrepancia es información —dice qué partidas absorben gasto que no les toca— no un error. Requiere 15-categoria-en-transacciones.sql" },
   { v: "1.76.0", desc: "Nueva categoría 'Seguros' en Gastos Financieros e Impuestos, junto a Fianzas: son el mismo tipo de gasto —transferencia de riesgo contratada— y separarlos partiría en dos algo que se lee mejor junto. La categoría 'Seguros' de Vehículos se conserva y queda reservada a pólizas vehiculares, que son parte del costo de operar la flotilla; el resto de las pólizas va a Gastos Financieros. Sin esa regla el gasto en seguros quedaría partido según quién capture" },
@@ -678,7 +682,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
       const anio = Number(nuevaPartida.anio) || new Date().getFullYear();
       const existingFolios = partidas.filter((p) => p.unidad === unidad).map((p) => p.folio);
       const folio = autoFolio(unidad, nuevaPartida.mes, anio, existingFolios);
-      const categoriaDefault = RUBROS.find((r) => r.rubro === nuevaPartida.rubro)?.categorias?.[0] || "Diversos";
+      const categoriaDefault = RUBROS.find((r) => r.rubro === nuevaPartida.rubro)?.categorias?.[0] || "";
       const creada = await partidasApi.insert({
         id: uid(), unidad, mes: nuevaPartida.mes, anio, smi: "", concepto: nuevaPartida.concepto.trim(),
         rubro: nuevaPartida.rubro, categoria: categoriaDefault, proyecto: nuevaPartida.proyecto.trim(),
@@ -1170,7 +1174,7 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
       );
 
       let rubroFila = (col.rubro !== -1 && row[col.rubro]) ? String(row[col.rubro]).trim() : "Otros";
-      let categoriaFila = (col.categoria !== -1 && row[col.categoria]) ? String(row[col.categoria]).trim() : "Diversos";
+      let categoriaFila = (col.categoria !== -1 && row[col.categoria]) ? String(row[col.categoria]).trim() : "";
 
       /* Validación contra el catálogo. Es la que faltaba: el formulario
          encadena rubro -> categoría desde siempre, pero la carga masiva
@@ -1203,10 +1207,12 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
           rubroFila = porCategoria[0].rubro;
           avisosClasif.push(`Rubro "${reparado.rubro_original}" no existe — se usó ${rubroFila}, que es donde vive "${categoriaFila}"`);
         } else {
-          rubroFila = "Otros";
-          categoriaFila = "Diversos";
+          // Sin categoría, no con una etiqueta genérica: el hueco se ve en el
+          // preview y pide corrección; "Diversos" parecería un dato resuelto.
           reparado.categoria_original = categoriaFila;
-          avisosClasif.push(`Rubro "${reparado.rubro_original}" no existe en el catálogo — se usó Otros / Diversos`);
+          rubroFila = "Otros";
+          categoriaFila = "";
+          avisosClasif.push(`Rubro "${reparado.rubro_original}" no existe en el catálogo — se usó Otros, sin categoría`);
         }
         defRubro = RUBROS.find((r) => r.rubro === rubroFila);
       }
@@ -1217,11 +1223,12 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
         reparado.categoria_original = categoriaFila;
         // Se sugiere por el concepto antes de caer en Diversos.
         const sugerida = sugerirCategoria(concepto, defRubro.categorias);
-        categoriaFila = sugerida || "Diversos";
+        categoriaFila = sugerida || "";
+        const destino = categoriaFila || "sin categoría";
         avisosClasif.push(
           dondeSiVa.length
-            ? `"${reparado.categoria_original}" no pertenece a ${rubroFila} (vive en ${dondeSiVa.join(" / ")}) — se usó ${categoriaFila}`
-            : `La categoría "${reparado.categoria_original}" no existe — se usó ${categoriaFila}`
+            ? `"${reparado.categoria_original}" no pertenece a ${rubroFila} (vive en ${dondeSiVa.join(" / ")}) — se usó ${destino}`
+            : `La categoría "${reparado.categoria_original}" no existe — se usó ${destino}`
         );
       }
 
@@ -6126,12 +6133,11 @@ function RubrosPanel({ rubrosApi, categoriasApi, partidas = [], transacciones = 
     if (rubros.some((r) => igual(r.nombre, nombre))) { alert(`El rubro "${nombre}" ya existe.`); return; }
     try {
       const orden = (rubros[rubros.length - 1]?.orden ?? rubros.length) + 1;
-      const creado = await rubrosApi.insert({ id: uid(), nombre, orden, activo: true });
-      // Todo rubro nace con "Diversos": es la salida honesta cuando el gasto
-      // no encaja en ninguna categoría específica, y evita que se invente una.
-      const rid = (creado && creado.id) || null;
-      if (rid) await categoriasApi.insert({ id: uid(), rubro_id: rid, nombre: "Diversos", orden: 99, activa: true });
+      await rubrosApi.insert({ id: uid(), nombre, orden, activo: true });
+      // Nace SIN categorías, a propósito. Crearle una genérica invitaría a
+      // usarla en vez de definir las que el rubro realmente necesita.
       setNuevoRubro("");
+      alert(`Rubro "${nombre}" creado. Agrégale sus categorías: un rubro sin categorías no sirve para clasificar.`);
     } catch (err) { alert("No se pudo agregar: " + (err.message || err)); }
   };
 
@@ -6160,6 +6166,11 @@ function RubrosPanel({ rubrosApi, categoriasApi, partidas = [], transacciones = 
     const nombre = nuevaCat.trim();
     if (!nombre || !rubroSel) return;
     if (catsDe(rubroSel.id).some((c) => igual(c.nombre, nombre))) { alert(`"${nombre}" ya existe en ${rubroSel.nombre}.`); return; }
+    // Se bloquea recrear el comodín: si vuelve a existir, vuelve a usarse.
+    if (["diversos", "varios", "otros", "general", "generales"].includes(nombre.toLowerCase())) {
+      alert(`No se permite "${nombre}" como categoría.\n\nUna opción genérica se vuelve el camino de menor resistencia y la clasificación se degrada: acaba respondiendo "en cosas" a la pregunta de en qué gastamos. Si un gasto no encaja, déjalo sin categoría — el hueco se ve y se corrige.`);
+      return;
+    }
     try {
       const cs = catsDe(rubroSel.id);
       await categoriasApi.insert({ id: uid(), rubro_id: rubroSel.id, nombre,

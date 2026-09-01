@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.87.0";
+const APP_VERSION = "1.88.0";
 const CHANGELOG = [
+  { v: "1.88.0", desc: "Catálogo se organiza en sub-pestañas —Proyectos, Rubros y categorías, Zonas, Proveedores y Solicitudes de Pago— en vez de seis paneles apilados que obligaban a recorrer toda la página. Se prefirió esto a secciones plegables: con seis encabezados que atravesar el recorrido sigue existiendo, y el estado de plegado se olvida entre visitas. De paso se retira el panel de referencia de rubros, que solo listaba lo que el panel administrable ya muestra" },
   { v: "1.87.0", desc: "La Solicitud de Pago se genera ahora en PDF con formato de documento formal —encabezado con folio, datos en dos columnas, desglose fiscal, la cifra a pagar destacada, bloque de datos bancarios y firmas— además del Excel, que se conserva. Y en Catálogo aparece el consecutivo editable de la SPP por compañía, junto con el responsable de proyecto y el lugar de adquisición, que hasta ahora se escribían a mano en cada solicitud. El folio asignado es el MAYOR entre lo configurado y lo ya emitido: bajar el consecutivo por error no debe reutilizar folios de solicitudes que ya salieron. Requiere 20-consecutivo-spp.sql" },
   { v: "1.86.2", desc: "Fix: el botón de Generar Solicitud de Pago no hacía nada. El botón vive en Transacciones pero su estado y su modal habían quedado en Partidas, así que el clic llamaba a un setter de otro componente y el error moría en la consola sin señal visible. Es el mismo tipo de error que la vista previa del PDF en la 1.56.0; el verificador de alcance por árbol sintáctico lo detecta y ahora se corre también sobre los componentes, no solo sobre las variables" },
   { v: "1.86.1", desc: "Fix: al elegir un proveedor del catálogo maestro no pasaba nada visible. Los datos sí se cargaban, pero en el formulario de alta, que solo se dibuja cuando hay algo en edición — y eso no se activaba, así que el clic llenaba una pantalla invisible. Ahora abre el formulario con los datos puestos, cada resultado tiene un botón 'Usar' para que se vea pulsable, y el aviso sobre datos bancarios faltantes aparece DENTRO del formulario en vez de en una alerta que hay que cerrar antes de ver los datos que describe" },
@@ -7349,8 +7350,17 @@ function ConfigCompaniaPanel({ unidad }) {
   );
 }
 
+const SUBS_CATALOGO = [
+  { id: "proyectos", label: "Proyectos" },
+  { id: "rubros", label: "Rubros y categorías" },
+  { id: "zonas", label: "Zonas" },
+  { id: "proveedores", label: "Proveedores" },
+  { id: "solicitudes", label: "Solicitudes de Pago" },
+];
+
 function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
+  const [sub, setSub] = useSessionState("ss-catalogo-sub", "proyectos");
   const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "", centro_costo: "" });
   const [editingId, setEditingId] = useState(null);
   const [draft, setDraft] = useState({ nombre: "", grupo: "", pct: "", centro_costo: "" });
@@ -7388,6 +7398,27 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {/* Sub-pestañas en vez de seis paneles apilados. Se prefirió esto a
+          secciones plegables: con seis encabezados que atravesar el recorrido
+          sigue existiendo, y el estado de plegado se olvida entre visitas. */}
+      <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start", flexWrap: "wrap" }}>
+        {SUBS_CATALOGO.map((sc) => (
+          <button
+            key={sc.id}
+            onClick={() => setSub(sc.id)}
+            style={{
+              padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
+              background: sub === sc.id ? T.accent : "transparent",
+              color: sub === sc.id ? "#FFFFFF" : T.textDim,
+              fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
+            }}
+          >
+            {sc.label}
+          </button>
+        ))}
+      </div>
+
+      {sub === "proyectos" && (
       <Panel
         title={`Proyectos y % de prorrateo — ${unidad}`}
         subtitle="El % se usa para repartir gastos compartidos marcados como “Todos” o “<Grupo> Gral”"
@@ -7453,25 +7484,16 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
           </div>
         )}
       </Panel>
+      )}
 
-      <Panel title="Catálogo de rubros y categorías" subtitle="Referencia — igual al acordado">
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: "4px 24px" }}>
-          {RUBROS.map((r) => (
-            <details key={r.rubro} style={{ borderBottom: `1px solid ${T.borderSoft}`, padding: "8px 0" }}>
-              <summary style={{ cursor: "pointer", fontSize: 12.5, color: T.text, fontWeight: 600 }}>{r.rubro}</summary>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 }}>
-                {r.categorias.map((c) => <Pill key={c}>{c}</Pill>)}
-              </div>
-            </details>
-          ))}
-        </div>
-      </Panel>
-
-      <ConfigCompaniaPanel unidad={unidad} />
-      <RubrosPanel rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} />
-      <ZonasPanel zonasApi={zonasApi} transacciones={transacciones} />
-
-      <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />
+      {sub === "rubros" && (
+        <RubrosPanel rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} />
+      )}
+      {sub === "zonas" && <ZonasPanel zonasApi={zonasApi} transacciones={transacciones} />}
+      {sub === "proveedores" && (
+        <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />
+      )}
+      {sub === "solicitudes" && <ConfigCompaniaPanel unidad={unidad} />}
     </div>
   );
 }

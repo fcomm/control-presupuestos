@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.86.0";
+const APP_VERSION = "1.86.1";
 const CHANGELOG = [
+  { v: "1.86.1", desc: "Fix: al elegir un proveedor del catálogo maestro no pasaba nada visible. Los datos sí se cargaban, pero en el formulario de alta, que solo se dibuja cuando hay algo en edición — y eso no se activaba, así que el clic llenaba una pantalla invisible. Ahora abre el formulario con los datos puestos, cada resultado tiene un botón 'Usar' para que se vea pulsable, y el aviso sobre datos bancarios faltantes aparece DENTRO del formulario en vez de en una alerta que hay que cerrar antes de ver los datos que describe" },
   { v: "1.86.0", desc: "Solicitud de Pago a Proveedores: las transacciones marcadas como ANTICIPO en Folio SAE muestran un botón que genera la SPP en Excel, con folio autonumérico por compañía y registro en base. Todo lo que la app sabe viene precargado; el desglose fiscal —subtotal, IVA, retenciones— se DEDUCE del importe pagado y se presenta para confirmar, no como un hecho: ese camino inverso solo es exacto si el importe correspondía al esquema elegido, y las retenciones dependen del régimen del proveedor. Hay cinco esquemas predefinidos más captura manual. Los proyectos ganan Centro de Costo en el catálogo, que la solicitud necesita. Requiere 19-spp-anticipos.sql" },
   { v: "1.85.0", desc: "El selector de proveedor puede consultar el catálogo maestro de ASPEL (11,057 proveedores). Se busca contra Supabase EN EL MOMENTO y nunca se carga en memoria: traer once mil registros en cada sesión degradaría la app para todos a cambio de un catálogo que casi nunca se consulta. Al elegir uno, sus datos llenan el formulario de alta pero NO se guarda solo — el maestro trae CLABE en apenas el 30% de los casos y divisa casi en ninguno, así que darlo de alta en silencio crearía proveedores incompletos que fallan al pagar. La lista avisa si trae o no datos bancarios, y si el registro venía marcado para revisión. Requiere 18-proveedores-maestro.sql y el CSV cargado" },
   { v: "1.84.0", desc: "Proveedores: botón 'Descargar plantilla' para la carga masiva, que faltaba — había importador pero no había de dónde sacar el formato, y la única forma de conocerlo era exportar el catálogo, que no sirve cuando aún no hay proveedores. Trae las 12 columnas que el importador detecta, una hoja por compañía con su fila de ejemplo, y una hoja de instrucciones que advierte lo de la CLABE: Excel convierte 18 dígitos a notación científica y corrompe el dato antes de que nadie lo note" },
@@ -883,6 +884,7 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
      catálogo que casi nunca se consulta. */
   const [buscandoMaestro, setBuscandoMaestro] = useState(false);
   const [resMaestro, setResMaestro] = useState(null); // null = no se ha buscado
+  const [avisoMaestro, setAvisoMaestro] = useState("");
 
   const buscarEnMaestro = async () => {
     const q = busqueda.trim();
@@ -911,6 +913,9 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
      nunca, así que darlo de alta en silencio crearía proveedores incompletos
      que fallan al momento de pagar. */
   const usarDelMaestro = (m) => {
+    // Llenar el formulario no basta: sólo se dibuja cuando `editando` tiene
+    // valor, así que sin esto el clic llenaba una pantalla invisible y
+    // parecía que no hacía nada.
     setEditando({ id: null, nombre: m.nombre || "", rfc: m.rfc || "", id_sae: m.id_sae || "" });
     setNuevaCuenta({
       banco: m.banco || "", sucursal: m.sucursal || "", swift: m.swift || "",
@@ -918,15 +923,19 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
       divisa: m.divisa || "MXP",
     });
     setResMaestro(null);
-    if (m.revisar) {
-      alert(`Este proveedor viene marcado en el maestro:\n\n${m.revisar}\n\nVerifica los datos bancarios contra la factura antes de guardarlo.`);
-    } else if (!m.clabe && !m.numero_cuenta) {
-      alert("El maestro no tiene datos bancarios de este proveedor. Se llenaron nombre, RFC e Id SAE; captura la cuenta antes de usarlo para pagar.");
-    }
+    setBusqueda("");
+    // El aviso se muestra DENTRO del formulario, no en un alert que hay que
+    // cerrar antes de ver los datos que describe.
+    setAvisoMaestro(
+      m.revisar ? `Este proveedor viene marcado en el maestro: ${m.revisar}. Verifica los datos bancarios contra la factura antes de guardarlo.`
+      : (!m.clabe && !m.numero_cuenta)
+        ? "El maestro no tiene datos bancarios de este proveedor. Se llenaron nombre, RFC e Id SAE; captura la cuenta antes de usarlo para pagar."
+        : `Datos traídos del catálogo maestro (SAE ${m.id_sae}). Revísalos y guarda para agregarlo a ${unidad}.`
+    );
   };
 
-  const abrir = () => { setResaltadoId(value || ""); setEditando(null); setBusqueda(""); setResMaestro(null); setOpen(true); };
-  const cerrar = () => { setOpen(false); setBusqueda(""); setEditando(null); setResMaestro(null); };
+  const abrir = () => { setResaltadoId(value || ""); setEditando(null); setBusqueda(""); setResMaestro(null); setAvisoMaestro(""); setOpen(true); };
+  const cerrar = () => { setOpen(false); setBusqueda(""); setEditando(null); setResMaestro(null); setAvisoMaestro(""); };
 
   const confirmar = () => {
     const p = proveedores.find((pr) => pr.id === resaltadoId) || (editando?.id === resaltadoId ? editando : null);
@@ -996,6 +1005,12 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
               <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>
                 {editando.id ? "Editar proveedor" : "Nuevo proveedor"} — {unidad}
               </div>
+              {avisoMaestro && (
+                <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "8px 11px",
+                              borderRadius: "0 6px 6px 0", fontSize: 11.5, marginBottom: 12 }}>
+                  {avisoMaestro}
+                </div>
+              )}
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
                 <Field label="Nombre" style={{ gridColumn: "span 2" }}>
                   <TextInput autoFocus value={editando.nombre} onChange={(e) => setEditando({ ...editando, nombre: e.target.value })} />
@@ -1011,7 +1026,7 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
                 <Button type="button" onClick={guardarIdentidad} disabled={guardando}>
                   {guardando ? "Guardando…" : editando.id ? "Guardar cambios" : "Crear proveedor"}
                 </Button>
-                <Button type="button" variant="ghost" onClick={() => setEditando(null)}>Volver a la lista</Button>
+                <Button type="button" variant="ghost" onClick={() => { setEditando(null); setAvisoMaestro(""); }}>Volver a la lista</Button>
               </div>
 
               {editando.id && (
@@ -1134,7 +1149,10 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
                         {resMaestro.map((m) => (
                           <div key={m.id}
                             onClick={() => usarDelMaestro(m)}
-                            style={{ padding: "8px 11px", borderBottom: `1px solid ${T.borderSoft}`, cursor: "pointer", fontSize: 12.5 }}>
+                            title="Usar este proveedor"
+                            style={{ padding: "8px 11px", borderBottom: `1px solid ${T.borderSoft}`, cursor: "pointer", fontSize: 12.5,
+                                     display: "flex", justifyContent: "space-between", alignItems: "center", gap: 10 }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
                             <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
                               <span style={{ fontWeight: 600 }}>{m.nombre}</span>
                               <span style={{ fontFamily: T.fontMono, color: T.textFaint, fontSize: 11, whiteSpace: "nowrap" }}>
@@ -1151,6 +1169,13 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
                                 : <span style={{ color: T.amber }}> · sin cuenta</span>}
                               {m.revisar ? <span style={{ color: T.red }}> · revisar: {m.revisar}</span> : null}
                             </div>
+                            </div>
+                            {/* Un botón explícito: la fila entera es pulsable, pero
+                                sin una señal visible nadie lo descubre. */}
+                            <Button type="button" variant="ghost" style={{ padding: "4px 10px", fontSize: 11.5, whiteSpace: "nowrap" }}
+                              onClick={(e) => { e.stopPropagation(); usarDelMaestro(m); }}>
+                              Usar
+                            </Button>
                           </div>
                         ))}
                       </div>

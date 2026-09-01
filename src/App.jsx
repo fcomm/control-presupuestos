@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.83.0";
+const APP_VERSION = "1.84.0";
 const CHANGELOG = [
+  { v: "1.84.0", desc: "Proveedores: botón 'Descargar plantilla' para la carga masiva, que faltaba — había importador pero no había de dónde sacar el formato, y la única forma de conocerlo era exportar el catálogo, que no sirve cuando aún no hay proveedores. Trae las 12 columnas que el importador detecta, una hoja por compañía con su fila de ejemplo, y una hoja de instrucciones que advierte lo de la CLABE: Excel convierte 18 dígitos a notación científica y corrompe el dato antes de que nadie lo note" },
   { v: "1.83.0", desc: "Formato consistente en los nueve archivos de Excel, con una distinción deliberada: los REPORTES (Presupuestal, Pagos, Pagos Dirección) llevan título, periodo, totales y subtotales; los archivos de INTERCAMBIO (RawData de partidas, catálogo de proveedores y las dos plantillas de importación) solo reciben encabezado con fondo, panel congelado y autofiltro. No llevan título a propósito: los parsers y el preparador leen el encabezado de la PRIMERA fila, así que anteponerlo rompería la reimportación. El Reporte de Pagos gana además un subtotal por zona y moneda, que es lo que Pagos necesita para cuadrar contra el banco, e importes alineados a la derecha en todos los archivos" },
   { v: "1.82.0", desc: "El Excel del Reporte Pagos Dirección adopta el formato del Reporte Presupuestal: título y subtítulo con periodo y totales, encabezado con fondo y texto blanco, filas de total por moneda al pie, encabezado congelado y autofiltro. Los totales dejan de vivir sueltos en celdas fijas —se rompían al cambiar las columnas visibles— y pasan al subtítulo, junto al periodo que los explica. El archivo se llama ahora 'Reporte de Pagos Dirección - Compañía - Periodo', con el periodo tomado de las fechas que realmente contiene" },
   { v: "1.81.0", desc: "El Reporte Excel de Partidas se llama ahora 'Reporte Presupuestal - Compañía - Mes', y el mes sale de las partidas que realmente contiene, no de los filtros: si el filtro es amplio pero solo hay septiembre, el archivo dice septiembre. Con varios meses usa el rango en orden cronológico. El título dentro del documento y el nombre de la hoja siguen el mismo criterio" },
@@ -6655,6 +6656,66 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
 
 function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
   const inputRef = useRef(null);
+  /* Plantilla de carga masiva. Faltaba: había importador pero no había de
+     dónde sacar el formato, así que la única forma de saber qué columnas
+     espera era exportar el catálogo existente — que no sirve si aún no hay
+     proveedores capturados. */
+  const descargarPlantilla = async () => {
+    const headers = ["Compañía", "Nombre", "RFC", "ID SAE", "Referencia", "Notas",
+      "Banco", "Sucursal", "SWIFT", "CLABE", "Numero de Cuenta", "Divisa"];
+    const anchos = [12, 40, 16, 12, 18, 30, 20, 12, 14, 24, 20, 9];
+    const ejemplos = {
+      OSB: ["OSB", "Ejemplo: Comisión Federal de Electricidad", "CFE370814QI0", "", "", "", "BANORTE", "", "", "072680013482913231", "", "MXP"],
+      CTM: ["CTM", "Ejemplo: Servicio de Gasolinería Lepacaba SA de CV", "SGL010203AB1", "", "", "", "BBVA", "", "", "012680001234567890", "", "MXP"],
+      ISE: ["ISE", "Ejemplo: Champion X", "", "", "", "Proveedor extranjero", "CITIBANK", "", "CITIUS33", "", "1234567890", "USD"],
+    };
+
+    const wbx = new ExcelJS.Workbook();
+    UNIDAD_KEYS.forEach((u) => {
+      const ws = wbx.addWorksheet(u);
+      ws.columns = anchos.map((w) => ({ width: w }));
+      const headerRow = ws.addRow(headers);
+      formatearHojaDatos(ws, headerRow, headers.length);
+      const ejemploRow = ws.addRow(ejemplos[u]);
+      ejemploRow.eachCell((cell) => { cell.font = { italic: true, color: { argb: "FF8B99A6" } }; });
+    });
+
+    const notas = wbx.addWorksheet("Instrucciones");
+    notas.columns = [{ width: 100 }];
+    [
+      "CÓMO LLENAR ESTA PLANTILLA",
+      "",
+      "1. Borra la fila de ejemplo (va en gris cursiva) antes de importar.",
+      "2. Compañía: OSB, CTM o ISE. Si la dejas vacía se usa el nombre de la hoja.",
+      "3. Nombre: obligatorio. Es lo que empareja con los proveedores que ya existen,",
+      "   junto con el RFC. Si el RFC coincide, se ACTUALIZA el proveedor en vez de",
+      "   duplicarlo.",
+      "4. Un proveedor con VARIAS cuentas bancarias va en varias filas: repite el",
+      "   nombre y el RFC, y cambia solo los datos de la cuenta.",
+      "5. CLABE y Número de Cuenta: escríbelos como TEXTO, no como número.",
+      "   Excel convierte una CLABE de 18 dígitos a notación científica y se pierden",
+      "   los últimos dígitos y el cero inicial. Si la celda muestra 7.26801E+17,",
+      "   el dato ya se corrompió: da formato de texto a la columna ANTES de pegar.",
+      "6. Divisa: MXP o USD. Determina con qué cuenta se paga cada transacción,",
+      "   así que una cuenta en dólares mal marcada manda el pago a la cuenta",
+      "   equivocada.",
+      "7. SWIFT: solo para transferencias internacionales.",
+      "8. ID SAE: el identificador del proveedor en ASPEL. Sirve para empatar por id",
+      "   en vez de por nombre, que es mucho más confiable.",
+    ].forEach((t) => notas.addRow([t]));
+    notas.getRow(1).font = { bold: true, size: 13 };
+
+    const buf = await wbx.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "Plantilla-Proveedores.xlsx";
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+
   const [preview, setPreview] = useState(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState("");
@@ -6716,7 +6777,11 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
   };
 
   return (
-    <Panel title="Carga masiva de proveedores" subtitle='Una fila por proveedor, con una columna "Compañía" (OSB/CTM/ISE) que dice a cuál pertenece — o usa hojas llamadas OSB/CTM/ISE como respaldo'>
+    <Panel
+      title="Carga masiva de proveedores"
+      subtitle='Una fila por proveedor, con una columna "Compañía" (OSB/CTM/ISE) que dice a cuál pertenece — o usa hojas llamadas OSB/CTM/ISE como respaldo'
+      right={<Button variant="ghost" onClick={descargarPlantilla}>Descargar plantilla</Button>}
+    >
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <input ref={inputRef} type="file" accept=".xlsx" onChange={onFile} style={{ fontSize: 12, color: T.textDim }} />
         {status && <Pill tone="teal">{status}</Pill>}

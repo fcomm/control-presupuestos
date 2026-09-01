@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.86.2";
+const APP_VERSION = "1.87.0";
 const CHANGELOG = [
+  { v: "1.87.0", desc: "La Solicitud de Pago se genera ahora en PDF con formato de documento formal —encabezado con folio, datos en dos columnas, desglose fiscal, la cifra a pagar destacada, bloque de datos bancarios y firmas— además del Excel, que se conserva. Y en Catálogo aparece el consecutivo editable de la SPP por compañía, junto con el responsable de proyecto y el lugar de adquisición, que hasta ahora se escribían a mano en cada solicitud. El folio asignado es el MAYOR entre lo configurado y lo ya emitido: bajar el consecutivo por error no debe reutilizar folios de solicitudes que ya salieron. Requiere 20-consecutivo-spp.sql" },
   { v: "1.86.2", desc: "Fix: el botón de Generar Solicitud de Pago no hacía nada. El botón vive en Transacciones pero su estado y su modal habían quedado en Partidas, así que el clic llamaba a un setter de otro componente y el error moría en la consola sin señal visible. Es el mismo tipo de error que la vista previa del PDF en la 1.56.0; el verificador de alcance por árbol sintáctico lo detecta y ahora se corre también sobre los componentes, no solo sobre las variables" },
   { v: "1.86.1", desc: "Fix: al elegir un proveedor del catálogo maestro no pasaba nada visible. Los datos sí se cargaban, pero en el formulario de alta, que solo se dibuja cuando hay algo en edición — y eso no se activaba, así que el clic llenaba una pantalla invisible. Ahora abre el formulario con los datos puestos, cada resultado tiene un botón 'Usar' para que se vea pulsable, y el aviso sobre datos bancarios faltantes aparece DENTRO del formulario en vez de en una alerta que hay que cerrar antes de ver los datos que describe" },
   { v: "1.86.0", desc: "Solicitud de Pago a Proveedores: las transacciones marcadas como ANTICIPO en Folio SAE muestran un botón que genera la SPP en Excel, con folio autonumérico por compañía y registro en base. Todo lo que la app sabe viene precargado; el desglose fiscal —subtotal, IVA, retenciones— se DEDUCE del importe pagado y se presenta para confirmar, no como un hecho: ese camino inverso solo es exacto si el importe correspondía al esquema elegido, y las retenciones dependen del régimen del proveedor. Hay cinco esquemas predefinidos más captura manual. Los proyectos ganan Centro de Costo en el catálogo, que la solicitud necesita. Requiere 19-spp-anticipos.sql" },
@@ -3542,6 +3543,141 @@ async function generarExcelSPP(r) {
 }
 
 /**
+ * PDF de la Solicitud de Pago. Es el documento que llega al área de Pagos,
+ * así que se cuida la presentación: bloques delimitados, la cifra a pagar
+ * destacada y los datos bancarios agrupados aparte, que es lo que se
+ * consulta al ejecutar la transferencia.
+ */
+function generarPdfSPP(r) {
+  const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
+  const M = 40;                    // margen
+  const A = 612 - M * 2;           // ancho útil
+  const AZUL = [62, 92, 118];
+  const GRIS = [107, 119, 133];
+  const num = (v) => "$" + (Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  let y = M;
+
+  // --- Encabezado ---
+  doc.setFillColor(...AZUL);
+  doc.rect(M, y, A, 46, "F");
+  doc.setTextColor(255).setFontSize(15).setFont(undefined, "bold");
+  doc.text("SOLICITUD DE PAGO A PROVEEDORES", M + 14, y + 28);
+  doc.setFontSize(10).setFont(undefined, "normal");
+  doc.text(r.compania, M + 14, y + 36);
+  doc.setFontSize(20).setFont(undefined, "bold");
+  doc.text(`FOLIO ${r.folio}`, M + A - 14, y + 30, { align: "right" });
+  y += 62;
+
+  /* Los datos generales en dos columnas: en una sola, el documento se
+     alarga y obliga a recorrerlo para encontrar un dato. */
+  const filaDoble = (e1, v1, e2, v2) => {
+    doc.setFontSize(8).setTextColor(...GRIS).setFont(undefined, "normal");
+    doc.text(String(e1).toUpperCase(), M, y);
+    if (e2) doc.text(String(e2).toUpperCase(), M + A / 2, y);
+    doc.setFontSize(10).setTextColor(35, 42, 49);
+    doc.text(String(v1 || "—"), M, y + 13);
+    if (e2) doc.text(String(v2 || "—"), M + A / 2, y + 13);
+    y += 28;
+  };
+  filaDoble("Fecha de elaboración", r.fecha_elaboracion, "Fecha de pago", r.fecha_pago);
+  filaDoble("Zona", r.zona, "Proyecto", r.centro_costo ? `${r.centro_costo} — ${r.proyecto}` : r.proyecto);
+  filaDoble("Responsable de proyecto", r.responsable, "Solicitante", r.solicitante);
+  filaDoble("Lugar de adquisición", r.lugar_adquisicion, "Proveedor ASPEL-SAE", r.proveedor_sae);
+
+  y += 4;
+  doc.setDrawColor(220).line(M, y, M + A, y);
+  y += 16;
+  doc.setFontSize(9.5).setTextColor(...GRIS).setFont(undefined, "italic");
+  doc.text("Por medio de la presente solicito se realice el pago al Proveedor como sigue:", M, y);
+  doc.setFont(undefined, "normal");
+  y += 16;
+
+  // --- Concepto y desglose ---
+  autoTable(doc, {
+    startY: y,
+    head: [["PARTIDA", "DESCRIPCIÓN DE PRODUCTOS O SERVICIOS", "CANT.", "P.U.", "SUBTOTAL"]],
+    body: [[1, r.descripcion || "", r.cantidad, num(r.precio_unitario), num(r.subtotal)]],
+    styles: { fontSize: 8.5, cellPadding: 6 },
+    headStyles: { fillColor: AZUL, textColor: 255, halign: "center" },
+    columnStyles: { 0: { halign: "center", cellWidth: 50 }, 1: { halign: "left" },
+                    2: { halign: "center", cellWidth: 48 }, 3: { halign: "right", cellWidth: 70 },
+                    4: { halign: "right", cellWidth: 80 } },
+    margin: { left: M, right: M },
+  });
+  y = doc.lastAutoTable.finalY + 14;
+
+  // Los importes alineados a la derecha, junto al total, para poder
+  // seguir la aritmética de arriba abajo.
+  const linea = (etq, val, fuerte) => {
+    doc.setFontSize(fuerte ? 11 : 9.5).setFont(undefined, fuerte ? "bold" : "normal");
+    doc.setTextColor(fuerte ? 35 : 90, fuerte ? 42 : 100, fuerte ? 49 : 110);
+    doc.text(etq, M + A - 150, y, { align: "right" });
+    doc.text(val, M + A, y, { align: "right" });
+    y += fuerte ? 18 : 14;
+  };
+  linea("Subtotal", num(r.subtotal));
+  linea("IVA", num(r.iva));
+  if (Number(r.ret_isr)) linea("Retención ISR", num(r.ret_isr));
+  if (Number(r.ret_iva)) linea("Retención IVA", num(r.ret_iva));
+  if (Number(r.descuento)) linea("Descuento", num(r.descuento));
+  linea("TOTAL", num(r.total), true);
+
+  y += 6;
+  // La cifra que se va a transferir, destacada: es el dato que Pagos busca.
+  doc.setFillColor(...AZUL);
+  doc.rect(M + A - 260, y, 260, 34, "F");
+  doc.setTextColor(255).setFontSize(9).setFont(undefined, "normal");
+  doc.text(`TOTAL A PAGAR ${r.pct_pago}%`, M + A - 248, y + 14);
+  doc.setFontSize(15).setFont(undefined, "bold");
+  doc.text(num(r.total_a_pagar), M + A - 12, y + 26, { align: "right" });
+  y += 50;
+
+  doc.setTextColor(35, 42, 49);
+  filaDoble("Tipo de moneda", r.moneda, "Condiciones de pago",
+    `${r.condicion_pago}${r.tipo_pago ? ` — ${r.tipo_pago}` : ""}`);
+
+  const bloqueTexto = (etq, val) => {
+    doc.setFontSize(8).setTextColor(...GRIS);
+    doc.text(String(etq).toUpperCase(), M, y);
+    doc.setFontSize(10).setTextColor(35, 42, 49);
+    const lineas = doc.splitTextToSize(String(val || "—"), A);
+    doc.text(lineas, M, y + 13);
+    y += 13 + lineas.length * 12 + 8;
+  };
+  bloqueTexto("Concepto de pago", r.concepto);
+  if (r.observaciones) bloqueTexto("Observaciones", r.observaciones);
+
+  // --- Datos bancarios, en su propio bloque ---
+  y += 6;
+  doc.setFillColor(236, 238, 241);
+  doc.rect(M, y, A, 22, "F");
+  doc.setFontSize(10).setFont(undefined, "bold").setTextColor(35, 42, 49);
+  doc.text("DATOS BANCARIOS DEL PROVEEDOR", M + 10, y + 15);
+  doc.setFont(undefined, "normal");
+  y += 34;
+  filaDoble("Nombre o razón social", r.proveedor, "Banco", r.banco);
+  filaDoble("Sucursal bancaria", r.sucursal, "Referencia bancaria", r.referencia_bancaria);
+  filaDoble("Cuenta bancaria", r.cuenta, "Cuenta CLABE", r.clabe);
+
+  // --- Firmas ---
+  y = Math.max(y + 20, 660);
+  const anchoF = (A - 40) / 3;
+  ["Solicitante", "Responsable de proyecto", "Autorización"].forEach((etq, i) => {
+    const x = M + i * (anchoF + 20);
+    doc.setDrawColor(150).line(x, y, x + anchoF, y);
+    doc.setFontSize(8).setTextColor(...GRIS);
+    doc.text(etq.toUpperCase(), x + anchoF / 2, y + 12, { align: "center" });
+    const nombre = i === 0 ? r.solicitante : i === 1 ? r.responsable : "";
+    if (nombre) doc.text(String(nombre), x + anchoF / 2, y - 5, { align: "center" });
+  });
+
+  doc.setFontSize(7.5).setTextColor(...GRIS);
+  doc.text(`Generado desde Control de Presupuestos · ${new Date().toLocaleString("es-MX")}`, M, 745);
+
+  doc.save(`SPP ${r.folio} - ${r.compania} - ${String(r.proveedor || "").slice(0, 30)}.pdf`);
+}
+
+/**
  * Diálogo de la Solicitud de Pago a Proveedores.
  *
  * Todo lo que la app sabe viene precargado; todo lo que la app DEDUCE se
@@ -3559,9 +3695,23 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
   const proyNombre = t.proyecto || partida?.proyecto || "";
   const proy = proyectosUnidad.find((p) => p.nombre === proyNombre);
 
+  /* Los datos fijos de la compañía se leen al abrir: son los mismos en cada
+     solicitud y hasta ahora se escribían a mano una y otra vez. */
+  const [cfgCia, setCfgCia] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    supabase.from("config_companias").select("*").eq("compania", unidad).maybeSingle()
+      .then(({ data }) => { if (vivo && data) { setCfgCia(data);
+        setF((prev) => ({ ...prev,
+          responsable: prev.responsable || data.spp_responsable || "",
+          lugar_adquisicion: data.spp_lugar_adquisicion || prev.lugar_adquisicion })); } });
+    return () => { vivo = false; };
+  }, [unidad]);
+
   const [esquema, setEsquema] = useState("pf_servicios");
   const [pctPago, setPctPago] = useState(50);
   const [guardando, setGuardando] = useState(false);
+  const [formato, setFormato] = useState("pdf");
 
   // El subtotal se deduce del importe pagado, que es lo único que la
   // transacción guarda hoy.
@@ -3578,9 +3728,9 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
     fecha_elaboracion: new Date().toISOString().slice(0, 10),
     fecha_pago: t.fecha_pago || t.dia || "",
     zona: t.zona || partida?.zona || "",
-    responsable: "",
+    responsable: cfgCia?.spp_responsable || "",
     solicitante: t.solicitante || session?.user?.email?.split("@")[0] || "",
-    lugar_adquisicion: "Queretaro",
+    lugar_adquisicion: cfgCia?.spp_lugar_adquisicion || "Queretaro",
     tipo_pago: "Anticipo",
     condicion_pago: "TRANSFERENCIA",
     concepto: t.concepto_detallado || "",
@@ -3609,7 +3759,11 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
         .from("solicitudes_pago").select("folio")
         .eq("compania", unidad).order("folio", { ascending: false }).limit(1);
       if (errF) throw errF;
-      const folio = ((ultimos && ultimos[0]?.folio) || 0) + 1;
+      const { data: cfg } = await supabase.from("config_companias")
+        .select("spp_ultimo").eq("compania", unidad).maybeSingle();
+      // El MAYOR entre lo configurado y lo ya emitido: bajar el consecutivo
+      // por error no debe reutilizar folios de solicitudes que ya salieron.
+      const folio = Math.max(Number(cfg?.spp_ultimo) || 0, (ultimos && ultimos[0]?.folio) || 0) + 1;
 
       const reg = {
         id: uid(), compania: unidad, folio, transaccion_id: t.id,
@@ -3633,6 +3787,9 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
       };
       const { error } = await supabase.from("solicitudes_pago").insert(reg);
       if (error) throw error;
+      await supabase.from("config_companias")
+        .upsert({ compania: unidad, spp_ultimo: folio, updated_at: new Date().toISOString() })
+        .catch(() => {});
 
       // El desglose confirmado se guarda también en la transacción: es el
       // dato que faltaba para saber de qué se compone el importe.
@@ -3643,7 +3800,8 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
         observaciones_spp: f.observaciones,
       }).catch(() => {});
 
-      await generarExcelSPP(reg);
+      if (formato === "pdf") generarPdfSPP(reg);
+      else await generarExcelSPP(reg);
       onClose();
     } catch (err) {
       alert("No se pudo generar la solicitud: " + (err.message || err));
@@ -3772,8 +3930,11 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
       </div>
 
       <div style={{ display: "flex", gap: 8 }}>
-        <Button onClick={generar} disabled={guardando}>
-          {guardando ? "Generando…" : "Generar solicitud"}
+        <Button onClick={() => { setFormato("pdf"); generar(); }} disabled={guardando}>
+          {guardando ? "Generando…" : "Generar PDF"}
+        </Button>
+        <Button variant="ghost" onClick={() => { setFormato("xlsx"); generar(); }} disabled={guardando}>
+          Generar Excel
         </Button>
         <Button variant="ghost" onClick={onClose}>Cancelar</Button>
       </div>
@@ -7107,6 +7268,87 @@ function RubrosPanel({ rubrosApi, categoriasApi, partidas = [], transacciones = 
   );
 }
 
+/**
+ * Ajustes por compañía. Hoy solo la numeración de las Solicitudes de Pago y
+ * los datos que se repiten en todas ellas, escritos hasta ahora a mano.
+ */
+function ConfigCompaniaPanel({ unidad }) {
+  const [cfg, setCfg] = useState(null);
+  const [ultimoEmitido, setUltimoEmitido] = useState(0);
+  const [guardando, setGuardando] = useState(false);
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const { data } = await supabase.from("config_companias").select("*").eq("compania", unidad).maybeSingle();
+      const { data: max } = await supabase.from("solicitudes_pago").select("folio")
+        .eq("compania", unidad).order("folio", { ascending: false }).limit(1);
+      if (!vivo) return;
+      setCfg(data || { compania: unidad, spp_ultimo: 0, spp_responsable: "", spp_lugar_adquisicion: "" });
+      setUltimoEmitido((max && max[0]?.folio) || 0);
+    })();
+    return () => { vivo = false; };
+  }, [unidad]);
+
+  if (!cfg) return null;
+  const siguiente = Math.max(Number(cfg.spp_ultimo) || 0, ultimoEmitido) + 1;
+
+  const guardar = async () => {
+    setGuardando(true);
+    try {
+      const { error } = await supabase.from("config_companias").upsert({
+        compania: unidad,
+        spp_ultimo: Number(cfg.spp_ultimo) || 0,
+        spp_responsable: cfg.spp_responsable || "",
+        spp_lugar_adquisicion: cfg.spp_lugar_adquisicion || "",
+        updated_at: new Date().toISOString(),
+      });
+      if (error) throw error;
+    } catch (err) {
+      alert("No se pudo guardar: " + (err.message || err));
+    } finally { setGuardando(false); }
+  };
+
+  return (
+    <Panel title={`Solicitudes de Pago — ${unidad}`}
+      subtitle="Numeración y datos que se repiten en todas las solicitudes de esta compañía">
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 12 }}>
+        <Field label="Último folio usado">
+          <TextInput type="number" value={cfg.spp_ultimo ?? 0}
+            onChange={(e) => setCfg({ ...cfg, spp_ultimo: e.target.value })} />
+        </Field>
+        <Field label="Responsable de proyecto">
+          <TextInput value={cfg.spp_responsable || ""}
+            onChange={(e) => setCfg({ ...cfg, spp_responsable: e.target.value })}
+            placeholder="Se precarga en cada solicitud" />
+        </Field>
+        <Field label="Lugar de adquisición">
+          <TextInput value={cfg.spp_lugar_adquisicion || ""}
+            onChange={(e) => setCfg({ ...cfg, spp_lugar_adquisicion: e.target.value })}
+            placeholder="Queretaro" />
+        </Field>
+      </div>
+
+      {/* El folio real es el mayor entre lo configurado y lo ya emitido: si
+          se baja el número por error, no se reutilizan folios de solicitudes
+          que ya salieron. */}
+      <div style={{ fontSize: 12, color: T.textDim, marginBottom: 12 }}>
+        La siguiente solicitud llevará el folio <b style={{ fontFamily: T.fontMono }}>{siguiente}</b>.
+        {ultimoEmitido > (Number(cfg.spp_ultimo) || 0) && (
+          <span style={{ color: T.amber }}>
+            {" "}Ya se emitió el folio {ultimoEmitido}, así que la numeración continúa desde ahí
+            aunque el valor configurado sea menor.
+          </span>
+        )}
+      </div>
+
+      <Button onClick={guardar} disabled={guardando}>
+        {guardando ? "Guardando…" : "Guardar"}
+      </Button>
+    </Panel>
+  );
+}
+
 function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "", centro_costo: "" });
@@ -7225,6 +7467,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
         </div>
       </Panel>
 
+      <ConfigCompaniaPanel unidad={unidad} />
       <RubrosPanel rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} />
       <ZonasPanel zonasApi={zonasApi} transacciones={transacciones} />
 

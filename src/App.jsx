@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.86.1";
+const APP_VERSION = "1.86.2";
 const CHANGELOG = [
+  { v: "1.86.2", desc: "Fix: el botón de Generar Solicitud de Pago no hacía nada. El botón vive en Transacciones pero su estado y su modal habían quedado en Partidas, así que el clic llamaba a un setter de otro componente y el error moría en la consola sin señal visible. Es el mismo tipo de error que la vista previa del PDF en la 1.56.0; el verificador de alcance por árbol sintáctico lo detecta y ahora se corre también sobre los componentes, no solo sobre las variables" },
   { v: "1.86.1", desc: "Fix: al elegir un proveedor del catálogo maestro no pasaba nada visible. Los datos sí se cargaban, pero en el formulario de alta, que solo se dibuja cuando hay algo en edición — y eso no se activaba, así que el clic llenaba una pantalla invisible. Ahora abre el formulario con los datos puestos, cada resultado tiene un botón 'Usar' para que se vea pulsable, y el aviso sobre datos bancarios faltantes aparece DENTRO del formulario en vez de en una alerta que hay que cerrar antes de ver los datos que describe" },
   { v: "1.86.0", desc: "Solicitud de Pago a Proveedores: las transacciones marcadas como ANTICIPO en Folio SAE muestran un botón que genera la SPP en Excel, con folio autonumérico por compañía y registro en base. Todo lo que la app sabe viene precargado; el desglose fiscal —subtotal, IVA, retenciones— se DEDUCE del importe pagado y se presenta para confirmar, no como un hecho: ese camino inverso solo es exacto si el importe correspondía al esquema elegido, y las retenciones dependen del régimen del proveedor. Hay cinco esquemas predefinidos más captura manual. Los proyectos ganan Centro de Costo en el catálogo, que la solicitud necesita. Requiere 19-spp-anticipos.sql" },
   { v: "1.85.0", desc: "El selector de proveedor puede consultar el catálogo maestro de ASPEL (11,057 proveedores). Se busca contra Supabase EN EL MOMENTO y nunca se carga en memoria: traer once mil registros en cada sesión degradaría la app para todos a cambio de un catálogo que casi nunca se consulta. Al elegir uno, sus datos llenan el formulario de alta pero NO se guarda solo — el maestro trae CLABE en apenas el 30% de los casos y divisa casi en ninguno, así que darlo de alta en silencio crearía proveedores incompletos que fallan al pagar. La lista avisa si trae o no datos bancarios, y si el registro venía marcado para revisión. Requiere 18-proveedores-maestro.sql y el CSV cargado" },
@@ -4236,7 +4237,6 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
   const [expandedIds, setExpandedIds] = useState(new Set());
   const [transaccionEditando, setTransaccionEditando] = useState(null);
-  const [sppDe, setSppDe] = useState(null);
   const toggleExpand = (id) => setExpandedIds((prev) => {
     const next = new Set(prev);
     next.has(id) ? next.delete(id) : next.add(id);
@@ -4781,19 +4781,6 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           </form>
         </Modal>
       )}
-      {sppDe && (
-        <SolicitudPagoModal
-          transaccion={sppDe}
-          onClose={() => setSppDe(null)}
-          unidad={unidad}
-          partidas={partidasUnidad}
-          proyectosUnidad={proyectosUnidad}
-          proveedoresApi={proveedoresApi}
-          cuentasApi={cuentasApi}
-          transaccionesApi={transaccionesApi}
-          session={session}
-        />
-      )}
       {transaccionEditando && (
         <TransaccionQuickEditModal
           partidasUnidad={partidasUnidad}
@@ -5017,6 +5004,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  // La Solicitud de Pago se genera desde una transacción, así que su estado
+  // vive aquí. Estaba en PartidasTab y el botón llamaba a un setter de otro
+  // componente: fallaba en la consola sin que nada visible ocurriera.
+  const [sppDe, setSppDe] = useState(null);
   const cuentasDelProveedorSeleccionado = form.proveedor_id ? cuentasApi.rows.filter((c) => c.proveedor_id === form.proveedor_id) : [];
   const transUnidad = transacciones.filter((t) => t.unidad_detectada === unidad);
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
@@ -5626,6 +5617,19 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 
       <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />
 
+      {sppDe && (
+        <SolicitudPagoModal
+          transaccion={sppDe}
+          onClose={() => setSppDe(null)}
+          unidad={unidad}
+          partidas={partidasUnidad}
+          proyectosUnidad={proyectosUnidad}
+          proveedoresApi={proveedoresApi}
+          cuentasApi={cuentasApi}
+          transaccionesApi={transaccionesApi}
+          session={session}
+        />
+      )}
       {modalOpen && (
         <Modal
           title={editId ? "Editar transacción" : "Nueva transacción real"}

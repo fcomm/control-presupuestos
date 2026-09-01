@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.85.0";
+const APP_VERSION = "1.86.0";
 const CHANGELOG = [
+  { v: "1.86.0", desc: "Solicitud de Pago a Proveedores: las transacciones marcadas como ANTICIPO en Folio SAE muestran un botón que genera la SPP en Excel, con folio autonumérico por compañía y registro en base. Todo lo que la app sabe viene precargado; el desglose fiscal —subtotal, IVA, retenciones— se DEDUCE del importe pagado y se presenta para confirmar, no como un hecho: ese camino inverso solo es exacto si el importe correspondía al esquema elegido, y las retenciones dependen del régimen del proveedor. Hay cinco esquemas predefinidos más captura manual. Los proyectos ganan Centro de Costo en el catálogo, que la solicitud necesita. Requiere 19-spp-anticipos.sql" },
   { v: "1.85.0", desc: "El selector de proveedor puede consultar el catálogo maestro de ASPEL (11,057 proveedores). Se busca contra Supabase EN EL MOMENTO y nunca se carga en memoria: traer once mil registros en cada sesión degradaría la app para todos a cambio de un catálogo que casi nunca se consulta. Al elegir uno, sus datos llenan el formulario de alta pero NO se guarda solo — el maestro trae CLABE en apenas el 30% de los casos y divisa casi en ninguno, así que darlo de alta en silencio crearía proveedores incompletos que fallan al pagar. La lista avisa si trae o no datos bancarios, y si el registro venía marcado para revisión. Requiere 18-proveedores-maestro.sql y el CSV cargado" },
   { v: "1.84.0", desc: "Proveedores: botón 'Descargar plantilla' para la carga masiva, que faltaba — había importador pero no había de dónde sacar el formato, y la única forma de conocerlo era exportar el catálogo, que no sirve cuando aún no hay proveedores. Trae las 12 columnas que el importador detecta, una hoja por compañía con su fila de ejemplo, y una hoja de instrucciones que advierte lo de la CLABE: Excel convierte 18 dígitos a notación científica y corrompe el dato antes de que nadie lo note" },
   { v: "1.83.0", desc: "Formato consistente en los nueve archivos de Excel, con una distinción deliberada: los REPORTES (Presupuestal, Pagos, Pagos Dirección) llevan título, periodo, totales y subtotales; los archivos de INTERCAMBIO (RawData de partidas, catálogo de proveedores y las dos plantillas de importación) solo reciben encabezado con fondo, panel congelado y autofiltro. No llevan título a propósito: los parsers y el preparador leen el encabezado de la PRIMERA fila, así que anteponerlo rompería la reimportación. El Reporte de Pagos gana además un subtotal por zona y moneda, que es lo que Pagos necesita para cuadrar contra el banco, e importes alineados a la derecha en todos los archivos" },
@@ -1167,6 +1168,81 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
       )}
     </>
   );
+}
+
+/* ----------------------------------------------------------------------
+   SOLICITUD DE PAGO A PROVEEDORES (SPP)
+   ---------------------------------------------------------------------- */
+
+/**
+ * Esquemas fiscales. Las retenciones dependen del RÉGIMEN del proveedor y
+ * del tipo de servicio, no del importe, así que la app no puede deducirlas
+ * sola: propone el más común y quien genera la solicitud confirma o ajusta.
+ *
+ * Calcularlas mal en un documento que va a Pagos es peor que preguntarlas.
+ */
+const ESQUEMAS_FISCALES = [
+  { id: "pf_servicios", label: "Persona física — servicios profesionales",
+    iva: 0.16, retIsr: 0.0125, retIvaSobreIva: 2 / 3,
+    nota: "IVA 16%, ISR 1.25%, retención de 2/3 del IVA" },
+  { id: "pf_arrendamiento", label: "Persona física — arrendamiento",
+    iva: 0.16, retIsr: 0.10, retIvaSobreIva: 2 / 3,
+    nota: "IVA 16%, ISR 10%, retención de 2/3 del IVA" },
+  { id: "pm_sin_ret", label: "Persona moral — sin retenciones",
+    iva: 0.16, retIsr: 0, retIvaSobreIva: 0,
+    nota: "IVA 16%, sin retenciones — el caso más común entre empresas" },
+  { id: "pm_flete", label: "Persona moral — autotransporte de carga",
+    iva: 0.16, retIsr: 0, retIvaSobreIva: 0.04 / 0.16,
+    nota: "IVA 16%, retención de 4% de IVA" },
+  { id: "sin_iva", label: "Exento / sin IVA",
+    iva: 0, retIsr: 0, retIvaSobreIva: 0,
+    nota: "Sin IVA ni retenciones" },
+  { id: "manual", label: "Capturar a mano",
+    iva: null, retIsr: null, retIvaSobreIva: null,
+    nota: "Los montos se escriben uno por uno" },
+];
+
+const r2 = (n) => Math.round((Number(n) || 0) * 100) / 100;
+
+/**
+ * Calcula el desglose a partir del subtotal. Las retenciones se devuelven
+ * en NEGATIVO, como aparecen en el formato que recibe Pagos.
+ */
+function calcularDesglose(subtotal, esquemaId) {
+  const e = ESQUEMAS_FISCALES.find((x) => x.id === esquemaId) || ESQUEMAS_FISCALES[0];
+  if (e.iva === null) return null; // captura manual
+  const sub = Number(subtotal) || 0;
+  const iva = r2(sub * e.iva);
+  return {
+    subtotal: r2(sub),
+    iva,
+    ret_isr: r2(-sub * e.retIsr),
+    ret_iva: r2(-iva * e.retIvaSobreIva),
+  };
+}
+
+const totalDesglose = (d) =>
+  r2((Number(d.subtotal) || 0) + (Number(d.iva) || 0) + (Number(d.ret_isr) || 0) +
+     (Number(d.ret_iva) || 0) - (Number(d.descuento) || 0));
+
+/**
+ * Deduce el subtotal a partir de un importe que ya trae impuestos.
+ *
+ * Las transacciones guardan el TOTAL, que es lo que se paga. Para llenar la
+ * solicitud hace falta el camino inverso, y por eso el resultado se propone
+ * en un diálogo en vez de darse por bueno: si el importe capturado no
+ * correspondía exactamente a este esquema, el subtotal deducido no cuadra.
+ */
+function subtotalDesdeTotal(total, esquemaId) {
+  const e = ESQUEMAS_FISCALES.find((x) => x.id === esquemaId) || ESQUEMAS_FISCALES[0];
+  if (e.iva === null) return 0;
+  const factor = 1 + e.iva - e.retIsr - e.iva * e.retIvaSobreIva;
+  return factor ? r2((Number(total) || 0) / factor) : 0;
+}
+
+/** ¿La transacción está marcada como anticipo? El marcador va en Folio SAE. */
+function esAnticipo(t) {
+  return /ANTICIP/i.test(String(t?.folio_compra_sae || ""));
 }
 
 /* ----------------------------------------------------------------------
@@ -3332,6 +3408,353 @@ function validarMonedaContraPartida(form, partidas) {
   return false;
 }
 
+/**
+ * Genera el archivo de la Solicitud de Pago.
+ *
+ * No replica el formato original —eso no era el objetivo— pero conserva
+ * TODOS los datos y su orden, para que quien lo recibe en Pagos reconozca
+ * el documento y no tenga que buscar dónde quedó cada cosa.
+ */
+async function generarExcelSPP(r) {
+  const wbx = new ExcelJS.Workbook();
+  const ws = wbx.addWorksheet(`SPP ${r.folio}`);
+  ws.columns = [{ width: 30 }, { width: 46 }, { width: 14 }, { width: 15 },
+                { width: 15 }, { width: 14 }, { width: 14 }, { width: 15 }];
+
+  const num = '"$"#,##0.00';
+  const gris = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECEEF1" } };
+  const azul = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
+
+  const tit = ws.addRow([`Solicitud de Pago a Proveedores ${r.compania}`]);
+  tit.font = { bold: true, size: 15, name: "Calibri" };
+  ws.mergeCells(1, 1, 1, 8);
+  ws.addRow([]);
+
+  const dato = (etq, val) => {
+    const row = ws.addRow([etq, val]);
+    row.getCell(1).font = { bold: true, name: "Calibri", size: 11 };
+    row.getCell(2).font = { name: "Calibri", size: 11 };
+    return row;
+  };
+  dato("Folio", r.folio);
+  dato("Fecha Elaboracion", r.fecha_elaboracion);
+  dato("Fecha de Pago", r.fecha_pago || "");
+  dato("Zona", r.zona);
+  dato("Proyecto", r.centro_costo ? `${r.centro_costo} — ${r.proyecto}` : r.proyecto);
+  dato("Responsable de Proyecto", r.responsable);
+  dato("Solicitante", r.solicitante);
+  dato("Lugar de Adquisicion", r.lugar_adquisicion);
+  ws.addRow([]);
+
+  const intro = ws.addRow(["Por medio de la presente solicito se realice el pago al Proveedor como sigue:"]);
+  intro.font = { name: "Calibri", size: 11, italic: true };
+  ws.mergeCells(intro.number, 1, intro.number, 8);
+  ws.addRow([]);
+
+  const hdr = ws.addRow(["PARTIDA", "DESCRIPCION DE PRODUCTOS O SERVICIOS", "CANTIDAD",
+                         "P.U", "SUBTOTAL", "IVA", "RET ISR", "RET IVA"]);
+  hdr.eachCell((c) => {
+    c.font = { bold: true, color: { argb: "FFFFFFFF" }, name: "Calibri", size: 10.5 };
+    c.fill = azul;
+    c.alignment = { horizontal: "center", vertical: "center", wrapText: true };
+  });
+  hdr.height = 24;
+
+  const fila = ws.addRow([1, r.descripcion, r.cantidad, r.precio_unitario,
+                          r.subtotal, r.iva, r.ret_isr, r.ret_iva]);
+  [4, 5, 6, 7, 8].forEach((i) => { fila.getCell(i).numFmt = num; fila.getCell(i).alignment = { horizontal: "right" }; });
+  fila.getCell(2).alignment = { horizontal: "left", wrapText: true, vertical: "top" };
+  ws.addRow([]);
+
+  const totRow = (etq, val, fuerte) => {
+    const row = ws.addRow(["", "", "", "", "", etq, "", val]);
+    row.getCell(6).font = { bold: true, name: "Calibri", size: 11 };
+    row.getCell(6).alignment = { horizontal: "right" };
+    row.getCell(8).numFmt = num;
+    row.getCell(8).font = { bold: true, name: "Calibri", size: fuerte ? 12 : 11 };
+    row.getCell(8).alignment = { horizontal: "right" };
+    if (fuerte) [6, 7, 8].forEach((i) => { row.getCell(i).fill = gris; });
+    return row;
+  };
+  totRow("TOTAL", r.total);
+  totRow("Descuento", r.descuento || 0);
+  totRow(`TOTAL A PAGAR ${r.pct_pago}%`, r.total_a_pagar, true);
+  ws.addRow([]);
+
+  dato("Tipo de Moneda", r.moneda);
+  dato("Condiciones de Pago", `${r.condicion_pago}${r.tipo_pago ? ` — ${r.tipo_pago}` : ""}`);
+  dato("Numero de Proveedor ASPEL-SAE", r.proveedor_sae || "");
+  ws.addRow([]);
+  dato("Concepto de Pago", r.concepto);
+  ws.addRow([]);
+  dato("Observaciones:", r.observaciones || "");
+  ws.addRow([]);
+
+  const ban = ws.addRow(["Datos Bancarios del Proveedor"]);
+  ban.font = { bold: true, name: "Calibri", size: 12 };
+  ban.getCell(1).fill = gris;
+  ws.mergeCells(ban.number, 1, ban.number, 8);
+  dato("Nombre o Razon Social", r.proveedor);
+  dato("Banco", r.banco || "");
+  dato("Sucursal Bancaria", r.sucursal || "");
+  // Cuenta y CLABE como TEXTO: Excel convierte 18 dígitos a notación
+  // científica y el número llegaría corrupto al área de Pagos.
+  const fc = dato("Cuenta Bancaria", String(r.cuenta || ""));
+  fc.getCell(2).numFmt = "@";
+  dato("Referencia Bancaria", r.referencia_bancaria || "");
+  const fcl = dato("Cuenta CLABE", String(r.clabe || ""));
+  fcl.getCell(2).numFmt = "@";
+
+  const buf = await wbx.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `SPP ${r.folio} - ${r.compania} - ${String(r.proveedor || "").slice(0, 30)}.xlsx`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/**
+ * Diálogo de la Solicitud de Pago a Proveedores.
+ *
+ * Todo lo que la app sabe viene precargado; todo lo que la app DEDUCE se
+ * muestra para que se confirme. La diferencia importa: el desglose fiscal
+ * se calcula hacia atrás desde el importe pagado, y ese camino inverso solo
+ * es exacto si el importe correspondía justo a ese esquema. Presentarlo como
+ * un hecho invitaría a firmar un documento con cifras que nadie revisó.
+ */
+function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosUnidad, proveedoresApi, cuentasApi, transaccionesApi, session }) {
+  const t = transaccion;
+  const partida = partidas.find((p) => p.id === t.partida_id);
+  const proveedor = proveedoresApi.rows.find((p) => p.id === t.proveedor_id);
+  const cuenta = cuentasApi.rows.find((c) => c.id === t.cuenta_id)
+    || (t.proveedor_id ? cuentasApi.rows.find((c) => c.proveedor_id === t.proveedor_id) : null);
+  const proyNombre = t.proyecto || partida?.proyecto || "";
+  const proy = proyectosUnidad.find((p) => p.nombre === proyNombre);
+
+  const [esquema, setEsquema] = useState("pf_servicios");
+  const [pctPago, setPctPago] = useState(50);
+  const [guardando, setGuardando] = useState(false);
+
+  // El subtotal se deduce del importe pagado, que es lo único que la
+  // transacción guarda hoy.
+  const [d, setD] = useState(() => {
+    const sub = subtotalDesdeTotal(t.importe, "pf_servicios");
+    return { ...calcularDesglose(sub, "pf_servicios"), descuento: 0 };
+  });
+  const recalcular = (esq, sub) => {
+    const nuevo = calcularDesglose(sub, esq);
+    if (nuevo) setD((prev) => ({ ...nuevo, descuento: prev.descuento || 0 }));
+  };
+
+  const [f, setF] = useState({
+    fecha_elaboracion: new Date().toISOString().slice(0, 10),
+    fecha_pago: t.fecha_pago || t.dia || "",
+    zona: t.zona || partida?.zona || "",
+    responsable: "",
+    solicitante: t.solicitante || session?.user?.email?.split("@")[0] || "",
+    lugar_adquisicion: "Queretaro",
+    tipo_pago: "Anticipo",
+    condicion_pago: "TRANSFERENCIA",
+    concepto: t.concepto_detallado || "",
+    descripcion: t.concepto_detallado || "",
+    cantidad: 1,
+    observaciones: "",
+    moneda: t.moneda === "USD" ? "Dólares" : "Pesos",
+  });
+
+  const total = totalDesglose(d);
+  const aPagar = r2(total * (Number(pctPago) || 0) / 100);
+  const num = (v) => (Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const faltantes = [];
+  if (!proveedor) faltantes.push("proveedor no vinculado");
+  if (!cuenta) faltantes.push("sin cuenta bancaria");
+  if (!proy?.centro_costo) faltantes.push("el proyecto no tiene centro de costo");
+  if (!f.zona) faltantes.push("sin zona");
+
+  const generar = async () => {
+    setGuardando(true);
+    try {
+      // Folio autonumérico por compañía, leído de la base y no del estado
+      // local: dos personas generando a la vez calcularían el mismo.
+      const { data: ultimos, error: errF } = await supabase
+        .from("solicitudes_pago").select("folio")
+        .eq("compania", unidad).order("folio", { ascending: false }).limit(1);
+      if (errF) throw errF;
+      const folio = ((ultimos && ultimos[0]?.folio) || 0) + 1;
+
+      const reg = {
+        id: uid(), compania: unidad, folio, transaccion_id: t.id,
+        fecha_elaboracion: f.fecha_elaboracion, fecha_pago: f.fecha_pago || null,
+        zona: f.zona, proyecto: proyNombre, centro_costo: proy?.centro_costo || "",
+        responsable: f.responsable, solicitante: f.solicitante,
+        lugar_adquisicion: f.lugar_adquisicion,
+        proveedor: proveedor?.nombre || t.proveedor || "",
+        proveedor_sae: proveedor?.id_sae || "",
+        banco: cuenta?.banco || "", sucursal: cuenta?.sucursal || "",
+        cuenta: cuenta?.numero_cuenta || "", clabe: cuenta?.clabe || "",
+        referencia_bancaria: proveedor?.referencia || "",
+        moneda: f.moneda, tipo_pago: f.tipo_pago, condicion_pago: f.condicion_pago,
+        concepto: f.concepto, descripcion: f.descripcion,
+        cantidad: Number(f.cantidad) || 1,
+        precio_unitario: r2((Number(d.subtotal) || 0) / (Number(f.cantidad) || 1)),
+        subtotal: d.subtotal, iva: d.iva, ret_isr: d.ret_isr, ret_iva: d.ret_iva,
+        descuento: Number(d.descuento) || 0, total,
+        pct_pago: Number(pctPago) || 0, total_a_pagar: aPagar,
+        observaciones: f.observaciones,
+      };
+      const { error } = await supabase.from("solicitudes_pago").insert(reg);
+      if (error) throw error;
+
+      // El desglose confirmado se guarda también en la transacción: es el
+      // dato que faltaba para saber de qué se compone el importe.
+      await transaccionesApi.update(t.id, {
+        subtotal: d.subtotal, iva: d.iva, ret_isr: d.ret_isr, ret_iva: d.ret_iva,
+        descuento: Number(d.descuento) || 0, pct_pago: Number(pctPago) || 0,
+        tipo_pago: f.tipo_pago, condicion_pago: f.condicion_pago,
+        observaciones_spp: f.observaciones,
+      }).catch(() => {});
+
+      await generarExcelSPP(reg);
+      onClose();
+    } catch (err) {
+      alert("No se pudo generar la solicitud: " + (err.message || err));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const campo = (etq, val, set, ancho = "100%") => (
+    <Field label={etq}>
+      <TextInput value={val} onChange={(e) => set(e.target.value)} style={{ width: ancho }} />
+    </Field>
+  );
+
+  return (
+    <Modal title={`Solicitud de Pago a Proveedores — ${unidad}`}
+      subtitle="Revisa cada cifra antes de generar: el desglose fiscal se deduce del importe pagado y solo es exacto si corresponde al esquema elegido"
+      onClose={onClose} width={900}>
+      {faltantes.length > 0 && (
+        <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 14 }}>
+          <b>La solicitud va a salir incompleta</b>
+          Falta: {faltantes.join(" · ")}. Puedes generarla igual y completar a mano,
+          pero conviene corregirlo en la app para que la próxima salga sola.
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 6 }}>
+        {campo("Fecha de elaboración", f.fecha_elaboracion, (v) => setF({ ...f, fecha_elaboracion: v }))}
+        {campo("Fecha de pago", f.fecha_pago, (v) => setF({ ...f, fecha_pago: v }))}
+        {campo("Zona", f.zona, (v) => setF({ ...f, zona: v }))}
+        <Field label="Proyecto / Centro de costo">
+          <TextInput value={`${proyNombre}${proy?.centro_costo ? ` · ${proy.centro_costo}` : " · sin CC"}`} disabled />
+        </Field>
+        {campo("Responsable de proyecto", f.responsable, (v) => setF({ ...f, responsable: v }))}
+        {campo("Solicitante", f.solicitante, (v) => setF({ ...f, solicitante: v }))}
+      </div>
+
+      <div style={{ borderTop: `1px solid ${T.borderSoft}`, margin: "14px 0", paddingTop: 14 }}>
+        <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Desglose fiscal</div>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12, marginBottom: 10 }}>
+          <Field label="Esquema fiscal del proveedor">
+            <Select value={esquema} onChange={(e) => {
+              const esq = e.target.value;
+              setEsquema(esq);
+              if (esq !== "manual") recalcular(esq, subtotalDesdeTotal(t.importe, esq));
+            }}>
+              {ESQUEMAS_FISCALES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+            </Select>
+            <span style={{ fontSize: 11, color: T.textFaint, marginTop: 4, display: "block" }}>
+              {(ESQUEMAS_FISCALES.find((x) => x.id === esquema) || {}).nota}
+            </span>
+          </Field>
+          <Field label="Subtotal">
+            <TextInput type="number" value={d.subtotal}
+              onChange={(e) => { const v = e.target.value; setD({ ...d, subtotal: v });
+                if (esquema !== "manual") recalcular(esquema, v); }} />
+          </Field>
+          <Field label="% que se paga">
+            <TextInput type="number" value={pctPago} onChange={(e) => setPctPago(e.target.value)} />
+          </Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+          <Field label="IVA">
+            <TextInput type="number" value={d.iva} onChange={(e) => setD({ ...d, iva: e.target.value })} />
+          </Field>
+          <Field label="Retención ISR">
+            <TextInput type="number" value={d.ret_isr} onChange={(e) => setD({ ...d, ret_isr: e.target.value })} />
+          </Field>
+          <Field label="Retención IVA">
+            <TextInput type="number" value={d.ret_iva} onChange={(e) => setD({ ...d, ret_iva: e.target.value })} />
+          </Field>
+          <Field label="Descuento">
+            <TextInput type="number" value={d.descuento} onChange={(e) => setD({ ...d, descuento: e.target.value })} />
+          </Field>
+        </div>
+
+        <div style={{ display: "flex", gap: 24, marginTop: 12, padding: "10px 14px", background: T.panelAlt, borderRadius: 6, flexWrap: "wrap" }}>
+          <div><span style={{ fontSize: 11, color: T.textFaint }}>TOTAL</span>
+            <div style={{ fontFamily: T.fontMono, fontSize: 15, fontWeight: 700 }}>${num(total)}</div></div>
+          <div><span style={{ fontSize: 11, color: T.textFaint }}>A PAGAR {pctPago}%</span>
+            <div style={{ fontFamily: T.fontMono, fontSize: 15, fontWeight: 700, color: T.teal }}>${num(aPagar)}</div></div>
+          {/* El contraste con lo capturado revela si el desglose cuadra. */}
+          <div><span style={{ fontSize: 11, color: T.textFaint }}>IMPORTE DE LA TRANSACCIÓN</span>
+            <div style={{ fontFamily: T.fontMono, fontSize: 15,
+              color: Math.abs(total - (Number(t.importe) || 0)) < 1 ? T.textDim : T.amber }}>
+              ${num(t.importe)}
+              {Math.abs(total - (Number(t.importe) || 0)) >= 1 &&
+                <span style={{ fontSize: 11 }}> · no coincide</span>}
+            </div></div>
+        </div>
+      </div>
+
+      <div style={{ borderTop: `1px solid ${T.borderSoft}`, margin: "14px 0", paddingTop: 14,
+                    display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+        <Field label="Tipo de pago">
+          <Select value={f.tipo_pago} onChange={(e) => setF({ ...f, tipo_pago: e.target.value })}>
+            {["Anticipo", "Pago Total", "Finiquito"].map((x) => <option key={x}>{x}</option>)}
+          </Select>
+        </Field>
+        <Field label="Condición de pago">
+          <Select value={f.condicion_pago} onChange={(e) => setF({ ...f, condicion_pago: e.target.value })}>
+            {["TRANSFERENCIA", "CHEQUE", "EFECTIVO"].map((x) => <option key={x}>{x}</option>)}
+          </Select>
+        </Field>
+        <Field label="Moneda">
+          <Select value={f.moneda} onChange={(e) => setF({ ...f, moneda: e.target.value })}>
+            {["Pesos", "Dólares"].map((x) => <option key={x}>{x}</option>)}
+          </Select>
+        </Field>
+        <Field label="Concepto de pago" style={{ gridColumn: "span 3" }}>
+          <TextInput value={f.concepto} onChange={(e) => setF({ ...f, concepto: e.target.value })} />
+        </Field>
+        <Field label="Descripción del producto o servicio" style={{ gridColumn: "span 3" }}>
+          <TextInput value={f.descripcion} onChange={(e) => setF({ ...f, descripcion: e.target.value })} />
+        </Field>
+        <Field label="Observaciones" style={{ gridColumn: "span 3" }}>
+          <TextInput value={f.observaciones} onChange={(e) => setF({ ...f, observaciones: e.target.value })}
+            placeholder="Correos, nombres comerciales, datos informativos…" />
+        </Field>
+      </div>
+
+      <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
+        Datos bancarios: {proveedor?.nombre || t.proveedor || "—"}
+        {cuenta ? ` · ${cuenta.banco || "sin banco"} · CLABE ${cuenta.clabe || "—"}` : " · sin cuenta registrada"}
+        {proveedor?.id_sae ? ` · SAE ${proveedor.id_sae}` : ""}
+      </div>
+
+      <div style={{ display: "flex", gap: 8 }}>
+        <Button onClick={generar} disabled={guardando}>
+          {guardando ? "Generando…" : "Generar solicitud"}
+        </Button>
+        <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+      </div>
+    </Modal>
+  );
+}
+
 function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, proveedoresApi, cuentasApi, unidad, partidasUnidad = [] }) {
   const [form, setForm] = useState({ ...transaccion });
   const [saving, setSaving] = useState(false);
@@ -3788,6 +4211,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
   const [expandedIds, setExpandedIds] = useState(new Set());
   const [transaccionEditando, setTransaccionEditando] = useState(null);
+  const [sppDe, setSppDe] = useState(null);
   const toggleExpand = (id) => setExpandedIds((prev) => {
     const next = new Set(prev);
     next.has(id) ? next.delete(id) : next.add(id);
@@ -4332,6 +4756,19 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           </form>
         </Modal>
       )}
+      {sppDe && (
+        <SolicitudPagoModal
+          transaccion={sppDe}
+          onClose={() => setSppDe(null)}
+          unidad={unidad}
+          partidas={partidasUnidad}
+          proyectosUnidad={proyectosUnidad}
+          proveedoresApi={proveedoresApi}
+          cuentasApi={cuentasApi}
+          transaccionesApi={transaccionesApi}
+          session={session}
+        />
+      )}
       {transaccionEditando && (
         <TransaccionQuickEditModal
           partidasUnidad={partidasUnidad}
@@ -4811,6 +5248,12 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       ))}
       <td style={tdStyle}>
         <div style={{ display: "flex", gap: 4 }}>
+          {/* La SPP solo aplica a anticipos, y el marcador vive en Folio SAE.
+              Mostrar el botón en todas invitaría a generar solicitudes de
+              pagos que no las necesitan. */}
+          {esAnticipo(t) && (
+            <IconButton icon="§" label="Generar Solicitud de Pago" tone={T.teal} onClick={() => setSppDe(t)} />
+          )}
           <IconButton icon="✎" label="Editar" tone={T.accent} onClick={() => startEdit(t)} />
           <IconButton icon="⧉" label="Duplicar" tone={T.textDim} onClick={() => duplicar(t)} />
           <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => remove(t.id)} />
@@ -6637,20 +7080,20 @@ function RubrosPanel({ rubrosApi, categoriasApi, partidas = [], transacciones = 
 
 function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
-  const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "" });
+  const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "", centro_costo: "" });
   const [editingId, setEditingId] = useState(null);
-  const [draft, setDraft] = useState({ nombre: "", grupo: "", pct: "" });
+  const [draft, setDraft] = useState({ nombre: "", grupo: "", pct: "", centro_costo: "" });
   const [guardandoId, setGuardandoId] = useState(null);
 
   const empezarEditar = (p) => {
     setEditingId(p.id);
-    setDraft({ nombre: p.nombre || "", grupo: p.grupo || "", pct: p.pct ?? "" });
+    setDraft({ nombre: p.nombre || "", grupo: p.grupo || "", pct: p.pct ?? "", centro_costo: p.centro_costo || "" });
   };
   const cancelarEditar = () => { setEditingId(null); setDraft({ nombre: "", grupo: "", pct: "" }); };
   const guardarEditar = async (id) => {
     setGuardandoId(id);
     try {
-      await proyectosApi.update(id, { nombre: draft.nombre, grupo: draft.grupo, pct: Number(draft.pct) || 0 });
+      await proyectosApi.update(id, { nombre: draft.nombre, grupo: draft.grupo, pct: Number(draft.pct) || 0, centro_costo: draft.centro_costo.trim() });
       cancelarEditar();
     } catch (err) {
       alert("No se pudo actualizar: " + (err.message || err));
@@ -6665,7 +7108,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
   };
   const addProyecto = () => {
     if (!nuevo.nombre) return;
-    proyectosApi.insert({ id: uid(), unidad, nombre: nuevo.nombre, grupo: nuevo.grupo || "General", pct: Number(nuevo.pct) || 0 })
+    proyectosApi.insert({ id: uid(), unidad, nombre: nuevo.nombre, grupo: nuevo.grupo || "General", pct: Number(nuevo.pct) || 0, centro_costo: nuevo.centro_costo.trim() })
       .catch((err) => alert("No se pudo agregar: " + (err.message || err)));
     setNuevo({ nombre: "", grupo: "", pct: "" });
   };
@@ -6682,7 +7125,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
         <div style={{ overflowX: "auto" }}>
           <table style={tableStyle}>
             <thead>
-              <tr>{["Proyecto","Grupo","% Administrativos",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+              <tr>{["Proyecto","Grupo","% Administrativos","Centro de costo",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
             </thead>
             <tbody>
               {proyectosUnidad.map((p) => {
@@ -6694,6 +7137,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
                         <td style={tdStyle}><TextInput autoFocus value={draft.nombre} onChange={(e) => setDraft({ ...draft, nombre: e.target.value })} /></td>
                         <td style={tdStyle}><TextInput value={draft.grupo} onChange={(e) => setDraft({ ...draft, grupo: e.target.value })} placeholder="Desh / Prod / IMP" /></td>
                         <td style={tdStyle}><TextInput type="number" value={draft.pct} onChange={(e) => setDraft({ ...draft, pct: e.target.value })} style={{ width: 90 }} /></td>
+                        <td style={tdStyle}><TextInput value={draft.centro_costo} onChange={(e) => setDraft({ ...draft, centro_costo: e.target.value.toUpperCase() })} placeholder="CC-015" style={{ width: 100 }} /></td>
                         <td style={tdStyle}>
                           <div style={{ display: "flex", gap: 6 }}>
                             <Button onClick={() => guardarEditar(p.id)} disabled={guardandoId === p.id}>{guardandoId === p.id ? "Guardando…" : "Guardar"}</Button>
@@ -6706,6 +7150,11 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
                         <td style={tdStyle}>{p.nombre}</td>
                         <td style={{ ...tdStyle, color: T.textDim }}>{p.grupo || "—"}</td>
                         <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{p.pct ?? 0}%</td>
+                        {/* Sin centro de costo la Solicitud de Pago sale incompleta, así que
+                            el hueco se marca en vez de mostrarse como un guion cualquiera. */}
+                        <td style={{ ...tdStyle, fontFamily: T.fontMono }}>
+                          {p.centro_costo || <span style={{ color: T.amber }}>falta</span>}
+                        </td>
                         <td style={tdStyle}>
                           <div style={{ display: "flex", gap: 6 }}>
                             <Button variant="ghost" onClick={() => empezarEditar(p)}>Editar</Button>
@@ -6721,6 +7170,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
                 <td style={tdStyle}><TextInput placeholder="Nuevo proyecto" value={nuevo.nombre} onChange={(e) => setNuevo({ ...nuevo, nombre: e.target.value })} /></td>
                 <td style={tdStyle}><TextInput placeholder="Grupo" value={nuevo.grupo} onChange={(e) => setNuevo({ ...nuevo, grupo: e.target.value })} /></td>
                 <td style={tdStyle}><TextInput type="number" placeholder="%" value={nuevo.pct} onChange={(e) => setNuevo({ ...nuevo, pct: e.target.value })} style={{ width: 90 }} /></td>
+                <td style={tdStyle}><TextInput placeholder="CC-015" value={nuevo.centro_costo} onChange={(e) => setNuevo({ ...nuevo, centro_costo: e.target.value.toUpperCase() })} style={{ width: 100 }} /></td>
                 <td style={tdStyle}><Button onClick={addProyecto}>Agregar</Button></td>
               </tr>
             </tbody>

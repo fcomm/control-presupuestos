@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.80.1";
+const APP_VERSION = "1.81.0";
 const CHANGELOG = [
+  { v: "1.81.0", desc: "El Reporte Excel de Partidas se llama ahora 'Reporte Presupuestal - Compañía - Mes', y el mes sale de las partidas que realmente contiene, no de los filtros: si el filtro es amplio pero solo hay septiembre, el archivo dice septiembre. Con varios meses usa el rango en orden cronológico. El título dentro del documento y el nombre de la hoja siguen el mismo criterio" },
   { v: "1.80.1", desc: "Reporte Excel de Partidas: los subtotales de cada grupo y el encabezado etiquetan ahora las DOS monedas. El formateador general solo marca los dólares —da por hecho que sin etiqueta son pesos— y en una fila donde conviven las dos, '$211,039.96 · $25,000.00 USD' invitaba a leer la primera cifra como parte del mismo total" },
   { v: "1.80.0", desc: "Partidas: nuevo 'Reporte Excel' con su propio selector de columnas —independiente del de pantalla— que respeta el agrupamiento de la vista: cada grupo abre con su nombre, cuántas partidas contiene y su subtotal por moneda, con sangría por nivel. Se diferencia de 'Exportar', que sigue dando el listado plano para el preparador de transacciones. Los totales van separados por moneda, nunca sumadas entre sí" },
   { v: "1.79.0", desc: "Se elimina la categoría 'Diversos' de los 15 rubros y no se puede volver a crear —tampoco Varios, Otros o General. En la v1.73 se agregó porque 81 partidas ya la usaban, y ese diagnóstico del pasado era correcto; hacia adelante el cálculo se invierte: una opción cómoda que no dice nada se vuelve el camino de menor resistencia y la clasificación se degrada sola. Cuando algo no se puede clasificar el campo se deja VACÍO, no con una etiqueta genérica: un hueco se ve y pide corrección, una etiqueta lo esconde. Los rubros nuevos nacen sin categorías, para que se definan las que de verdad hacen falta" },
@@ -3518,8 +3519,21 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     const COLS = repVis.visibles;
     setGenerandoReporteXls(true);
     try {
+      /* El periodo sale de las partidas que REALMENTE salen en el reporte, no
+         de los filtros: si el filtro es amplio pero solo hay septiembre, el
+         archivo debe decir septiembre. Con varios meses se usa el rango, en
+         orden cronológico y no alfabético. */
+      const periodos = [...new Set(partidasOrdenadas.map((p) => `${p.mes}|${p.anio}`))]
+        .map((k) => { const [mes, anio] = k.split("|"); return { mes, anio: Number(anio) }; })
+        .sort((a, b) => a.anio - b.anio || MESES.indexOf(a.mes) - MESES.indexOf(b.mes));
+      const etiquetaPeriodo = !periodos.length ? "Sin periodo"
+        : periodos.length === 1 ? `${periodos[0].mes} ${periodos[0].anio}`
+        : `${periodos[0].mes} ${periodos[0].anio} a ${periodos[periodos.length - 1].mes} ${periodos[periodos.length - 1].anio}`;
+
       const wbx = new ExcelJS.Workbook();
-      const ws = wbx.addWorksheet(`Partidas ${unidad}`);
+      // El nombre de hoja de Excel no admite : \\ / ? * [ ] y topa en 31.
+      const nombreHoja = `${unidad} ${etiquetaPeriodo}`.replace(/[:\\/?*[\]]/g, "-").slice(0, 31);
+      const ws = wbx.addWorksheet(nombreHoja);
       ws.columns = COLS.map((c) => ({ width: c.width }));
 
       const totalPorMoneda = (lista) => {
@@ -3539,7 +3553,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         .join("   ·   ");
 
       // Encabezado del documento
-      const tit = ws.addRow([`Partidas presupuestales — ${unidad}`]);
+      const tit = ws.addRow([`Reporte Presupuestal — ${unidad} — ${etiquetaPeriodo}`]);
       tit.font = { bold: true, size: 14 };
       ws.mergeCells(1, 1, 1, Math.max(COLS.length, 2));
       const sub = ws.addRow([
@@ -3606,7 +3620,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Reporte-Partidas_${unidad}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      a.download = `Reporte Presupuestal - ${unidad} - ${etiquetaPeriodo}.xlsx`;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (err) {

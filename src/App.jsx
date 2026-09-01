@@ -44,7 +44,7 @@ const T = {
 // única que existía, la de Otros. Legitimarla conserva el análisis por
 // rubro, que es lo que de verdad se lee, en vez de forzar a mandar todo
 // gasto sin categoría clara al rubro Otros.
-const RUBROS = [
+const RUBROS_RESPALDO = [
   { rubro: "Materiales e Insumos", categorias: ["Material eléctrico","Material mecánico","Ferretería","Instrumentación","Tubería y conexiones","Consumibles industriales","Consumibles de oficina","Papelería","EPP","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación","Diversos"] },
   { rubro: "Equipos y Herramientas", categorias: ["Herramienta menor","Herramienta especializada","Equipos de medición","Equipos de cómputo","Equipos de comunicación","Maquinaria","Mobiliario","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación","Diversos"] },
   { rubro: "Productos Químicos", categorias: ["Productos químicos de operación","Reactivos","Solventes","Aditivos","Químicos de laboratorio","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación","Diversos"] },
@@ -240,8 +240,44 @@ function sugerirCategoria(concepto, categorias) {
 // Todas las categorías del catálogo, sin repetir. La transacción puede usar
 // cualquiera: describe QUÉ se compró, con independencia del rubro donde se
 // presupuestó.
-const CATEGORIAS_TODAS = [...new Set(RUBROS.flatMap((r) => r.categorias))]
-  .filter((c) => c !== "Diversos").sort().concat("Diversos");
+/* El catálogo vive en Supabase, pero los parsers de importación son
+   funciones de módulo: no pueden leer estado de React. Por eso RUBROS es una
+   variable de módulo que se refresca cuando llegan los datos, con la lista
+   del código como respaldo mientras cargan o si la migración no se ha
+   corrido. Enhebrar el catálogo por los 18 puntos de uso —varios fuera de
+   componentes— habría sido mucho más invasivo por el mismo resultado. */
+let RUBROS = RUBROS_RESPALDO;
+let CATEGORIAS_TODAS = [];
+
+function recalcularCategoriasTodas() {
+  CATEGORIAS_TODAS = [...new Set(RUBROS.flatMap((r) => r.categorias))]
+    .filter((c) => c !== "Diversos").sort().concat("Diversos");
+}
+recalcularCategoriasTodas();
+
+/** Reconstruye el catálogo desde las filas de Supabase. */
+function aplicarCatalogo(rubrosRows, categoriasRows) {
+  if (!rubrosRows || !rubrosRows.length) {
+    RUBROS = RUBROS_RESPALDO;
+  } else {
+    const porRubro = new Map();
+    categoriasRows.forEach((c) => {
+      if (c.activa === false) return;
+      if (!porRubro.has(c.rubro_id)) porRubro.set(c.rubro_id, []);
+      porRubro.get(c.rubro_id).push(c);
+    });
+    RUBROS = [...rubrosRows]
+      .filter((r) => r.activo !== false)
+      .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999) || String(a.nombre).localeCompare(String(b.nombre)))
+      .map((r) => ({
+        rubro: r.nombre,
+        categorias: (porRubro.get(r.id) || [])
+          .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999) || String(a.nombre).localeCompare(String(b.nombre)))
+          .map((c) => c.nombre),
+      }));
+  }
+  recalcularCategoriasTodas();
+}
 
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
@@ -252,8 +288,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.77.0";
+const APP_VERSION = "1.78.0";
 const CHANGELOG = [
+  { v: "1.78.0", desc: "Los rubros y categorías salen del código y pasan a ser administrables desde Catálogo: se agregan, renombran, desactivan y eliminan sin volver a desplegar. El punto delicado es renombrar — partidas.rubro, partidas.categoria y transacciones.categoria guardan el TEXTO, no un id, así que cambiar el nombre dejaría a los registros existentes apuntando a algo inexistente; por eso el cambio se propaga a los registros en uso, avisando cuántos son. Un rubro o categoría en uso no se puede eliminar, solo desactivar: sale del selector y el histórico se conserva. Todo rubro nuevo nace con la categoría Diversos. Requiere 16-catalogo-editable.sql" },
   { v: "1.77.0", desc: "Las transacciones estrenan campo Categoría: la partida dice en qué rubro se presupuestó, la transacción dice qué se compró. Está en el formulario —con las categorías del rubro de su partida arriba y el resto abajo, más la sugerencia por concepto de un clic—, en la tabla, en Agrupar por y en el buscador. La carga masiva la asigna sola cuando el archivo no la trae, deduciéndola del concepto; sin eso el campo entraría vacío en cada importación y el dato se degradaría desde el primer archivo. No se restringe al rubro de la partida a propósito: con datos reales, 39 de 228 transacciones tenían la categoría correcta para el gasto y una partida de otro rubro, y esa discrepancia es información —dice qué partidas absorben gasto que no les toca— no un error. Requiere 15-categoria-en-transacciones.sql" },
   { v: "1.76.0", desc: "Nueva categoría 'Seguros' en Gastos Financieros e Impuestos, junto a Fianzas: son el mismo tipo de gasto —transferencia de riesgo contratada— y separarlos partiría en dos algo que se lee mejor junto. La categoría 'Seguros' de Vehículos se conserva y queda reservada a pólizas vehiculares, que son parte del costo de operar la flotilla; el resto de las pólizas va a Gastos Financieros. Sin esa regla el gasto en seguros quedaría partido según quién capture" },
   { v: "1.75.0", desc: "Dos cosas sobre rubros y categorías. Al capturar una partida, la app sugiere una categoría a partir del concepto —dentro del rubro elegido— y basta un clic para usarla; se sugiere, no se impone, porque quien captura sabe cosas que el concepto no dice. Y la carga masiva ya no deja entrar combinaciones inválidas: en vez de solo avisar, las repara conservando SIEMPRE el rubro —que es el eje que se lee en el Dashboard— y ajustando la categoría, con el valor original guardado en `extra` para no perderlo. Un rubro inexistente cuya categoría solo vive en un lugar se corrige a ese lugar; si no hay forma de saberlo, cae en Otros / Diversos, que es honesto" },
@@ -6052,7 +6089,220 @@ function ZonasPanel({ zonasApi, transacciones = [] }) {
   );
 }
 
-function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, transacciones = [], proveedoresApi, cuentasApi, perfilesApi }) {
+/**
+ * Catálogo de rubros y categorías.
+ *
+ * El punto delicado es RENOMBRAR. `partidas.rubro`, `partidas.categoria` y
+ * `transacciones.categoria` guardan el TEXTO, no un id, así que cambiar el
+ * nombre aquí dejaría a los registros existentes apuntando a algo que ya no
+ * existe en el catálogo. Por eso al renombrar se propaga el cambio a los
+ * registros en uso, en el mismo paso y avisando cuántos son.
+ *
+ * Se guarda el texto y no un id a propósito: así el histórico conserva cómo
+ * se llamaba el rubro cuando se capturó, y borrar una categoría no deja
+ * registros rotos.
+ */
+function RubrosPanel({ rubrosApi, categoriasApi, partidas = [], transacciones = [] }) {
+  const [nuevoRubro, setNuevoRubro] = useState("");
+  const [rubroSel, setRubroSel] = useState(null);
+  const [nuevaCat, setNuevaCat] = useState("");
+
+  const rubros = [...rubrosApi.rows].sort(
+    (a, b) => (a.orden ?? 999) - (b.orden ?? 999) || String(a.nombre).localeCompare(String(b.nombre))
+  );
+  const catsDe = (rid) => categoriasApi.rows
+    .filter((c) => c.rubro_id === rid)
+    .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999) || String(a.nombre).localeCompare(String(b.nombre)));
+
+  const igual = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+  const usosRubro = (nom) => partidas.filter((p) => igual(p.rubro, nom)).length;
+  const usosCat = (nom) =>
+    partidas.filter((p) => igual(p.categoria, nom)).length +
+    transacciones.filter((t) => igual(t.categoria, nom)).length;
+
+  const agregarRubro = async () => {
+    const nombre = nuevoRubro.trim();
+    if (!nombre) return;
+    if (rubros.some((r) => igual(r.nombre, nombre))) { alert(`El rubro "${nombre}" ya existe.`); return; }
+    try {
+      const orden = (rubros[rubros.length - 1]?.orden ?? rubros.length) + 1;
+      const creado = await rubrosApi.insert({ id: uid(), nombre, orden, activo: true });
+      // Todo rubro nace con "Diversos": es la salida honesta cuando el gasto
+      // no encaja en ninguna categoría específica, y evita que se invente una.
+      const rid = (creado && creado.id) || null;
+      if (rid) await categoriasApi.insert({ id: uid(), rubro_id: rid, nombre: "Diversos", orden: 99, activa: true });
+      setNuevoRubro("");
+    } catch (err) { alert("No se pudo agregar: " + (err.message || err)); }
+  };
+
+  const renombrarRubro = async (r) => {
+    const nombre = (prompt(`Nuevo nombre para el rubro "${r.nombre}":`, r.nombre) || "").trim();
+    if (!nombre || igual(nombre, r.nombre)) return;
+    if (rubros.some((x) => x.id !== r.id && igual(x.nombre, nombre))) { alert(`Ya existe un rubro "${nombre}".`); return; }
+    const n = usosRubro(r.nombre);
+    if (n && !confirm(`${n} partida(s) usan el rubro "${r.nombre}". Se les va a cambiar el nombre también, para que no queden apuntando a un rubro inexistente.\n\n¿Continuar?`)) return;
+    try {
+      await rubrosApi.update(r.id, { nombre });
+      for (const p of partidas.filter((p) => igual(p.rubro, r.nombre))) {
+        await supabase.from("partidas").update({ rubro: nombre }).eq("id", p.id);
+      }
+    } catch (err) { alert("No se pudo renombrar: " + (err.message || err)); }
+  };
+
+  const borrarRubro = (r) => {
+    const n = usosRubro(r.nombre);
+    if (n) { alert(`No se puede eliminar "${r.nombre}": ${n} partida(s) lo usan.\n\nSi ya no se debe usar, desactívalo — sale del selector pero el histórico se conserva.`); return; }
+    if (!confirm(`¿Eliminar el rubro "${r.nombre}" y sus ${catsDe(r.id).length} categoría(s)?`)) return;
+    rubrosApi.remove(r.id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+  };
+
+  const agregarCat = async () => {
+    const nombre = nuevaCat.trim();
+    if (!nombre || !rubroSel) return;
+    if (catsDe(rubroSel.id).some((c) => igual(c.nombre, nombre))) { alert(`"${nombre}" ya existe en ${rubroSel.nombre}.`); return; }
+    try {
+      const cs = catsDe(rubroSel.id);
+      await categoriasApi.insert({ id: uid(), rubro_id: rubroSel.id, nombre,
+        orden: (cs[cs.length - 1]?.orden ?? cs.length) + 1, activa: true });
+      setNuevaCat("");
+    } catch (err) { alert("No se pudo agregar: " + (err.message || err)); }
+  };
+
+  const renombrarCat = async (c) => {
+    const nombre = (prompt(`Nuevo nombre para la categoría "${c.nombre}":`, c.nombre) || "").trim();
+    if (!nombre || igual(nombre, c.nombre)) return;
+    const n = usosCat(c.nombre);
+    if (n && !confirm(`${n} registro(s) usan la categoría "${c.nombre}". Se les va a cambiar el nombre también.\n\n¿Continuar?`)) return;
+    try {
+      await categoriasApi.update(c.id, { nombre });
+      for (const p of partidas.filter((p) => igual(p.categoria, c.nombre))) {
+        await supabase.from("partidas").update({ categoria: nombre }).eq("id", p.id);
+      }
+      for (const t of transacciones.filter((t) => igual(t.categoria, c.nombre))) {
+        await supabase.from("transacciones").update({ categoria: nombre }).eq("id", t.id);
+      }
+    } catch (err) { alert("No se pudo renombrar: " + (err.message || err)); }
+  };
+
+  const borrarCat = (c) => {
+    const n = usosCat(c.nombre);
+    if (n) { alert(`No se puede eliminar "${c.nombre}": ${n} registro(s) la usan.\n\nDesactívala si ya no se debe usar.`); return; }
+    if (!confirm(`¿Eliminar la categoría "${c.nombre}"?`)) return;
+    categoriasApi.remove(c.id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+  };
+
+  const activo = rubroSel && rubros.find((r) => r.id === rubroSel.id);
+
+  return (
+    <Panel
+      title="Rubros y categorías"
+      subtitle={`${rubros.length} rubros · ${categoriasApi.rows.length} categorías — alimentan Partidas y Transacciones`}
+    >
+      {!rubrosApi.rows.length && (
+        <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 14 }}>
+          <b>El catálogo de la base está vacío</b>
+          Mientras tanto se usa la lista del código. Corre
+          <code style={{ fontFamily: T.fontMono, margin: "0 4px" }}>16-catalogo-editable.sql</code>
+          para poblarla con los 15 rubros y 122 categorías actuales.
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 18, alignItems: "flex-start", flexWrap: "wrap" }}>
+        {/* Rubros */}
+        <div style={{ flex: "1 1 340px", minWidth: 300 }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 10 }}>
+            <Field label="Nuevo rubro">
+              <TextInput value={nuevoRubro} onChange={(e) => setNuevoRubro(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") agregarRubro(); }}
+                placeholder="Nombre del rubro" style={{ width: 210 }} />
+            </Field>
+            <Button onClick={agregarRubro} disabled={!nuevoRubro.trim()}>+ Agregar</Button>
+          </div>
+          <table style={tableStyle}>
+            <thead><tr><th style={thStyle}>Rubro</th><th style={thStyle}>Cats.</th><th style={thStyle}>Partidas</th><th style={thStyle}></th></tr></thead>
+            <tbody>
+              {rubros.map((r) => (
+                <tr key={r.id}
+                  onClick={() => setRubroSel(r)}
+                  style={{ cursor: "pointer", opacity: r.activo === false ? 0.55 : 1,
+                           background: rubroSel?.id === r.id ? T.panelAlt : "transparent" }}>
+                  <td style={tdStyle}>{r.nombre}</td>
+                  <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{catsDe(r.id).length}</td>
+                  <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{usosRubro(r.nombre) || "—"}</td>
+                  <td style={tdStyle}>
+                    <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                      <IconButton icon="✎" label="Renombrar" tone={T.accent}
+                        onClick={(e) => { e.stopPropagation(); renombrarRubro(r); }} />
+                      <IconButton icon={r.activo === false ? "◻" : "◼"}
+                        label={r.activo === false ? "Activar" : "Desactivar"}
+                        onClick={(e) => { e.stopPropagation();
+                          rubrosApi.update(r.id, { activo: r.activo === false })
+                            .catch((err) => alert("No se pudo: " + (err.message || err))); }} />
+                      <IconButton icon="✕" label="Eliminar" tone={T.red}
+                        onClick={(e) => { e.stopPropagation(); borrarRubro(r); }} />
+                    </div>
+                  </td>
+                </tr>
+              ))}
+              {!rubros.length && (
+                <tr><td colSpan={4} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin rubros en la base</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Categorías del rubro elegido */}
+        <div style={{ flex: "1 1 340px", minWidth: 300 }}>
+          {!activo ? (
+            <div style={{ color: T.textFaint, fontSize: 12.5, padding: "40px 0", textAlign: "center" }}>
+              Elige un rubro de la izquierda para ver y editar sus categorías
+            </div>
+          ) : (
+            <>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>
+                Categorías de {activo.nombre}
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 10 }}>
+                <Field label="Nueva categoría">
+                  <TextInput value={nuevaCat} onChange={(e) => setNuevaCat(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") agregarCat(); }}
+                    placeholder="Nombre de la categoría" style={{ width: 210 }} />
+                </Field>
+                <Button onClick={agregarCat} disabled={!nuevaCat.trim()}>+ Agregar</Button>
+              </div>
+              <table style={tableStyle}>
+                <thead><tr><th style={thStyle}>Categoría</th><th style={thStyle}>En uso</th><th style={thStyle}></th></tr></thead>
+                <tbody>
+                  {catsDe(activo.id).map((c) => (
+                    <tr key={c.id} style={{ opacity: c.activa === false ? 0.55 : 1 }}>
+                      <td style={tdStyle}>{c.nombre}</td>
+                      <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{usosCat(c.nombre) || "—"}</td>
+                      <td style={tdStyle}>
+                        <div style={{ display: "flex", gap: 4, justifyContent: "flex-end" }}>
+                          <IconButton icon="✎" label="Renombrar" tone={T.accent} onClick={() => renombrarCat(c)} />
+                          <IconButton icon={c.activa === false ? "◻" : "◼"}
+                            label={c.activa === false ? "Activar" : "Desactivar"}
+                            onClick={() => categoriasApi.update(c.id, { activa: c.activa === false })
+                              .catch((err) => alert("No se pudo: " + (err.message || err)))} />
+                          <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => borrarCat(c)} />
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {!catsDe(activo.id).length && (
+                    <tr><td colSpan={3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin categorías</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </>
+          )}
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "" });
   const [editingId, setEditingId] = useState(null);
@@ -6163,6 +6413,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, transacciones =
         </div>
       </Panel>
 
+      <RubrosPanel rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} />
       <ZonasPanel zonasApi={zonasApi} transacciones={transacciones} />
 
       <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />
@@ -7758,6 +8009,15 @@ export default function App() {
   const { session, recovery, clearRecovery } = useAuth();
   const proyectosApi = useCollection("proyectos");
   const zonasApi = useCollection("zonas");
+  const rubrosApi = useCollection("rubros");
+  const categoriasApi = useCollection("categorias");
+  // Al cambiar el catálogo se reconstruye la variable de módulo y se fuerza
+  // un render, para que los selectores muestren lo nuevo sin recargar.
+  const [catalogoVersion, setCatalogoVersion] = useState(0);
+  useEffect(() => {
+    aplicarCatalogo(rubrosApi.rows, categoriasApi.rows);
+    setCatalogoVersion((v) => v + 1);
+  }, [rubrosApi.rows, categoriasApi.rows]);
   const partidasApi = useCollection("partidas", "created_at", { withAudit: true });
   const transaccionesApi = useCollection("transacciones", "created_at", { withAudit: true });
   const proveedoresApi = useCollection("proveedores", "created_at", { withAudit: true });
@@ -7934,7 +8194,7 @@ export default function App() {
               unidadesPermitidas={miPerfil?.unidades_permitidas || []}
             />
           )}
-          {tab === "catalogo" && <CatalogoTab unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
+          {tab === "catalogo" && <CatalogoTab key={catalogoVersion} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>
       )}
     </div>

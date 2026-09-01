@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.84.0";
+const APP_VERSION = "1.85.0";
 const CHANGELOG = [
+  { v: "1.85.0", desc: "El selector de proveedor puede consultar el catálogo maestro de ASPEL (11,057 proveedores). Se busca contra Supabase EN EL MOMENTO y nunca se carga en memoria: traer once mil registros en cada sesión degradaría la app para todos a cambio de un catálogo que casi nunca se consulta. Al elegir uno, sus datos llenan el formulario de alta pero NO se guarda solo — el maestro trae CLABE en apenas el 30% de los casos y divisa casi en ninguno, así que darlo de alta en silencio crearía proveedores incompletos que fallan al pagar. La lista avisa si trae o no datos bancarios, y si el registro venía marcado para revisión. Requiere 18-proveedores-maestro.sql y el CSV cargado" },
   { v: "1.84.0", desc: "Proveedores: botón 'Descargar plantilla' para la carga masiva, que faltaba — había importador pero no había de dónde sacar el formato, y la única forma de conocerlo era exportar el catálogo, que no sirve cuando aún no hay proveedores. Trae las 12 columnas que el importador detecta, una hoja por compañía con su fila de ejemplo, y una hoja de instrucciones que advierte lo de la CLABE: Excel convierte 18 dígitos a notación científica y corrompe el dato antes de que nadie lo note" },
   { v: "1.83.0", desc: "Formato consistente en los nueve archivos de Excel, con una distinción deliberada: los REPORTES (Presupuestal, Pagos, Pagos Dirección) llevan título, periodo, totales y subtotales; los archivos de INTERCAMBIO (RawData de partidas, catálogo de proveedores y las dos plantillas de importación) solo reciben encabezado con fondo, panel congelado y autofiltro. No llevan título a propósito: los parsers y el preparador leen el encabezado de la PRIMERA fila, así que anteponerlo rompería la reimportación. El Reporte de Pagos gana además un subtotal por zona y moneda, que es lo que Pagos necesita para cuadrar contra el banco, e importes alineados a la derecha en todos los archivos" },
   { v: "1.82.0", desc: "El Excel del Reporte Pagos Dirección adopta el formato del Reporte Presupuestal: título y subtítulo con periodo y totales, encabezado con fondo y texto blanco, filas de total por moneda al pie, encabezado congelado y autofiltro. Los totales dejan de vivir sueltos en celdas fijas —se rompían al cambiar las columnas visibles— y pasan al subtítulo, junto al periodo que los explica. El archivo se llama ahora 'Reporte de Pagos Dirección - Compañía - Periodo', con el periodo tomado de las fechas que realmente contiene" },
@@ -875,8 +876,56 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
   const [nuevaCuenta, setNuevaCuenta] = useState(cuentaBlank);
   const cuentasDeEditando = (editando?.id && cuentasApi) ? cuentasApi.rows.filter((c) => c.proveedor_id === editando.id) : [];
 
-  const abrir = () => { setResaltadoId(value || ""); setEditando(null); setBusqueda(""); setOpen(true); };
-  const cerrar = () => { setOpen(false); setBusqueda(""); setEditando(null); };
+  /* Búsqueda en el catálogo maestro (11 mil proveedores de ASPEL).
+     Se consulta a Supabase EN EL MOMENTO, no se carga en memoria: traer once
+     mil registros en cada sesión degradaría la app para todos a cambio de un
+     catálogo que casi nunca se consulta. */
+  const [buscandoMaestro, setBuscandoMaestro] = useState(false);
+  const [resMaestro, setResMaestro] = useState(null); // null = no se ha buscado
+
+  const buscarEnMaestro = async () => {
+    const q = busqueda.trim();
+    if (q.length < 3) { alert("Escribe al menos 3 letras del nombre o el RFC para buscar en el maestro."); return; }
+    setBuscandoMaestro(true);
+    try {
+      const { data, error } = await supabase
+        .from("proveedores_maestro")
+        .select("*")
+        .eq("compania", unidad)
+        .or(`nombre.ilike.%${q}%,rfc.ilike.%${q}%,id_sae.eq.${/^\d+$/.test(q) ? q : -1}`)
+        .order("nombre")
+        .limit(25);
+      if (error) throw error;
+      setResMaestro(data || []);
+    } catch (err) {
+      alert("No se pudo buscar en el maestro: " + (err.message || err));
+      setResMaestro([]);
+    } finally {
+      setBuscandoMaestro(false);
+    }
+  };
+
+  /* Trae un proveedor del maestro al formulario de alta. No lo guarda solo:
+     el maestro trae CLABE en apenas el 30% de los casos y la divisa casi
+     nunca, así que darlo de alta en silencio crearía proveedores incompletos
+     que fallan al momento de pagar. */
+  const usarDelMaestro = (m) => {
+    setEditando({ id: null, nombre: m.nombre || "", rfc: m.rfc || "", id_sae: m.id_sae || "" });
+    setNuevaCuenta({
+      banco: m.banco || "", sucursal: m.sucursal || "", swift: m.swift || "",
+      clabe: m.clabe || "", numero_cuenta: m.numero_cuenta || "",
+      divisa: m.divisa || "MXP",
+    });
+    setResMaestro(null);
+    if (m.revisar) {
+      alert(`Este proveedor viene marcado en el maestro:\n\n${m.revisar}\n\nVerifica los datos bancarios contra la factura antes de guardarlo.`);
+    } else if (!m.clabe && !m.numero_cuenta) {
+      alert("El maestro no tiene datos bancarios de este proveedor. Se llenaron nombre, RFC e Id SAE; captura la cuenta antes de usarlo para pagar.");
+    }
+  };
+
+  const abrir = () => { setResaltadoId(value || ""); setEditando(null); setBusqueda(""); setResMaestro(null); setOpen(true); };
+  const cerrar = () => { setOpen(false); setBusqueda(""); setEditando(null); setResMaestro(null); };
 
   const confirmar = () => {
     const p = proveedores.find((pr) => pr.id === resaltadoId) || (editando?.id === resaltadoId ? editando : null);
@@ -1054,7 +1103,58 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
                   </button>
                 ))}
                 {!filtrados.length && (
-                  <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>Sin resultados</div>
+                  <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>
+                    Sin resultados en {unidad}
+                  </div>
+                )}
+              </div>
+
+              {/* Puente al catálogo maestro. Aparece siempre, no solo cuando la
+                  búsqueda local falla: un proveedor puede existir aquí con
+                  datos incompletos y estar completo allá. */}
+              <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${T.borderSoft}` }}>
+                <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <Button type="button" variant="ghost" onClick={buscarEnMaestro} disabled={buscandoMaestro}>
+                    {buscandoMaestro ? "Buscando…" : "Buscar en el catálogo maestro"}
+                  </Button>
+                  <span style={{ fontSize: 11.5, color: T.textFaint }}>
+                    11 mil proveedores de ASPEL — se consulta al momento, no está cargado en la app
+                  </span>
+                </div>
+
+                {resMaestro !== null && (
+                  <div style={{ marginTop: 10 }}>
+                    {!resMaestro.length ? (
+                      <div style={{ fontSize: 12, color: T.textFaint, padding: "8px 2px" }}>
+                        Tampoco está en el maestro de {unidad}. Usa "+ Nuevo proveedor" para darlo de alta.
+                      </div>
+                    ) : (
+                      <div style={{ maxHeight: 220, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
+                        {resMaestro.map((m) => (
+                          <div key={m.id}
+                            onClick={() => usarDelMaestro(m)}
+                            style={{ padding: "8px 11px", borderBottom: `1px solid ${T.borderSoft}`, cursor: "pointer", fontSize: 12.5 }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", gap: 10 }}>
+                              <span style={{ fontWeight: 600 }}>{m.nombre}</span>
+                              <span style={{ fontFamily: T.fontMono, color: T.textFaint, fontSize: 11, whiteSpace: "nowrap" }}>
+                                SAE {m.id_sae}
+                              </span>
+                            </div>
+                            <div style={{ color: T.textDim, fontSize: 11.5, marginTop: 2 }}>
+                              {m.rfc || "sin RFC"}
+                              {m.banco ? ` · ${m.banco}` : ""}
+                              {/* Que tenga o no datos bancarios cambia lo que falta capturar
+                                  después, así que se dice desde la lista. */}
+                              {m.clabe || m.numero_cuenta
+                                ? <span style={{ color: T.teal }}> · con datos bancarios</span>
+                                : <span style={{ color: T.amber }}> · sin cuenta</span>}
+                              {m.revisar ? <span style={{ color: T.red }}> · revisar: {m.revisar}</span> : null}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
                 )}
               </div>
               <div style={{ display: "flex", gap: 8 }}>

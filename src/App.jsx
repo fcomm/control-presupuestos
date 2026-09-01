@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.88.0";
+const APP_VERSION = "1.88.1";
 const CHANGELOG = [
+  { v: "1.88.1", desc: "Fix: generar la Solicitud de Pago fallaba con 'catch is not a function'. El constructor de consultas de Supabase no es una promesa hasta que se le hace await, así que encadenarle .catch() rompe. Los dos pasos secundarios —adelantar el consecutivo y guardar el desglose en la transacción— van ahora en su propio try: la solicitud ya quedó registrada y no deben impedir que se descargue el documento" },
   { v: "1.88.0", desc: "Catálogo se organiza en sub-pestañas —Proyectos, Rubros y categorías, Zonas, Proveedores y Solicitudes de Pago— en vez de seis paneles apilados que obligaban a recorrer toda la página. Se prefirió esto a secciones plegables: con seis encabezados que atravesar el recorrido sigue existiendo, y el estado de plegado se olvida entre visitas. De paso se retira el panel de referencia de rubros, que solo listaba lo que el panel administrable ya muestra" },
   { v: "1.87.0", desc: "La Solicitud de Pago se genera ahora en PDF con formato de documento formal —encabezado con folio, datos en dos columnas, desglose fiscal, la cifra a pagar destacada, bloque de datos bancarios y firmas— además del Excel, que se conserva. Y en Catálogo aparece el consecutivo editable de la SPP por compañía, junto con el responsable de proyecto y el lugar de adquisición, que hasta ahora se escribían a mano en cada solicitud. El folio asignado es el MAYOR entre lo configurado y lo ya emitido: bajar el consecutivo por error no debe reutilizar folios de solicitudes que ya salieron. Requiere 20-consecutivo-spp.sql" },
   { v: "1.86.2", desc: "Fix: el botón de Generar Solicitud de Pago no hacía nada. El botón vive en Transacciones pero su estado y su modal habían quedado en Partidas, así que el clic llamaba a un setter de otro componente y el error moría en la consola sin señal visible. Es el mismo tipo de error que la vista previa del PDF en la 1.56.0; el verificador de alcance por árbol sintáctico lo detecta y ahora se corre también sobre los componentes, no solo sobre las variables" },
@@ -3788,18 +3789,26 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
       };
       const { error } = await supabase.from("solicitudes_pago").insert(reg);
       if (error) throw error;
-      await supabase.from("config_companias")
-        .upsert({ compania: unidad, spp_ultimo: folio, updated_at: new Date().toISOString() })
-        .catch(() => {});
+      /* El constructor de consultas de Supabase no es una promesa hasta que
+         se le hace await, así que encadenarle .catch() lanza "catch is not a
+         function". Estos dos pasos son secundarios —la solicitud ya quedó
+         guardada— y no deben impedir que se descargue el documento, así que
+         cada uno va en su propio try. */
+      try {
+        await supabase.from("config_companias")
+          .upsert({ compania: unidad, spp_ultimo: folio, updated_at: new Date().toISOString() });
+      } catch { /* el folio ya quedó en solicitudes_pago; el consecutivo se recalcula solo */ }
 
-      // El desglose confirmado se guarda también en la transacción: es el
-      // dato que faltaba para saber de qué se compone el importe.
-      await transaccionesApi.update(t.id, {
-        subtotal: d.subtotal, iva: d.iva, ret_isr: d.ret_isr, ret_iva: d.ret_iva,
-        descuento: Number(d.descuento) || 0, pct_pago: Number(pctPago) || 0,
-        tipo_pago: f.tipo_pago, condicion_pago: f.condicion_pago,
-        observaciones_spp: f.observaciones,
-      }).catch(() => {});
+      try {
+        // El desglose confirmado se guarda también en la transacción: es el
+        // dato que faltaba para saber de qué se compone el importe.
+        await transaccionesApi.update(t.id, {
+          subtotal: d.subtotal, iva: d.iva, ret_isr: d.ret_isr, ret_iva: d.ret_iva,
+          descuento: Number(d.descuento) || 0, pct_pago: Number(pctPago) || 0,
+          tipo_pago: f.tipo_pago, condicion_pago: f.condicion_pago,
+          observaciones_spp: f.observaciones,
+        });
+      } catch { /* el documento es lo que importa; el desglose se puede recapturar */ }
 
       if (formato === "pdf") generarPdfSPP(reg);
       else await generarExcelSPP(reg);

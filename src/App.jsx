@@ -132,6 +132,7 @@ const GROUP_OPCIONES_TRANS = [
   { value: "proyecto", label: "Proyecto (transacción)" },
   { value: "status", label: "Status" },
   { value: "moneda", label: "Moneda" },
+  { value: "categoria", label: "Categoría" },
   { value: "_proyecto", label: "Proyecto (partida)" },
   { value: "_rubro", label: "Rubro (partida)" },
   { value: "_mes", label: "Mes (partida)" },
@@ -162,10 +163,13 @@ const GROUP_OPCIONES_PANEL = [
 // cualquiera sabe que va ahí.
 const PISTAS_CATEGORIA = {
   "Combustible": ["gasolina", "diesel", "diésel", "magna", "premium"],
+  "Mantenimiento vehicular": ["mantto unidad", "mantto unidades", "mantto vehicular",
+    "mantenimiento vehicular", "unidades ligeras", "unidades pesadas", "unidad vehicular"],
   "Llantas": ["llanta", "neumatico", "rin"],
   "Refacciones": ["acumulador", "bateria", "balata", "amortiguador", "clutch", "filtro"],
   "Lubricantes": ["aceite", "lubricante", "grasa"],
   "Energía eléctrica": ["cfe", "luz", "energia", "medidor", "recibo de luz"],
+  "Telefonía móvil": ["celular", "telefonia celular", "radiomovil", "movil"],
   "Telefonía fija": ["telefono", "telefonia", "telmex", "linea telefonica"],
   "Internet": ["internet", "enlace", "fibra", "banda ancha"],
   "Agua": ["agua", "pipa", "hidraulico", "potable"],
@@ -233,6 +237,12 @@ function sugerirCategoria(concepto, categorias) {
   return mejorPts >= 40 ? mejor : null;
 }
 
+// Todas las categorías del catálogo, sin repetir. La transacción puede usar
+// cualquiera: describe QUÉ se compró, con independencia del rubro donde se
+// presupuestó.
+const CATEGORIAS_TODAS = [...new Set(RUBROS.flatMap((r) => r.categorias))]
+  .filter((c) => c !== "Diversos").sort().concat("Diversos");
+
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
 const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10));
@@ -242,8 +252,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.76.0";
+const APP_VERSION = "1.77.0";
 const CHANGELOG = [
+  { v: "1.77.0", desc: "Las transacciones estrenan campo Categoría: la partida dice en qué rubro se presupuestó, la transacción dice qué se compró. Está en el formulario —con las categorías del rubro de su partida arriba y el resto abajo, más la sugerencia por concepto de un clic—, en la tabla, en Agrupar por y en el buscador. La carga masiva la asigna sola cuando el archivo no la trae, deduciéndola del concepto; sin eso el campo entraría vacío en cada importación y el dato se degradaría desde el primer archivo. No se restringe al rubro de la partida a propósito: con datos reales, 39 de 228 transacciones tenían la categoría correcta para el gasto y una partida de otro rubro, y esa discrepancia es información —dice qué partidas absorben gasto que no les toca— no un error. Requiere 15-categoria-en-transacciones.sql" },
   { v: "1.76.0", desc: "Nueva categoría 'Seguros' en Gastos Financieros e Impuestos, junto a Fianzas: son el mismo tipo de gasto —transferencia de riesgo contratada— y separarlos partiría en dos algo que se lee mejor junto. La categoría 'Seguros' de Vehículos se conserva y queda reservada a pólizas vehiculares, que son parte del costo de operar la flotilla; el resto de las pólizas va a Gastos Financieros. Sin esa regla el gasto en seguros quedaría partido según quién capture" },
   { v: "1.75.0", desc: "Dos cosas sobre rubros y categorías. Al capturar una partida, la app sugiere una categoría a partir del concepto —dentro del rubro elegido— y basta un clic para usarla; se sugiere, no se impone, porque quien captura sabe cosas que el concepto no dice. Y la carga masiva ya no deja entrar combinaciones inválidas: en vez de solo avisar, las repara conservando SIEMPRE el rubro —que es el eje que se lee en el Dashboard— y ajustando la categoría, con el valor original guardado en `extra` para no perderlo. Un rubro inexistente cuya categoría solo vive en un lugar se corrige a ese lugar; si no hay forma de saberlo, cae en Otros / Diversos, que es honesto" },
   { v: "1.74.0", desc: "Las exportaciones a Excel de Partidas y del Reporte Pagos Dirección respetan ahora las columnas visibles, igual que ya lo hacían el PDF y el Reporte de Pagos. En Partidas se conservan siempre Unidad, Usado y Disponible: no existen como columna en pantalla pero sí hacen falta en la hoja. De paso, el reporte de Dirección deja de llevar encabezados, valores y anchos en tres listas paralelas —el formato de moneda se aplicaba por índice fijo, así que mover la columna Importe dejaba el signo de pesos en la de al lado" },
@@ -1352,6 +1363,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = [], cue
       formaPago: findExactCol(headers, ["forma de pago", "forma pago"]),
       metodoPago: findExactCol(headers, ["metodo de pago", "metodo pago"]),
       referenciaPago: findCol(headers, ["referencia", "pago"], ["referencia", "transferencia"], ["referencia bancaria"]),
+      categoria: findCol(headers, ["categoria"]),
       folio: findCol(headers, ["a partida"]) !== -1 ? findCol(headers, ["a partida"]) : findExactCol(headers, ["partida", "folio"]),
     };
 
@@ -1408,6 +1420,17 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = [], cue
                           : (cuentasDelProv.length === 1 && !cuentasDivisa.length ? null : null);
       if (cuentaElegida) conCuenta++; else if (proveedorMatch) sinCuenta++;
 
+      const conceptoDetallado = (col.concepto !== -1 && row[col.concepto]) ? String(row[col.concepto]).trim() : "";
+      const categoriaDelArchivo = (col.categoria !== -1 && row[col.categoria]) ? String(row[col.categoria]).trim() : "";
+      // Las opciones se acotan al rubro de la partida cuando la hay; si no,
+      // se busca en todo el catálogo.
+      const catsPosibles = partida
+        ? (RUBROS.find((r) => r.rubro === partida.rubro)?.categorias || CATEGORIAS_TODAS)
+        : CATEGORIAS_TODAS;
+      const categoriaImportada = categoriaDelArchivo
+        || sugerirCategoria(conceptoDetallado, catsPosibles)
+        || "";
+
       rows.push({
         id: uid(),
         _desajusteMoneda: desajusteMoneda
@@ -1426,7 +1449,7 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = [], cue
         area: (col.area !== -1 && row[col.area]) ? String(row[col.area]).trim() : "",
         proveedor: proveedorNombre,
         proveedor_id: proveedorMatch ? proveedorMatch.id : "",
-        concepto_detallado: (col.concepto !== -1 && row[col.concepto]) ? String(row[col.concepto]).trim() : "",
+        concepto_detallado: conceptoDetallado,
         importe,
         moneda: (col.moneda !== -1 && row[col.moneda]) ? String(row[col.moneda]).trim().toUpperCase() : "MXP",
         status: (col.status !== -1 && row[col.status]) ? String(row[col.status]).trim() : "",
@@ -1435,6 +1458,11 @@ function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = [], cue
         forma_pago: (col.formaPago !== -1 && row[col.formaPago]) ? String(row[col.formaPago]).trim() : "",
         metodo_pago: (col.metodoPago !== -1 && row[col.metodoPago]) ? String(row[col.metodoPago]).trim() : "",
         referencia_pago: (col.referenciaPago !== -1 && row[col.referenciaPago]) ? String(row[col.referenciaPago]).trim() : "",
+        // Si el archivo trae categoría se respeta; si no, se deduce del
+        // concepto. Sin esto el campo entraría vacío en cada importación y el
+        // dato que acabamos de poblar se degradaría desde el primer archivo.
+        categoria: categoriaImportada,
+        _categoriaSugerida: categoriaImportada && !categoriaDelArchivo,
       });
       count++;
     }
@@ -4092,7 +4120,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
     try {
       // _cuentasDisponibles es un dato de pantalla, no de la tabla: se descarta
       // antes de insertar o Supabase rechaza la columna desconocida.
-      const toInsert = preview.rows.map(({ _cuentasDisponibles, _desajusteMoneda, ...r }) => ({
+      const toInsert = preview.rows.map(({ _cuentasDisponibles, _desajusteMoneda, _categoriaSugerida, ...r }) => ({
         ...r,
         partida_id: r.partida_id || null,
         proveedor_id: r.proveedor_id || null,
@@ -4141,6 +4169,11 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
             <Pill tone="teal">{vinculadasActuales} vinculadas a una partida</Pill>
             {sinVincularActuales > 0 && <Pill tone="red">{sinVincularActuales} sin vincular</Pill>}
             {preview.desajustes > 0 && <Pill tone="amber">{preview.desajustes} con moneda distinta</Pill>}
+            {preview.rows.filter((r) => r._categoriaSugerida).length > 0 && (
+              <Pill tone="accent">
+                {preview.rows.filter((r) => r._categoriaSugerida).length} con categoría deducida del concepto
+              </Pill>
+            )}
           </div>
           {preview.desajustes > 0 && (
             <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
@@ -4202,7 +4235,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const blank = {
     partida_id: partidasUnidad[0]?.id || "", unidad_detectada: unidad, dia: "", solicitante: "", smi: "", proyecto: "", zona: "", area: "",
     proveedor: "", proveedor_id: "", cuenta_id: "", concepto_detallado: "", importe: "", moneda: "MXP", status: "No Pagado", fecha_pago: "",
-    folio_compra_sae: "", folio_factura: "", forma_pago: "", metodo_pago: "", referencia_pago: "",
+    folio_compra_sae: "", folio_factura: "", forma_pago: "", metodo_pago: "", referencia_pago: "", categoria: "",
   };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
@@ -4396,6 +4429,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         </span>
       ),
     },
+    { key: "categoria", label: "Categoría", render: (t) => t.categoria ? <Pill>{t.categoria}</Pill> : <span style={{ color: T.textFaint }}>—</span> },
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
     { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—" },
     { key: "fecha_pago", label: "Fecha de Pago", render: (t) => t.fecha_pago || "—" },
@@ -4910,6 +4944,45 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </Field>
             <Field label="Importe">
               <TextInput type="number" step="0.01" value={form.importe} onChange={(e) => setForm({ ...form, importe: e.target.value })} placeholder="0.00" />
+            </Field>
+            <Field label="Categoría del gasto">
+              {/* Las opciones salen del rubro de la partida vinculada, pero NO
+                  se restringe a él: con datos reales, 39 de 228 transacciones
+                  tenían la categoría correcta para el gasto y una partida de
+                  otro rubro. La discrepancia es información, no error. */}
+              <Select value={form.categoria || ""} onChange={(e) => setForm({ ...form, categoria: e.target.value })}>
+                <option value="">— Sin categoría —</option>
+                {(() => {
+                  const p = partidasUnidad.find((x) => x.id === form.partida_id);
+                  const delRubro = p ? (RUBROS.find((r) => r.rubro === p.rubro)?.categorias || []) : [];
+                  const resto = CATEGORIAS_TODAS.filter((c) => !delRubro.includes(c));
+                  return (
+                    <>
+                      {delRubro.length > 0 && (
+                        <optgroup label={`Del rubro ${p.rubro}`}>
+                          {delRubro.map((c) => <option key={c}>{c}</option>)}
+                        </optgroup>
+                      )}
+                      <optgroup label="Otras categorías">
+                        {resto.map((c) => <option key={c}>{c}</option>)}
+                      </optgroup>
+                    </>
+                  );
+                })()}
+              </Select>
+              {(() => {
+                const p = partidasUnidad.find((x) => x.id === form.partida_id);
+                const cats = p ? (RUBROS.find((r) => r.rubro === p.rubro)?.categorias || []) : CATEGORIAS_TODAS;
+                const sug = sugerirCategoria(form.concepto_detallado, cats);
+                if (!sug || sug === form.categoria) return null;
+                return (
+                  <button type="button" onClick={() => setForm({ ...form, categoria: sug })}
+                    style={{ marginTop: 5, background: "transparent", border: "none", padding: 0,
+                             color: T.accent, fontSize: 11.5, cursor: "pointer", textAlign: "left", fontFamily: T.fontUI }}>
+                    Por el concepto, quizá sea <b>{sug}</b> — usar
+                  </button>
+                );
+              })()}
             </Field>
             <Field label="Moneda">
               <Select

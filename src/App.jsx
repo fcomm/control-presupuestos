@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.80.0";
+const APP_VERSION = "1.80.1";
 const CHANGELOG = [
+  { v: "1.80.1", desc: "Reporte Excel de Partidas: los subtotales de cada grupo y el encabezado etiquetan ahora las DOS monedas. El formateador general solo marca los dólares —da por hecho que sin etiqueta son pesos— y en una fila donde conviven las dos, '$211,039.96 · $25,000.00 USD' invitaba a leer la primera cifra como parte del mismo total" },
   { v: "1.80.0", desc: "Partidas: nuevo 'Reporte Excel' con su propio selector de columnas —independiente del de pantalla— que respeta el agrupamiento de la vista: cada grupo abre con su nombre, cuántas partidas contiene y su subtotal por moneda, con sangría por nivel. Se diferencia de 'Exportar', que sigue dando el listado plano para el preparador de transacciones. Los totales van separados por moneda, nunca sumadas entre sí" },
   { v: "1.79.0", desc: "Se elimina la categoría 'Diversos' de los 15 rubros y no se puede volver a crear —tampoco Varios, Otros o General. En la v1.73 se agregó porque 81 partidas ya la usaban, y ese diagnóstico del pasado era correcto; hacia adelante el cálculo se invierte: una opción cómoda que no dice nada se vuelve el camino de menor resistencia y la clasificación se degrada sola. Cuando algo no se puede clasificar el campo se deja VACÍO, no con una etiqueta genérica: un hueco se ve y pide corrección, una etiqueta lo esconde. Los rubros nuevos nacen sin categorías, para que se definan las que de verdad hacen falta" },
   { v: "1.78.0", desc: "Los rubros y categorías salen del código y pasan a ser administrables desde Catálogo: se agregan, renombran, desactivan y eliminan sin volver a desplegar. El punto delicado es renombrar — partidas.rubro, partidas.categoria y transacciones.categoria guardan el TEXTO, no un id, así que cambiar el nombre dejaría a los registros existentes apuntando a algo inexistente; por eso el cambio se propaga a los registros en uso, avisando cuántos son. Un rubro o categoría en uso no se puede eliminar, solo desactivar: sale del selector y el histórico se conserva. Todo rubro nuevo nace con la categoría Diversos. Requiere 16-catalogo-editable.sql" },
@@ -3529,7 +3530,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         });
         return t;
       };
-      const fmtTot = (t) => Object.entries(t).map(([m, v]) => money(v, m)).join("   ·   ");
+      /* En los subtotales se etiquetan AMBAS monedas. `money()` solo marca los
+         dólares —da por hecho que sin etiqueta son pesos— y en una fila donde
+         conviven las dos, "$211,039.96 · $25,000.00 USD" invita a leer la
+         primera cifra como parte del mismo total. */
+      const fmtTot = (t) => Object.entries(t)
+        .map(([m, v]) => `$${(Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${m}`)
+        .join("   ·   ");
 
       // Encabezado del documento
       const tit = ws.addRow([`Partidas presupuestales — ${unidad}`]);

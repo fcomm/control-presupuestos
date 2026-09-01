@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.79.0";
+const APP_VERSION = "1.80.0";
 const CHANGELOG = [
+  { v: "1.80.0", desc: "Partidas: nuevo 'Reporte Excel' con su propio selector de columnas —independiente del de pantalla— que respeta el agrupamiento de la vista: cada grupo abre con su nombre, cuántas partidas contiene y su subtotal por moneda, con sangría por nivel. Se diferencia de 'Exportar', que sigue dando el listado plano para el preparador de transacciones. Los totales van separados por moneda, nunca sumadas entre sí" },
   { v: "1.79.0", desc: "Se elimina la categoría 'Diversos' de los 15 rubros y no se puede volver a crear —tampoco Varios, Otros o General. En la v1.73 se agregó porque 81 partidas ya la usaban, y ese diagnóstico del pasado era correcto; hacia adelante el cálculo se invierte: una opción cómoda que no dice nada se vuelve el camino de menor resistencia y la clasificación se degrada sola. Cuando algo no se puede clasificar el campo se deja VACÍO, no con una etiqueta genérica: un hueco se ve y pide corrección, una etiqueta lo esconde. Los rubros nuevos nacen sin categorías, para que se definan las que de verdad hacen falta" },
   { v: "1.78.0", desc: "Los rubros y categorías salen del código y pasan a ser administrables desde Catálogo: se agregan, renombran, desactivan y eliminan sin volver a desplegar. El punto delicado es renombrar — partidas.rubro, partidas.categoria y transacciones.categoria guardan el TEXTO, no un id, así que cambiar el nombre dejaría a los registros existentes apuntando a algo inexistente; por eso el cambio se propaga a los registros en uso, avisando cuántos son. Un rubro o categoría en uso no se puede eliminar, solo desactivar: sale del selector y el histórico se conserva. Todo rubro nuevo nace con la categoría Diversos. Requiere 16-catalogo-editable.sql" },
   { v: "1.77.0", desc: "Las transacciones estrenan campo Categoría: la partida dice en qué rubro se presupuestó, la transacción dice qué se compró. Está en el formulario —con las categorías del rubro de su partida arriba y el resto abajo, más la sugerencia por concepto de un clic—, en la tabla, en Agrupar por y en el buscador. La carga masiva la asigna sola cuando el archivo no la trae, deduciéndola del concepto; sin eso el campo entraría vacío en cada importación y el dato se degradaría desde el primer archivo. No se restringe al rubro de la partida a propósito: con datos reales, 39 de 228 transacciones tenían la categoría correcta para el gasto y una partida de otro rubro, y esa discrepancia es información —dice qué partidas absorben gasto que no les toca— no un error. Requiere 15-categoria-en-transacciones.sql" },
@@ -3481,6 +3482,133 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     URL.revokeObjectURL(url);
   };
 
+
+  /* -----------------------------------------------------------------
+     REPORTE EXCEL DE PARTIDAS
+     Se diferencia de "Exportar" en dos cosas: tiene su propio selector de
+     columnas —independiente de lo que esté visible en pantalla— y respeta
+     el AGRUPAMIENTO de la vista, emitiendo una fila de encabezado con
+     subtotal por cada grupo. Un listado plano de ochenta renglones no se
+     parece a lo que se está viendo y obliga a rehacer el resumen a mano.
+     ----------------------------------------------------------------- */
+  const COLUMNAS_REPORTE_PARTIDAS = [
+    { key: "folio",       header: "Folio",       width: 16, fija: true, get: (p) => p.folio || "" },
+    { key: "mes",         header: "Mes",         width: 12, get: (p) => p.mes },
+    { key: "anio",        header: "Año",         width: 8,  get: (p) => p.anio },
+    { key: "concepto",    header: "Concepto",    width: 52, fija: true, get: (p) => p.concepto, izq: true },
+    { key: "rubro",       header: "Rubro",       width: 26, get: (p) => p.rubro, izq: true },
+    { key: "categoria",   header: "Categoría",   width: 30, get: (p) => p.categoria || "", izq: true },
+    { key: "zona",        header: "Zona",        width: 16, get: (p) => p.zona || "Cualquiera" },
+    { key: "proyecto",    header: "Proyecto",    width: 18, get: (p) => p.proyecto || "" },
+    { key: "smi",         header: "SMI",         width: 11, get: (p) => p.smi || "" },
+    { key: "moneda",      header: "Moneda",      width: 9,  get: (p) => p.moneda || "MXP" },
+    { key: "monto",       header: "Presupuesto", width: 15, fija: true, money: true, get: (p) => Number(p.monto_estimado) || 0 },
+    { key: "usado",       header: "Usado",       width: 15, money: true, get: (p) => usadoDe(p) },
+    { key: "disponible",  header: "Disponible",  width: 15, money: true, get: (p) => (Number(p.monto_estimado) || 0) - usadoDe(p) },
+  ];
+  const repVis = useVisibilidadColumnas("colv-partidas-reporte", COLUMNAS_REPORTE_PARTIDAS, ["smi", "anio"]);
+  const [generandoReporteXls, setGenerandoReporteXls] = useState(false);
+
+  const generarReporteExcel = async () => {
+    if (!partidasOrdenadas.length) {
+      alert("No hay partidas en el filtro actual para el reporte.");
+      return;
+    }
+    const COLS = repVis.visibles;
+    setGenerandoReporteXls(true);
+    try {
+      const wbx = new ExcelJS.Workbook();
+      const ws = wbx.addWorksheet(`Partidas ${unidad}`);
+      ws.columns = COLS.map((c) => ({ width: c.width }));
+
+      const totalPorMoneda = (lista) => {
+        const t = {};
+        lista.forEach((p) => {
+          const m = (p.moneda || "MXP") === "USD" ? "USD" : "MXP";
+          t[m] = (t[m] || 0) + (Number(p.monto_estimado) || 0);
+        });
+        return t;
+      };
+      const fmtTot = (t) => Object.entries(t).map(([m, v]) => money(v, m)).join("   ·   ");
+
+      // Encabezado del documento
+      const tit = ws.addRow([`Partidas presupuestales — ${unidad}`]);
+      tit.font = { bold: true, size: 14 };
+      ws.mergeCells(1, 1, 1, Math.max(COLS.length, 2));
+      const sub = ws.addRow([
+        `${partidasOrdenadas.length} partidas   ·   ${fmtTot(totalPorMoneda(partidasOrdenadas))}` +
+        (groupKeys.length ? `   ·   agrupado por ${groupBys.map((g) => (GROUP_OPCIONES.find((o) => o.value === g.field) || {}).label || g.field).join(" > ")}` : ""),
+      ]);
+      sub.font = { size: 10, color: { argb: "FF6B7785" } };
+      ws.mergeCells(2, 1, 2, Math.max(COLS.length, 2));
+      ws.addRow([]);
+
+      const hr = ws.addRow(COLS.map((c) => c.header));
+      hr.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
+        cell.alignment = { horizontal: "center", vertical: "center" };
+      });
+
+      const filaDe = (p, sangria) => {
+        const row = ws.addRow(COLS.map((c) => c.get(p)));
+        COLS.forEach((c, i) => {
+          const cell = row.getCell(i + 1);
+          if (c.money) cell.numFmt = '"$"#,##0.00';
+          if (c.izq) cell.alignment = { horizontal: "left", indent: sangria };
+        });
+        return row;
+      };
+
+      // Recorre el árbol agrupado. Cada grupo abre con su nombre, cuántas
+      // partidas contiene y su subtotal por moneda.
+      const hojas = (nodo) => nodo.type === "rows" ? nodo.rows : nodo.entries.flatMap((e) => hojas(e.child));
+      const etiquetaCampo = (campo) =>
+        (GROUP_OPCIONES.find((o) => o.value === campo) || {}).label || campo;
+
+      if (groupKeys.length && grouped) {
+        (function recorrer(nodo, nivel) {
+          if (nodo.type === "rows") { nodo.rows.forEach((p) => filaDe(p, nivel)); return; }
+          nodo.entries.forEach((e) => {
+            const lista = hojas(e.child);
+            const row = ws.addRow([`${etiquetaCampo(nodo.key)}: ${e.value}   (${lista.length})   ${fmtTot(totalPorMoneda(lista))}`]);
+            ws.mergeCells(row.number, 1, row.number, Math.max(COLS.length, 2));
+            row.getCell(1).font = { bold: true, color: { argb: nivel === 0 ? "FF232A31" : "FF4A5560" } };
+            row.getCell(1).fill = { type: "pattern", pattern: "solid",
+              fgColor: { argb: nivel === 0 ? "FFECEEF1" : "FFF6F7F9" } };
+            row.getCell(1).alignment = { indent: nivel };
+            recorrer(e.child, nivel + 1);
+          });
+        })(grouped, 0);
+      } else {
+        partidasOrdenadas.forEach((p) => filaDe(p, 0));
+      }
+
+      // Totales por moneda: nunca sumadas entre sí.
+      ws.addRow([]);
+      Object.entries(totalPorMoneda(partidasOrdenadas)).forEach(([m, v]) => {
+        const row = ws.addRow([`TOTAL ${m}`, ...Array(Math.max(COLS.length - 2, 0)).fill(""), v]);
+        row.font = { bold: true };
+        row.getCell(COLS.length).numFmt = '"$"#,##0.00';
+      });
+
+      ws.views = [{ state: "frozen", ySplit: 4 }];
+
+      const buf = await wbx.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Reporte-Partidas_${unidad}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("No se pudo generar el reporte: " + (err.message || err));
+    } finally {
+      setGenerandoReporteXls(false);
+    }
+  };
+
   const COLUMNAS_PARTIDA = [
     { key: "mes", label: "Mes", render: (p) => p.mes },
     { key: "anio", label: "Año", render: (p) => p.anio },
@@ -3853,6 +3981,17 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         subtitle={filtrosActivos ? `${partidasFiltradas.length} de ${partidasUnidad.length} registradas` : `${partidasUnidad.length} registradas`}
         right={
           <div style={{ display: "flex", gap: 8 }}>
+            <ColumnVisibilityControl
+              columns={COLUMNAS_REPORTE_PARTIDAS}
+              hidden={repVis.hidden}
+              onToggle={repVis.toggle}
+              onShowAll={repVis.showAll}
+              etiqueta="Columnas del reporte"
+            />
+            <Button variant="ghost" onClick={generarReporteExcel} disabled={generandoReporteXls}
+              title="Excel con las columnas elegidas, respetando el agrupamiento de la vista">
+              {generandoReporteXls ? "Generando…" : "Reporte Excel"}
+            </Button>
             <Button variant="ghost" onClick={generarReportePDF} disabled={generandoPDF}>
               {generandoPDF ? "Generando…" : "Reporte de Presupuesto Mensual"}
             </Button>

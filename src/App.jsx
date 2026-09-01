@@ -291,8 +291,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.81.0";
+const APP_VERSION = "1.83.0";
 const CHANGELOG = [
+  { v: "1.83.0", desc: "Formato consistente en los nueve archivos de Excel, con una distinción deliberada: los REPORTES (Presupuestal, Pagos, Pagos Dirección) llevan título, periodo, totales y subtotales; los archivos de INTERCAMBIO (RawData de partidas, catálogo de proveedores y las dos plantillas de importación) solo reciben encabezado con fondo, panel congelado y autofiltro. No llevan título a propósito: los parsers y el preparador leen el encabezado de la PRIMERA fila, así que anteponerlo rompería la reimportación. El Reporte de Pagos gana además un subtotal por zona y moneda, que es lo que Pagos necesita para cuadrar contra el banco, e importes alineados a la derecha en todos los archivos" },
+  { v: "1.82.0", desc: "El Excel del Reporte Pagos Dirección adopta el formato del Reporte Presupuestal: título y subtítulo con periodo y totales, encabezado con fondo y texto blanco, filas de total por moneda al pie, encabezado congelado y autofiltro. Los totales dejan de vivir sueltos en celdas fijas —se rompían al cambiar las columnas visibles— y pasan al subtítulo, junto al periodo que los explica. El archivo se llama ahora 'Reporte de Pagos Dirección - Compañía - Periodo', con el periodo tomado de las fechas que realmente contiene" },
   { v: "1.81.0", desc: "El Reporte Excel de Partidas se llama ahora 'Reporte Presupuestal - Compañía - Mes', y el mes sale de las partidas que realmente contiene, no de los filtros: si el filtro es amplio pero solo hay septiembre, el archivo dice septiembre. Con varios meses usa el rango en orden cronológico. El título dentro del documento y el nombre de la hoja siguen el mismo criterio" },
   { v: "1.80.1", desc: "Reporte Excel de Partidas: los subtotales de cada grupo y el encabezado etiquetan ahora las DOS monedas. El formateador general solo marca los dólares —da por hecho que sin etiqueta son pesos— y en una fila donde conviven las dos, '$211,039.96 · $25,000.00 USD' invitaba a leer la primera cifra como parte del mismo total" },
   { v: "1.80.0", desc: "Partidas: nuevo 'Reporte Excel' con su propio selector de columnas —independiente del de pantalla— que respeta el agrupamiento de la vista: cada grupo abre con su nombre, cuántas partidas contiene y su subtotal por moneda, con sangría por nivel. Se diferencia de 'Exportar', que sigue dando el listado plano para el preparador de transacciones. Los totales van separados por moneda, nunca sumadas entre sí" },
@@ -1070,6 +1072,24 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
    IMPORTACION DESDE EXCEL (hojas RawData-*)
 ---------------------------------------------------------------------- */
 const UNIDAD_KEYS = ["OSB", "CTM", "ISE"];
+
+/**
+ * Da formato al encabezado de un archivo de INTERCAMBIO (RawData, catálogos,
+ * plantillas). No agrega filas de título a propósito: los parsers de
+ * importación y el preparador leen el encabezado de la PRIMERA fila, así que
+ * anteponer un título rompería la reimportación. Lo que sí se puede: fondo,
+ * panel congelado y autofiltro, que no mueven nada de lugar.
+ */
+function formatearHojaDatos(ws, headerRow, nCols) {
+  headerRow.eachCell((cell) => {
+    cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
+    cell.alignment = { horizontal: "center", vertical: "center", wrapText: true };
+  });
+  headerRow.height = 22;
+  ws.views = [{ state: "frozen", ySplit: headerRow.number }];
+  ws.autoFilter = { from: { row: headerRow.number, column: 1 }, to: { row: headerRow.number, column: nCols } };
+}
 
 function normHeader(h) {
   return String(h ?? "")
@@ -2981,14 +3001,10 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
     UNIDAD_KEYS.forEach((u) => {
       const ws = wbx.addWorksheet(`RawData-${u}`);
       const headerRow = ws.addRow(headers);
-      headerRow.eachCell((cell) => {
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
-      });
+      formatearHojaDatos(ws, headerRow, headers.length);
       const ejemploRow = ws.addRow(ejemplos[u]);
       ejemploRow.eachCell((cell) => { cell.font = { italic: true, color: { argb: "FF8B99A6" } }; });
       ws.columns = [{ width: 11 }, { width: 7 }, { width: 45 }, { width: 24 }, { width: 30 }, { width: 16 }, { width: 15 }, { width: 14 }, { width: 14 }, { width: 9 }, { width: 8 }, { width: 15 }];
-      ws.views = [{ state: "frozen", ySplit: 1 }];
     });
     const notas = wbx.addWorksheet("Instrucciones");
     [
@@ -3457,22 +3473,19 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       const ws = wbx.addWorksheet(`RawData-${u}`);
       ws.columns = COLS.map((c) => ({ width: c.width }));
       const hr = ws.addRow(COLS.map((c) => c.header));
-      hr.eachCell((cell) => {
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
-      });
+      formatearHojaDatos(ws, hr, COLS.length);
       filas.forEach((p) => {
         const row = ws.addRow(COLS.map((c) => c.get(p)));
         COLS.forEach((c, ci) => {
           const cell = row.getCell(ci + 1);
           cell.font = { name: "Calibri", size: 11 };
-          if (c.money) cell.numFmt = '"$"#,##0.00';
+          if (c.money) { cell.numFmt = '"$"#,##0.00'; cell.alignment = { horizontal: "right" }; }
           // El folio se fuerza a texto: si Excel lo interpreta como número,
           // se pierden ceros y el archivo deja de servir para reimportar.
           if (c.header === "Folio") cell.alignment = { horizontal: "left" };
+          if (c.header === "Concepto") cell.alignment = { horizontal: "left", wrapText: true, vertical: "top" };
         });
       });
-      ws.views = [{ state: "frozen", ySplit: 1 }];
     });
     const buf = await wbx.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
@@ -4260,16 +4273,12 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
     UNIDAD_KEYS.forEach((u) => {
       const ws = wbx.addWorksheet(u);
       const headerRow = ws.addRow(headers);
-      headerRow.eachCell((cell) => {
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
-      });
+      formatearHojaDatos(ws, headerRow, headers.length);
       const ejemploRow = ws.addRow(ejemplo);
       ejemploRow.eachCell((cell) => { cell.font = { italic: true, color: { argb: "FF8B99A6" } }; });
       ws.columns = headers.map(() => ({ width: 16 }));
       ws.getColumn(7).width = 32; ws.getColumn(8).width = 40;
       ws.getColumn(11).width = 22; ws.getColumn(12).width = 22;
-      ws.views = [{ state: "frozen", ySplit: 1 }];
     });
     const notas = wbx.addWorksheet("Instrucciones");
     [
@@ -5461,9 +5470,11 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         columnasExcel.forEach((c, i) => {
           const cell = headerRow.getCell(i + 1);
           cell.value = c.header;
-          cell.alignment = { horizontal: "center" };
-          cell.font = { name: "Calibri", size: 11 };
+          cell.alignment = { horizontal: "center", vertical: "center", wrapText: true };
+          cell.font = { name: "Calibri", size: 11, bold: true, color: { argb: "FFFFFFFF" } };
+          cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
         });
+        headerRow.height = 22;
         fila += 1;
 
         filasGrupo.forEach((f) => {
@@ -5471,12 +5482,38 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           columnasExcel.forEach((c, ci) => {
             const cell = row.getCell(ci + 1);
             cell.value = c.get(f);
-            cell.alignment = { horizontal: "center" };
+            // Las cifras a la derecha, los textos largos a la izquierda con
+            // ajuste: centrarlo todo obliga a leer cada celda para comparar.
+            cell.alignment = {
+              horizontal: c.money ? "right" : (["proveedor", "concepto", "notas"].includes(c.key) ? "left" : "center"),
+              vertical: "top",
+              wrapText: ["proveedor", "concepto", "notas"].includes(c.key),
+            };
             cell.font = { name: "Calibri", size: 11 };
             if (c.money) cell.numFmt = '"$"#,##0.00';
           });
           fila += 1;
         });
+
+        // Subtotal del bloque: cada zona y moneda cierra con su suma, que es
+        // lo que Pagos necesita para cuadrar contra el banco.
+        const idxImporte = columnasExcel.findIndex((c) => c.money);
+        if (idxImporte !== -1) {
+          const totRow = ws.getRow(fila);
+          const etq = totRow.getCell(Math.max(idxImporte, 1));
+          etq.value = `Total ${zona} ${moneda}`;
+          etq.font = { name: "Calibri", size: 11, bold: true };
+          etq.alignment = { horizontal: "right" };
+          const val = totRow.getCell(idxImporte + 1);
+          val.value = filasGrupo.reduce((sum, f) => sum + (Number(f.importe) || 0), 0);
+          val.numFmt = '"$"#,##0.00';
+          val.font = { name: "Calibri", size: 11, bold: true };
+          val.alignment = { horizontal: "right" };
+          for (let i = 1; i <= columnasExcel.length; i++) {
+            totRow.getCell(i).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECEEF1" } };
+          }
+          fila += 1;
+        }
 
         fila += 2; // espacio antes de la siguiente sección
       });
@@ -5487,7 +5524,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `reporte-pagos-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `Reporte de Pagos - ${unidad} - ${(!inicio ? "Sin periodo" : (inicio === fin ? inicio : `${inicio} a ${fin}`))}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -5870,64 +5907,88 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
 
   const exportarExcel = async () => {
-    const wbx = new ExcelJS.Workbook();
-    const ws = wbx.addWorksheet("Reporte pagos direccion");
+    if (!filasOrdenadas.length) {
+      alert("No hay transacciones en el filtro actual para exportar.");
+      return;
+    }
+    const colsXls = columnas.filter((c) => c.xls);
 
-    // Los anchos también salen de la selección: dejarlos fijos en diez
-    // desalinearía la hoja en cuanto se oculte una columna.
-    ws.columns = columnas.filter((c) => c.xls).map((c) => ({ width: c.width || 14 }));
-
+    /* El periodo sale de las fechas que REALMENTE contiene el reporte, no de
+       los filtros: si el rango es amplio pero solo hay pagos de un día, el
+       archivo debe decir ese día. */
     const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
     const inicio = fechaDesde || diasOrdenados[0] || "";
     const fin = fechaHasta || diasOrdenados[diasOrdenados.length - 1] || "";
+    const etiquetaPeriodo = !inicio ? "Sin periodo" : (inicio === fin ? inicio : `${inicio} a ${fin}`);
 
-    const tituloCell = ws.getCell("B1");
-    tituloCell.value = `Reporte de pagos a realizar del dia ${inicio} al dia ${fin} Compañía ${unidad}`;
-    tituloCell.font = { bold: true, size: 16, name: "Calibri" };
+    const fmtTot = (m, v) =>
+      `$${(Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${m}`;
 
-    ws.getCell("F3").value = "Total a pagar MXP";
-    ws.getCell("F3").font = { bold: true, name: "Calibri", size: 11 };
-    ws.getCell("F3").alignment = { horizontal: "right" };
-    ws.getCell("G3").value = totalMXN;
-    ws.getCell("G3").numFmt = '"$"#,##0.00';
-    ws.getCell("G3").font = { name: "Calibri", size: 11 };
+    const wbx = new ExcelJS.Workbook();
+    const nombreHoja = `${unidad} ${etiquetaPeriodo}`.replace(/[:\\/?*[\]]/g, "-").slice(0, 31);
+    const ws = wbx.addWorksheet(nombreHoja);
+    ws.columns = colsXls.map((c) => ({ width: c.width || 14 }));
 
-    ws.getCell("F4").value = "Total a pagar USD";
-    ws.getCell("F4").font = { bold: true, name: "Calibri", size: 11 };
-    ws.getCell("F4").alignment = { horizontal: "right" };
-    ws.getCell("G4").value = totalUSD;
-    ws.getCell("G4").numFmt = '"$"#,##0.00';
-    ws.getCell("G4").font = { name: "Calibri", size: 11 };
+    // --- Encabezado, con el mismo tratamiento que el Reporte Presupuestal ---
+    const tit = ws.addRow([`Reporte de Pagos a Dirección — ${unidad} — ${etiquetaPeriodo}`]);
+    tit.font = { bold: true, size: 14, name: "Calibri" };
+    ws.mergeCells(1, 1, 1, Math.max(colsXls.length, 2));
 
-    // Las mismas columnas que están a la vista, en su orden. El formato de
-    // moneda viaja con la columna (`money`), no por índice: así mover
-    // Importe de lugar ya no deja el signo de pesos en la columna de al lado.
-    const colsXls = columnas.filter((c) => c.xls);
-    const headerRow = ws.getRow(6);
-    colsXls.forEach((c, i) => {
-      const cell = headerRow.getCell(i + 1);
-      cell.value = c.label;
-      cell.alignment = { horizontal: "center" };
-      cell.font = { name: "Calibri", size: 11 };
+    // Los totales van en el subtítulo, no sueltos en celdas fijas: ahí se leen
+    // junto al periodo que los explica, y dejan de romperse si cambian las
+    // columnas visibles.
+    const totales = [];
+    if (totalMXN) totales.push(fmtTot("MXP", totalMXN));
+    if (totalUSD) totales.push(fmtTot("USD", totalUSD));
+    const sub = ws.addRow([`${filasOrdenadas.length} transacciones   ·   ${totales.join("   ·   ") || "sin importes"}`]);
+    sub.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" };
+    ws.mergeCells(2, 1, 2, Math.max(colsXls.length, 2));
+    ws.addRow([]);
+
+    const hr = ws.addRow(colsXls.map((c) => c.label));
+    hr.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" }, name: "Calibri" };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
+      cell.alignment = { horizontal: "center", vertical: "center", wrapText: true };
     });
+    ws.getRow(hr.number).height = 22;
 
-    filasOrdenadas.forEach((f, i) => {
-      const row = ws.getRow(7 + i);
+    filasOrdenadas.forEach((f) => {
+      const row = ws.addRow(colsXls.map((c) => c.xls(f)));
       colsXls.forEach((c, ci) => {
         const cell = row.getCell(ci + 1);
-        cell.value = c.xls(f);
-        cell.alignment = { horizontal: "center" };
         cell.font = { name: "Calibri", size: 11 };
+        // Las cifras a la derecha: alineadas por el punto decimal se comparan
+        // de un vistazo, que es para lo que sirve una columna de importes.
+        cell.alignment = { horizontal: c.money ? "right" : (c.izq ? "left" : "center"), vertical: "top", wrapText: !!c.izq };
         if (c.money) cell.numFmt = '"$"#,##0.00';
       });
     });
+
+    // --- Totales al pie, separados por moneda ---
+    ws.addRow([]);
+    [["MXP", totalMXN], ["USD", totalUSD]].forEach(([m, v]) => {
+      if (!v) return;
+      const row = ws.addRow([`TOTAL ${m}`, ...Array(Math.max(colsXls.length - 2, 0)).fill(""), v]);
+      row.font = { bold: true, name: "Calibri" };
+      const ult = row.getCell(colsXls.length);
+      ult.numFmt = '"$"#,##0.00';
+      row.eachCell((cell) => {
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECEEF1" } };
+      });
+    });
+
+    // Encabezado congelado: con cien renglones, saber en qué columna se está
+    // parado deja de ser evidente al hacer scroll.
+    ws.views = [{ state: "frozen", ySplit: hr.number }];
+    ws.autoFilter = { from: { row: hr.number, column: 1 }, to: { row: hr.number, column: colsXls.length } };
 
     const buffer = await wbx.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `reporte-pagos-direccion-${unidad}-${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `Reporte de Pagos Dirección - ${unidad} - ${etiquetaPeriodo}.xlsx`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
@@ -6807,10 +6868,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
       const ws = wbx.addWorksheet(`Proveedores-${u}`);
       ws.columns = COLS.map((c) => ({ width: c.width }));
       const hr = ws.addRow(COLS.map((c) => c.header));
-      hr.eachCell((cell) => {
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
-        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
-      });
+      formatearHojaDatos(ws, hr, COLS.length);
       delaUnidad.forEach((p) => {
         const ctas = cuentasApi.rows.filter((c) => c.proveedor_id === p.id);
         // Sin cuentas se escribe un renglón igual, para que el preparador
@@ -6829,7 +6887,6 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
           });
         });
       });
-      ws.views = [{ state: "frozen", ySplit: 1 }];
     });
     if (!wbx.worksheets.length) { alert("No hay proveedores que exportar."); return; }
     const buf = await wbx.xlsx.writeBuffer();

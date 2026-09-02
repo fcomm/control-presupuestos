@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.89.0";
+const APP_VERSION = "1.90.0";
 const CHANGELOG = [
+  { v: "1.90.0", desc: "La Solicitud de Pago resuelve el caso de los gastos prorrateados: cuando el proyecto es un marcador como 'Todos' o 'Desh Gral', el documento lista TODOS los centros de costo involucrados con su porcentaje —CC-015 40% · CC-022 35% · CC-031 25%— que es lo que Contabilidad necesita para registrarlo una vez por proyecto en ASPEL, tal como ya lo hacen a mano. El centro de costo pasa a un renglón propio a lo ancho de la hoja, porque en media columna se cortaría. Y el aviso de datos faltantes ahora señala qué proyectos del reparto no tienen CC, no solo si falta el del proyecto principal" },
   { v: "1.89.0", desc: "PDF de la Solicitud de Pago: la compañía pasa a ser prefijo del folio —CTM-12— en lugar de ir suelta bajo el título, donde además lo tapaba. Se retiran las firmas y el pie de generación: el documento se firma en el sistema, no en papel, y esas líneas ocupaban un cuarto de la hoja sin usarse. El nombre del archivo sigue el mismo formato, en PDF y en Excel" },
   { v: "1.88.1", desc: "Fix: generar la Solicitud de Pago fallaba con 'catch is not a function'. El constructor de consultas de Supabase no es una promesa hasta que se le hace await, así que encadenarle .catch() rompe. Los dos pasos secundarios —adelantar el consecutivo y guardar el desglose en la transacción— van ahora en su propio try: la solicitud ya quedó registrada y no deben impedir que se descargue el documento" },
   { v: "1.88.0", desc: "Catálogo se organiza en sub-pestañas —Proyectos, Rubros y categorías, Zonas, Proveedores y Solicitudes de Pago— en vez de seis paneles apilados que obligaban a recorrer toda la página. Se prefirió esto a secciones plegables: con seis encabezados que atravesar el recorrido sigue existiendo, y el estado de plegado se olvida entre visitas. De paso se retira el panel de referencia de rubros, que solo listaba lo que el panel administrable ya muestra" },
@@ -3470,7 +3471,8 @@ async function generarExcelSPP(r) {
   dato("Fecha Elaboracion", r.fecha_elaboracion);
   dato("Fecha de Pago", r.fecha_pago || "");
   dato("Zona", r.zona);
-  dato("Proyecto", r.centro_costo ? `${r.centro_costo} — ${r.proyecto}` : r.proyecto);
+  dato("Proyecto", r.proyecto);
+  if (r.centro_costo) dato(String(r.centro_costo).includes("·") ? "Centros de costo (prorrateo)" : "Centro de costo", r.centro_costo);
   dato("Responsable de Proyecto", r.responsable);
   dato("Solicitante", r.solicitante);
   dato("Lugar de Adquisicion", r.lugar_adquisicion);
@@ -3585,9 +3587,22 @@ function generarPdfSPP(r) {
     y += 28;
   };
   filaDoble("Fecha de elaboración", r.fecha_elaboracion, "Fecha de pago", r.fecha_pago);
-  filaDoble("Zona", r.zona, "Proyecto", r.centro_costo ? `${r.centro_costo} — ${r.proyecto}` : r.proyecto);
+  filaDoble("Zona", r.zona, "Proyecto", r.proyecto);
   filaDoble("Responsable de proyecto", r.responsable, "Solicitante", r.solicitante);
   filaDoble("Lugar de adquisición", r.lugar_adquisicion, "Proveedor ASPEL-SAE", r.proveedor_sae);
+
+  /* El centro de costo va en renglón propio y a lo ancho: cuando el gasto se
+     prorratea son varios con su porcentaje, y en media columna se cortarían.
+     Es el dato con el que Contabilidad desglosa el registro en ASPEL. */
+  if (r.centro_costo) {
+    const varios = String(r.centro_costo).includes("·");
+    doc.setFontSize(8).setTextColor(...GRIS);
+    doc.text(varios ? "CENTROS DE COSTO (PRORRATEO)" : "CENTRO DE COSTO", M, y);
+    doc.setFontSize(varios ? 9.5 : 10).setTextColor(35, 42, 49);
+    const lineas = doc.splitTextToSize(String(r.centro_costo), A);
+    doc.text(lineas, M, y + 13);
+    y += 13 + lineas.length * 12 + 10;
+  }
 
   y += 4;
   doc.setDrawColor(220).line(M, y, M + A, y);
@@ -3685,6 +3700,26 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
   const proyNombre = t.proyecto || partida?.proyecto || "";
   const proy = proyectosUnidad.find((p) => p.nombre === proyNombre);
 
+  /* Un gasto prorrateado no tiene UN centro de costo: se reparte entre varios.
+     El proceso de Pagos ya contempla eso —anotan todos los CC involucrados y
+     en ASPEL lo registran una vez por proyecto— así que la solicitud los lista
+     todos con su porcentaje, que es el dato que hace falta para desglosarlo.
+     `resolverProrrateo` ya sabe qué proyectos toca cada marcador. */
+  const repartoCC = resolverProrrateo(proyNombre, proyectosUnidad)
+    .map(({ proyecto, fraccion }) => {
+      const p = proyectosUnidad.find((x) => x.nombre === proyecto);
+      return { proyecto, cc: p?.centro_costo || "", pct: Math.round(fraccion * 1000) / 10 };
+    })
+    .filter((x) => x.pct > 0)
+    .sort((a, b) => b.pct - a.pct);
+
+  const esProrrateo = repartoCC.length > 1;
+  const ccTexto = esProrrateo
+    ? repartoCC.map((x) => `${x.cc || `(${x.proyecto} sin CC)`} ${x.pct}%`).join("  ·  ")
+    : (repartoCC[0]?.cc || proy?.centro_costo || "");
+  // Sin CC en alguno de los proyectos del reparto, el desglose queda cojo.
+  const ccFaltantes = repartoCC.filter((x) => !x.cc).map((x) => x.proyecto);
+
   /* Los datos fijos de la compañía se leen al abrir: son los mismos en cada
      solicitud y hasta ahora se escribían a mano una y otra vez. */
   const [cfgCia, setCfgCia] = useState(null);
@@ -3737,7 +3772,7 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
   const faltantes = [];
   if (!proveedor) faltantes.push("proveedor no vinculado");
   if (!cuenta) faltantes.push("sin cuenta bancaria");
-  if (!proy?.centro_costo) faltantes.push("el proyecto no tiene centro de costo");
+  if (ccFaltantes.length) faltantes.push(`sin centro de costo: ${ccFaltantes.join(", ")}`);
   if (!f.zona) faltantes.push("sin zona");
 
   const generar = async () => {
@@ -3758,7 +3793,7 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
       const reg = {
         id: uid(), compania: unidad, folio, transaccion_id: t.id,
         fecha_elaboracion: f.fecha_elaboracion, fecha_pago: f.fecha_pago || null,
-        zona: f.zona, proyecto: proyNombre, centro_costo: proy?.centro_costo || "",
+        zona: f.zona, proyecto: proyNombre, centro_costo: ccTexto,
         responsable: f.responsable, solicitante: f.solicitante,
         lugar_adquisicion: f.lugar_adquisicion,
         proveedor: proveedor?.nombre || t.proveedor || "",
@@ -3830,8 +3865,13 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
         {campo("Fecha de elaboración", f.fecha_elaboracion, (v) => setF({ ...f, fecha_elaboracion: v }))}
         {campo("Fecha de pago", f.fecha_pago, (v) => setF({ ...f, fecha_pago: v }))}
         {campo("Zona", f.zona, (v) => setF({ ...f, zona: v }))}
-        <Field label="Proyecto / Centro de costo">
-          <TextInput value={`${proyNombre}${proy?.centro_costo ? ` · ${proy.centro_costo}` : " · sin CC"}`} disabled />
+        <Field label={esProrrateo ? "Proyecto / Centros de costo (prorrateo)" : "Proyecto / Centro de costo"}>
+          <TextInput value={`${proyNombre}${ccTexto ? ` · ${ccTexto}` : " · sin CC"}`} disabled />
+          {esProrrateo && (
+            <span style={{ fontSize: 11, color: T.textFaint, marginTop: 4, display: "block" }}>
+              El gasto se reparte entre {repartoCC.length} proyectos; la solicitud lista todos con su porcentaje.
+            </span>
+          )}
         </Field>
         {campo("Responsable de proyecto", f.responsable, (v) => setF({ ...f, responsable: v }))}
         {campo("Solicitante", f.solicitante, (v) => setF({ ...f, solicitante: v }))}

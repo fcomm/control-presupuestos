@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.88.1";
+const APP_VERSION = "1.89.0";
 const CHANGELOG = [
+  { v: "1.89.0", desc: "PDF de la Solicitud de Pago: la compañía pasa a ser prefijo del folio —CTM-12— en lugar de ir suelta bajo el título, donde además lo tapaba. Se retiran las firmas y el pie de generación: el documento se firma en el sistema, no en papel, y esas líneas ocupaban un cuarto de la hoja sin usarse. El nombre del archivo sigue el mismo formato, en PDF y en Excel" },
   { v: "1.88.1", desc: "Fix: generar la Solicitud de Pago fallaba con 'catch is not a function'. El constructor de consultas de Supabase no es una promesa hasta que se le hace await, así que encadenarle .catch() rompe. Los dos pasos secundarios —adelantar el consecutivo y guardar el desglose en la transacción— van ahora en su propio try: la solicitud ya quedó registrada y no deben impedir que se descargue el documento" },
   { v: "1.88.0", desc: "Catálogo se organiza en sub-pestañas —Proyectos, Rubros y categorías, Zonas, Proveedores y Solicitudes de Pago— en vez de seis paneles apilados que obligaban a recorrer toda la página. Se prefirió esto a secciones plegables: con seis encabezados que atravesar el recorrido sigue existiendo, y el estado de plegado se olvida entre visitas. De paso se retira el panel de referencia de rubros, que solo listaba lo que el panel administrable ya muestra" },
   { v: "1.87.0", desc: "La Solicitud de Pago se genera ahora en PDF con formato de documento formal —encabezado con folio, datos en dos columnas, desglose fiscal, la cifra a pagar destacada, bloque de datos bancarios y firmas— además del Excel, que se conserva. Y en Catálogo aparece el consecutivo editable de la SPP por compañía, junto con el responsable de proyecto y el lugar de adquisición, que hasta ahora se escribían a mano en cada solicitud. El folio asignado es el MAYOR entre lo configurado y lo ya emitido: bajar el consecutivo por error no debe reutilizar folios de solicitudes que ya salieron. Requiere 20-consecutivo-spp.sql" },
@@ -3539,7 +3540,7 @@ async function generarExcelSPP(r) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `SPP ${r.folio} - ${r.compania} - ${String(r.proveedor || "").slice(0, 30)}.xlsx`;
+  a.download = `SPP ${r.compania}-${r.folio} - ${String(r.proveedor || "").slice(0, 30)}.xlsx`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -3562,12 +3563,14 @@ function generarPdfSPP(r) {
   // --- Encabezado ---
   doc.setFillColor(...AZUL);
   doc.rect(M, y, A, 46, "F");
-  doc.setTextColor(255).setFontSize(15).setFont(undefined, "bold");
-  doc.text("SOLICITUD DE PAGO A PROVEEDORES", M + 14, y + 28);
-  doc.setFontSize(10).setFont(undefined, "normal");
-  doc.text(r.compania, M + 14, y + 36);
-  doc.setFontSize(20).setFont(undefined, "bold");
-  doc.text(`FOLIO ${r.folio}`, M + A - 14, y + 30, { align: "right" });
+  doc.setTextColor(255).setFontSize(14).setFont(undefined, "bold");
+  doc.text("SOLICITUD DE PAGO A PROVEEDORES", M + 14, y + 29);
+  // La compañía va como prefijo del folio: "CTM-12" identifica el documento
+  // de un vistazo, y el título deja de competir con ella por el mismo renglón.
+  doc.setFontSize(9).setFont(undefined, "normal");
+  doc.text("FOLIO", M + A - 14, y + 17, { align: "right" });
+  doc.setFontSize(19).setFont(undefined, "bold");
+  doc.text(`${r.compania}-${r.folio}`, M + A - 14, y + 36, { align: "right" });
   y += 62;
 
   /* Los datos generales en dos columnas: en una sola, el documento se
@@ -3661,22 +3664,7 @@ function generarPdfSPP(r) {
   filaDoble("Sucursal bancaria", r.sucursal, "Referencia bancaria", r.referencia_bancaria);
   filaDoble("Cuenta bancaria", r.cuenta, "Cuenta CLABE", r.clabe);
 
-  // --- Firmas ---
-  y = Math.max(y + 20, 660);
-  const anchoF = (A - 40) / 3;
-  ["Solicitante", "Responsable de proyecto", "Autorización"].forEach((etq, i) => {
-    const x = M + i * (anchoF + 20);
-    doc.setDrawColor(150).line(x, y, x + anchoF, y);
-    doc.setFontSize(8).setTextColor(...GRIS);
-    doc.text(etq.toUpperCase(), x + anchoF / 2, y + 12, { align: "center" });
-    const nombre = i === 0 ? r.solicitante : i === 1 ? r.responsable : "";
-    if (nombre) doc.text(String(nombre), x + anchoF / 2, y - 5, { align: "center" });
-  });
-
-  doc.setFontSize(7.5).setTextColor(...GRIS);
-  doc.text(`Generado desde Control de Presupuestos · ${new Date().toLocaleString("es-MX")}`, M, 745);
-
-  doc.save(`SPP ${r.folio} - ${r.compania} - ${String(r.proveedor || "").slice(0, 30)}.pdf`);
+  doc.save(`SPP ${r.compania}-${r.folio} - ${String(r.proveedor || "").slice(0, 30)}.pdf`);
 }
 
 /**

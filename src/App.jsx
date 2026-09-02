@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.91.1";
+const APP_VERSION = "1.92.0";
 const CHANGELOG = [
+  { v: "1.92.0", desc: "El detalle de transacciones del Reporte Excel pasa a una HOJA APARTE, como tabla plana: una transacción por renglón con los datos de su partida repetidos en columnas propias. Intercalarlo bajo cada partida obligaba a encajar las transacciones en columnas dimensionadas para partidas, repetía el encabezado en cada bloque y metía una jerarquía que la hoja de cálculo no sabe manejar. Plano se puede filtrar, ordenar y resumir con tabla dinámica, que es para lo que sirve Excel; la primera hoja recupera su legibilidad. Lleva autofiltro y el folio de partida congelado" },
   { v: "1.91.1", desc: "El detalle de transacciones en el Reporte Excel de Partidas gana su propio selector de columnas —trece disponibles, entre ellas categoría, zona, área, referencia y folio de factura— y deja de concatenar fecha, proveedor y concepto en una sola celda. Ahora van en columnas propias con su encabezado, que es lo que permite filtrarlas y ordenarlas en Excel; era la razón de exportar a Excel y no a PDF. Fecha, Proveedor e Importe son fijas" },
   { v: "1.91.0", desc: "Los reportes de Partidas pueden incluir las transacciones vinculadas, con una casilla 'Con transacciones'. En el Excel cada partida abre en sus transacciones —fecha, proveedor, concepto e importe— en gris y con sangría, para que se lean como detalle; hasta ahora 'Usado' era un total sin explicación. En el PDF ejecutivo, que no lista partidas, se agrega en su lugar un corte del gasto ejercido por categoría: los otros cortes dicen en qué se presupuestó, este dice en qué se gastó. Es opcional porque con partidas de veinte transacciones el documento se alarga y no siempre se quiere ese nivel" },
   { v: "1.90.0", desc: "La Solicitud de Pago resuelve el caso de los gastos prorrateados: cuando el proyecto es un marcador como 'Todos' o 'Desh Gral', el documento lista TODOS los centros de costo involucrados con su porcentaje —CC-015 40% · CC-022 35% · CC-031 25%— que es lo que Contabilidad necesita para registrarlo una vez por proyecto en ASPEL, tal como ya lo hacen a mano. El centro de costo pasa a un renglón propio a lo ancho de la hoja, porque en media columna se cortaría. Y el aviso de datos faltantes ahora señala qué proyectos del reparto no tienen CC, no solo si falta el del proyecto principal" },
@@ -4353,7 +4354,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       ws.mergeCells(1, 1, 1, Math.max(COLS.length, 2));
       const sub = ws.addRow([
         `${partidasOrdenadas.length} partidas   ·   ${fmtTot(totalPorMoneda(partidasOrdenadas))}` +
-        (groupKeys.length ? `   ·   agrupado por ${groupBys.map((g) => (GROUP_OPCIONES.find((o) => o.value === g.field) || {}).label || g.field).join(" > ")}` : ""),
+        (groupKeys.length ? `   ·   agrupado por ${groupBys.map((g) => (GROUP_OPCIONES.find((o) => o.value === g.field) || {}).label || g.field).join(" > ")}` : "") +
+        (conDetalle ? "   ·   el detalle de transacciones está en la hoja «Transacciones»" : ""),
       ]);
       sub.font = { size: 10, color: { argb: "FF6B7785" } };
       ws.mergeCells(2, 1, 2, Math.max(COLS.length, 2));
@@ -4374,35 +4376,6 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           if (c.izq) cell.alignment = { horizontal: "left", indent: sangria };
         });
 
-        /* Las transacciones van bajo su partida, en gris y con sangría, para
-           que se lean como detalle. Empiezan una columna a la derecha: así el
-           bloque se distingue del renglón de la partida sin depender del
-           color, que se pierde al imprimir en blanco y negro. */
-        if (conDetalle) {
-          const DET = detVis.visibles;
-          const lista = txDe(p);
-          if (lista.length && DET.length) {
-            const enc = ws.addRow(["", ...DET.map((c) => c.header)]);
-            enc.eachCell((cell, i) => {
-              if (i === 1) return;
-              cell.font = { name: "Calibri", size: 8.5, bold: true, color: { argb: "FF6B7785" } };
-              cell.alignment = { horizontal: "center", vertical: "center", wrapText: true };
-            });
-            lista.forEach((t) => {
-              const rt = ws.addRow(["", ...DET.map((c) => c.get(t))]);
-              DET.forEach((c, i) => {
-                const cell = rt.getCell(i + 2);
-                cell.font = { name: "Calibri", size: 9.5, color: { argb: "FF4A5560" } };
-                cell.alignment = {
-                  horizontal: c.money ? "right" : (c.izq ? "left" : "center"),
-                  vertical: "top", wrapText: !!c.izq,
-                };
-                if (c.money) cell.numFmt = '"$"#,##0.00';
-              });
-            });
-            ws.addRow([]);
-          }
-        }
         return row;
       };
 
@@ -4439,6 +4412,55 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       });
 
       ws.views = [{ state: "frozen", ySplit: 4 }];
+
+      /* El detalle va en HOJA APARTE, como tabla plana con una transacción
+         por renglón y los datos de su partida repetidos.
+
+         Intercalarlo bajo cada partida obligaba a encajar las transacciones
+         en columnas dimensionadas para partidas, repetía el encabezado en
+         cada bloque, y producía una jerarquía que la hoja de cálculo no sabe
+         manejar. Plano se puede filtrar, ordenar y resumir con tabla
+         dinámica, que es para lo que sirve Excel. */
+      if (conDetalle) {
+        const DET = detVis.visibles;
+        const CTX = [
+          { header: "Folio partida", width: 16, get: (p) => p.folio || "" },
+          { header: "Mes",           width: 12, get: (p) => p.mes },
+          { header: "Año",           width: 8,  get: (p) => p.anio },
+          { header: "Partida",       width: 44, get: (p) => p.concepto, izq: true },
+          { header: "Rubro",         width: 26, get: (p) => p.rubro, izq: true },
+          { header: "Proyecto",      width: 18, get: (p) => p.proyecto || "" },
+        ];
+        const conTx = partidasOrdenadas.filter((p) => txDe(p).length);
+        if (conTx.length && DET.length) {
+          const wd = wbx.addWorksheet("Transacciones");
+          wd.columns = [...CTX, ...DET].map((c) => ({ width: c.width }));
+          const hd = wd.addRow([...CTX.map((c) => c.header), ...DET.map((c) => c.header)]);
+          hd.eachCell((cell) => {
+            cell.font = { bold: true, color: { argb: "FFFFFFFF" }, name: "Calibri" };
+            cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
+            cell.alignment = { horizontal: "center", vertical: "center", wrapText: true };
+          });
+          hd.height = 24;
+
+          conTx.forEach((p) => {
+            txDe(p).forEach((t) => {
+              const row = wd.addRow([...CTX.map((c) => c.get(p)), ...DET.map((c) => c.get(t))]);
+              [...CTX, ...DET].forEach((c, i) => {
+                const cell = row.getCell(i + 1);
+                cell.font = { name: "Calibri", size: 10 };
+                cell.alignment = {
+                  horizontal: c.money ? "right" : (c.izq ? "left" : "center"),
+                  vertical: "top", wrapText: !!c.izq,
+                };
+                if (c.money) cell.numFmt = '"$"#,##0.00';
+              });
+            });
+          });
+          wd.views = [{ state: "frozen", ySplit: 1, xSplit: 1 }];
+          wd.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: CTX.length + DET.length } };
+        }
+      }
 
       const buf = await wbx.xlsx.writeBuffer();
       const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });

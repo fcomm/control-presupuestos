@@ -293,7 +293,7 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // ----------------------------------------------------------------------
 const APP_VERSION = "1.93.0";
 const CHANGELOG = [
-  { v: "1.93.0", desc: "La cabecera de Partidas pasa de once controles a dos: 'Exportar y reportes' y '+ Nueva partida'. Lo demás se recoge en un panel donde cada salida lleva una línea explicando qué hace y para quién es — tres botones distintos decían 'Columnas' y no había forma de saber cuál era cuál. Los selectores de columnas de cada reporte quedan junto al reporte que gobiernan, no sueltos en la barra. Los filtros y el agrupamiento se quedan donde estaban, que es donde se usan a diario" },
+  { v: "1.93.0", desc: "La cabecera de Partidas pasa de once controles a dos: 'Exportar y reportes' y '+ Nueva partida'. Las tres salidas se recogen en un panel que se despliega EN SU LUGAR —no en un modal— para que los filtros que gobiernan la exportación sigan a la vista mientras se elige qué generar; un modal tapaba justo el contexto necesario para decidir. Cada salida lleva una línea explicando qué hace y para quién es: tres botones distintos decían 'Columnas' y no había forma de saber cuál era cuál. El panel recuerda cuántas partidas y con qué agrupamiento van a salir. Los filtros y el agrupamiento se quedan siempre visibles" },
   { v: "1.92.0", desc: "El detalle de transacciones del Reporte Excel pasa a una HOJA APARTE, como tabla plana: una transacción por renglón con los datos de su partida repetidos en columnas propias. Intercalarlo bajo cada partida obligaba a encajar las transacciones en columnas dimensionadas para partidas, repetía el encabezado en cada bloque y metía una jerarquía que la hoja de cálculo no sabe manejar. Plano se puede filtrar, ordenar y resumir con tabla dinámica, que es para lo que sirve Excel; la primera hoja recupera su legibilidad. Lleva autofiltro y el folio de partida congelado" },
   { v: "1.91.1", desc: "El detalle de transacciones en el Reporte Excel de Partidas gana su propio selector de columnas —trece disponibles, entre ellas categoría, zona, área, referencia y folio de factura— y deja de concatenar fecha, proveedor y concepto en una sola celda. Ahora van en columnas propias con su encabezado, que es lo que permite filtrarlas y ordenarlas en Excel; era la razón de exportar a Excel y no a PDF. Fecha, Proveedor e Importe son fijas" },
   { v: "1.91.0", desc: "Los reportes de Partidas pueden incluir las transacciones vinculadas, con una casilla 'Con transacciones'. En el Excel cada partida abre en sus transacciones —fecha, proveedor, concepto e importe— en gris y con sangría, para que se lean como detalle; hasta ahora 'Usado' era un total sin explicación. En el PDF ejecutivo, que no lista partidas, se agrega en su lugar un corte del gasto ejercido por categoría: los otros cortes dicen en qué se presupuestó, este dice en qué se gastó. Es opcional porque con partidas de veinte transacciones el documento se alarga y no siempre se quiere ese nivel" },
@@ -4880,7 +4880,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
              la mitad del espacio de forma permanente, así que se recoge en un
              panel donde además cabe explicar qué hace cada salida. */
           <div style={{ display: "flex", gap: 8 }}>
-            <Button variant="ghost" onClick={() => setPanelExport(true)}>Exportar y reportes</Button>
+            <Button variant={panelExport ? "primary" : "ghost"} onClick={() => setPanelExport(!panelExport)}>
+              Exportar y reportes {panelExport ? "▲" : "▼"}
+            </Button>
             <Button onClick={openNew}>+ Nueva partida</Button>
           </div>
         }
@@ -4937,6 +4939,80 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           />
         </div>
 
+        {/* Se despliega en su lugar, no en un modal: así los filtros que
+            gobiernan la exportación siguen a la vista mientras se elige qué
+            generar. Un modal tapaba justo el contexto que hace falta para
+            decidir. */}
+        {panelExport && (
+          <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8,
+                        padding: 14, marginBottom: 16 }}>
+            <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
+              Todas las salidas respetan los filtros de arriba —
+              {filtrosActivos ? ` ${partidasFiltradas.length} de ${partidasUnidad.length} partidas` : ` las ${partidasUnidad.length} partidas`}
+              {groupKeys.length ? `, agrupadas por ${groupBys.map((g) => (GROUP_OPCIONES.find((o) => o.value === g.field) || {}).label || g.field).join(" > ")}` : ""}.
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+
+              <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Reporte Excel</div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
+                  Respeta el agrupamiento de la vista, con subtotal por grupo y por moneda.
+                  Para revisar o compartir el presupuesto.
+                </div>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
+                  <ColumnVisibilityControl
+                    columns={COLUMNAS_REPORTE_PARTIDAS}
+                    hidden={repVis.hidden} onToggle={repVis.toggle} onShowAll={repVis.showAll}
+                    etiqueta="Columnas"
+                  />
+                  {conDetalle && (
+                    <ColumnVisibilityControl
+                      columns={COLUMNAS_DETALLE_TX}
+                      hidden={detVis.hidden} onToggle={detVis.toggle} onShowAll={detVis.showAll}
+                      etiqueta="Cols. transacciones"
+                    />
+                  )}
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: T.textDim, cursor: "pointer", marginBottom: 10 }}>
+                  <input type="checkbox" checked={conDetalle} onChange={(e) => setConDetalle(e.target.checked)} />
+                  Agregar hoja con las transacciones
+                </label>
+                <Button onClick={generarReporteExcel} disabled={generandoReporteXls} style={{ width: "100%" }}>
+                  {generandoReporteXls ? "Generando…" : "Generar Excel"}
+                </Button>
+              </div>
+
+              <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
+                            display: "flex", flexDirection: "column" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Presupuesto Mensual (PDF)</div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
+                  Resumen ejecutivo: totales por moneda y cortes por rubro, proyecto y zona.
+                  No lista partidas — para Dirección.
+                </div>
+                <div style={{ flex: 1 }} />
+                <Button onClick={generarReportePDF} disabled={generandoPDF} style={{ width: "100%" }}>
+                  {generandoPDF ? "Generando…" : "Generar PDF"}
+                </Button>
+              </div>
+
+              <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
+                            display: "flex", flexDirection: "column" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Exportar datos</div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
+                  Listado plano sin formato, con el encabezado en la primera fila.
+                  Es lo que lee el preparador de transacciones.
+                </div>
+                <div style={{ flex: 1 }} />
+                <div style={{ display: "flex", gap: 6 }}>
+                  <Button variant="ghost" onClick={() => exportarExcel(false)} style={{ flex: 1 }}>Solo {unidad}</Button>
+                  <Button variant="ghost" onClick={() => exportarExcel(true)} style={{ flex: 1 }}>Las 3</Button>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div style={{ overflowX: "auto" }}>
           <table style={{ ...tableStyle, tableLayout: "fixed" }}>
             <colgroup>
@@ -4976,82 +5052,6 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       </Panel>
 
       <ImportarExcelPanel partidas={partidas} partidasApi={partidasApi} />
-
-      {panelExport && (
-        <Modal title={`Exportar y reportes — ${unidad}`}
-          subtitle="Todas las salidas respetan los filtros que tengas puestos ahora"
-          onClose={() => setPanelExport(false)} width={720}>
-
-          {/* Cada salida con su explicación: los nombres solos no bastaban
-              para saber en qué se diferencian, y por eso convivían cinco
-              botones que nadie sabía cuál usar. */}
-          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-
-            <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 14 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
-                <div style={{ flex: 1, minWidth: 240 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700 }}>Reporte Excel</div>
-                  <div style={{ fontSize: 11.5, color: T.textDim, marginTop: 3 }}>
-                    Respeta el agrupamiento de la vista, con subtotal por grupo y por moneda.
-                    Para revisar o compartir el presupuesto.
-                  </div>
-                </div>
-                <Button onClick={() => { setPanelExport(false); generarReporteExcel(); }} disabled={generandoReporteXls}>
-                  {generandoReporteXls ? "Generando…" : "Generar"}
-                </Button>
-              </div>
-              <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
-                <ColumnVisibilityControl
-                  columns={COLUMNAS_REPORTE_PARTIDAS}
-                  hidden={repVis.hidden} onToggle={repVis.toggle} onShowAll={repVis.showAll}
-                  etiqueta="Columnas"
-                />
-                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: T.textDim, cursor: "pointer" }}>
-                  <input type="checkbox" checked={conDetalle} onChange={(e) => setConDetalle(e.target.checked)} />
-                  Agregar hoja con las transacciones
-                </label>
-                {conDetalle && (
-                  <ColumnVisibilityControl
-                    columns={COLUMNAS_DETALLE_TX}
-                    hidden={detVis.hidden} onToggle={detVis.toggle} onShowAll={detVis.showAll}
-                    etiqueta="Columnas de transacciones"
-                  />
-                )}
-              </div>
-            </div>
-
-            <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 14,
-                          display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 14, flexWrap: "wrap" }}>
-              <div style={{ flex: 1, minWidth: 240 }}>
-                <div style={{ fontSize: 13, fontWeight: 700 }}>Reporte de Presupuesto Mensual (PDF)</div>
-                <div style={{ fontSize: 11.5, color: T.textDim, marginTop: 3 }}>
-                  Resumen ejecutivo: totales por moneda y cortes por rubro, proyecto y zona.
-                  No lista partidas — para Dirección.
-                </div>
-              </div>
-              <Button onClick={() => { setPanelExport(false); generarReportePDF(); }} disabled={generandoPDF}>
-                {generandoPDF ? "Generando…" : "Generar"}
-              </Button>
-            </div>
-
-            <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 14 }}>
-              <div style={{ fontSize: 13, fontWeight: 700 }}>Exportar datos</div>
-              <div style={{ fontSize: 11.5, color: T.textDim, marginTop: 3, marginBottom: 10 }}>
-                Listado plano sin formato, con el encabezado en la primera fila.
-                Es lo que lee el preparador de transacciones.
-              </div>
-              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-                <Button variant="ghost" onClick={() => { setPanelExport(false); exportarExcel(false); }}>
-                  Solo {unidad}
-                </Button>
-                <Button variant="ghost" onClick={() => { setPanelExport(false); exportarExcel(true); }}>
-                  Las tres compañías
-                </Button>
-              </div>
-            </div>
-          </div>
-        </Modal>
-      )}
 
       {modalOpen && (
         <Modal

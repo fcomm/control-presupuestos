@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.96.1";
+const APP_VERSION = "1.97.0";
 const CHANGELOG = [
+  { v: "1.97.0", desc: "El reporte oficial genera ahora DOS archivos: el PDF para leer, sin detalle, y el Excel para analizar, con las transacciones vinculadas en hoja aparte cuando es el reporte de presupuesto. La REVISIÓN va dentro de ambos documentos, no solo en el nombre del archivo: los nombres se pierden al reenviar por correo, y sin la versión visible nadie puede saber cuál de dos copias es la vigente. Las descargas van separadas por una pausa porque los navegadores bloquean la segunda cuando salen juntas — el archivo desaparecería sin decir por qué" },
   { v: "1.96.1", desc: "Registrar un reporte oficial genera ahora el PDF en el mismo acto. Estaban separados —se registraba aquí y el documento se generaba desde Partidas— y eso permitía que el archivo enviado no coincidiera con lo congelado: bastaba cambiar un filtro entre un paso y otro para que la línea base mintiera. El PDF viene agrupado por área, que es la dimensión con la que se revisa después. Y las versiones ya registradas se pueden volver a descargar: el documento se reconstruye del contenido congelado, no de los datos actuales, así que sale idéntico al que se envió" },
   { v: "1.96.0", desc: "Nueva pestaña Reportes a Dirección, con reportes oficiales versionados y bitácora de gasto imprevisto. Hasta ahora los reportes se generaban filtrando, así que nadie podía reconstruir qué se envió: cuando en la revisión alguien decía 'eso sí estaba reportado', no había forma de comprobarlo. Un reporte oficial congela su contenido —los datos, no los ids, para que el histórico no se reescriba si la partida cambia después— y con eso la línea base deja de ser una convención. La desviación se mide por ÁREA y CATEGORÍA, no por monto: el objetivo es fomentar planeación, no controlar cuánto. Y va por área porque a quien se le pide atención es al área: que Mantenimiento haya reportado Llantas no cubre a Deshidratación gastando en llantas. Requiere 21-reportes-oficiales.sql" },
   { v: "1.95.0", desc: "Los dos Reportes de Pagos adoptan el panel desplegable de Partidas y Transacciones. En el Reporte de Pagos había SEIS controles en la cabecera, con tres botones distintos diciendo 'Columnas' sin forma de saber cuál gobernaba qué; ahora cada selector vive junto a la salida que controla, y cada una explica qué hace — incluido cuál marca las transacciones como enviadas y cuál no, que es la diferencia que importa. El selector de la tabla se queda a la mano en ambos, porque gobierna lo que se está viendo" },
@@ -1245,7 +1246,21 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas }) {
   doc.setFontSize(15).setFont(undefined, "bold").setTextColor(35, 42, 49);
   doc.text(esPres ? "Presupuesto mensual" : "Transacciones de la semana", M, 40);
   doc.setFontSize(10).setFont(undefined, "normal").setTextColor(107, 119, 133);
-  doc.text(`${compania}   ·   ${periodo}   ·   versión ${version}`, M, 56);
+  doc.text(`${compania}   ·   ${periodo}`, M, 56);
+
+  /* La revisión va DENTRO del documento, no solo en el nombre del archivo:
+     los nombres se pierden al reenviar por correo o al guardarlos, y sin la
+     versión visible nadie puede saber cuál de dos copias es la vigente. */
+  const anchoU = 792 - M * 2;
+  doc.setFillColor(62, 92, 118);
+  doc.rect(M + anchoU - 150, 26, 150, 34, "F");
+  doc.setTextColor(255).setFontSize(8).setFont(undefined, "normal");
+  doc.text("REVISIÓN", M + anchoU - 138, 40);
+  doc.setFontSize(17).setFont(undefined, "bold");
+  doc.text(String(version), M + anchoU - 12, 52, { align: "right" });
+  doc.setFontSize(7.5).setFont(undefined, "normal");
+  doc.text(new Date().toLocaleDateString("es-MX"), M + anchoU - 138, 52);
+  doc.setTextColor(107, 119, 133).setFont(undefined, "normal");
   doc.text(
     `${filas.length} registros   ·   ` +
     Object.entries(tot).map(([m, v]) => `${num(v)} ${m}`).join("   ·   "),
@@ -1288,6 +1303,137 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas }) {
   });
 
   doc.save(`${esPres ? "Presupuesto" : "Transacciones"} ${compania} - ${periodo} - v${version}.pdf`);
+}
+
+/**
+ * Excel de un reporte oficial. Complementa al PDF, no lo repite: el PDF va
+ * sin detalle porque es para leerse, y el Excel lleva las transacciones
+ * vinculadas en hoja aparte porque es para analizarse.
+ */
+async function generarExcelOficial({ compania, tipo, periodo, version, filas, transacciones }) {
+  const esPres = tipo === "presupuesto";
+  const wbx = new ExcelJS.Workbook();
+  const num = '"$"#,##0.00';
+  const AZUL = "FF3E5C76", GRIS = "FFECEEF1";
+
+  const tot = {};
+  filas.forEach((f) => { const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP"; tot[m] = (tot[m] || 0) + (Number(f.importe) || 0); });
+  const fmtTot = (t) => Object.entries(t)
+    .map(([m, v]) => `$${(Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${m}`)
+    .join("   ·   ");
+
+  const COLS = esPres
+    ? [{ h: "Folio", w: 16, g: (f) => f.folio }, { h: "Área", w: 20, g: (f) => f.area, izq: 1 },
+       { h: "Concepto", w: 46, g: (f) => f.concepto, izq: 1 }, { h: "Rubro", w: 26, g: (f) => f.rubro, izq: 1 },
+       { h: "Categoría", w: 28, g: (f) => f.categoria, izq: 1 }, { h: "Proyecto", w: 18, g: (f) => f.proyecto },
+       { h: "Zona", w: 15, g: (f) => f.zona }, { h: "Importe", w: 15, g: (f) => Number(f.importe) || 0, money: 1 },
+       { h: "Moneda", w: 9, g: (f) => f.moneda }]
+    : [{ h: "Día", w: 12, g: (f) => f.dia }, { h: "Folio", w: 15, g: (f) => f.folio },
+       { h: "Área", w: 20, g: (f) => f.area, izq: 1 }, { h: "Proveedor", w: 32, g: (f) => f.proveedor, izq: 1 },
+       { h: "Concepto", w: 44, g: (f) => f.concepto, izq: 1 }, { h: "Categoría", w: 28, g: (f) => f.categoria, izq: 1 },
+       { h: "Solicitante", w: 18, g: (f) => f.solicitante }, { h: "Proyecto", w: 18, g: (f) => f.proyecto },
+       { h: "Zona", w: 15, g: (f) => f.zona }, { h: "Importe", w: 15, g: (f) => Number(f.importe) || 0, money: 1 },
+       { h: "Moneda", w: 9, g: (f) => f.moneda }];
+
+  const ws = wbx.addWorksheet(esPres ? "Presupuesto" : "Transacciones");
+  ws.columns = COLS.map((c) => ({ width: c.w }));
+
+  const tit = ws.addRow([esPres ? `Presupuesto mensual — ${compania}` : `Transacciones de la semana — ${compania}`]);
+  tit.font = { bold: true, size: 14, name: "Calibri" };
+  ws.mergeCells(1, 1, 1, COLS.length);
+  // La revisión dentro del archivo, no solo en su nombre.
+  const rev = ws.addRow([`${periodo}   ·   REVISIÓN ${version}   ·   enviado el ${new Date().toLocaleDateString("es-MX")}`]);
+  rev.font = { bold: true, size: 11, color: { argb: AZUL }, name: "Calibri" };
+  ws.mergeCells(2, 1, 2, COLS.length);
+  const sub = ws.addRow([`${filas.length} registros   ·   ${fmtTot(tot)}`]);
+  sub.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" };
+  ws.mergeCells(3, 1, 3, COLS.length);
+  ws.addRow([]);
+
+  const hr = ws.addRow(COLS.map((c) => c.h));
+  hr.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" }, name: "Calibri" };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: AZUL } };
+    cell.alignment = { horizontal: "center", vertical: "center", wrapText: true };
+  });
+  hr.height = 22;
+
+  // Agrupado por área, igual que el PDF: es la dimensión de la revisión.
+  const porArea = {};
+  filas.forEach((f) => { (porArea[f.area || "Sin área"] = porArea[f.area || "Sin área"] || []).push(f); });
+  Object.keys(porArea).sort().forEach((area) => {
+    const lista = porArea[area];
+    const t = {};
+    lista.forEach((f) => { const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP"; t[m] = (t[m] || 0) + (Number(f.importe) || 0); });
+    const rg = ws.addRow([`${area}   (${lista.length})   ${fmtTot(t)}`]);
+    ws.mergeCells(rg.number, 1, rg.number, COLS.length);
+    rg.getCell(1).font = { bold: true, name: "Calibri" };
+    rg.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } };
+    lista.forEach((f) => {
+      const row = ws.addRow(COLS.map((c) => c.g(f)));
+      COLS.forEach((c, i) => {
+        const cell = row.getCell(i + 1);
+        cell.font = { name: "Calibri", size: 10 };
+        cell.alignment = { horizontal: c.money ? "right" : (c.izq ? "left" : "center"), vertical: "top", wrapText: !!c.izq };
+        if (c.money) cell.numFmt = num;
+      });
+    });
+  });
+
+  ws.addRow([]);
+  Object.entries(tot).forEach(([m, v]) => {
+    const row = ws.addRow([`TOTAL ${m}`, ...Array(COLS.length - 2).fill(""), v]);
+    row.font = { bold: true, name: "Calibri" };
+    row.getCell(COLS.length).numFmt = num;
+    row.eachCell((cell) => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } }; });
+  });
+  ws.views = [{ state: "frozen", ySplit: 5 }];
+
+  /* Hoja de transacciones: solo en el reporte de presupuesto. En el semanal
+     las transacciones YA son el contenido, y repetirlas sería redundante. */
+  if (esPres && transacciones && transacciones.length) {
+    const TX = [
+      { h: "Folio partida", w: 16, g: (x) => x._folio }, { h: "Partida", w: 40, g: (x) => x._partida, izq: 1 },
+      { h: "Día", w: 12, g: (x) => x.dia }, { h: "Área", w: 20, g: (x) => x.area, izq: 1 },
+      { h: "Proveedor", w: 32, g: (x) => x.proveedor, izq: 1 }, { h: "Concepto", w: 44, g: (x) => x.concepto_detallado, izq: 1 },
+      { h: "Categoría", w: 28, g: (x) => x.categoria, izq: 1 }, { h: "Solicitante", w: 18, g: (x) => x.solicitante },
+      { h: "Importe", w: 15, g: (x) => Number(x.importe) || 0, money: 1 }, { h: "Moneda", w: 9, g: (x) => x.moneda },
+      { h: "Status", w: 12, g: (x) => x.status },
+    ];
+    const wd = wbx.addWorksheet("Transacciones");
+    wd.columns = TX.map((c) => ({ width: c.w }));
+    const t2 = wd.addRow([`Transacciones vinculadas — ${compania} — ${periodo} — REVISIÓN ${version}`]);
+    t2.font = { bold: true, size: 12, name: "Calibri" };
+    wd.mergeCells(1, 1, 1, TX.length);
+    wd.addRow([]);
+    const h2 = wd.addRow(TX.map((c) => c.h));
+    h2.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" }, name: "Calibri" };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: AZUL } };
+      cell.alignment = { horizontal: "center", vertical: "center", wrapText: true };
+    });
+    h2.height = 22;
+    transacciones.forEach((x) => {
+      const row = wd.addRow(TX.map((c) => c.g(x)));
+      TX.forEach((c, i) => {
+        const cell = row.getCell(i + 1);
+        cell.font = { name: "Calibri", size: 10 };
+        cell.alignment = { horizontal: c.money ? "right" : (c.izq ? "left" : "center"), vertical: "top", wrapText: !!c.izq };
+        if (c.money) cell.numFmt = num;
+      });
+    });
+    wd.views = [{ state: "frozen", ySplit: 3 }];
+    wd.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: TX.length } };
+  }
+
+  const buf = await wbx.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${esPres ? "Presupuesto" : "Transacciones"} ${compania} - ${periodo} - rev ${version}.xlsx`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 /**
@@ -8064,11 +8210,29 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
 
   const desviaciones = detectarDesviaciones(filas, reportado);
 
+  /* Las transacciones de las partidas del mes, para la hoja de detalle del
+     Excel. Se toman en el momento de generar, no del congelado: el PDF es la
+     evidencia de lo reportado y el Excel es la herramienta de análisis. */
+  const transaccionesDeLasPartidas = () => {
+    const ids = new Set(partidasMes.map((p) => p.id));
+    return transUnidad
+      .filter((t) => ids.has(t.partida_id))
+      .map((t) => {
+        const p = partidasMes.find((x) => x.id === t.partida_id);
+        return { ...t, _folio: p?.folio || "", _partida: p?.concepto || "" };
+      })
+      .sort((a, b) => String(a._folio).localeCompare(String(b._folio)) || String(a.dia || "").localeCompare(String(b.dia || "")));
+  };
+
   const descargarVersion = async (r) => {
     const { data, error } = await supabase.from("reportes_oficiales_detalle")
       .select("*").eq("reporte_id", r.id);
     if (error) { alert("No se pudo recuperar: " + error.message); return; }
     generarPdfOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [] });
+    await new Promise((res) => setTimeout(res, 900));
+    // Sin hoja de transacciones al reconstruir: solo se congeló lo reportado,
+    // y las transacciones de hoy no son las que existían entonces.
+    await generarExcelOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [], transacciones: [] });
   };
 
   const generar = async () => {
@@ -8076,7 +8240,8 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
     const v = yaEnviados.length + 1;
     if (!confirm(
       `Se va a generar el PDF de la versión ${v} del reporte ${esPresupuesto ? "de presupuesto" : "de transacciones"} ` +
-      `de ${periodo}, con ${filas.length} registros, y se va a registrar como enviado.\n\n` +
+      `de ${periodo}, con ${filas.length} registros, MÁS el Excel${esPresupuesto ? " con las transacciones vinculadas" : ""}, ` +
+      `y se va a registrar como enviado.\n\n` +
       `A partir de aquí, lo que aparezca fuera de estas combinaciones de área y categoría cuenta como imprevisto.`
     )) return;
     setGenerando(true);
@@ -8087,8 +8252,14 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
         periodoIni: esPresupuesto ? null : semanaRep, periodoFin: esPresupuesto ? null : finSemana,
         filas,
       });
-      // El documento sale del mismo conjunto que se acaba de congelar.
+      /* Ambos documentos salen del mismo conjunto que se acaba de congelar.
+         Van con una pausa entre uno y otro: los navegadores bloquean la
+         segunda descarga automática cuando salen juntas, y el archivo
+         desaparecería sin decir por qué. */
+      const txPartidas = esPresupuesto ? transaccionesDeLasPartidas() : [];
       generarPdfOficial({ compania: unidad, tipo, periodo, version: r.version, filas });
+      await new Promise((res) => setTimeout(res, 900));
+      await generarExcelOficial({ compania: unidad, tipo, periodo, version: r.version, filas, transacciones: txPartidas });
       setRecarga((x) => x + 1);
     } catch (err) {
       alert("No se pudo registrar: " + (err.message || err));

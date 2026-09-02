@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.94.1";
+const APP_VERSION = "1.95.0";
 const CHANGELOG = [
+  { v: "1.95.0", desc: "Los dos Reportes de Pagos adoptan el panel desplegable de Partidas y Transacciones. En el Reporte de Pagos había SEIS controles en la cabecera, con tres botones distintos diciendo 'Columnas' sin forma de saber cuál gobernaba qué; ahora cada selector vive junto a la salida que controla, y cada una explica qué hace — incluido cuál marca las transacciones como enviadas y cuál no, que es la diferencia que importa. El selector de la tabla se queda a la mano en ambos, porque gobierna lo que se está viendo" },
   { v: "1.94.1", desc: "En el selector de categoría de una transacción, las opciones que no pertenecen al rubro de la partida se agrupan ahora POR RUBRO en vez de caer en una lista plana de casi cien. Encontrar la correcta obligaba a recorrerlas todas, que es justo la fricción que empuja a no elegir ninguna. El rubro de la partida sigue primero y marcado, porque es el caso normal y en orden alfabético quedaría escondido entre los demás" },
   { v: "1.94.0", desc: "Transacciones estrena exportación a Excel, que no tenía ninguna: para llevarse el gasto real había que pasar por el Reporte de Pagos, que filtra por otra cosa. Sale con los datos de su partida —folio, concepto, rubro— en columnas propias, respeta el agrupamiento de la vista con subtotal por grupo y por moneda, y tiene selector de columnas con veinte opciones. El panel se despliega en su lugar, igual que en Partidas, para que los filtros sigan a la vista mientras se elige qué generar" },
   { v: "1.93.0", desc: "La cabecera de Partidas pasa de once controles a dos: 'Exportar y reportes' y '+ Nueva partida'. Las tres salidas se recogen en un panel que se despliega EN SU LUGAR —no en un modal— para que los filtros que gobiernan la exportación sigan a la vista mientras se elige qué generar; un modal tapaba justo el contexto necesario para decidir. Cada salida lleva una línea explicando qué hace y para quién es: tres botones distintos decían 'Columnas' y no había forma de saber cuál era cuál. El panel recuerda cuántas partidas y con qué agrupamiento van a salir. Los filtros y el agrupamiento se quedan siempre visibles" },
@@ -6538,6 +6539,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   const [buscar, setBuscar] = useSessionState("ss-reporte-buscar", "");
   const [fechaDesde, setFechaDesde] = useSessionState("ss-reporte-desde", "");
   const [fechaHasta, setFechaHasta] = useSessionState("ss-reporte-hasta", "");
+  const [panelExportRP, setPanelExportRP] = useState(false);
   const [sort, setSort] = usePrefState("pref-reporte-sort", { key: "dia", dir: "desc" }, sanearSort(["dia","solicitante","area","numero_solicitud","no_sae","folio_compra_sae","folio_factura","forma_pago","metodo_pago","proveedor","referencia_pago","concepto","banco","clabe","numero_cuenta","swift","importe","moneda","notas"]));
   const filasFiltradas = filas.filter((f) => {
     if (fechaDesde && (!f.dia || f.dia < fechaDesde)) return false;
@@ -6855,6 +6857,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         title={`Reporte de pagos — ${unidad}`}
         subtitle={`${filasOrdenadas.length} de ${filas.length} transacciones`}
         right={
+          /* Tres botones decían "Columnas" y no había forma de saber cuál
+             gobernaba qué. Cada selector se va junto a la salida que controla. */
           <div style={{ display: "flex", gap: 8 }}>
             <ColumnVisibilityControl
               columns={COLUMNAS_REPORTE}
@@ -6862,26 +6866,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               onToggle={colVisibility.toggle}
               onShowAll={colVisibility.showAll}
             />
-            <ColumnVisibilityControl
-              columns={COLUMNAS_PDF}
-              hidden={pdfVis.hidden}
-              onToggle={pdfVis.toggle}
-              onShowAll={pdfVis.showAll}
-              etiqueta="Columnas del PDF"
-            />
-            <ColumnVisibilityControl
-              columns={COLUMNAS_EXCEL}
-              hidden={excelVis.hidden}
-              onToggle={excelVis.toggle}
-              onShowAll={excelVis.showAll}
-              etiqueta="Columnas del Excel"
-            />
-            <Button onClick={exportarExcel}>Exportar a Excel</Button>
-            <Button variant="ghost" onClick={vistaPreviaPDF} disabled={generandoReporte}>
-              Vista previa PDF
-            </Button>
-            <Button onClick={generarReportePDF} disabled={generandoReporte}>
-              {generandoReporte ? "Generando…" : "Generar reporte (PDF)"}
+            <Button variant={panelExportRP ? "primary" : "ghost"} onClick={() => setPanelExportRP(!panelExportRP)}>
+              Exportar y reportes {panelExportRP ? "▲" : "▼"}
             </Button>
           </div>
         }
@@ -6903,6 +6889,63 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           </Field>
           {filtrosFechaActivos && <Button variant="ghost" onClick={limpiarFechas}>Limpiar fechas</Button>}
         </div>
+
+        {panelExportRP && (
+          <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8,
+                        padding: 14, marginBottom: 16 }}>
+            <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
+              Las salidas respetan los filtros de arriba — {filasOrdenadas.length} de {filas.length} transacciones.
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+
+              <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
+                            display: "flex", flexDirection: "column" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Reporte de Pagos (PDF)</div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
+                  El documento que va al área de Pagos, en bloques por zona y moneda.
+                  Marca las transacciones como enviadas.
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <ColumnVisibilityControl
+                    columns={COLUMNAS_PDF}
+                    hidden={pdfVis.hidden} onToggle={pdfVis.toggle} onShowAll={pdfVis.showAll}
+                    etiqueta="Columnas"
+                  />
+                </div>
+                <div style={{ flex: 1 }} />
+                <div style={{ display: "flex", gap: 6 }}>
+                  {/* La vista previa NO marca nada como enviado: existe para
+                      revisar antes de un paso que no se puede deshacer. */}
+                  <Button variant="ghost" onClick={vistaPreviaPDF} disabled={generandoReporte} style={{ flex: 1 }}>
+                    Vista previa
+                  </Button>
+                  <Button onClick={generarReportePDF} disabled={generandoReporte} style={{ flex: 1 }}>
+                    {generandoReporte ? "Generando…" : "Generar"}
+                  </Button>
+                </div>
+              </div>
+
+              <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
+                            display: "flex", flexDirection: "column" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Exportar a Excel</div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
+                  Las mismas transacciones en hoja de cálculo, con subtotal por zona y moneda.
+                  No marca nada como enviado.
+                </div>
+                <div style={{ marginBottom: 10 }}>
+                  <ColumnVisibilityControl
+                    columns={COLUMNAS_EXCEL}
+                    hidden={excelVis.hidden} onToggle={excelVis.toggle} onShowAll={excelVis.showAll}
+                    etiqueta="Columnas"
+                  />
+                </div>
+                <div style={{ flex: 1 }} />
+                <Button onClick={exportarExcel} style={{ width: "100%" }}>Generar Excel</Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div style={{ overflowX: "auto" }}>
           <table style={{ ...tableStyle, tableLayout: "fixed" }}>
             <colgroup>
@@ -7030,6 +7073,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
   const [buscar, setBuscar] = useSessionState("ss-reporte-direccion-buscar", "");
   const [fechaDesde, setFechaDesde] = useSessionState("ss-reporte-direccion-desde", "");
   const [fechaHasta, setFechaHasta] = useSessionState("ss-reporte-direccion-hasta", "");
+  const [panelExportRD, setPanelExportRD] = useState(false);
   const [sort, setSort] = usePrefState("pref-reporte-direccion-sort", { key: "dia", dir: "desc" }, sanearSort(["dia","solicitante","proyecto","zona","proveedor","concepto","importe","moneda","a_partida","status"]));
   const filasFiltradas = filas.filter((f) => {
     if (fechaDesde && (!f.dia || f.dia < fechaDesde)) return false;
@@ -7236,15 +7280,16 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
         subtitle={`${filasOrdenadas.length} de ${filas.length} transacciones`}
         right={
           <div style={{ display: "flex", gap: 8 }}>
+            {/* El selector es UNO solo aquí: gobierna la tabla, el PDF y el
+                Excel a la vez desde la v1.82, así que se queda a la mano. */}
             <ColumnVisibilityControl
               columns={COLUMNAS_REPORTE_DIRECCION}
               hidden={colVisibility.hidden}
               onToggle={colVisibility.toggle}
               onShowAll={colVisibility.showAll}
             />
-            <Button onClick={exportarExcel}>Exportar a Excel</Button>
-            <Button onClick={generarReportePDF} disabled={generandoReporte}>
-              {generandoReporte ? "Generando…" : "Generar reporte (PDF)"}
+            <Button variant={panelExportRD ? "primary" : "ghost"} onClick={() => setPanelExportRD(!panelExportRD)}>
+              Exportar {panelExportRD ? "▲" : "▼"}
             </Button>
           </div>
         }
@@ -7266,6 +7311,40 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
           </Field>
           {filtrosFechaActivos && <Button variant="ghost" onClick={limpiarFechas}>Limpiar fechas</Button>}
         </div>
+
+        {panelExportRD && (
+          <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8,
+                        padding: 14, marginBottom: 16 }}>
+            <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
+              Ambas salidas llevan las columnas visibles de la tabla —
+              {filasOrdenadas.length} de {filas.length} transacciones.
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+              <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
+                            display: "flex", flexDirection: "column" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Reporte (PDF)</div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
+                  El documento que se envía a Dirección. Marca las transacciones como reportadas.
+                </div>
+                <div style={{ flex: 1 }} />
+                <Button onClick={generarReportePDF} disabled={generandoReporte} style={{ width: "100%" }}>
+                  {generandoReporte ? "Generando…" : "Generar PDF"}
+                </Button>
+              </div>
+              <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
+                            display: "flex", flexDirection: "column" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Excel</div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
+                  Los mismos datos en hoja de cálculo, con totales por moneda.
+                  No marca nada como reportado.
+                </div>
+                <div style={{ flex: 1 }} />
+                <Button onClick={exportarExcel} style={{ width: "100%" }}>Generar Excel</Button>
+              </div>
+            </div>
+          </div>
+        )}
+
         <div style={{ overflowX: "auto" }}>
           <table style={{ ...tableStyle, tableLayout: "fixed" }}>
             <colgroup>

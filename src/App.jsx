@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.96.0";
+const APP_VERSION = "1.96.1";
 const CHANGELOG = [
+  { v: "1.96.1", desc: "Registrar un reporte oficial genera ahora el PDF en el mismo acto. Estaban separados —se registraba aquí y el documento se generaba desde Partidas— y eso permitía que el archivo enviado no coincidiera con lo congelado: bastaba cambiar un filtro entre un paso y otro para que la línea base mintiera. El PDF viene agrupado por área, que es la dimensión con la que se revisa después. Y las versiones ya registradas se pueden volver a descargar: el documento se reconstruye del contenido congelado, no de los datos actuales, así que sale idéntico al que se envió" },
   { v: "1.96.0", desc: "Nueva pestaña Reportes a Dirección, con reportes oficiales versionados y bitácora de gasto imprevisto. Hasta ahora los reportes se generaban filtrando, así que nadie podía reconstruir qué se envió: cuando en la revisión alguien decía 'eso sí estaba reportado', no había forma de comprobarlo. Un reporte oficial congela su contenido —los datos, no los ids, para que el histórico no se reescriba si la partida cambia después— y con eso la línea base deja de ser una convención. La desviación se mide por ÁREA y CATEGORÍA, no por monto: el objetivo es fomentar planeación, no controlar cuánto. Y va por área porque a quien se le pide atención es al área: que Mantenimiento haya reportado Llantas no cubre a Deshidratación gastando en llantas. Requiere 21-reportes-oficiales.sql" },
   { v: "1.95.0", desc: "Los dos Reportes de Pagos adoptan el panel desplegable de Partidas y Transacciones. En el Reporte de Pagos había SEIS controles en la cabecera, con tres botones distintos diciendo 'Columnas' sin forma de saber cuál gobernaba qué; ahora cada selector vive junto a la salida que controla, y cada una explica qué hace — incluido cuál marca las transacciones como enviadas y cuál no, que es la diferencia que importa. El selector de la tabla se queda a la mano en ambos, porque gobierna lo que se está viendo" },
   { v: "1.94.1", desc: "En el selector de categoría de una transacción, las opciones que no pertenecen al rubro de la partida se agrupan ahora POR RUBRO en vez de caer en una lista plana de casi cien. Encontrar la correcta obligaba a recorrerlas todas, que es justo la fricción que empuja a no elegir ninguna. El rubro de la partida sigue primero y marcado, porque es el caso normal y en orden alfabético quedaría escondido entre los demás" },
@@ -1222,6 +1223,72 @@ function lunesDe(fecha) {
 }
 
 const nh = (v) => String(v || "").trim().toLowerCase();
+
+/**
+ * PDF de un reporte oficial. Se genera del MISMO conjunto que se congela,
+ * en el mismo acto: registrar por un lado y generar el archivo por otro
+ * permitiría que el documento enviado no coincida con la línea base, y
+ * entonces la línea base mentiría — justo lo que se quiere evitar.
+ */
+function generarPdfOficial({ compania, tipo, periodo, version, filas }) {
+  const esPres = tipo === "presupuesto";
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+  const M = 36;
+  const num = (v) => "$" + (Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+  const tot = {};
+  filas.forEach((f) => {
+    const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP";
+    tot[m] = (tot[m] || 0) + (Number(f.importe) || 0);
+  });
+
+  doc.setFontSize(15).setFont(undefined, "bold").setTextColor(35, 42, 49);
+  doc.text(esPres ? "Presupuesto mensual" : "Transacciones de la semana", M, 40);
+  doc.setFontSize(10).setFont(undefined, "normal").setTextColor(107, 119, 133);
+  doc.text(`${compania}   ·   ${periodo}   ·   versión ${version}`, M, 56);
+  doc.text(
+    `${filas.length} registros   ·   ` +
+    Object.entries(tot).map(([m, v]) => `${num(v)} ${m}`).join("   ·   "),
+    M, 70
+  );
+
+  // Agrupado por ÁREA: es la dimensión con la que se revisa después, así
+  // que el documento enviado ya viene ordenado igual que el reclamo.
+  const porArea = {};
+  filas.forEach((f) => { (porArea[f.area || "Sin área"] = porArea[f.area || "Sin área"] || []).push(f); });
+
+  const body = [];
+  Object.keys(porArea).sort().forEach((area) => {
+    const lista = porArea[area];
+    const t = {};
+    lista.forEach((f) => { const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP"; t[m] = (t[m] || 0) + (Number(f.importe) || 0); });
+    body.push([{
+      content: `${area}   (${lista.length})   ${Object.entries(t).map(([m, v]) => `${num(v)} ${m}`).join("  ·  ")}`,
+      colSpan: esPres ? 6 : 7,
+      styles: { fillColor: [236, 238, 241], fontStyle: "bold", halign: "left" },
+    }]);
+    lista.forEach((f) => body.push(esPres
+      ? [f.folio || "", f.concepto || "", f.rubro || "", f.categoria || "", f.proyecto || "", num(f.importe)]
+      : [f.dia || "", f.proveedor || "", f.concepto || "", f.categoria || "", f.solicitante || "", f.proyecto || "", num(f.importe)]
+    ));
+  });
+
+  autoTable(doc, {
+    startY: 84,
+    head: [esPres
+      ? ["Folio", "Concepto", "Rubro", "Categoría", "Proyecto", "Importe"]
+      : ["Día", "Proveedor", "Concepto", "Categoría", "Solicitante", "Proyecto", "Importe"]],
+    body,
+    styles: { fontSize: 7.5, cellPadding: 4 },
+    headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
+    columnStyles: esPres
+      ? { 0: { cellWidth: 78 }, 1: { halign: "left" }, 2: { halign: "left" }, 3: { halign: "left" }, 5: { halign: "right", cellWidth: 74 } }
+      : { 0: { cellWidth: 58 }, 1: { halign: "left" }, 2: { halign: "left" }, 3: { halign: "left" }, 6: { halign: "right", cellWidth: 74 } },
+    margin: { left: M, right: M },
+  });
+
+  doc.save(`${esPres ? "Presupuesto" : "Transacciones"} ${compania} - ${periodo} - v${version}.pdf`);
+}
 
 /**
  * Registra un reporte oficial y congela su contenido.
@@ -7997,23 +8064,32 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
 
   const desviaciones = detectarDesviaciones(filas, reportado);
 
+  const descargarVersion = async (r) => {
+    const { data, error } = await supabase.from("reportes_oficiales_detalle")
+      .select("*").eq("reporte_id", r.id);
+    if (error) { alert("No se pudo recuperar: " + error.message); return; }
+    generarPdfOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [] });
+  };
+
   const generar = async () => {
     if (!filas.length) { alert("No hay registros en el periodo elegido."); return; }
     const v = yaEnviados.length + 1;
     if (!confirm(
-      `Registrar la versión ${v} del reporte ${esPresupuesto ? "de presupuesto" : "de transacciones"} de ${periodo}, ` +
-      `con ${filas.length} registros.\n\n` +
+      `Se va a generar el PDF de la versión ${v} del reporte ${esPresupuesto ? "de presupuesto" : "de transacciones"} ` +
+      `de ${periodo}, con ${filas.length} registros, y se va a registrar como enviado.\n\n` +
       `A partir de aquí, lo que aparezca fuera de estas combinaciones de área y categoría cuenta como imprevisto.`
     )) return;
     setGenerando(true);
     try {
+      const tipo = esPresupuesto ? "presupuesto" : "transacciones";
       const r = await registrarReporteOficial({
-        compania: unidad, tipo: esPresupuesto ? "presupuesto" : "transacciones",
-        periodo, periodoIni: esPresupuesto ? null : semanaRep, periodoFin: esPresupuesto ? null : finSemana,
+        compania: unidad, tipo, periodo,
+        periodoIni: esPresupuesto ? null : semanaRep, periodoFin: esPresupuesto ? null : finSemana,
         filas,
       });
+      // El documento sale del mismo conjunto que se acaba de congelar.
+      generarPdfOficial({ compania: unidad, tipo, periodo, version: r.version, filas });
       setRecarga((x) => x + 1);
-      alert(`Versión ${r.version} registrada con ${r.n} registros.`);
     } catch (err) {
       alert("No se pudo registrar: " + (err.message || err));
     } finally { setGenerando(false); }
@@ -8075,9 +8151,15 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
           <div style={{ fontSize: 11.5, color: T.textDim, marginBottom: 12 }}>
             Versiones de {periodo}:{" "}
             {yaEnviados.sort((a, b) => a.version - b.version).map((r) => (
-              <span key={r.id} style={{ fontFamily: T.fontMono, marginRight: 10 }}>
+              /* Se puede volver a descargar una versión ya registrada: el
+                 documento se reconstruye del contenido CONGELADO, no de los
+                 datos actuales, así que sale idéntico al que se envió. */
+              <button key={r.id} type="button" onClick={() => descargarVersion(r)}
+                title="Volver a descargar este PDF, tal como se envió"
+                style={{ background: "transparent", border: "none", padding: 0, marginRight: 12,
+                         color: T.accent, cursor: "pointer", fontFamily: T.fontMono, fontSize: 11.5 }}>
                 v{r.version} ({new Date(r.enviado_en).toLocaleDateString("es-MX")}, {r.n_registros} reg.)
-              </span>
+              </button>
             ))}
           </div>
         )}

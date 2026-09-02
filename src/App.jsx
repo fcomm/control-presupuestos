@@ -291,8 +291,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.93.0";
+const APP_VERSION = "1.94.1";
 const CHANGELOG = [
+  { v: "1.94.1", desc: "En el selector de categoría de una transacción, las opciones que no pertenecen al rubro de la partida se agrupan ahora POR RUBRO en vez de caer en una lista plana de casi cien. Encontrar la correcta obligaba a recorrerlas todas, que es justo la fricción que empuja a no elegir ninguna. El rubro de la partida sigue primero y marcado, porque es el caso normal y en orden alfabético quedaría escondido entre los demás" },
+  { v: "1.94.0", desc: "Transacciones estrena exportación a Excel, que no tenía ninguna: para llevarse el gasto real había que pasar por el Reporte de Pagos, que filtra por otra cosa. Sale con los datos de su partida —folio, concepto, rubro— en columnas propias, respeta el agrupamiento de la vista con subtotal por grupo y por moneda, y tiene selector de columnas con veinte opciones. El panel se despliega en su lugar, igual que en Partidas, para que los filtros sigan a la vista mientras se elige qué generar" },
   { v: "1.93.0", desc: "La cabecera de Partidas pasa de once controles a dos: 'Exportar y reportes' y '+ Nueva partida'. Las tres salidas se recogen en un panel que se despliega EN SU LUGAR —no en un modal— para que los filtros que gobiernan la exportación sigan a la vista mientras se elige qué generar; un modal tapaba justo el contexto necesario para decidir. Cada salida lleva una línea explicando qué hace y para quién es: tres botones distintos decían 'Columnas' y no había forma de saber cuál era cuál. El panel recuerda cuántas partidas y con qué agrupamiento van a salir. Los filtros y el agrupamiento se quedan siempre visibles" },
   { v: "1.92.0", desc: "El detalle de transacciones del Reporte Excel pasa a una HOJA APARTE, como tabla plana: una transacción por renglón con los datos de su partida repetidos en columnas propias. Intercalarlo bajo cada partida obligaba a encajar las transacciones en columnas dimensionadas para partidas, repetía el encabezado en cada bloque y metía una jerarquía que la hoja de cálculo no sabe manejar. Plano se puede filtrar, ordenar y resumir con tabla dinámica, que es para lo que sirve Excel; la primera hoja recupera su legibilidad. Lleva autofiltro y el folio de partida congelado" },
   { v: "1.91.1", desc: "El detalle de transacciones en el Reporte Excel de Partidas gana su propio selector de columnas —trece disponibles, entre ellas categoría, zona, área, referencia y folio de factura— y deja de concatenar fecha, proveedor y concepto en una sola celda. Ahora van en columnas propias con su encabezado, que es lo que permite filtrarlas y ordenarlas en Excel; era la razón de exportar a Excel y no a PDF. Fecha, Proveedor e Importe son fijas" },
@@ -5426,7 +5428,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   // agrupar por Proyecto/Rubro/Mes aunque esos campos no vivan en la transacción misma.
   const transEnriquecidas = transOrdenadas.map((t) => {
     const p = partidaDe(t);
-    return { ...t, _proyecto: p?.proyecto || SIN_DATO, _rubro: p?.rubro || SIN_DATO, _mes: p?.mes || SIN_DATO, _anio: p?.anio || null, _vinculo: t.partida_id ? "Vinculada" : "Sin vincular" };
+    // El folio y el concepto de la partida se agregan aquí para que la
+    // exportación pueda mostrarlos sin volver a buscar la partida por fila.
+    return { ...t, _proyecto: p?.proyecto || SIN_DATO, _rubro: p?.rubro || SIN_DATO, _mes: p?.mes || SIN_DATO, _anio: p?.anio || null,
+      _folioPartida: p?.folio || "", _conceptoPartida: p?.concepto || "",
+      _vinculo: t.partida_id ? "Vinculada" : "Sin vincular" };
   });
 
   const [groupBys, setGroupBys] = usePrefState("pref-transacciones-groupbys", [], sanearGroupBys(GROUP_OPCIONES_TRANS));
@@ -5629,6 +5635,151 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
   };
 
+
+  /* -----------------------------------------------------------------
+     EXPORTAR Y REPORTES
+     Transacciones no tenía ninguna salida: para llevarse el gasto real había
+     que pasar por el Reporte de Pagos, que filtra por otra cosa. Se replica
+     la estructura de Partidas —panel desplegable en su lugar, cada salida
+     con su explicación— para que ambas pestañas se usen igual.
+     ----------------------------------------------------------------- */
+  const COLUMNAS_EXPORT_TX = [
+    { key: "dia",        header: "Día",           width: 12, fija: true, get: (t) => t.dia || "" },
+    { key: "folio_tx",   header: "Folio",         width: 15, get: (t) => t.folio_transaccion || "" },
+    { key: "partida",    header: "Partida",       width: 16, get: (t) => t._folioPartida || "" },
+    { key: "concepto_p", header: "Concepto de la partida", width: 40, izq: true, get: (t) => t._conceptoPartida || "" },
+    { key: "rubro",      header: "Rubro",         width: 26, izq: true, get: (t) => t._rubro || "" },
+    { key: "categoria",  header: "Categoría",     width: 28, izq: true, get: (t) => t.categoria || "" },
+    { key: "proyecto",   header: "Proyecto",      width: 18, get: (t) => t.proyecto || t._proyecto || "" },
+    { key: "zona",       header: "Zona",          width: 15, get: (t) => t.zona || "" },
+    { key: "area",       header: "Área",          width: 18, get: (t) => t.area || "" },
+    { key: "solicitante",header: "Solicitante",   width: 18, get: (t) => t.solicitante || "" },
+    { key: "proveedor",  header: "Proveedor",     width: 34, fija: true, izq: true, get: (t) => t.proveedor || "" },
+    { key: "concepto",   header: "Concepto del pago", width: 44, izq: true, get: (t) => t.concepto_detallado || "" },
+    { key: "importe",    header: "Importe",       width: 15, fija: true, money: true, get: (t) => Number(t.importe) || 0 },
+    { key: "moneda",     header: "Moneda",        width: 9,  get: (t) => t.moneda || "MXP" },
+    { key: "status",     header: "Status",        width: 12, get: (t) => t.status || "" },
+    { key: "fecha_pago", header: "Fecha de pago", width: 13, get: (t) => t.fecha_pago || "" },
+    { key: "forma_pago", header: "Forma de pago", width: 15, get: (t) => t.forma_pago || "" },
+    { key: "referencia", header: "Referencia",    width: 16, get: (t) => t.referencia_pago || "" },
+    { key: "factura",    header: "Folio factura", width: 15, get: (t) => t.folio_factura || "" },
+    { key: "sae",        header: "Folio SAE",     width: 15, get: (t) => t.folio_compra_sae || "" },
+  ];
+  const expVis = useVisibilidadColumnas("colv-transacciones-export", COLUMNAS_EXPORT_TX,
+    ["folio_tx", "concepto_p", "area", "solicitante", "forma_pago", "referencia", "factura", "sae"]);
+  const [panelExportTx, setPanelExportTx] = useState(false);
+  const [generandoTx, setGenerandoTx] = useState(false);
+
+  const etiquetaCampoTx = (campo) =>
+    (GROUP_OPCIONES_TRANS.find((o) => o.value === campo) || {}).label || campo;
+
+  const exportarTransacciones = async () => {
+    if (!transEnriquecidas.length) { alert("No hay transacciones en el filtro actual."); return; }
+    const COLS = expVis.visibles;
+    setGenerandoTx(true);
+    try {
+      const dias = transEnriquecidas.map((t) => t.dia).filter(Boolean).sort();
+      const periodo = !dias.length ? "Sin periodo"
+        : (dias[0] === dias[dias.length - 1] ? dias[0] : `${dias[0]} a ${dias[dias.length - 1]}`);
+
+      const totales = {};
+      transEnriquecidas.forEach((t) => {
+        const m = (t.moneda || "MXP") === "USD" ? "USD" : "MXP";
+        totales[m] = (totales[m] || 0) + (Number(t.importe) || 0);
+      });
+      const fmtTot = (t) => Object.entries(t)
+        .map(([m, v]) => `$${(Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${m}`)
+        .join("   ·   ");
+
+      const wbx = new ExcelJS.Workbook();
+      const ws = wbx.addWorksheet(`${unidad} ${periodo}`.replace(/[:\\/?*[\]]/g, "-").slice(0, 31));
+      ws.columns = COLS.map((c) => ({ width: c.width }));
+
+      const tit = ws.addRow([`Transacciones — ${unidad} — ${periodo}`]);
+      tit.font = { bold: true, size: 14, name: "Calibri" };
+      ws.mergeCells(1, 1, 1, Math.max(COLS.length, 2));
+      const sub = ws.addRow([`${transEnriquecidas.length} transacciones   ·   ${fmtTot(totales)}` +
+        (groupKeys.length ? `   ·   agrupadas por ${groupBys.map((g) => etiquetaCampoTx(g.field)).join(" > ")}` : "")]);
+      sub.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" };
+      ws.mergeCells(2, 1, 2, Math.max(COLS.length, 2));
+      ws.addRow([]);
+
+      const hr = ws.addRow(COLS.map((c) => c.header));
+      hr.eachCell((cell) => {
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" }, name: "Calibri" };
+        cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
+        cell.alignment = { horizontal: "center", vertical: "center", wrapText: true };
+      });
+      hr.height = 24;
+
+      const filaDe = (t, sangria) => {
+        const row = ws.addRow(COLS.map((c) => c.get(t)));
+        COLS.forEach((c, i) => {
+          const cell = row.getCell(i + 1);
+          cell.font = { name: "Calibri", size: 10 };
+          cell.alignment = {
+            horizontal: c.money ? "right" : (c.izq ? "left" : "center"),
+            vertical: "top", wrapText: !!c.izq,
+          };
+          if (c.money) cell.numFmt = '"$"#,##0.00';
+          if (c.izq && sangria) cell.alignment = { ...cell.alignment, indent: sangria };
+        });
+      };
+
+      const totalDe = (lista) => {
+        const t = {};
+        lista.forEach((x) => {
+          const m = (x.moneda || "MXP") === "USD" ? "USD" : "MXP";
+          t[m] = (t[m] || 0) + (Number(x.importe) || 0);
+        });
+        return t;
+      };
+      const hojas = (n) => n.type === "rows" ? n.rows : n.entries.flatMap((e) => hojas(e.child));
+
+      if (groupKeys.length && grouped) {
+        (function recorrer(nodo, nivel) {
+          if (nodo.type === "rows") { nodo.rows.forEach((t) => filaDe(t, nivel)); return; }
+          nodo.entries.forEach((e) => {
+            const lista = hojas(e.child);
+            const row = ws.addRow([`${etiquetaCampoTx(nodo.key)}: ${e.value}   (${lista.length})   ${fmtTot(totalDe(lista))}`]);
+            ws.mergeCells(row.number, 1, row.number, Math.max(COLS.length, 2));
+            row.getCell(1).font = { bold: true, color: { argb: nivel === 0 ? "FF232A31" : "FF4A5560" } };
+            row.getCell(1).fill = { type: "pattern", pattern: "solid",
+              fgColor: { argb: nivel === 0 ? "FFECEEF1" : "FFF6F7F9" } };
+            row.getCell(1).alignment = { indent: nivel };
+            recorrer(e.child, nivel + 1);
+          });
+        })(grouped, 0);
+      } else {
+        transEnriquecidas.forEach((t) => filaDe(t, 0));
+      }
+
+      ws.addRow([]);
+      Object.entries(totales).forEach(([m, v]) => {
+        const row = ws.addRow([`TOTAL ${m}`, ...Array(Math.max(COLS.length - 2, 0)).fill(""), v]);
+        row.font = { bold: true, name: "Calibri" };
+        row.getCell(COLS.length).numFmt = '"$"#,##0.00';
+        row.eachCell((cell) => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECEEF1" } }; });
+      });
+
+      ws.views = [{ state: "frozen", ySplit: 4 }];
+      if (!groupKeys.length) ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: COLS.length } };
+
+      const buf = await wbx.xlsx.writeBuffer();
+      const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `Transacciones - ${unidad} - ${periodo}.xlsx`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      alert("No se pudo exportar: " + (err.message || err));
+    } finally {
+      setGenerandoTx(false);
+    }
+  };
+
   const renderRowTr = (t, depth = 0, n) => (
     <tr key={t.id}>
       <td style={{ ...tdStyle, width: 36, textAlign: "right", color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{n}</td>
@@ -5788,6 +5939,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         subtitle={filtrosActivos ? `${transFiltradas.length} de ${transUnidad.length} registradas` : `${transUnidad.length} registradas`}
         right={
           <div style={{ display: "flex", gap: 8 }}>
+            <Button variant={panelExportTx ? "primary" : "ghost"} onClick={() => setPanelExportTx(!panelExportTx)}>
+              Exportar {panelExportTx ? "▲" : "▼"}
+            </Button>
             <Button onClick={openNew}>+ Nueva transacción</Button>
           </div>
         }
@@ -5860,6 +6014,37 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <Button variant="danger" onClick={eliminarSeleccionadas} disabled={eliminando}>
               {eliminando ? "Eliminando…" : "Eliminar seleccionadas"}
             </Button>
+          </div>
+        )}
+
+        {/* Mismo criterio que en Partidas: se despliega en su lugar para que
+            los filtros que gobiernan la salida sigan a la vista. */}
+        {panelExportTx && (
+          <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8,
+                        padding: 14, marginBottom: 16 }}>
+            <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
+              La exportación respeta los filtros de arriba —
+              {filtrosActivos ? ` ${transFiltradas.length} de ${transUnidad.length} transacciones` : ` las ${transUnidad.length} transacciones`}
+              {groupKeys.length ? `, agrupadas por ${groupBys.map((g) => etiquetaCampoTx(g.field)).join(" > ")}` : ""}.
+            </div>
+
+            <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13, maxWidth: 460 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700 }}>Transacciones (Excel)</div>
+              <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, marginBottom: 10 }}>
+                El gasto real con los datos de su partida —folio, rubro, proyecto— en columnas
+                propias. Respeta el agrupamiento de la vista, con subtotal por grupo y por moneda.
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <ColumnVisibilityControl
+                  columns={COLUMNAS_EXPORT_TX}
+                  hidden={expVis.hidden} onToggle={expVis.toggle} onShowAll={expVis.showAll}
+                  etiqueta="Columnas"
+                />
+                <Button onClick={exportarTransacciones} disabled={generandoTx} style={{ flex: 1, minWidth: 130 }}>
+                  {generandoTx ? "Generando…" : "Generar Excel"}
+                </Button>
+              </div>
+            </div>
           </div>
         )}
 
@@ -6117,17 +6302,28 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 {(() => {
                   const p = partidasUnidad.find((x) => x.id === form.partida_id);
                   const delRubro = p ? (RUBROS.find((r) => r.rubro === p.rubro)?.categorias || []) : [];
-                  const resto = CATEGORIAS_TODAS.filter((c) => !delRubro.includes(c));
+                  /* El resto se agrupa POR RUBRO. En una lista plana son casi
+                     cien opciones sin estructura, y encontrar la correcta
+                     obliga a recorrerlas todas — que es justo la fricción que
+                     empuja a no elegir ninguna.
+                     El rubro de la partida sigue primero: es el caso normal, y
+                     bajarlo al orden alfabético lo escondería entre los demás. */
+                  const otros = RUBROS
+                    .filter((r) => !p || r.rubro !== p.rubro)
+                    .map((r) => ({ rubro: r.rubro, cats: r.categorias.filter((c) => !delRubro.includes(c)) }))
+                    .filter((r) => r.cats.length);
                   return (
                     <>
                       {delRubro.length > 0 && (
-                        <optgroup label={`Del rubro ${p.rubro}`}>
+                        <optgroup label={`▸ ${p.rubro} (rubro de la partida)`}>
                           {delRubro.map((c) => <option key={c}>{c}</option>)}
                         </optgroup>
                       )}
-                      <optgroup label="Otras categorías">
-                        {resto.map((c) => <option key={c}>{c}</option>)}
-                      </optgroup>
+                      {otros.map((r) => (
+                        <optgroup key={r.rubro} label={r.rubro}>
+                          {r.cats.map((c) => <option key={`${r.rubro}|${c}`}>{c}</option>)}
+                        </optgroup>
+                      ))}
                     </>
                   );
                 })()}

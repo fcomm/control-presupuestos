@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.91.0";
+const APP_VERSION = "1.91.1";
 const CHANGELOG = [
+  { v: "1.91.1", desc: "El detalle de transacciones en el Reporte Excel de Partidas gana su propio selector de columnas —trece disponibles, entre ellas categoría, zona, área, referencia y folio de factura— y deja de concatenar fecha, proveedor y concepto en una sola celda. Ahora van en columnas propias con su encabezado, que es lo que permite filtrarlas y ordenarlas en Excel; era la razón de exportar a Excel y no a PDF. Fecha, Proveedor e Importe son fijas" },
   { v: "1.91.0", desc: "Los reportes de Partidas pueden incluir las transacciones vinculadas, con una casilla 'Con transacciones'. En el Excel cada partida abre en sus transacciones —fecha, proveedor, concepto e importe— en gris y con sangría, para que se lean como detalle; hasta ahora 'Usado' era un total sin explicación. En el PDF ejecutivo, que no lista partidas, se agrega en su lugar un corte del gasto ejercido por categoría: los otros cortes dicen en qué se presupuestó, este dice en qué se gastó. Es opcional porque con partidas de veinte transacciones el documento se alarga y no siempre se quiere ese nivel" },
   { v: "1.90.0", desc: "La Solicitud de Pago resuelve el caso de los gastos prorrateados: cuando el proyecto es un marcador como 'Todos' o 'Desh Gral', el documento lista TODOS los centros de costo involucrados con su porcentaje —CC-015 40% · CC-022 35% · CC-031 25%— que es lo que Contabilidad necesita para registrarlo una vez por proyecto en ASPEL, tal como ya lo hacen a mano. El centro de costo pasa a un renglón propio a lo ancho de la hoja, porque en media columna se cortaría. Y el aviso de datos faltantes ahora señala qué proyectos del reparto no tienen CC, no solo si falta el del proyecto principal" },
   { v: "1.89.0", desc: "PDF de la Solicitud de Pago: la compañía pasa a ser prefijo del folio —CTM-12— en lugar de ir suelta bajo el título, donde además lo tapaba. Se retiran las firmas y el pie de generación: el documento se firma en el sistema, no en papel, y esas líneas ocupaban un cuarto de la hoja sin usarse. El nombre del archivo sigue el mismo formato, en PDF y en Excel" },
@@ -4282,6 +4283,27 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const txDe = (p) => transacciones
     .filter((t) => t.partida_id === p.id)
     .sort((a, b) => String(a.dia || "").localeCompare(String(b.dia || "")));
+
+  /* Columnas del detalle de transacciones. Van en columnas propias y no
+     concatenadas en una celda: así se pueden filtrar y ordenar en Excel, que
+     es la razón de exportar a Excel en vez de a PDF. */
+  const COLUMNAS_DETALLE_TX = [
+    { key: "dia",        header: "Fecha",      width: 12, fija: true, get: (t) => t.dia || "" },
+    { key: "folio",      header: "Folio tx",   width: 15, get: (t) => t.folio_transaccion || "" },
+    { key: "proveedor",  header: "Proveedor",  width: 32, fija: true, izq: true, get: (t) => t.proveedor || "" },
+    { key: "concepto",   header: "Concepto",   width: 42, izq: true, get: (t) => t.concepto_detallado || "" },
+    { key: "categoria",  header: "Categoría",  width: 26, get: (t) => t.categoria || "" },
+    { key: "zona",       header: "Zona",       width: 15, get: (t) => t.zona || "" },
+    { key: "area",       header: "Área",       width: 18, get: (t) => t.area || "" },
+    { key: "importe",    header: "Importe",    width: 14, fija: true, money: true, get: (t) => Number(t.importe) || 0 },
+    { key: "moneda",     header: "Moneda",     width: 9,  get: (t) => t.moneda || "MXP" },
+    { key: "status",     header: "Status",     width: 12, get: (t) => t.status || "" },
+    { key: "fecha_pago", header: "Fecha pago", width: 13, get: (t) => t.fecha_pago || "" },
+    { key: "referencia", header: "Referencia", width: 16, get: (t) => t.referencia_pago || "" },
+    { key: "factura",    header: "Folio factura", width: 15, get: (t) => t.folio_factura || "" },
+  ];
+  const detVis = useVisibilidadColumnas("colv-partidas-detalle-tx", COLUMNAS_DETALLE_TX,
+    ["folio", "area", "fecha_pago", "referencia", "factura"]);
   const [generandoReporteXls, setGenerandoReporteXls] = useState(false);
 
   const generarReporteExcel = async () => {
@@ -4352,25 +4374,34 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           if (c.izq) cell.alignment = { horizontal: "left", indent: sangria };
         });
 
-        // Las transacciones van bajo su partida, en gris y con sangría, para
-        // que se lean como detalle y no se confundan con otra partida.
+        /* Las transacciones van bajo su partida, en gris y con sangría, para
+           que se lean como detalle. Empiezan una columna a la derecha: así el
+           bloque se distingue del renglón de la partida sin depender del
+           color, que se pierde al imprimir en blanco y negro. */
         if (conDetalle) {
-          const idxConcepto = Math.max(COLS.findIndex((c) => c.key === "concepto"), 0);
-          const idxMonto = COLS.findIndex((c) => c.key === "monto");
-          txDe(p).forEach((t) => {
-            const fila = new Array(COLS.length).fill("");
-            fila[idxConcepto] = `${t.dia || "—"}   ${t.proveedor || ""}${t.concepto_detallado ? ` · ${t.concepto_detallado}` : ""}${t.status === "Pagado" ? "" : "  (no pagado)"}`;
-            if (idxMonto !== -1) fila[idxMonto] = Number(t.importe) || 0;
-            const rt = ws.addRow(fila);
-            rt.eachCell((cell) => {
-              cell.font = { name: "Calibri", size: 9.5, color: { argb: "FF6B7785" } };
+          const DET = detVis.visibles;
+          const lista = txDe(p);
+          if (lista.length && DET.length) {
+            const enc = ws.addRow(["", ...DET.map((c) => c.header)]);
+            enc.eachCell((cell, i) => {
+              if (i === 1) return;
+              cell.font = { name: "Calibri", size: 8.5, bold: true, color: { argb: "FF6B7785" } };
+              cell.alignment = { horizontal: "center", vertical: "center", wrapText: true };
             });
-            rt.getCell(idxConcepto + 1).alignment = { horizontal: "left", indent: sangria + 2, wrapText: true, vertical: "top" };
-            if (idxMonto !== -1) {
-              rt.getCell(idxMonto + 1).numFmt = '"$"#,##0.00';
-              rt.getCell(idxMonto + 1).alignment = { horizontal: "right" };
-            }
-          });
+            lista.forEach((t) => {
+              const rt = ws.addRow(["", ...DET.map((c) => c.get(t))]);
+              DET.forEach((c, i) => {
+                const cell = rt.getCell(i + 2);
+                cell.font = { name: "Calibri", size: 9.5, color: { argb: "FF4A5560" } };
+                cell.alignment = {
+                  horizontal: c.money ? "right" : (c.izq ? "left" : "center"),
+                  vertical: "top", wrapText: !!c.izq,
+                };
+                if (c.money) cell.numFmt = '"$"#,##0.00';
+              });
+            });
+            ws.addRow([]);
+          }
         }
         return row;
       };
@@ -4832,6 +4863,17 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
               <input type="checkbox" checked={conDetalle} onChange={(e) => setConDetalle(e.target.checked)} />
               Con transacciones
             </label>
+            {/* El selector solo aparece con el detalle activo: sin él no hay
+                columnas que elegir y sería un botón que no hace nada. */}
+            {conDetalle && (
+              <ColumnVisibilityControl
+                columns={COLUMNAS_DETALLE_TX}
+                hidden={detVis.hidden}
+                onToggle={detVis.toggle}
+                onShowAll={detVis.showAll}
+                etiqueta="Columnas de transacciones"
+              />
+            )}
             <Button variant="ghost" onClick={generarReporteExcel} disabled={generandoReporteXls}
               title="Excel con las columnas elegidas, respetando el agrupamiento de la vista">
               {generandoReporteXls ? "Generando…" : "Reporte Excel"}

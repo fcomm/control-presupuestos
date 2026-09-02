@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.90.0";
+const APP_VERSION = "1.91.0";
 const CHANGELOG = [
+  { v: "1.91.0", desc: "Los reportes de Partidas pueden incluir las transacciones vinculadas, con una casilla 'Con transacciones'. En el Excel cada partida abre en sus transacciones —fecha, proveedor, concepto e importe— en gris y con sangría, para que se lean como detalle; hasta ahora 'Usado' era un total sin explicación. En el PDF ejecutivo, que no lista partidas, se agrega en su lugar un corte del gasto ejercido por categoría: los otros cortes dicen en qué se presupuestó, este dice en qué se gastó. Es opcional porque con partidas de veinte transacciones el documento se alarga y no siempre se quiere ese nivel" },
   { v: "1.90.0", desc: "La Solicitud de Pago resuelve el caso de los gastos prorrateados: cuando el proyecto es un marcador como 'Todos' o 'Desh Gral', el documento lista TODOS los centros de costo involucrados con su porcentaje —CC-015 40% · CC-022 35% · CC-031 25%— que es lo que Contabilidad necesita para registrarlo una vez por proyecto en ASPEL, tal como ya lo hacen a mano. El centro de costo pasa a un renglón propio a lo ancho de la hoja, porque en media columna se cortaría. Y el aviso de datos faltantes ahora señala qué proyectos del reparto no tienen CC, no solo si falta el del proyecto principal" },
   { v: "1.89.0", desc: "PDF de la Solicitud de Pago: la compañía pasa a ser prefijo del folio —CTM-12— en lugar de ir suelta bajo el título, donde además lo tapaba. Se retiran las firmas y el pie de generación: el documento se firma en el sistema, no en papel, y esas líneas ocupaban un cuarto de la hoja sin usarse. El nombre del archivo sigue el mismo formato, en PDF y en Excel" },
   { v: "1.88.1", desc: "Fix: generar la Solicitud de Pago fallaba con 'catch is not a function'. El constructor de consultas de Supabase no es una promesa hasta que se le hace await, así que encadenarle .catch() rompe. Los dos pasos secundarios —adelantar el consecutivo y guardar el desglose en la transacción— van ahora en su propio try: la solicitud ya quedó registrada y no deben impedir que se descargue el documento" },
@@ -4271,6 +4272,16 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     { key: "disponible",  header: "Disponible",  width: 15, money: true, get: (p) => (Number(p.monto_estimado) || 0) - usadoDe(p) },
   ];
   const repVis = useVisibilidadColumnas("colv-partidas-reporte", COLUMNAS_REPORTE_PARTIDAS, ["smi", "anio"]);
+
+  /* El reporte muestra "Usado" como un total, pero no de qué se compone.
+     Con el detalle activado, cada partida abre en sus transacciones — que es
+     donde está la respuesta a "y esto en qué se gastó". Se deja opcional:
+     con partidas de veinte transacciones el documento se vuelve largo, y no
+     siempre se quiere ese nivel. */
+  const [conDetalle, setConDetalle] = usePrefState("pref-partidas-reporte-detalle", false);
+  const txDe = (p) => transacciones
+    .filter((t) => t.partida_id === p.id)
+    .sort((a, b) => String(a.dia || "").localeCompare(String(b.dia || "")));
   const [generandoReporteXls, setGenerandoReporteXls] = useState(false);
 
   const generarReporteExcel = async () => {
@@ -4340,6 +4351,27 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           if (c.money) cell.numFmt = '"$"#,##0.00';
           if (c.izq) cell.alignment = { horizontal: "left", indent: sangria };
         });
+
+        // Las transacciones van bajo su partida, en gris y con sangría, para
+        // que se lean como detalle y no se confundan con otra partida.
+        if (conDetalle) {
+          const idxConcepto = Math.max(COLS.findIndex((c) => c.key === "concepto"), 0);
+          const idxMonto = COLS.findIndex((c) => c.key === "monto");
+          txDe(p).forEach((t) => {
+            const fila = new Array(COLS.length).fill("");
+            fila[idxConcepto] = `${t.dia || "—"}   ${t.proveedor || ""}${t.concepto_detallado ? ` · ${t.concepto_detallado}` : ""}${t.status === "Pagado" ? "" : "  (no pagado)"}`;
+            if (idxMonto !== -1) fila[idxMonto] = Number(t.importe) || 0;
+            const rt = ws.addRow(fila);
+            rt.eachCell((cell) => {
+              cell.font = { name: "Calibri", size: 9.5, color: { argb: "FF6B7785" } };
+            });
+            rt.getCell(idxConcepto + 1).alignment = { horizontal: "left", indent: sangria + 2, wrapText: true, vertical: "top" };
+            if (idxMonto !== -1) {
+              rt.getCell(idxMonto + 1).numFmt = '"$"#,##0.00';
+              rt.getCell(idxMonto + 1).alignment = { horizontal: "right" };
+            }
+          });
+        }
         return row;
       };
 
@@ -4527,7 +4559,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         });
         autoTable(doc, {
           startY: y,
-          head: [[titulo, "Partidas", ...monedas.map((m) => `Importe ${m}`)]],
+          head: [[titulo, titulo.startsWith("Gasto ejercido") ? "Transacc." : "Partidas",
+                  ...monedas.map((m) => `Importe ${m}`)]],
           body: cuerpo,
           styles: { fontSize: 8.5, cellPadding: 5 },
           headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "left" },
@@ -4599,6 +4632,29 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       // Si ninguna partida tiene zona, el corte no aporta nada y se omite.
       if (!(porZona.length === 1 && porZona[0].clave === "Cualquier zona")) {
         seccion("Zona", porZona);
+      }
+
+      /* Con el detalle activado se agrega el gasto REAL de esas partidas,
+         cortado por categoría. Es la otra mitad de la pregunta: los cortes de
+         arriba dicen en qué se presupuestó, este dice en qué se gastó. */
+      if (conDetalle) {
+        const ids = new Set(partidasOrdenadas.map((p) => p.id));
+        const txs = transacciones.filter((t) => ids.has(t.partida_id));
+        if (txs.length) {
+          const mapa = {};
+          txs.forEach((t) => {
+            const k = String(t.categoria || "").trim() || "Sin categoría";
+            const m = (t.moneda || "MXP") === "USD" ? "USD" : "MXP";
+            if (!mapa[k]) mapa[k] = { clave: k, MXP: 0, USD: 0, n: 0 };
+            mapa[k][m] += Number(t.importe) || 0;
+            mapa[k].n++;
+          });
+          const filas = Object.values(mapa).sort((a, b) => (b.MXP + b.USD) - (a.MXP + a.USD));
+          const sub = { clave: "TOTAL EJERCIDO", MXP: 0, USD: 0, n: txs.length };
+          txs.forEach((t) => { sub[(t.moneda || "MXP") === "USD" ? "USD" : "MXP"] += Number(t.importe) || 0; });
+          filas.push(sub);
+          seccion("Gasto ejercido, por categoría", filas);
+        }
       }
 
       doc.save(`presupuesto-mensual-${unidad}-${new Date().toISOString().slice(0, 10)}.pdf`);
@@ -4771,6 +4827,11 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
               onShowAll={repVis.showAll}
               etiqueta="Columnas del reporte"
             />
+            <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: T.textDim, cursor: "pointer", whiteSpace: "nowrap" }}
+              title="Agrega las transacciones vinculadas a cada partida">
+              <input type="checkbox" checked={conDetalle} onChange={(e) => setConDetalle(e.target.checked)} />
+              Con transacciones
+            </label>
             <Button variant="ghost" onClick={generarReporteExcel} disabled={generandoReporteXls}
               title="Excel con las columnas elegidas, respetando el agrupamiento de la vista">
               {generandoReporteXls ? "Generando…" : "Reporte Excel"}

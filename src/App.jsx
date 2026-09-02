@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.95.0";
+const APP_VERSION = "1.96.0";
 const CHANGELOG = [
+  { v: "1.96.0", desc: "Nueva pestaña Reportes a Dirección, con reportes oficiales versionados y bitácora de gasto imprevisto. Hasta ahora los reportes se generaban filtrando, así que nadie podía reconstruir qué se envió: cuando en la revisión alguien decía 'eso sí estaba reportado', no había forma de comprobarlo. Un reporte oficial congela su contenido —los datos, no los ids, para que el histórico no se reescriba si la partida cambia después— y con eso la línea base deja de ser una convención. La desviación se mide por ÁREA y CATEGORÍA, no por monto: el objetivo es fomentar planeación, no controlar cuánto. Y va por área porque a quien se le pide atención es al área: que Mantenimiento haya reportado Llantas no cubre a Deshidratación gastando en llantas. Requiere 21-reportes-oficiales.sql" },
   { v: "1.95.0", desc: "Los dos Reportes de Pagos adoptan el panel desplegable de Partidas y Transacciones. En el Reporte de Pagos había SEIS controles en la cabecera, con tres botones distintos diciendo 'Columnas' sin forma de saber cuál gobernaba qué; ahora cada selector vive junto a la salida que controla, y cada una explica qué hace — incluido cuál marca las transacciones como enviadas y cuál no, que es la diferencia que importa. El selector de la tabla se queda a la mano en ambos, porque gobierna lo que se está viendo" },
   { v: "1.94.1", desc: "En el selector de categoría de una transacción, las opciones que no pertenecen al rubro de la partida se agrupan ahora POR RUBRO en vez de caer en una lista plana de casi cien. Encontrar la correcta obligaba a recorrerlas todas, que es justo la fricción que empuja a no elegir ninguna. El rubro de la partida sigue primero y marcado, porque es el caso normal y en orden alfabético quedaría escondido entre los demás" },
   { v: "1.94.0", desc: "Transacciones estrena exportación a Excel, que no tenía ninguna: para llevarse el gasto real había que pasar por el Reporte de Pagos, que filtra por otra cosa. Sale con los datos de su partida —folio, concepto, rubro— en columnas propias, respeta el agrupamiento de la vista con subtotal por grupo y por moneda, y tiene selector de columnas con veinte opciones. El panel se despliega en su lugar, igual que en Partidas, para que los filtros sigan a la vista mientras se elige qué generar" },
@@ -1206,6 +1207,78 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
       )}
     </>
   );
+}
+
+/* ----------------------------------------------------------------------
+   REPORTES OFICIALES Y DESVIACIONES
+   ---------------------------------------------------------------------- */
+
+/** Lunes de la semana a la que pertenece una fecha. */
+function lunesDe(fecha) {
+  const d = fecha instanceof Date ? new Date(fecha) : new Date(`${fecha}T12:00:00`);
+  const dia = d.getDay();               // 0 domingo … 6 sábado
+  d.setDate(d.getDate() - ((dia + 6) % 7));
+  return d.toISOString().slice(0, 10);
+}
+
+const nh = (v) => String(v || "").trim().toLowerCase();
+
+/**
+ * Registra un reporte oficial y congela su contenido.
+ *
+ * Guarda los DATOS de cada registro, no solo su id: si la partida cambia
+ * de área o categoría después, el reporte debe seguir diciendo lo que decía
+ * cuando se envió. Con ids, el histórico se reescribiría solo — que es
+ * exactamente lo que hace imposible comprobar qué se reportó.
+ */
+async function registrarReporteOficial({ compania, tipo, periodo, periodoIni, periodoFin, filas, notas }) {
+  const { data: prev, error: e1 } = await supabase
+    .from("reportes_oficiales").select("version")
+    .eq("compania", compania).eq("tipo", tipo).eq("periodo", periodo)
+    .order("version", { ascending: false }).limit(1);
+  if (e1) throw e1;
+  const version = ((prev && prev[0]?.version) || 0) + 1;
+
+  const tot = { MXP: 0, USD: 0 };
+  filas.forEach((f) => { tot[(f.moneda || "MXP") === "USD" ? "USD" : "MXP"] += Number(f.importe) || 0; });
+
+  const idRep = uid();
+  const { error: e2 } = await supabase.from("reportes_oficiales").insert({
+    id: idRep, compania, tipo, periodo,
+    periodo_ini: periodoIni || null, periodo_fin: periodoFin || null,
+    n_registros: filas.length, importe_mxp: tot.MXP, importe_usd: tot.USD,
+    notas: notas || null,
+  });
+  if (e2) throw e2;
+
+  // En lotes: con doscientos registros una sola inserción puede exceder
+  // el límite de la petición.
+  const detalle = filas.map((f) => ({ id: uid(), reporte_id: idRep, ...f }));
+  for (let i = 0; i < detalle.length; i += 100) {
+    const { error } = await supabase.from("reportes_oficiales_detalle").insert(detalle.slice(i, i + 100));
+    if (error) throw error;
+  }
+  return { version, n: filas.length };
+}
+
+/**
+ * Detecta lo que se está gastando sin haberlo reportado.
+ *
+ * La comparación es por ÁREA + CATEGORÍA, no por monto: el objetivo es
+ * fomentar planeación —saber de antemano en qué se va a gastar— no
+ * controlar cuánto. Y va por área porque a quien se le pide atención es al
+ * área: que Mantenimiento haya reportado "Llantas" no cubre a
+ * Deshidratación gastando en llantas.
+ */
+function detectarDesviaciones(registros, reportado) {
+  const base = new Set(reportado.map((r) => `${nh(r.area)}|${nh(r.categoria)}`));
+  return registros.filter((r) => {
+    const cat = nh(r.categoria);
+    // Sin categoría no se puede juzgar: se omite en vez de acusar de algo
+    // que quizá sí estaba planeado.
+    if (!cat) return false;
+    return !base.has(`${nh(r.area)}|${cat}`);
+  });
 }
 
 /* ----------------------------------------------------------------------
@@ -7847,6 +7920,225 @@ const SUBS_CATALOGO = [
   { id: "solicitudes", label: "Solicitudes de Pago" },
 ];
 
+/**
+ * Reportes oficiales a Dirección y bitácora de desviaciones.
+ *
+ * Separado de las exportaciones normales a propósito: un reporte oficial no
+ * es un archivo más, es el acto que fija la línea base. Mezclarlo con los
+ * botones de exportar invitaría a generarlo por costumbre y a versionar
+ * envíos que nunca salieron.
+ */
+function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
+  const [sub, setSub] = useSessionState("ss-repdir-sub", "presupuesto");
+  const [reportes, setReportes] = useState([]);
+  const [reportado, setReportado] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [generando, setGenerando] = useState(false);
+  const [recarga, setRecarga] = useState(0);
+
+  const hoy = new Date().toISOString().slice(0, 10);
+  const [mesRep, setMesRep] = useState(MESES[new Date().getMonth()]);
+  const [anioRep, setAnioRep] = useState(new Date().getFullYear());
+  const [semanaRep, setSemanaRep] = useState(lunesDe(hoy));
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      setCargando(true);
+      const { data: reps } = await supabase.from("reportes_oficiales")
+        .select("*").eq("compania", unidad).order("enviado_en", { ascending: false });
+      const { data: base } = await supabase.from("v_reportado").select("*").eq("compania", unidad);
+      if (!vivo) return;
+      setReportes(reps || []);
+      setReportado(base || []);
+      setCargando(false);
+    })();
+    return () => { vivo = false; };
+  }, [unidad, recarga]);
+
+  const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
+  const transUnidad = transacciones.filter((t) => t.unidad_detectada === unidad);
+  const partidaDe = (t) => partidas.find((p) => p.id === t.partida_id);
+
+  // --- Presupuesto del mes elegido ---
+  const partidasMes = partidasUnidad.filter((p) => p.mes === mesRep && Number(p.anio) === Number(anioRep));
+  /* Una partida no tiene área: el área vive en la transacción. Se toma de
+     sus transacciones, y si no tiene ninguna todavía, queda "Sin área" —
+     que es honesto: aún no se sabe quién lo va a ejercer. */
+  const areaDePartida = (p) => {
+    const t = transUnidad.find((x) => x.partida_id === p.id && x.area);
+    return t?.area || "Sin área";
+  };
+  const filasPresupuesto = partidasMes.map((p) => ({
+    origen_id: p.id, folio: p.folio || "", area: areaDePartida(p),
+    categoria: p.categoria || "", rubro: p.rubro || "", proyecto: p.proyecto || "",
+    zona: p.zona || "", concepto: p.concepto || "", proveedor: null, solicitante: null,
+    importe: Number(p.monto_estimado) || 0, moneda: p.moneda || "MXP", dia: null,
+  }));
+
+  // --- Transacciones de la semana elegida ---
+  const finSemana = (() => { const d = new Date(`${semanaRep}T12:00:00`); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); })();
+  const transSemana = transUnidad.filter((t) => t.dia && t.dia >= semanaRep && t.dia <= finSemana);
+  const filasTrans = transSemana.map((t) => {
+    const p = partidaDe(t);
+    return {
+      origen_id: t.id, folio: t.folio_transaccion || "", area: t.area || "Sin área",
+      categoria: t.categoria || "", rubro: p?.rubro || "", proyecto: t.proyecto || p?.proyecto || "",
+      zona: t.zona || "", concepto: t.concepto_detallado || "", proveedor: t.proveedor || "",
+      solicitante: t.solicitante || "", importe: Number(t.importe) || 0,
+      moneda: t.moneda || "MXP", dia: t.dia || null,
+    };
+  });
+
+  const esPresupuesto = sub === "presupuesto";
+  const filas = esPresupuesto ? filasPresupuesto : filasTrans;
+  const periodo = esPresupuesto ? `${mesRep} ${anioRep}` : `Semana ${semanaRep}`;
+  const yaEnviados = reportes.filter((r) => r.tipo === (esPresupuesto ? "presupuesto" : "transacciones") && r.periodo === periodo);
+
+  const desviaciones = detectarDesviaciones(filas, reportado);
+
+  const generar = async () => {
+    if (!filas.length) { alert("No hay registros en el periodo elegido."); return; }
+    const v = yaEnviados.length + 1;
+    if (!confirm(
+      `Registrar la versión ${v} del reporte ${esPresupuesto ? "de presupuesto" : "de transacciones"} de ${periodo}, ` +
+      `con ${filas.length} registros.\n\n` +
+      `A partir de aquí, lo que aparezca fuera de estas combinaciones de área y categoría cuenta como imprevisto.`
+    )) return;
+    setGenerando(true);
+    try {
+      const r = await registrarReporteOficial({
+        compania: unidad, tipo: esPresupuesto ? "presupuesto" : "transacciones",
+        periodo, periodoIni: esPresupuesto ? null : semanaRep, periodoFin: esPresupuesto ? null : finSemana,
+        filas,
+      });
+      setRecarga((x) => x + 1);
+      alert(`Versión ${r.version} registrada con ${r.n} registros.`);
+    } catch (err) {
+      alert("No se pudo registrar: " + (err.message || err));
+    } finally { setGenerando(false); }
+  };
+
+  // --- Desviaciones agrupadas por área, que es a quien se le pregunta ---
+  const porArea = {};
+  desviaciones.forEach((d) => {
+    const a = d.area || "Sin área";
+    if (!porArea[a]) porArea[a] = { area: a, cats: new Map(), n: 0 };
+    porArea[a].n++;
+    const c = porArea[a].cats;
+    if (!c.has(d.categoria)) c.set(d.categoria, []);
+    c.get(d.categoria).push(d);
+  });
+  const areas = Object.values(porArea).sort((a, b) => b.n - a.n);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start" }}>
+        {[{ id: "presupuesto", label: "Presupuesto mensual" }, { id: "transacciones", label: "Transacciones semanales" }].map((x) => (
+          <button key={x.id} onClick={() => setSub(x.id)}
+            style={{ padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
+                     background: sub === x.id ? T.accent : "transparent",
+                     color: sub === x.id ? "#FFFFFF" : T.textDim,
+                     fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI }}>
+            {x.label}
+          </button>
+        ))}
+      </div>
+
+      <Panel
+        title={`Reporte oficial a Dirección — ${unidad}`}
+        subtitle={`${filas.length} registros en ${periodo}` + (yaEnviados.length ? ` · ${yaEnviados.length} versión(es) enviada(s)` : " · sin enviar")}
+        right={
+          <Button onClick={generar} disabled={generando || !filas.length}>
+            {generando ? "Registrando…" : `Registrar versión ${yaEnviados.length + 1}`}
+          </Button>
+        }
+      >
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>
+          {esPresupuesto ? (
+            <>
+              <Field label="Mes"><Select value={mesRep} onChange={(e) => setMesRep(e.target.value)}>
+                {MESES.map((m) => <option key={m}>{m}</option>)}</Select></Field>
+              <Field label="Año"><TextInput type="number" value={anioRep} onChange={(e) => setAnioRep(e.target.value)} style={{ width: 100 }} /></Field>
+            </>
+          ) : (
+            <Field label="Semana (lunes)">
+              <TextInput type="date" value={semanaRep} onChange={(e) => setSemanaRep(lunesDe(e.target.value))} />
+              <span style={{ fontSize: 11, color: T.textFaint, marginTop: 4, display: "block" }}>
+                Del {semanaRep} al {finSemana}
+              </span>
+            </Field>
+          )}
+        </div>
+
+        {yaEnviados.length > 0 && (
+          <div style={{ fontSize: 11.5, color: T.textDim, marginBottom: 12 }}>
+            Versiones de {periodo}:{" "}
+            {yaEnviados.sort((a, b) => a.version - b.version).map((r) => (
+              <span key={r.id} style={{ fontFamily: T.fontMono, marginRight: 10 }}>
+                v{r.version} ({new Date(r.enviado_en).toLocaleDateString("es-MX")}, {r.n_registros} reg.)
+              </span>
+            ))}
+          </div>
+        )}
+      </Panel>
+
+      <Panel
+        title="Gasto imprevisto"
+        subtitle="Combinaciones de área y categoría que no aparecen en ningún reporte oficial — lo que hay que revisar con cada área"
+      >
+        {cargando ? (
+          <div style={{ color: T.textFaint, fontSize: 12.5, padding: 20, textAlign: "center" }}>Cargando…</div>
+        ) : !reportado.length ? (
+          <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12 }}>
+            <b>Todavía no hay línea base</b>
+            Registra el primer reporte oficial para que la app pueda distinguir lo planeado de lo imprevisto.
+            Antes de eso, todo sería imprevisto y no diría nada.
+          </div>
+        ) : !areas.length ? (
+          <div style={{ color: T.teal, fontSize: 12.5, padding: 16, textAlign: "center" }}>
+            Nada fuera de lo reportado en {periodo}.
+          </div>
+        ) : (
+          <>
+            <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
+              {desviaciones.length} de {filas.length} registros de {periodo} no estaban contemplados.
+              Se compara por área: que otra área haya reportado la misma categoría no cuenta.
+            </div>
+            {areas.map((a) => (
+              <div key={a.area} style={{ marginBottom: 14, border: `1px solid ${T.borderSoft}`, borderRadius: 8, overflow: "hidden" }}>
+                <div style={{ background: T.panelAlt, padding: "9px 13px", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <span style={{ fontWeight: 700, fontSize: 13 }}>{a.area}</span>
+                  <span style={{ fontSize: 11.5, color: T.textDim }}>
+                    {a.cats.size} categoría(s) sin reportar · {a.n} registro(s)
+                  </span>
+                </div>
+                {[...a.cats.entries()].map(([cat, items]) => (
+                  <div key={cat} style={{ padding: "9px 13px", borderTop: `1px solid ${T.borderSoft}` }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
+                      <Pill tone="amber">{cat}</Pill>
+                      <span style={{ fontSize: 11.5, color: T.textFaint }}>{items.length} registro(s)</span>
+                    </div>
+                    <div style={{ fontSize: 11.5, color: T.textDim, marginTop: 6 }}>
+                      {items.slice(0, 4).map((x, i) => (
+                        <div key={i}>
+                          {x.dia ? `${x.dia} · ` : ""}{x.proveedor ? `${x.proveedor} · ` : ""}{x.concepto || "—"}
+                          {x.solicitante ? ` · solicitó ${x.solicitante}` : ""}
+                        </div>
+                      ))}
+                      {items.length > 4 && <div style={{ color: T.textFaint }}>y {items.length - 4} más…</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ))}
+          </>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
 function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [sub, setSub] = useSessionState("ss-catalogo-sub", "proyectos");
@@ -9696,6 +9988,7 @@ export default function App() {
     { id: "transacciones", label: "Transacciones" },
     { id: "reporte", label: "Reporte de Pagos" },
     { id: "reporte-direccion", label: "Reporte Pagos Dirección" },
+    { id: "reportes-direccion", label: "Reportes a Dirección" },
     { id: "vehiculos", label: "Vehículos" },
     { id: "catalogo", label: "Catálogo" },
   ];
@@ -9809,6 +10102,7 @@ export default function App() {
           {tab === "transacciones" && <TransaccionesTab zonas={zonas} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
+          {tab === "reportes-direccion" && <ReportesDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} session={session} />}
           {tab === "vehiculos" && (
             <VehiculosTab
               vehiculos={vehiculosApi.rows}

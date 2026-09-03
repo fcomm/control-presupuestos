@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.99.0";
+const APP_VERSION = "1.99.1";
 const CHANGELOG = [
+  { v: "1.99.1", desc: "La hoja de Presupuesto del Reporte Excel pasa a tabla plana: una partida por renglón, sin encabezados de grupo. Esos encabezados eran texto en celdas fusionadas —no se podían filtrar ni resumir con tabla dinámica— y además duplicaban lo que Zona y Rubro ya dicen en sus propias columnas. El agrupamiento se conserva en el ORDEN de los renglones, que es lo único que aportaba sin estorbar, y ahora el autofiltro sí funciona: antes las filas de grupo lo rompían porque no tenían la misma forma que los datos" },
   { v: "1.99.0", desc: "Los reportes oficiales se generan ahora desde la pestaña que les corresponde —el de presupuesto en Partidas, el semanal en Transacciones— con botón propio junto a las exportaciones normales; la pestaña Reportes a Dirección se queda con la bitácora de gasto imprevisto, que es la parte de análisis. Se corrige además el formato: el presupuesto mensual usa el PDF EJECUTIVO que ya estaba definido, no el listado que había introducido por error, y su Excel lleva siempre las transacciones vinculadas. El semanal genera también ambos archivos. Los dos toman todo el periodo sin filtros y llevan la revisión dentro del documento" },
   { v: "1.98.1", desc: "En Reportes a Dirección, el control de agrupar y el botón de registrar se veían iguales y estaban pegados, aunque uno solo configura y el otro ejecuta algo irreversible. Ahora van separados por un divisor y el botón dice 'Enviar a Dirección — versión N', que describe lo que realmente hace. Además la última versión se puede deshacer: el botón se confundía con el de agrupar, y una versión registrada por error deja la línea base contando envíos que nunca salieron. Solo la última, porque borrar una intermedia dejaría huecos en la numeración" },
   { v: "1.98.0", desc: "Los reportes oficiales respetan ahora el agrupamiento de Partidas y Transacciones —comparten la misma preferencia, así que cambiarlo en cualquiera de las dos lo cambia en el reporte— y el control quedó también en la pestaña, para verlo y ajustarlo al momento de generar. Los FILTROS siguen sin aplicarse a propósito: un reporte oficial debe traer todo el periodo, porque si no, no habría forma de distinguir entre lo que no estaba presupuestado y lo que un filtro ocultó. Agrupar no oculta nada, filtrar sí" },
@@ -4755,7 +4756,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       ws.mergeCells(1, 1, 1, Math.max(COLS.length, 2));
       const sub = ws.addRow([
         `${partidasOrdenadasVista.length} partidas   ·   ${fmtTot(totalPorMoneda(partidasOrdenadasVista))}` +
-        (groupKeys.length ? `   ·   agrupado por ${groupBys.map((g) => (GROUP_OPCIONES.find((o) => o.value === g.field) || {}).label || g.field).join(" > ")}` : "") +
+        (groupKeys.length ? `   ·   ordenado por ${groupBys.map((g) => (GROUP_OPCIONES.find((o) => o.value === g.field) || {}).label || g.field).join(" > ")}` : "") +
         (conDetalleEfectivo ? "   ·   el detalle de transacciones está en la hoja «Transacciones»" : ""),
       ]);
       sub.font = { size: 10, color: { argb: "FF6B7785" } };
@@ -4783,26 +4784,14 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       // Recorre el árbol agrupado. Cada grupo abre con su nombre, cuántas
       // partidas contiene y su subtotal por moneda.
       const hojas = (nodo) => nodo.type === "rows" ? nodo.rows : nodo.entries.flatMap((e) => hojas(e.child));
-      const etiquetaCampo = (campo) =>
-        (GROUP_OPCIONES.find((o) => o.value === campo) || {}).label || campo;
 
-      if (groupKeys.length && grouped) {
-        (function recorrer(nodo, nivel) {
-          if (nodo.type === "rows") { nodo.rows.forEach((p) => filaDe(p, nivel)); return; }
-          nodo.entries.forEach((e) => {
-            const lista = hojas(e.child);
-            const row = ws.addRow([`${etiquetaCampo(nodo.key)}: ${e.value}   (${lista.length})   ${fmtTot(totalPorMoneda(lista))}`]);
-            ws.mergeCells(row.number, 1, row.number, Math.max(COLS.length, 2));
-            row.getCell(1).font = { bold: true, color: { argb: nivel === 0 ? "FF232A31" : "FF4A5560" } };
-            row.getCell(1).fill = { type: "pattern", pattern: "solid",
-              fgColor: { argb: nivel === 0 ? "FFECEEF1" : "FFF6F7F9" } };
-            row.getCell(1).alignment = { indent: nivel };
-            recorrer(e.child, nivel + 1);
-          });
-        })(grouped, 0);
-      } else {
-        partidasOrdenadasVista.forEach((p) => filaDe(p, 0));
-      }
+      /* Tabla PLANA: una partida por renglón, sin encabezados de grupo. Esos
+         encabezados eran texto en celdas fusionadas —no se pueden filtrar ni
+         resumir con tabla dinámica— y además duplicaban lo que Zona y Rubro
+         ya dicen en sus columnas. El agrupamiento se conserva en el ORDEN de
+         los renglones, que es lo único que aporta sin estorbar. */
+      const ordenadas = (groupKeys.length && grouped) ? hojas(grouped) : partidasOrdenadasVista;
+      ordenadas.forEach((p) => filaDe(p, 0));
 
       // Totales por moneda: nunca sumadas entre sí.
       ws.addRow([]);
@@ -4812,7 +4801,10 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         row.getCell(COLS.length).numFmt = '"$"#,##0.00';
       });
 
-      ws.views = [{ state: "frozen", ySplit: 4 }];
+      ws.views = [{ state: "frozen", ySplit: hr.number }];
+      // Con la tabla plana el autofiltro sirve: antes las filas de grupo lo
+      // rompían porque no tenían la misma forma que los datos.
+      ws.autoFilter = { from: { row: hr.number, column: 1 }, to: { row: hr.number, column: COLS.length } };
 
       /* El detalle va en HOJA APARTE, como tabla plana con una transacción
          por renglón y los datos de su partida repetidos.

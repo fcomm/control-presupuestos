@@ -319,8 +319,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.2.1";
+const APP_VERSION = "2.2.2";
 const CHANGELOG = [
+  { v: "2.2.2", desc: "Fix: el catálogo de zonas seguía mostrando las de las tres compañías juntas —de ahí que Queretaro apareciera tres veces— porque el filtro por compañía nunca llegó a aplicarse en el panel. Se corrige también el conteo de transacciones, que sumaba las tres y por eso daba el mismo número en cada fila, y la detección de zonas huérfanas, que ahora mira solo las de la compañía activa" },
   { v: "2.2.1", desc: "uid() devuelve ahora SIEMPRE un UUID válido. Su respaldo anterior daba una cadena de ocho caracteres cuando crypto.randomUUID no estaba disponible —navegadores viejos, cualquier origen sin HTTPS— y Postgres rechaza eso en una columna uuid: el insert fallaba y el síntoma era «no pasó nada», que es justo lo que costó diagnosticar con los reportes oficiales. Se arregla en la función en vez de en las diecisiete llamadas, así que cubre también las que se agreguen después" },
   { v: "2.2.0", desc: "Las zonas pasan a ser por compañía: OSB dejaba de ver Guaymas entre zonas de CTM y viceversa, y el selector ofrecía lugares donde esa compañía no opera. Cada zona conserva su grupo editable, así que el reporte a Dirección puede agrupar distinto en cada compañía si hiciera falta. El SQL reparte las zonas existentes según su USO REAL en partidas y transacciones —no las replica a todas— y unifica QRO con Queretaro, moviendo también el detalle congelado de los reportes ya enviados: sin eso la línea base seguiría distinguiendo dos zonas que ya no existen. Requiere 23-zonas-por-compania.sql" },
   { v: "2.1.0", desc: "Las zonas ganan un GRUPO editable en Catálogo, que es como Dirección las conoce: Poza Rica, Altamira, Cerro Azul, Cotaxtla y Tamaulipas son 'Zona Norte' para ellos. El reporte mensual oficial corta por grupo en vez de por zona suelta, y el Excel lleva el grupo como columna propia para poder filtrar por él sin perder la zona real. Una zona sin grupo se reporta con su propio nombre, que es preferible a mandarla a un cajón genérico donde nadie la buscaría. Requiere 22-grupo-zonas.sql" },
@@ -8192,10 +8193,15 @@ function ZonasPanel({ zonasApi, transacciones = [], unidad }) {
   const [borradorGrupo, setBorradorGrupo] = useState("");
   const [borrador, setBorrador] = useState("");
 
-  const zonas = [...zonasApi.rows].sort(
+  /* Solo las de esta compañía. Se toleran las que aún no tienen unidad para
+     que el panel siga sirviendo si la migración no se ha corrido. */
+  const zonas = [...zonasApi.rows.filter((z) => z.unidad === unidad || !z.unidad)].sort(
     (a, b) => (a.orden ?? 999) - (b.orden ?? 999) || String(a.nombre).localeCompare(String(b.nombre))
   );
-  const usos = (nombre) => transacciones.filter(
+  // El conteo también por compañía: sin esto las tres mostraban el mismo
+  // número y parecía que la separación no había servido de nada.
+  const transDeLaUnidad = transacciones.filter((t) => t.unidad_detectada === unidad);
+  const usos = (nombre) => transDeLaUnidad.filter(
     (t) => String(t.zona || "").trim().toLowerCase() === String(nombre).trim().toLowerCase()
   ).length;
 
@@ -8203,7 +8209,7 @@ function ZonasPanel({ zonasApi, transacciones = [], unidad }) {
   // por carga masiva o desde los correos, y sin esto pasarían inadvertidas.
   const enCatalogo = new Set(zonas.map((z) => String(z.nombre).trim().toLowerCase()));
   const huerfanas = [...new Set(
-    transacciones.map((t) => String(t.zona || "").trim()).filter(Boolean)
+    transDeLaUnidad.map((t) => String(t.zona || "").trim()).filter(Boolean)
       .filter((z) => !enCatalogo.has(z.toLowerCase()))
   )].sort();
 
@@ -8244,7 +8250,7 @@ function ZonasPanel({ zonasApi, transacciones = [], unidad }) {
   return (
     <Panel
       title="Catálogo de zonas"
-      subtitle={`${zonas.filter((z) => z.activa !== false).length} activas — alimentan el selector de Zona al capturar transacciones`}
+      subtitle={`${zonas.filter((z) => z.activa !== false).length} activas en ${unidad} — alimentan el selector de Zona al capturar transacciones`}
     >
       <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>
         <Field label="Nueva zona">

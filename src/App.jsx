@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.97.0";
+const APP_VERSION = "1.97.1";
 const CHANGELOG = [
+  { v: "1.97.1", desc: "Fix: registrar un reporte oficial no hacía nada. Los identificadores se generaban en el navegador con uid(), que cuando crypto.randomUUID no está disponible devuelve una cadena de ocho caracteres — no un UUID válido — y Postgres rechazaba la inserción. Ahora los genera la base, que ya tenía gen_random_uuid() por defecto. Además los errores dicen en qué paso falló y quedan completos en la consola: el mensaje anterior era demasiado escueto para diagnosticar" },
   { v: "1.97.0", desc: "El reporte oficial genera ahora DOS archivos: el PDF para leer, sin detalle, y el Excel para analizar, con las transacciones vinculadas en hoja aparte cuando es el reporte de presupuesto. La REVISIÓN va dentro de ambos documentos, no solo en el nombre del archivo: los nombres se pierden al reenviar por correo, y sin la versión visible nadie puede saber cuál de dos copias es la vigente. Las descargas van separadas por una pausa porque los navegadores bloquean la segunda cuando salen juntas — el archivo desaparecería sin decir por qué" },
   { v: "1.96.1", desc: "Registrar un reporte oficial genera ahora el PDF en el mismo acto. Estaban separados —se registraba aquí y el documento se generaba desde Partidas— y eso permitía que el archivo enviado no coincidiera con lo congelado: bastaba cambiar un filtro entre un paso y otro para que la línea base mintiera. El PDF viene agrupado por área, que es la dimensión con la que se revisa después. Y las versiones ya registradas se pueden volver a descargar: el documento se reconstruye del contenido congelado, no de los datos actuales, así que sale idéntico al que se envió" },
   { v: "1.96.0", desc: "Nueva pestaña Reportes a Dirección, con reportes oficiales versionados y bitácora de gasto imprevisto. Hasta ahora los reportes se generaban filtrando, así que nadie podía reconstruir qué se envió: cuando en la revisión alguien decía 'eso sí estaba reportado', no había forma de comprobarlo. Un reporte oficial congela su contenido —los datos, no los ids, para que el histórico no se reescriba si la partida cambia después— y con eso la línea base deja de ser una convención. La desviación se mide por ÁREA y CATEGORÍA, no por monto: el objetivo es fomentar planeación, no controlar cuánto. Y va por área porque a quien se le pide atención es al área: que Mantenimiento haya reportado Llantas no cubre a Deshidratación gastando en llantas. Requiere 21-reportes-oficiales.sql" },
@@ -1449,27 +1450,31 @@ async function registrarReporteOficial({ compania, tipo, periodo, periodoIni, pe
     .from("reportes_oficiales").select("version")
     .eq("compania", compania).eq("tipo", tipo).eq("periodo", periodo)
     .order("version", { ascending: false }).limit(1);
-  if (e1) throw e1;
+  if (e1) throw new Error(`al leer la última versión: ${e1.message}. ¿Se corrió 21-reportes-oficiales.sql?`);
   const version = ((prev && prev[0]?.version) || 0) + 1;
 
   const tot = { MXP: 0, USD: 0 };
   filas.forEach((f) => { tot[(f.moneda || "MXP") === "USD" ? "USD" : "MXP"] += Number(f.importe) || 0; });
 
-  const idRep = uid();
-  const { error: e2 } = await supabase.from("reportes_oficiales").insert({
-    id: idRep, compania, tipo, periodo,
+  /* El id lo genera la BASE, no el navegador. `uid()` cae en una cadena de
+     ocho caracteres cuando crypto.randomUUID no está disponible, y eso no es
+     un UUID válido: Postgres rechaza la inserción y el fallo aparece como
+     "no pasó nada". Las tablas ya tienen gen_random_uuid() por defecto. */
+  const { data: cab, error: e2 } = await supabase.from("reportes_oficiales").insert({
+    compania, tipo, periodo,
     periodo_ini: periodoIni || null, periodo_fin: periodoFin || null,
     n_registros: filas.length, importe_mxp: tot.MXP, importe_usd: tot.USD,
     notas: notas || null,
-  });
-  if (e2) throw e2;
+  }).select("id").single();
+  if (e2) throw new Error(`al registrar la cabecera: ${e2.message}${e2.hint ? ` (${e2.hint})` : ""}`);
+  if (!cab?.id) throw new Error("la base no devolvió el id del reporte");
 
-  // En lotes: con doscientos registros una sola inserción puede exceder
-  // el límite de la petición.
-  const detalle = filas.map((f) => ({ id: uid(), reporte_id: idRep, ...f }));
+  // En lotes: con doscientos registros una sola inserción puede exceder el
+  // límite de la petición.
+  const detalle = filas.map((f) => ({ reporte_id: cab.id, ...f }));
   for (let i = 0; i < detalle.length; i += 100) {
     const { error } = await supabase.from("reportes_oficiales_detalle").insert(detalle.slice(i, i + 100));
-    if (error) throw error;
+    if (error) throw new Error(`al guardar el detalle (registro ${i + 1} en adelante): ${error.message}`);
   }
   return { version, n: filas.length };
 }
@@ -8246,6 +8251,16 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
     )) return;
     setGenerando(true);
     try {
+      /* Comprobación previa: si la migración no se corrió, el fallo aparece
+         al insertar y el mensaje de Postgres no dice qué falta. Preguntarlo
+         antes convierte un error críptico en una instrucción. */
+      const { error: eTabla } = await supabase.from("reportes_oficiales").select("id").limit(1);
+      if (eTabla) {
+        throw new Error(
+          `La tabla de reportes oficiales no está disponible (${eTabla.message}).\n\n` +
+          `Corre 21-reportes-oficiales.sql en Supabase antes de usar esta pestaña.`
+        );
+      }
       const tipo = esPresupuesto ? "presupuesto" : "transacciones";
       const r = await registrarReporteOficial({
         compania: unidad, tipo, periodo,
@@ -8262,7 +8277,11 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
       await generarExcelOficial({ compania: unidad, tipo, periodo, version: r.version, filas, transacciones: txPartidas });
       setRecarga((x) => x + 1);
     } catch (err) {
-      alert("No se pudo registrar: " + (err.message || err));
+      // A la consola además del aviso: el mensaje de Supabase suele traer
+      // detalle que no cabe en un alert y que es lo que permite diagnosticar.
+      console.error("Reporte oficial:", err);
+      alert("No se pudo registrar el reporte.\n\n" + (err.message || err) +
+            "\n\nEl detalle completo está en la consola del navegador (F12).");
     } finally { setGenerando(false); }
   };
 

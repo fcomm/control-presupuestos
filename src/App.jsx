@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.99.1";
+const APP_VERSION = "1.99.2";
 const CHANGELOG = [
+  { v: "1.99.2", desc: "Fix: el Excel del reporte oficial fallaba con 'Cannot merge already merged cells'. Las fusiones del encabezado usaban números de fila fijos, así que al agregar el renglón de REVISIÓN todo se recorría y se intentaba fusionar dos veces la misma fila. Ahora cada fusión usa el número real de su renglón, que es lo que ExcelJS ya devuelve al agregarlo — y se corrigió el mismo patrón frágil en los otros cuatro generadores, donde todavía no fallaba pero fallaría al agregar cualquier renglón" },
   { v: "1.99.1", desc: "La hoja de Presupuesto del Reporte Excel pasa a tabla plana: una partida por renglón, sin encabezados de grupo. Esos encabezados eran texto en celdas fusionadas —no se podían filtrar ni resumir con tabla dinámica— y además duplicaban lo que Zona y Rubro ya dicen en sus propias columnas. El agrupamiento se conserva en el ORDEN de los renglones, que es lo único que aportaba sin estorbar, y ahora el autofiltro sí funciona: antes las filas de grupo lo rompían porque no tenían la misma forma que los datos" },
   { v: "1.99.0", desc: "Los reportes oficiales se generan ahora desde la pestaña que les corresponde —el de presupuesto en Partidas, el semanal en Transacciones— con botón propio junto a las exportaciones normales; la pestaña Reportes a Dirección se queda con la bitácora de gasto imprevisto, que es la parte de análisis. Se corrige además el formato: el presupuesto mensual usa el PDF EJECUTIVO que ya estaba definido, no el listado que había introducido por error, y su Excel lleva siempre las transacciones vinculadas. El semanal genera también ambos archivos. Los dos toman todo el periodo sin filtros y llevan la revisión dentro del documento" },
   { v: "1.98.1", desc: "En Reportes a Dirección, el control de agrupar y el botón de registrar se veían iguales y estaban pegados, aunque uno solo configura y el otro ejecuta algo irreversible. Ahora van separados por un divisor y el botón dice 'Enviar a Dirección — versión N', que describe lo que realmente hace. Además la última versión se puede deshacer: el botón se confundía con el de agrupar, y una versión registrada por error deja la línea base contando envíos que nunca salieron. Solo la última, porque borrar una intermedia dejaría huecos en la numeración" },
@@ -1355,16 +1356,20 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
   const ws = wbx.addWorksheet(esPres ? "Presupuesto" : "Transacciones");
   ws.columns = COLS.map((c) => ({ width: c.w }));
 
+  // Fusiones por el número REAL de fila: con números fijos, agregar un
+  // renglón al encabezado hace fusionar dos veces la misma fila.
+  const fusionar = (row) => ws.mergeCells(row.number, 1, row.number, COLS.length);
+
   const tit = ws.addRow([esPres ? `Presupuesto mensual — ${compania}` : `Transacciones de la semana — ${compania}`]);
   tit.font = { bold: true, size: 14, name: "Calibri" };
-  ws.mergeCells(1, 1, 1, COLS.length);
+  fusionar(tit);
   // La revisión dentro del archivo, no solo en su nombre.
   const rev = ws.addRow([`${periodo}   ·   REVISIÓN ${version}   ·   enviado el ${new Date().toLocaleDateString("es-MX")}`]);
   rev.font = { bold: true, size: 11, color: { argb: AZUL }, name: "Calibri" };
-  ws.mergeCells(2, 1, 2, COLS.length);
+  fusionar(rev);
   const sub = ws.addRow([`${filas.length} registros   ·   ${fmtTot(tot)}`]);
   sub.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" };
-  ws.mergeCells(3, 1, 3, COLS.length);
+  fusionar(sub);
   ws.addRow([]);
 
   const hr = ws.addRow(COLS.map((c) => c.h));
@@ -1434,7 +1439,7 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
     wd.columns = TX.map((c) => ({ width: c.w }));
     const t2 = wd.addRow([`Transacciones vinculadas — ${compania} — ${periodo} — REVISIÓN ${version}`]);
     t2.font = { bold: true, size: 12, name: "Calibri" };
-    wd.mergeCells(1, 1, 1, TX.length);
+    wd.mergeCells(t2.number, 1, t2.number, TX.length);
     wd.addRow([]);
     const h2 = wd.addRow(TX.map((c) => c.h));
     h2.eachCell((cell) => {
@@ -3793,7 +3798,7 @@ async function generarExcelSPP(r) {
 
   const tit = ws.addRow([`Solicitud de Pago a Proveedores ${r.compania}`]);
   tit.font = { bold: true, size: 15, name: "Calibri" };
-  ws.mergeCells(1, 1, 1, 8);
+  ws.mergeCells(tit.number, 1, tit.number, 8);
   ws.addRow([]);
 
   const dato = (etq, val) => {
@@ -4745,22 +4750,30 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         .join("   ·   ");
 
       // Encabezado del documento
+      /* Cada fusión usa el número REAL de su fila. Con números fijos, agregar
+         el renglón de revisión corría todo y se intentaba fusionar dos veces
+         la fila 2 — de ahí "Cannot merge already merged cells". */
+      const anchoFusion = Math.max(COLS.length, 2);
+      const fusionar = (row) => ws.mergeCells(row.number, 1, row.number, anchoFusion);
+
       const tit = ws.addRow([`Reporte Presupuestal — ${unidad} — ${periodoForzado || etiquetaPeriodo}`]);
       tit.font = { bold: true, size: 14 };
+      fusionar(tit);
+
       if (revision) {
         // La revisión dentro del archivo, no solo en su nombre.
         const rr = ws.addRow([`REVISIÓN ${revision}   ·   enviado el ${new Date().toLocaleDateString("es-MX")}`]);
         rr.font = { bold: true, size: 11, color: { argb: "FF3E5C76" } };
-        ws.mergeCells(rr.number, 1, rr.number, Math.max(COLS.length, 2));
+        fusionar(rr);
       }
-      ws.mergeCells(1, 1, 1, Math.max(COLS.length, 2));
+
       const sub = ws.addRow([
         `${partidasOrdenadasVista.length} partidas   ·   ${fmtTot(totalPorMoneda(partidasOrdenadasVista))}` +
         (groupKeys.length ? `   ·   ordenado por ${groupBys.map((g) => (GROUP_OPCIONES.find((o) => o.value === g.field) || {}).label || g.field).join(" > ")}` : "") +
         (conDetalleEfectivo ? "   ·   el detalle de transacciones está en la hoja «Transacciones»" : ""),
       ]);
       sub.font = { size: 10, color: { argb: "FF6B7785" } };
-      ws.mergeCells(2, 1, 2, Math.max(COLS.length, 2));
+      fusionar(sub);
       ws.addRow([]);
 
       const hr = ws.addRow(COLS.map((c) => c.header));
@@ -6188,11 +6201,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 
       const tit = ws.addRow([`Transacciones — ${unidad} — ${periodo}`]);
       tit.font = { bold: true, size: 14, name: "Calibri" };
-      ws.mergeCells(1, 1, 1, Math.max(COLS.length, 2));
+      ws.mergeCells(tit.number, 1, tit.number, Math.max(COLS.length, 2));
       const sub = ws.addRow([`${transEnriquecidas.length} transacciones   ·   ${fmtTot(totales)}` +
         (groupKeys.length ? `   ·   agrupadas por ${groupBys.map((g) => etiquetaCampoTx(g.field)).join(" > ")}` : "")]);
       sub.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" };
-      ws.mergeCells(2, 1, 2, Math.max(COLS.length, 2));
+      ws.mergeCells(sub.number, 1, sub.number, Math.max(COLS.length, 2));
       ws.addRow([]);
 
       const hr = ws.addRow(COLS.map((c) => c.header));
@@ -7636,7 +7649,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
     // --- Encabezado, con el mismo tratamiento que el Reporte Presupuestal ---
     const tit = ws.addRow([`Reporte de Pagos a Dirección — ${unidad} — ${etiquetaPeriodo}`]);
     tit.font = { bold: true, size: 14, name: "Calibri" };
-    ws.mergeCells(1, 1, 1, Math.max(colsXls.length, 2));
+    ws.mergeCells(tit.number, 1, tit.number, Math.max(colsXls.length, 2));
 
     // Los totales van en el subtítulo, no sueltos en celdas fijas: ahí se leen
     // junto al periodo que los explica, y dejan de romperse si cambian las
@@ -7646,7 +7659,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
     if (totalUSD) totales.push(fmtTot("USD", totalUSD));
     const sub = ws.addRow([`${filasOrdenadas.length} transacciones   ·   ${totales.join("   ·   ") || "sin importes"}`]);
     sub.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" };
-    ws.mergeCells(2, 1, 2, Math.max(colsXls.length, 2));
+    ws.mergeCells(sub.number, 1, sub.number, Math.max(colsXls.length, 2));
     ws.addRow([]);
 
     const hr = ws.addRow(colsXls.map((c) => c.label));

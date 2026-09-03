@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.99.2";
+const APP_VERSION = "2.0.0";
 const CHANGELOG = [
+  { v: "2.0.0", desc: "El reporte semanal se rehace con formato propio. Los archivos se llaman 'Reporte Pagos del dia 07 - 13 de Septiembre'. El PDF abre con un resumen ejecutivo —cuánto se va a pagar, por zona y moneda— y debajo una tabla plana con la zona y el día como columnas, para que se lea de corrido. El Excel lleva una tabla por zona y moneda apiladas verticalmente, cada una con su subtotal, más una hoja «Datos» plana con autofiltro: Excel admite un solo autofiltro por hoja, así que las tablas apiladas no pueden filtrarse cada una por su cuenta y la hoja plana cubre ese uso" },
   { v: "1.99.2", desc: "Fix: el Excel del reporte oficial fallaba con 'Cannot merge already merged cells'. Las fusiones del encabezado usaban números de fila fijos, así que al agregar el renglón de REVISIÓN todo se recorría y se intentaba fusionar dos veces la misma fila. Ahora cada fusión usa el número real de su renglón, que es lo que ExcelJS ya devuelve al agregarlo — y se corrigió el mismo patrón frágil en los otros cuatro generadores, donde todavía no fallaba pero fallaría al agregar cualquier renglón" },
   { v: "1.99.1", desc: "La hoja de Presupuesto del Reporte Excel pasa a tabla plana: una partida por renglón, sin encabezados de grupo. Esos encabezados eran texto en celdas fusionadas —no se podían filtrar ni resumir con tabla dinámica— y además duplicaban lo que Zona y Rubro ya dicen en sus propias columnas. El agrupamiento se conserva en el ORDEN de los renglones, que es lo único que aportaba sin estorbar, y ahora el autofiltro sí funciona: antes las filas de grupo lo rompían porque no tenían la misma forma que los datos" },
   { v: "1.99.0", desc: "Los reportes oficiales se generan ahora desde la pestaña que les corresponde —el de presupuesto en Partidas, el semanal en Transacciones— con botón propio junto a las exportaciones normales; la pestaña Reportes a Dirección se queda con la bitácora de gasto imprevisto, que es la parte de análisis. Se corrige además el formato: el presupuesto mensual usa el PDF EJECUTIVO que ya estaba definido, no el listado que había introducido por error, y su Excel lleva siempre las transacciones vinculadas. El semanal genera también ambos archivos. Los dos toman todo el periodo sin filtros y llevan la revisión dentro del documento" },
@@ -1467,6 +1468,219 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
   const a = document.createElement("a");
   a.href = url;
   a.download = `${esPres ? "Presupuesto" : "Transacciones"} ${compania} - ${periodo} - rev ${version}.xlsx`;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/** "07 - 13 de Septiembre", o con los dos meses si la semana los cruza. */
+function rangoSemana(ini, fin) {
+  if (!ini || !fin) return "Sin periodo";
+  const a = new Date(`${ini}T12:00:00`), b = new Date(`${fin}T12:00:00`);
+  const dd = (d) => String(d.getDate()).padStart(2, "0");
+  return a.getMonth() === b.getMonth()
+    ? `${dd(a)} - ${dd(b)} de ${MESES[b.getMonth()]}`
+    : `${dd(a)} de ${MESES[a.getMonth()]} - ${dd(b)} de ${MESES[b.getMonth()]}`;
+}
+
+const numMx = (v) => (Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+/** Agrupa por zona y moneda, que es como Pagos ejecuta las transferencias. */
+function bloquesZonaMoneda(filas) {
+  const mapa = new Map();
+  filas.forEach((f) => {
+    const zona = String(f.zona || "").trim() || "Sin zona";
+    const moneda = (f.moneda || "MXP") === "USD" ? "USD" : "MXP";
+    const k = `${zona}|${moneda}`;
+    if (!mapa.has(k)) mapa.set(k, { zona, moneda, filas: [], total: 0 });
+    const b = mapa.get(k);
+    b.filas.push(f);
+    b.total += Number(f.importe) || 0;
+  });
+  return [...mapa.values()].sort((a, b) =>
+    a.zona.localeCompare(b.zona) || a.moneda.localeCompare(b.moneda));
+}
+
+/**
+ * PDF del reporte semanal de pagos.
+ *
+ * Encabezado con el resumen ejecutivo —lo que se va a pagar, por zona y
+ * moneda— y debajo una tabla PLANA. La zona y el día van como columnas en
+ * lugar de como encabezados de sección: así el documento se lee de corrido y
+ * el resumen de arriba ya dio la vista agrupada.
+ */
+function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas }) {
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+  const M = 36, A = 792 - M * 2;
+  const rango = rangoSemana(periodoIni, periodoFin);
+  const bloques = bloquesZonaMoneda(filas);
+
+  const tot = {};
+  filas.forEach((f) => { const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP"; tot[m] = (tot[m] || 0) + (Number(f.importe) || 0); });
+
+  doc.setFontSize(15).setFont(undefined, "bold").setTextColor(35, 42, 49);
+  doc.text(`Reporte de Pagos — ${compania}`, M, 38);
+  doc.setFontSize(10).setFont(undefined, "normal").setTextColor(107, 119, 133);
+  doc.text(`Del día ${rango}   ·   ${filas.length} pagos`, M, 54);
+
+  if (version) {
+    doc.setFillColor(62, 92, 118);
+    doc.rect(M + A - 96, 22, 96, 30, "F");
+    doc.setTextColor(255).setFontSize(7.5);
+    doc.text("REVISIÓN", M + A - 86, 34);
+    doc.setFontSize(15).setFont(undefined, "bold");
+    doc.text(String(version), M + A - 10, 46, { align: "right" });
+    doc.setFont(undefined, "normal");
+  }
+
+  /* Resumen ejecutivo: lo que Dirección necesita ver primero es cuánto se va
+     a pagar y a dónde. El detalle de abajo es para consultarlo, no para
+     sumarlo a mano. */
+  let y = 70;
+  doc.setFillColor(246, 247, 249);
+  doc.rect(M, y, A, 26 + bloques.length * 13, "F");
+  doc.setFontSize(8.5).setTextColor(107, 119, 133);
+  doc.text("RESUMEN — LO QUE SE VA A PAGAR", M + 10, y + 15);
+  doc.setFontSize(9).setTextColor(35, 42, 49);
+  let yb = y + 30;
+  bloques.forEach((b) => {
+    doc.text(`${b.zona}   ${b.moneda}`, M + 14, yb);
+    doc.text(`${b.filas.length} pago(s)`, M + 220, yb);
+    doc.setFont(undefined, "bold");
+    doc.text(`$${numMx(b.total)}`, M + 330, yb, { align: "right" });
+    doc.setFont(undefined, "normal");
+    yb += 13;
+  });
+  doc.setFont(undefined, "bold").setFontSize(11);
+  doc.text(
+    Object.entries(tot).map(([m, v]) => `TOTAL ${m}: $${numMx(v)}`).join("      "),
+    M + A - 10, y + 18, { align: "right" }
+  );
+  doc.setFont(undefined, "normal");
+  y += 26 + bloques.length * 13 + 14;
+
+  // Tabla plana: zona y día como columnas.
+  autoTable(doc, {
+    startY: y,
+    head: [["Día", "Zona", "Área", "Proveedor", "Concepto", "Categoría", "Solicitante", "Importe", "Mon."]],
+    body: filas
+      .slice()
+      .sort((a, b) => String(a.zona || "").localeCompare(String(b.zona || "")) || String(a.dia || "").localeCompare(String(b.dia || "")))
+      .map((f) => [f.dia || "", f.zona || "", f.area || "", f.proveedor || "", f.concepto || "",
+                   f.categoria || "", f.solicitante || "", `$${numMx(f.importe)}`, f.moneda || "MXP"]),
+    styles: { fontSize: 7, cellPadding: 3.5 },
+    headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
+    columnStyles: {
+      0: { cellWidth: 54 }, 1: { cellWidth: 62 }, 2: { cellWidth: 62 },
+      3: { halign: "left" }, 4: { halign: "left" }, 5: { halign: "left", cellWidth: 90 },
+      6: { cellWidth: 66 }, 7: { halign: "right", cellWidth: 62 }, 8: { cellWidth: 34 },
+    },
+    margin: { left: M, right: M },
+  });
+
+  doc.save(`Reporte Pagos del dia ${rango}.pdf`);
+}
+
+/**
+ * Excel del reporte semanal: una tabla por zona y moneda, apiladas.
+ *
+ * Excel admite UN solo autofiltro por hoja, así que tablas apiladas no pueden
+ * filtrarse cada una por su cuenta. Por eso van dos hojas: la de bloques para
+ * leer y entregar, y una plana con autofiltro para filtrar y hacer tablas
+ * dinámicas. Es la misma división que ya usamos en el reporte presupuestal.
+ */
+async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, filas }) {
+  const rango = rangoSemana(periodoIni, periodoFin);
+  const bloques = bloquesZonaMoneda(filas);
+  const fmt = '"$"#,##0.00';
+  const AZUL = "FF3E5C76", GRIS = "FFECEEF1";
+
+  const COLS = [
+    { h: "Día", w: 12, g: (f) => f.dia },
+    { h: "Área", w: 20, g: (f) => f.area, izq: 1 },
+    { h: "Proveedor", w: 34, g: (f) => f.proveedor, izq: 1 },
+    { h: "Concepto", w: 46, g: (f) => f.concepto, izq: 1 },
+    { h: "Categoría", w: 28, g: (f) => f.categoria, izq: 1 },
+    { h: "Solicitante", w: 18, g: (f) => f.solicitante },
+    { h: "Proyecto", w: 18, g: (f) => f.proyecto },
+    { h: "Folio", w: 15, g: (f) => f.folio },
+    { h: "Importe", w: 15, g: (f) => Number(f.importe) || 0, money: 1 },
+  ];
+
+  const wbx = new ExcelJS.Workbook();
+  const ws = wbx.addWorksheet("Por zona y moneda");
+  ws.columns = COLS.map((c) => ({ width: c.w }));
+
+  const tit = ws.addRow([`Reporte de Pagos — ${compania} — del día ${rango}`]);
+  tit.font = { bold: true, size: 14, name: "Calibri" };
+  ws.mergeCells(tit.number, 1, tit.number, COLS.length);
+  if (version) {
+    const rv = ws.addRow([`REVISIÓN ${version}   ·   enviado el ${new Date().toLocaleDateString("es-MX")}`]);
+    rv.font = { bold: true, size: 11, color: { argb: AZUL }, name: "Calibri" };
+    ws.mergeCells(rv.number, 1, rv.number, COLS.length);
+  }
+  ws.addRow([]);
+
+  bloques.forEach((b) => {
+    const enc = ws.addRow([`${b.zona}   ·   ${b.moneda}   ·   ${b.filas.length} pago(s)   ·   $${numMx(b.total)} ${b.moneda}`]);
+    ws.mergeCells(enc.number, 1, enc.number, COLS.length);
+    enc.font = { bold: true, size: 12, name: "Calibri" };
+    enc.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } };
+
+    const hr = ws.addRow(COLS.map((c) => c.h));
+    hr.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" }, name: "Calibri", size: 10 };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: AZUL } };
+      cell.alignment = { horizontal: "center", vertical: "center", wrapText: true };
+    });
+
+    b.filas
+      .slice()
+      .sort((x, z) => String(x.dia || "").localeCompare(String(z.dia || "")))
+      .forEach((f) => {
+        const row = ws.addRow(COLS.map((c) => c.g(f)));
+        COLS.forEach((c, i) => {
+          const cell = row.getCell(i + 1);
+          cell.font = { name: "Calibri", size: 10 };
+          cell.alignment = { horizontal: c.money ? "right" : (c.izq ? "left" : "center"), vertical: "top", wrapText: !!c.izq };
+          if (c.money) cell.numFmt = fmt;
+        });
+      });
+
+    const tr = ws.addRow([`Total ${b.zona} ${b.moneda}`, ...Array(COLS.length - 2).fill(""), b.total]);
+    tr.font = { bold: true, name: "Calibri" };
+    tr.getCell(COLS.length).numFmt = fmt;
+    tr.eachCell((cell) => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } }; });
+    ws.addRow([]);
+  });
+
+  // Hoja plana: es la que se puede filtrar y resumir.
+  const PL = [{ h: "Zona", w: 16, g: (f) => f.zona }, { h: "Moneda", w: 9, g: (f) => f.moneda }, ...COLS];
+  const wp = wbx.addWorksheet("Datos");
+  wp.columns = PL.map((c) => ({ width: c.w }));
+  const hp = wp.addRow(PL.map((c) => c.h));
+  hp.eachCell((cell) => {
+    cell.font = { bold: true, color: { argb: "FFFFFFFF" }, name: "Calibri" };
+    cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: AZUL } };
+    cell.alignment = { horizontal: "center", vertical: "center", wrapText: true };
+  });
+  filas.forEach((f) => {
+    const row = wp.addRow(PL.map((c) => c.g(f)));
+    PL.forEach((c, i) => {
+      const cell = row.getCell(i + 1);
+      cell.font = { name: "Calibri", size: 10 };
+      cell.alignment = { horizontal: c.money ? "right" : (c.izq ? "left" : "center"), vertical: "top", wrapText: !!c.izq };
+      if (c.money) cell.numFmt = fmt;
+    });
+  });
+  wp.views = [{ state: "frozen", ySplit: 1 }];
+  wp.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: PL.length } };
+
+  const buf = await wbx.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `Reporte Pagos del dia ${rango}.xlsx`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -6161,11 +6375,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         compania: unidad, tipo: "transacciones", periodo: periodoSem,
         periodoIni: semanaOf, periodoFin: finSemanaOf, filas,
       });
-      generarPdfOficial({ compania: unidad, tipo: "transacciones", periodo: periodoSem,
-        version: r.version, filas, grupos: groupBys, etiqueta: etiquetaCampoTx });
+      generarPdfSemanal({ compania: unidad, periodoIni: semanaOf, periodoFin: finSemanaOf,
+        version: r.version, filas });
       await new Promise((res) => setTimeout(res, 900));
-      await generarExcelOficial({ compania: unidad, tipo: "transacciones", periodo: periodoSem,
-        version: r.version, filas, transacciones: [], grupos: groupBys, etiqueta: etiquetaCampoTx });
+      await generarExcelSemanal({ compania: unidad, periodoIni: semanaOf, periodoFin: finSemanaOf,
+        version: r.version, filas });
       setRecargaSem((x) => x + 1);
     } catch (err) {
       console.error("Reporte semanal:", err);
@@ -8478,11 +8692,23 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
     const { data, error } = await supabase.from("reportes_oficiales_detalle")
       .select("*").eq("reporte_id", r.id);
     if (error) { alert("No se pudo recuperar: " + error.message); return; }
-    generarPdfOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [] });
-    await new Promise((res) => setTimeout(res, 900));
-    // Sin hoja de transacciones al reconstruir: solo se congeló lo reportado,
-    // y las transacciones de hoy no son las que existían entonces.
-    await generarExcelOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [], transacciones: [] });
+    /* Se reconstruye con el MISMO formato con que se envió: si el semanal
+       saliera aquí con el formato del presupuesto, la copia no coincidiría
+       con la que Dirección tiene, y el archivo dejaría de servir de evidencia. */
+    if (r.tipo === "transacciones") {
+      generarPdfSemanal({ compania: r.compania, periodoIni: r.periodo_ini, periodoFin: r.periodo_fin,
+        version: r.version, filas: data || [] });
+      await new Promise((res) => setTimeout(res, 900));
+      await generarExcelSemanal({ compania: r.compania, periodoIni: r.periodo_ini, periodoFin: r.periodo_fin,
+        version: r.version, filas: data || [] });
+    } else {
+      generarPdfOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [] });
+      await new Promise((res) => setTimeout(res, 900));
+      // Sin hoja de transacciones al reconstruir: solo se congeló lo reportado,
+      // y las transacciones de hoy no son las que existían entonces.
+      await generarExcelOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo,
+        version: r.version, filas: data || [], transacciones: [] });
+    }
   };
 
 

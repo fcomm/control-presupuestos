@@ -291,8 +291,10 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.98.0";
+const APP_VERSION = "1.99.0";
 const CHANGELOG = [
+  { v: "1.99.0", desc: "Los reportes oficiales se generan ahora desde la pestaña que les corresponde —el de presupuesto en Partidas, el semanal en Transacciones— con botón propio junto a las exportaciones normales; la pestaña Reportes a Dirección se queda con la bitácora de gasto imprevisto, que es la parte de análisis. Se corrige además el formato: el presupuesto mensual usa el PDF EJECUTIVO que ya estaba definido, no el listado que había introducido por error, y su Excel lleva siempre las transacciones vinculadas. El semanal genera también ambos archivos. Los dos toman todo el periodo sin filtros y llevan la revisión dentro del documento" },
+  { v: "1.98.1", desc: "En Reportes a Dirección, el control de agrupar y el botón de registrar se veían iguales y estaban pegados, aunque uno solo configura y el otro ejecuta algo irreversible. Ahora van separados por un divisor y el botón dice 'Enviar a Dirección — versión N', que describe lo que realmente hace. Además la última versión se puede deshacer: el botón se confundía con el de agrupar, y una versión registrada por error deja la línea base contando envíos que nunca salieron. Solo la última, porque borrar una intermedia dejaría huecos en la numeración" },
   { v: "1.98.0", desc: "Los reportes oficiales respetan ahora el agrupamiento de Partidas y Transacciones —comparten la misma preferencia, así que cambiarlo en cualquiera de las dos lo cambia en el reporte— y el control quedó también en la pestaña, para verlo y ajustarlo al momento de generar. Los FILTROS siguen sin aplicarse a propósito: un reporte oficial debe traer todo el periodo, porque si no, no habría forma de distinguir entre lo que no estaba presupuestado y lo que un filtro ocultó. Agrupar no oculta nada, filtrar sí" },
   { v: "1.97.2", desc: "Fix: al registrar un reporte oficial faltaba mandar la columna version, que es obligatoria — se calculaba correctamente pero no se incluía en la inserción. El mensaje mejorado de la 1.97.1 fue lo que permitió verlo de inmediato" },
   { v: "1.97.1", desc: "Fix: registrar un reporte oficial no hacía nada. Los identificadores se generaban en el navegador con uid(), que cuando crypto.randomUUID no está disponible devuelve una cadena de ocho caracteres — no un UUID válido — y Postgres rechazaba la inserción. Ahora los genera la base, que ya tenía gen_random_uuid() por defecto. Además los errores dicen en qué paso falló y quedan completos en la consola: el mensaje anterior era demasiado escueto para diagnosticar" },
@@ -4492,7 +4494,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const limpiarFiltros = () => setFiltros({ texto: "", mes: [], anio: [], rubro: "Todos", proyecto: "Todos" });
 
   const [sort, setSort] = usePrefState("pref-partidas-sort", { key: null, dir: "asc" }, sanearSort(["mes","anio","concepto","rubro","categoria","proyecto","zona","folio","monto_estimado","updated_at"]));
-  const partidasOrdenadas = sortRows(partidasFiltradas, sort, {
+  const partidasOrdenadasVistaBase = sortRows(partidasFiltradas, sort, {
     mes: (r) => MESES.indexOf(r.mes),
     monto_estimado: (r) => Number(r.monto_estimado) || 0,
     anio: (r) => Number(r.anio) || 0,
@@ -4506,7 +4508,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     return next;
   });
   const groupKeys = groupBys.map((g) => g.field);
-  const grouped = groupKeys.length ? agruparRows(partidasOrdenadas, groupBys) : null;
+  const grouped = groupKeys.length ? agruparRows(partidasOrdenadasVistaBase, groupBys) : null;
 
   const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
@@ -4545,7 +4547,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           unidad: u,
           filas: aplicarFiltrosPartidas(partidas.filter((p) => p.unidad === u), u === unidad),
         })).filter((h) => h.filas.length)
-      : [{ unidad, filas: partidasOrdenadas }];
+      : [{ unidad, filas: partidasOrdenadasVistaBase }];
 
     if (!hojas.length) { alert("No hay partidas que exportar con los filtros actuales."); return; }
 
@@ -4610,6 +4612,64 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
      con partidas de veinte transacciones el documento se vuelve largo, y no
      siempre se quiere ese nivel. */
   const [panelExport, setPanelExport] = useState(false);
+
+  /* -------- Reporte oficial a Dirección --------
+     Vive aquí y no en otra pestaña porque es donde están los datos: generar
+     en un lado y revisar en otro obligaba a cambiar de pantalla para algo que
+     es un solo acto. La pestaña de Dirección se queda con la bitácora. */
+  const [mesOf, setMesOf] = useState(MESES[new Date().getMonth()]);
+  const [anioOf, setAnioOf] = useState(new Date().getFullYear());
+  const [versionesOf, setVersionesOf] = useState([]);
+  const [oficialOcupado, setOficialOcupado] = useState(false);
+  const [recargaOf, setRecargaOf] = useState(0);
+  const periodoOf = `${mesOf} ${anioOf}`;
+
+  useEffect(() => {
+    let vivo = true;
+    supabase.from("reportes_oficiales").select("*")
+      .eq("compania", unidad).eq("tipo", "presupuesto").eq("periodo", periodoOf)
+      .order("version", { ascending: true })
+      .then(({ data }) => { if (vivo) setVersionesOf(data || []); });
+    return () => { vivo = false; };
+  }, [unidad, periodoOf, recargaOf]);
+
+  // TODAS las del mes, sin filtros: un reporte oficial que filtrara no
+  // permitiría distinguir lo no presupuestado de lo que el filtro ocultó.
+  const partidasDelMesOf = partidasUnidad.filter((p) => p.mes === mesOf && Number(p.anio) === Number(anioOf));
+
+  const enviarADireccion = async () => {
+    if (!partidasDelMesOf.length) { alert(`No hay partidas en ${periodoOf}.`); return; }
+    const v = versionesOf.length + 1;
+    if (!confirm(
+      `Se va a enviar a Dirección la versión ${v} del presupuesto de ${periodoOf}, ` +
+      `con las ${partidasDelMesOf.length} partidas del mes (sin filtros).\n\n` +
+      `Se generan el PDF ejecutivo y el Excel con las transacciones vinculadas, y queda ` +
+      `registrado: a partir de aquí, lo que aparezca fuera de estas combinaciones de área ` +
+      `y categoría cuenta como imprevisto.`
+    )) return;
+    setOficialOcupado(true);
+    try {
+      const areaDe = (p) => transacciones.find((t) => t.partida_id === p.id && t.area)?.area || "Sin área";
+      const filas = partidasDelMesOf.map((p) => ({
+        origen_id: p.id, folio: p.folio || "", area: areaDe(p), categoria: p.categoria || "",
+        rubro: p.rubro || "", proyecto: p.proyecto || "", zona: p.zona || "",
+        concepto: p.concepto || "", proveedor: null, solicitante: null,
+        importe: Number(p.monto_estimado) || 0, moneda: p.moneda || "MXP", dia: null,
+      }));
+      const r = await registrarReporteOficial({
+        compania: unidad, tipo: "presupuesto", periodo: periodoOf, filas,
+      });
+      // El MISMO formato ejecutivo que ya estaba definido para Dirección.
+      await generarReportePDF(partidasDelMesOf, r.version);
+      await new Promise((res) => setTimeout(res, 900));
+      // El Excel oficial SIEMPRE lleva las transacciones vinculadas.
+      await generarReporteExcel({ rows: partidasDelMesOf, revision: r.version, forzarDetalle: true, periodo: periodoOf });
+      setRecargaOf((x) => x + 1);
+    } catch (err) {
+      console.error("Reporte oficial:", err);
+      alert("No se pudo enviar: " + (err.message || err));
+    } finally { setOficialOcupado(false); }
+  };
   const [conDetalle, setConDetalle] = usePrefState("pref-partidas-reporte-detalle", false);
   const txDe = (p) => transacciones
     .filter((t) => t.partida_id === p.id)
@@ -4637,8 +4697,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     ["folio", "area", "fecha_pago", "referencia", "factura"]);
   const [generandoReporteXls, setGenerandoReporteXls] = useState(false);
 
-  const generarReporteExcel = async () => {
-    if (!partidasOrdenadas.length) {
+  const generarReporteExcel = async (opts = {}) => {
+    /* El reporte oficial pasa su propio conjunto, su revisión y fuerza el
+       detalle de transacciones, que en el oficial va SIEMPRE. */
+    const { rows = null, revision = null, forzarDetalle = false, periodo: periodoForzado = null } = opts;
+    const partidasOrdenadasVista = rows || partidasOrdenadasVistaBase;
+    const conDetalleEfectivo = forzarDetalle || conDetalle;
+    if (!partidasOrdenadasVista.length) {
       alert("No hay partidas en el filtro actual para el reporte.");
       return;
     }
@@ -4649,7 +4714,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
          de los filtros: si el filtro es amplio pero solo hay septiembre, el
          archivo debe decir septiembre. Con varios meses se usa el rango, en
          orden cronológico y no alfabético. */
-      const periodos = [...new Set(partidasOrdenadas.map((p) => `${p.mes}|${p.anio}`))]
+      const periodos = [...new Set(partidasOrdenadasVista.map((p) => `${p.mes}|${p.anio}`))]
         .map((k) => { const [mes, anio] = k.split("|"); return { mes, anio: Number(anio) }; })
         .sort((a, b) => a.anio - b.anio || MESES.indexOf(a.mes) - MESES.indexOf(b.mes));
       const etiquetaPeriodo = !periodos.length ? "Sin periodo"
@@ -4679,13 +4744,19 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         .join("   ·   ");
 
       // Encabezado del documento
-      const tit = ws.addRow([`Reporte Presupuestal — ${unidad} — ${etiquetaPeriodo}`]);
+      const tit = ws.addRow([`Reporte Presupuestal — ${unidad} — ${periodoForzado || etiquetaPeriodo}`]);
       tit.font = { bold: true, size: 14 };
+      if (revision) {
+        // La revisión dentro del archivo, no solo en su nombre.
+        const rr = ws.addRow([`REVISIÓN ${revision}   ·   enviado el ${new Date().toLocaleDateString("es-MX")}`]);
+        rr.font = { bold: true, size: 11, color: { argb: "FF3E5C76" } };
+        ws.mergeCells(rr.number, 1, rr.number, Math.max(COLS.length, 2));
+      }
       ws.mergeCells(1, 1, 1, Math.max(COLS.length, 2));
       const sub = ws.addRow([
-        `${partidasOrdenadas.length} partidas   ·   ${fmtTot(totalPorMoneda(partidasOrdenadas))}` +
+        `${partidasOrdenadasVista.length} partidas   ·   ${fmtTot(totalPorMoneda(partidasOrdenadasVista))}` +
         (groupKeys.length ? `   ·   agrupado por ${groupBys.map((g) => (GROUP_OPCIONES.find((o) => o.value === g.field) || {}).label || g.field).join(" > ")}` : "") +
-        (conDetalle ? "   ·   el detalle de transacciones está en la hoja «Transacciones»" : ""),
+        (conDetalleEfectivo ? "   ·   el detalle de transacciones está en la hoja «Transacciones»" : ""),
       ]);
       sub.font = { size: 10, color: { argb: "FF6B7785" } };
       ws.mergeCells(2, 1, 2, Math.max(COLS.length, 2));
@@ -4730,12 +4801,12 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           });
         })(grouped, 0);
       } else {
-        partidasOrdenadas.forEach((p) => filaDe(p, 0));
+        partidasOrdenadasVista.forEach((p) => filaDe(p, 0));
       }
 
       // Totales por moneda: nunca sumadas entre sí.
       ws.addRow([]);
-      Object.entries(totalPorMoneda(partidasOrdenadas)).forEach(([m, v]) => {
+      Object.entries(totalPorMoneda(partidasOrdenadasVista)).forEach(([m, v]) => {
         const row = ws.addRow([`TOTAL ${m}`, ...Array(Math.max(COLS.length - 2, 0)).fill(""), v]);
         row.font = { bold: true };
         row.getCell(COLS.length).numFmt = '"$"#,##0.00';
@@ -4751,7 +4822,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
          cada bloque, y producía una jerarquía que la hoja de cálculo no sabe
          manejar. Plano se puede filtrar, ordenar y resumir con tabla
          dinámica, que es para lo que sirve Excel. */
-      if (conDetalle) {
+      if (conDetalleEfectivo) {
         const DET = detVis.visibles;
         const CTX = [
           { header: "Folio partida", width: 16, get: (p) => p.folio || "" },
@@ -4761,7 +4832,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           { header: "Rubro",         width: 26, get: (p) => p.rubro, izq: true },
           { header: "Proyecto",      width: 18, get: (p) => p.proyecto || "" },
         ];
-        const conTx = partidasOrdenadas.filter((p) => txDe(p).length);
+        const conTx = partidasOrdenadasVista.filter((p) => txDe(p).length);
         if (conTx.length && DET.length) {
           const wd = wbx.addWorksheet("Transacciones");
           wd.columns = [...CTX, ...DET].map((c) => ({ width: c.width }));
@@ -4797,7 +4868,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `Reporte Presupuestal - ${unidad} - ${etiquetaPeriodo}.xlsx`;
+      a.download = revision
+        ? `Presupuesto ${unidad} - ${periodoForzado || etiquetaPeriodo} - rev ${revision}.xlsx`
+        : `Reporte Presupuestal - ${unidad} - ${etiquetaPeriodo}.xlsx`;
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch (err) {
@@ -4872,12 +4945,16 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
    * mentalmente, y calcularlo por moneda evita que un renglón en dólares se
    * vea diminuto junto a los pesos.
    */
-  const generarReportePDF = async () => {
+  /* Acepta un conjunto y una etiqueta de revisión: el reporte oficial usa
+     ESTE mismo formato ejecutivo —el que ya estaba definido para Dirección—
+     pero sobre todas las partidas del mes, no sobre las filtradas. */
+  const generarReportePDF = async (rows = null, revision = null) => {
+    const partidasOrdenadas = rows || partidasOrdenadasVistaBase;
     if (!partidasOrdenadas.length) {
       alert("No hay partidas en el filtro actual para generar el reporte.");
       return;
     }
-    if (!confirm(`Generar el Reporte de Presupuesto Mensual con ${partidasOrdenadas.length} partida(s) resumidas por rubro, proyecto y zona.`)) return;
+    if (!rows && !confirm(`Generar el Reporte de Presupuesto Mensual con ${partidasOrdenadas.length} partida(s) resumidas por rubro, proyecto y zona.`)) return;
 
     setGenerandoPDF(true);
     try {
@@ -4914,6 +4991,17 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       doc.setFontSize(9.5);
       doc.setTextColor(120);
       doc.text(`${periodo || "Sin periodo"}   ·   ${partidasOrdenadas.length} partidas`, 30, 52);
+      if (revision) {
+        // La revisión dentro del documento: los nombres de archivo se pierden
+        // al reenviar y sin ella no se sabe cuál copia es la vigente.
+        doc.setFillColor(62, 92, 118);
+        doc.rect(552 - 96, 22, 96, 30, "F");
+        doc.setTextColor(255).setFontSize(7.5);
+        doc.text("REVISIÓN", 552 - 86, 34);
+        doc.setFontSize(15).setFont(undefined, "bold");
+        doc.text(String(revision), 552 - 10, 46, { align: "right" });
+        doc.setFont(undefined, "normal").setTextColor(120);
+      }
 
       // Los totales van arriba y en grande: son la respuesta a la primera
       // pregunta, y quien lo lee no debería tener que buscarlos.
@@ -5040,7 +5128,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         }
       }
 
-      doc.save(`presupuesto-mensual-${unidad}-${new Date().toISOString().slice(0, 10)}.pdf`);
+      doc.save(revision
+        ? `Presupuesto ${unidad} - ${periodo} - rev ${revision}.pdf`
+        : `presupuesto-mensual-${unidad}-${new Date().toISOString().slice(0, 10)}.pdf`);
     } catch (err) {
       alert("No se pudo generar el reporte: " + (err.message || err));
     } finally {
@@ -5324,6 +5414,33 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                 </Button>
               </div>
 
+              {/* El reporte oficial se separa del resto: no es un archivo más,
+                  es el acto que fija la línea base. Por eso lleva su propio mes
+                  —no el de los filtros— y avisa que no se filtra. */}
+              <div style={{ background: T.panel, border: `2px solid ${T.accent}`, borderRadius: 8, padding: 13,
+                            display: "flex", flexDirection: "column" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Enviar a Dirección (oficial)</div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, marginBottom: 10 }}>
+                  PDF ejecutivo y Excel con las transacciones vinculadas. Toma
+                  <b> todas las partidas del mes</b>, sin filtros, y congela lo enviado
+                  como línea base para detectar gasto imprevisto.
+                </div>
+                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                  <Select value={mesOf} onChange={(e) => setMesOf(e.target.value)} style={{ flex: 1 }}>
+                    {MESES.map((m) => <option key={m}>{m}</option>)}
+                  </Select>
+                  <TextInput type="number" value={anioOf} onChange={(e) => setAnioOf(e.target.value)} style={{ width: 84 }} />
+                </div>
+                <div style={{ fontSize: 11, color: T.textFaint, marginBottom: 10 }}>
+                  {partidasDelMesOf.length} partidas en {periodoOf}
+                  {versionesOf.length ? ` · ${versionesOf.length} versión(es) enviada(s)` : " · sin enviar"}
+                </div>
+                <div style={{ flex: 1 }} />
+                <Button onClick={enviarADireccion} disabled={oficialOcupado || !partidasDelMesOf.length} style={{ width: "100%" }}>
+                  {oficialOcupado ? "Enviando…" : `Enviar versión ${versionesOf.length + 1}`}
+                </Button>
+              </div>
+
               <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
                             display: "flex", flexDirection: "column" }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700 }}>Exportar datos</div>
@@ -5358,7 +5475,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                     key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
                     width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
                     onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={onColDragOver} onDrop={(e) => onColDrop(e, c.key)}
-                    sumLabel={c.key === "monto_estimado" ? sumaPorMoneda(partidasOrdenadas, "monto_estimado") : undefined}
+                    sumLabel={c.key === "monto_estimado" ? sumaPorMoneda(partidasOrdenadasVistaBase, "monto_estimado") : undefined}
                   />
                 ))}
                 <th style={thStyle}></th>
@@ -5367,7 +5484,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             <tbody>
               {groupKeys.length
                 ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])))
-                : partidasOrdenadas.map((p, i) => renderRowTr(p, 0, i + 1))}
+                : partidasOrdenadasVistaBase.map((p, i) => renderRowTr(p, 0, i + 1))}
               {!partidasUnidad.length && (
                 <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
               )}
@@ -5994,6 +6111,62 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const expVis = useVisibilidadColumnas("colv-transacciones-export", COLUMNAS_EXPORT_TX,
     ["folio_tx", "concepto_p", "area", "solicitante", "forma_pago", "referencia", "factura", "sae"]);
   const [panelExportTx, setPanelExportTx] = useState(false);
+
+  /* -------- Reporte semanal oficial a Dirección -------- */
+  const [semanaOf, setSemanaOf] = useState(lunesDe(new Date().toISOString().slice(0, 10)));
+  const [versionesSem, setVersionesSem] = useState([]);
+  const [oficialSem, setOficialSem] = useState(false);
+  const [recargaSem, setRecargaSem] = useState(0);
+  const finSemanaOf = (() => { const d = new Date(`${semanaOf}T12:00:00`); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); })();
+  const periodoSem = `Semana ${semanaOf}`;
+
+  useEffect(() => {
+    let vivo = true;
+    supabase.from("reportes_oficiales").select("*")
+      .eq("compania", unidad).eq("tipo", "transacciones").eq("periodo", periodoSem)
+      .order("version", { ascending: true })
+      .then(({ data }) => { if (vivo) setVersionesSem(data || []); });
+    return () => { vivo = false; };
+  }, [unidad, periodoSem, recargaSem]);
+
+  // Todas las de la semana, sin filtros.
+  const transDeLaSemana = transUnidad.filter((t) => t.dia && t.dia >= semanaOf && t.dia <= finSemanaOf);
+
+  const enviarSemanalADireccion = async () => {
+    if (!transDeLaSemana.length) { alert(`No hay transacciones del ${semanaOf} al ${finSemanaOf}.`); return; }
+    const v = versionesSem.length + 1;
+    if (!confirm(
+      `Se va a enviar a Dirección la versión ${v} de las transacciones del ${semanaOf} al ${finSemanaOf}, ` +
+      `con las ${transDeLaSemana.length} de la semana (sin filtros).\n\n` +
+      `Se generan el PDF y el Excel, y queda registrado como línea base.`
+    )) return;
+    setOficialSem(true);
+    try {
+      const filas = transDeLaSemana.map((t) => {
+        const p = partidas.find((x) => x.id === t.partida_id);
+        return {
+          origen_id: t.id, folio: t.folio_transaccion || "", area: t.area || "Sin área",
+          categoria: t.categoria || "", rubro: p?.rubro || "", proyecto: t.proyecto || p?.proyecto || "",
+          zona: t.zona || "", concepto: t.concepto_detallado || "", proveedor: t.proveedor || "",
+          solicitante: t.solicitante || "", importe: Number(t.importe) || 0,
+          moneda: t.moneda || "MXP", dia: t.dia || null,
+        };
+      });
+      const r = await registrarReporteOficial({
+        compania: unidad, tipo: "transacciones", periodo: periodoSem,
+        periodoIni: semanaOf, periodoFin: finSemanaOf, filas,
+      });
+      generarPdfOficial({ compania: unidad, tipo: "transacciones", periodo: periodoSem,
+        version: r.version, filas, grupos: groupBys, etiqueta: etiquetaCampoTx });
+      await new Promise((res) => setTimeout(res, 900));
+      await generarExcelOficial({ compania: unidad, tipo: "transacciones", periodo: periodoSem,
+        version: r.version, filas, transacciones: [], grupos: groupBys, etiqueta: etiquetaCampoTx });
+      setRecargaSem((x) => x + 1);
+    } catch (err) {
+      console.error("Reporte semanal:", err);
+      alert("No se pudo enviar: " + (err.message || err));
+    } finally { setOficialSem(false); }
+  };
   const [generandoTx, setGenerandoTx] = useState(false);
 
   const etiquetaCampoTx = (campo) =>
@@ -6354,7 +6527,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               {groupKeys.length ? `, agrupadas por ${groupBys.map((g) => etiquetaCampoTx(g.field)).join(" > ")}` : ""}.
             </div>
 
-            <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13, maxWidth: 460 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))", gap: 12 }}>
+            <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13 }}>
               <div style={{ fontSize: 12.5, fontWeight: 700 }}>Transacciones (Excel)</div>
               <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, marginBottom: 10 }}>
                 El gasto real con los datos de su partida —folio, rubro, proyecto— en columnas
@@ -6370,6 +6544,30 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   {generandoTx ? "Generando…" : "Generar Excel"}
                 </Button>
               </div>
+            </div>
+
+            {/* El reporte semanal oficial: toma toda la semana, sin filtros, y
+                fija la línea base. Va con borde distinto porque no es una
+                exportación más — es un acto que no se deshace fácilmente. */}
+            <div style={{ background: T.panel, border: `2px solid ${T.accent}`, borderRadius: 8, padding: 13,
+                          display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700 }}>Enviar a Dirección (oficial)</div>
+              <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, marginBottom: 10 }}>
+                PDF y Excel de la semana completa, <b>sin filtros</b>, agrupados como la vista.
+                Congela lo enviado como línea base para detectar gasto imprevisto.
+              </div>
+              <Field label="Semana (lunes)">
+                <TextInput type="date" value={semanaOf} onChange={(e) => setSemanaOf(lunesDe(e.target.value))} />
+              </Field>
+              <div style={{ fontSize: 11, color: T.textFaint, margin: "8px 0 10px" }}>
+                Del {semanaOf} al {finSemanaOf} · {transDeLaSemana.length} transacciones
+                {versionesSem.length ? ` · ${versionesSem.length} versión(es) enviada(s)` : " · sin enviar"}
+              </div>
+              <div style={{ flex: 1 }} />
+              <Button onClick={enviarSemanalADireccion} disabled={oficialSem || !transDeLaSemana.length} style={{ width: "100%" }}>
+                {oficialSem ? "Enviando…" : `Enviar versión ${versionesSem.length + 1}`}
+              </Button>
+            </div>
             </div>
           </div>
         )}
@@ -8185,7 +8383,6 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
   const [reportes, setReportes] = useState([]);
   const [reportado, setReportado] = useState([]);
   const [cargando, setCargando] = useState(true);
-  const [generando, setGenerando] = useState(false);
   const [recarga, setRecarga] = useState(0);
 
   const hoy = new Date().toISOString().slice(0, 10);
@@ -8252,30 +8449,24 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
      la misma— así que agrupar en Partidas cambia también el reporte oficial.
      Se muestra aquí para que sea visible y ajustable en el momento de generar,
      en vez de depender de algo que se configuró en otra pantalla. */
-  const [gbPres, setGbPres] = usePrefState("pref-partidas-groupbys", [], sanearGroupBys(GROUP_OPCIONES));
-  const [gbTrans, setGbTrans] = usePrefState("pref-transacciones-groupbys", [], sanearGroupBys(GROUP_OPCIONES_TRANS));
-  const groupBysRep = esPresupuesto ? gbPres : gbTrans;
-  const setGroupBysRep = esPresupuesto ? setGbPres : setGbTrans;
-  const opcionesRep = esPresupuesto ? GROUP_OPCIONES : GROUP_OPCIONES_TRANS;
-  const etiquetaRep = (campo) => (opcionesRep.find((o) => o.value === campo) || {}).label || campo;
   const filas = esPresupuesto ? filasPresupuesto : filasTrans;
   const periodo = esPresupuesto ? `${mesRep} ${anioRep}` : `Semana ${semanaRep}`;
   const yaEnviados = reportes.filter((r) => r.tipo === (esPresupuesto ? "presupuesto" : "transacciones") && r.periodo === periodo);
 
   const desviaciones = detectarDesviaciones(filas, reportado);
 
-  /* Las transacciones de las partidas del mes, para la hoja de detalle del
-     Excel. Se toman en el momento de generar, no del congelado: el PDF es la
-     evidencia de lo reportado y el Excel es la herramienta de análisis. */
-  const transaccionesDeLasPartidas = () => {
-    const ids = new Set(partidasMes.map((p) => p.id));
-    return transUnidad
-      .filter((t) => ids.has(t.partida_id))
-      .map((t) => {
-        const p = partidasMes.find((x) => x.id === t.partida_id);
-        return { ...t, _folio: p?.folio || "", _partida: p?.concepto || "" };
-      })
-      .sort((a, b) => String(a._folio).localeCompare(String(b._folio)) || String(a.dia || "").localeCompare(String(b.dia || "")));
+  /* Deshacer un registro. Una versión de más deja la línea base contando
+     envíos que nunca salieron, y entonces gasto realmente imprevisto
+     parecería reportado. */
+  const deshacerVersion = async (r) => {
+    if (!confirm(
+      `¿Eliminar el registro de la versión ${r.version} de ${r.periodo}?\n\n` +
+      `Úsalo solo si se generó por error y NO se envió a Dirección. ` +
+      `Las combinaciones de área y categoría que aportaba dejarán de contar como reportadas.`
+    )) return;
+    const { error } = await supabase.from("reportes_oficiales").delete().eq("id", r.id);
+    if (error) { alert("No se pudo eliminar: " + error.message); return; }
+    setRecarga((x) => x + 1);
   };
 
   const descargarVersion = async (r) => {
@@ -8289,50 +8480,7 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
     await generarExcelOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [], transacciones: [] });
   };
 
-  const generar = async () => {
-    if (!filas.length) { alert("No hay registros en el periodo elegido."); return; }
-    const v = yaEnviados.length + 1;
-    if (!confirm(
-      `Se va a generar el PDF de la versión ${v} del reporte ${esPresupuesto ? "de presupuesto" : "de transacciones"} ` +
-      `de ${periodo}, con ${filas.length} registros, MÁS el Excel${esPresupuesto ? " con las transacciones vinculadas" : ""}, ` +
-      `y se va a registrar como enviado.\n\n` +
-      `A partir de aquí, lo que aparezca fuera de estas combinaciones de área y categoría cuenta como imprevisto.`
-    )) return;
-    setGenerando(true);
-    try {
-      /* Comprobación previa: si la migración no se corrió, el fallo aparece
-         al insertar y el mensaje de Postgres no dice qué falta. Preguntarlo
-         antes convierte un error críptico en una instrucción. */
-      const { error: eTabla } = await supabase.from("reportes_oficiales").select("id").limit(1);
-      if (eTabla) {
-        throw new Error(
-          `La tabla de reportes oficiales no está disponible (${eTabla.message}).\n\n` +
-          `Corre 21-reportes-oficiales.sql en Supabase antes de usar esta pestaña.`
-        );
-      }
-      const tipo = esPresupuesto ? "presupuesto" : "transacciones";
-      const r = await registrarReporteOficial({
-        compania: unidad, tipo, periodo,
-        periodoIni: esPresupuesto ? null : semanaRep, periodoFin: esPresupuesto ? null : finSemana,
-        filas,
-      });
-      /* Ambos documentos salen del mismo conjunto que se acaba de congelar.
-         Van con una pausa entre uno y otro: los navegadores bloquean la
-         segunda descarga automática cuando salen juntas, y el archivo
-         desaparecería sin decir por qué. */
-      const txPartidas = esPresupuesto ? transaccionesDeLasPartidas() : [];
-      generarPdfOficial({ compania: unidad, tipo, periodo, version: r.version, filas, grupos: groupBysRep, etiqueta: etiquetaRep });
-      await new Promise((res) => setTimeout(res, 900));
-      await generarExcelOficial({ compania: unidad, tipo, periodo, version: r.version, filas, transacciones: txPartidas, grupos: groupBysRep, etiqueta: etiquetaRep });
-      setRecarga((x) => x + 1);
-    } catch (err) {
-      // A la consola además del aviso: el mensaje de Supabase suele traer
-      // detalle que no cabe en un alert y que es lo que permite diagnosticar.
-      console.error("Reporte oficial:", err);
-      alert("No se pudo registrar el reporte.\n\n" + (err.message || err) +
-            "\n\nEl detalle completo está en la consola del navegador (F12).");
-    } finally { setGenerando(false); }
-  };
+
 
   // --- Desviaciones agrupadas por área, que es a quien se le pregunta ---
   const porArea = {};
@@ -8361,23 +8509,8 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
       </div>
 
       <Panel
-        title={`Reporte oficial a Dirección — ${unidad}`}
-        subtitle={`${filas.length} registros en ${periodo}` + (yaEnviados.length ? ` · ${yaEnviados.length} versión(es) enviada(s)` : " · sin enviar")}
-        right={
-          <div style={{ display: "flex", gap: 8 }}>
-            {/* El mismo agrupamiento que la pestaña de origen: cambiarlo aquí
-                lo cambia allá, porque comparten la preferencia. */}
-            <GroupByControl
-              options={opcionesRep}
-              value={groupBysRep}
-              onChange={setGroupBysRep}
-              maxLevels={3}
-            />
-          <Button onClick={generar} disabled={generando || !filas.length}>
-            {generando ? "Registrando…" : `Registrar versión ${yaEnviados.length + 1}`}
-          </Button>
-          </div>
-        }
+        title={`Versiones enviadas — ${unidad}`}
+        subtitle="La generación vive en Partidas y Transacciones, junto a los datos. Aquí se consulta el historial y se vuelve a descargar lo enviado."
       >
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>
           {esPresupuesto ? (
@@ -8389,26 +8522,36 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
           ) : (
             <Field label="Semana (lunes)">
               <TextInput type="date" value={semanaRep} onChange={(e) => setSemanaRep(lunesDe(e.target.value))} />
-              <span style={{ fontSize: 11, color: T.textFaint, marginTop: 4, display: "block" }}>
-                Del {semanaRep} al {finSemana}
-              </span>
             </Field>
           )}
         </div>
 
-        {yaEnviados.length > 0 && (
-          <div style={{ fontSize: 11.5, color: T.textDim, marginBottom: 12 }}>
-            Versiones de {periodo}:{" "}
+        {!yaEnviados.length ? (
+          <div style={{ fontSize: 12.5, color: T.textFaint, padding: "12px 0" }}>
+            Sin envíos de {periodo}. Se generan desde {esPresupuesto ? "Partidas" : "Transacciones"},
+            en el panel de exportación.
+          </div>
+        ) : (
+          <div style={{ fontSize: 11.5, color: T.textDim }}>
             {yaEnviados.sort((a, b) => a.version - b.version).map((r) => (
-              /* Se puede volver a descargar una versión ya registrada: el
-                 documento se reconstruye del contenido CONGELADO, no de los
-                 datos actuales, así que sale idéntico al que se envió. */
-              <button key={r.id} type="button" onClick={() => descargarVersion(r)}
-                title="Volver a descargar este PDF, tal como se envió"
-                style={{ background: "transparent", border: "none", padding: 0, marginRight: 12,
-                         color: T.accent, cursor: "pointer", fontFamily: T.fontMono, fontSize: 11.5 }}>
-                v{r.version} ({new Date(r.enviado_en).toLocaleDateString("es-MX")}, {r.n_registros} reg.)
-              </button>
+              <span key={r.id} style={{ marginRight: 14, whiteSpace: "nowrap" }}>
+                <button type="button" onClick={() => descargarVersion(r)}
+                  title="Volver a descargar los documentos, tal como se enviaron"
+                  style={{ background: "transparent", border: "none", padding: 0,
+                           color: T.accent, cursor: "pointer", fontFamily: T.fontMono, fontSize: 11.5 }}>
+                  v{r.version} ({new Date(r.enviado_en).toLocaleDateString("es-MX")}, {r.n_registros} reg.)
+                </button>
+                {/* Solo la ÚLTIMA se puede deshacer: borrar una intermedia
+                    dejaría huecos y haría dudar si faltó un envío. */}
+                {r.version === Math.max(...yaEnviados.map((x) => x.version)) && (
+                  <button type="button" onClick={() => deshacerVersion(r)}
+                    title="Eliminar este registro — solo si se generó por error"
+                    style={{ background: "transparent", border: "none", padding: "0 0 0 5px",
+                             color: T.textFaint, cursor: "pointer", fontSize: 12 }}>
+                    ✕
+                  </button>
+                )}
+              </span>
             ))}
           </div>
         )}

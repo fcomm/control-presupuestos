@@ -1,13 +1,12 @@
-import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
-  PieChart, Pie, Cell, LineChart, Line, Legend
+  LineChart, Line, Legend
 } from "recharts";
 import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import { Wallet, BarChart3, CheckCircle2, FileEdit, ArrowDownCircle, ArrowUpCircle, Info } from "lucide-react";
 import { useCollection } from "./useCollection";
 import { supabase } from "./supabaseClient";
 
@@ -319,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.2.2";
+const APP_VERSION = "2.2.3";
 const CHANGELOG = [
+  { v: "2.2.3", desc: "Limpieza de código, sin cambios de comportamiento. Se eliminan dos funciones muertas (opcionesPartidaPorMes, SlidingToggle, reemplazadas hace tiempo por otros componentes) y ocho imports sin usar (useCallback y todo lucide-react — la app resuelve sus íconos con símbolos de texto). Se consolidan cuatro patrones que se habían repetido, idénticos, en varios puntos por construirse en sesiones separadas: el formateador de totales por moneda (3 sitios), el cierre de popups al hacer clic fuera (3 sitios, ahora un hook useClickOutside), el alternar membresía en un Set para expandir/contraer (5 sitios), y eliminar una cuenta bancaria (2 sitios). Cada consolidación se verificó con equivalencia de salida antes de aplicarse. De paso, el reporte Excel de Partidas —el más usado de la app— tenía cinco celdas de encabezado sin fuente Calibri explícita, a diferencia de todos los demás reportes; se corrige por consistencia" },
   { v: "2.2.2", desc: "Fix: el catálogo de zonas seguía mostrando las de las tres compañías juntas —de ahí que Queretaro apareciera tres veces— porque el filtro por compañía nunca llegó a aplicarse en el panel. Se corrige también el conteo de transacciones, que sumaba las tres y por eso daba el mismo número en cada fila, y la detección de zonas huérfanas, que ahora mira solo las de la compañía activa" },
   { v: "2.2.1", desc: "uid() devuelve ahora SIEMPRE un UUID válido. Su respaldo anterior daba una cadena de ocho caracteres cuando crypto.randomUUID no estaba disponible —navegadores viejos, cualquier origen sin HTTPS— y Postgres rechaza eso en una columna uuid: el insert fallaba y el síntoma era «no pasó nada», que es justo lo que costó diagnosticar con los reportes oficiales. Se arregla en la función en vez de en las diecisiete llamadas, así que cubre también las que se agreguen después" },
   { v: "2.2.0", desc: "Las zonas pasan a ser por compañía: OSB dejaba de ver Guaymas entre zonas de CTM y viceversa, y el selector ofrecía lugares donde esa compañía no opera. Cada zona conserva su grupo editable, así que el reporte a Dirección puede agrupar distinto en cada compañía si hiciera falta. El SQL reparte las zonas existentes según su USO REAL en partidas y transacciones —no las replica a todas— y unifica QRO con Queretaro, moviendo también el detalle congelado de los reportes ya enviados: sin eso la línea base seguiría distinguiendo dos zonas que ya no existen. Requiere 23-zonas-por-compania.sql" },
@@ -646,6 +646,18 @@ const money = (n, moneda = "MXP") =>
   (Number(n) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) +
   (moneda === "USD" ? " USD" : "");
 
+/**
+ * Convierte un objeto de totales por moneda —{ MXP: 1000, USD: 50 }— en el
+ * texto que se muestra en encabezados de reporte: "$1,000.00 MXP · $50.00 USD".
+ *
+ * Estaba repetida, byte por byte, en tres generadores de reporte distintos
+ * (cada uno construido en una sesión separada). Se consolida aquí para que
+ * un ajuste futuro al formato se haga una sola vez, no en tres.
+ */
+const fmtTotalesPorMoneda = (t) => Object.entries(t)
+  .map(([m, v]) => `$${(Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${m}`)
+  .join("   ·   ");
+
 /* ----------------------------------------------------------------------
    PRORRATEO
 ---------------------------------------------------------------------- */
@@ -678,29 +690,6 @@ function marcadoresDisponibles(proyectosUnidad) {
   const grupos = [...new Set(proyectosUnidad.map((p) => p.grupo))].filter(Boolean);
   const marcadores = grupos.filter((g) => proyectosUnidad.filter((p) => p.grupo === g).length > 1).map((g) => `${g} Gral`);
   return [...proyectosUnidad.map((p) => p.nombre), ...marcadores, "Todos"];
-}
-
-// Renderiza las <option> de un selector de Partida agrupadas por Mes (<optgroup>),
-// en orden cronológico — para no tener que buscar entre una lista plana larga.
-function opcionesPartidaPorMes(lista) {
-  const meses = MESES.filter((m) => lista.some((p) => p.mes === m));
-  const sinMes = lista.filter((p) => !p.mes);
-  return (
-    <>
-      {meses.map((mes) => (
-        <optgroup key={mes} label={mes}>
-          {lista.filter((p) => p.mes === mes).map((p) => (
-            <option key={p.id} value={p.id}>{p.concepto} ({p.proyecto || "—"})</option>
-          ))}
-        </optgroup>
-      ))}
-      {sinMes.length > 0 && (
-        <optgroup label="Sin mes">
-          {sinMes.map((p) => <option key={p.id} value={p.id}>{p.concepto} ({p.proyecto || "—"})</option>)}
-        </optgroup>
-      )}
-    </>
-  );
 }
 
 // Botón que abre un popup con buscador para elegir una partida — más cómodo
@@ -1033,10 +1022,7 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
       alert("No se pudo agregar la cuenta: " + (err.message || err));
     }
   };
-  const eliminarCuentaEditando = (id) => {
-    if (!confirm("¿Eliminar esta cuenta bancaria? Esto no se puede deshacer.")) return;
-    cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
-  };
+  const eliminarCuentaEditando = (id) => eliminarCuentaBancaria(cuentasApi, id);
 
   return (
     <>
@@ -1369,9 +1355,7 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
 
   const tot = {};
   filas.forEach((f) => { const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP"; tot[m] = (tot[m] || 0) + (Number(f.importe) || 0); });
-  const fmtTot = (t) => Object.entries(t)
-    .map(([m, v]) => `$${(Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${m}`)
-    .join("   ·   ");
+  const fmtTot = fmtTotalesPorMoneda;
 
   const COLS = esPres
     ? [{ h: "Folio", w: 16, g: (f) => f.folio }, { h: "Área", w: 20, g: (f) => f.area, izq: 1 },
@@ -2412,38 +2396,6 @@ function IconButton({ icon, label, tone = T.textDim, ...rest }) {
   );
 }
 
-// Switch deslizante estilo iOS, para elegir entre dos opciones (ej. MXP/USD).
-function SlidingToggle({ opciones, value, onChange }) {
-  const idx = Math.max(0, opciones.indexOf(value));
-  const anchoBoton = 68;
-  return (
-    <div style={{
-      position: "relative", width: anchoBoton * opciones.length + 4, height: 30,
-      background: T.panelAlt, borderRadius: 15, border: `1px solid ${T.border}`, display: "flex",
-    }}>
-      <div style={{
-        position: "absolute", top: 2, left: 2 + idx * anchoBoton, width: anchoBoton - 2, height: 24,
-        background: T.accent, borderRadius: 12, transition: "left 0.2s ease",
-        boxShadow: "0 1px 3px rgba(35,42,49,0.2)",
-      }} />
-      {opciones.map((op) => (
-        <button
-          key={op}
-          type="button"
-          onClick={() => onChange(op)}
-          style={{
-            position: "relative", zIndex: 1, width: anchoBoton, border: "none", background: "transparent",
-            fontSize: 11.5, fontWeight: 700, cursor: "pointer", fontFamily: T.fontUI, letterSpacing: "0.02em",
-            color: value === op ? "#FFFFFF" : T.textDim, transition: "color 0.2s ease",
-          }}
-        >
-          {op}
-        </button>
-      ))}
-    </div>
-  );
-}
-
 function Pill({ children, tone = "dim" }) {
   const tones = {
     dim: { color: T.textDim, background: T.panelAlt, border: `1px solid ${T.border}` },
@@ -3168,15 +3120,52 @@ function useColumnVisibility(storageKey, columns) {
   return { visible, hidden, toggle, showAll };
 }
 
+/**
+ * Cierra algo (un dropdown, un popup) al hacer clic fuera de `ref`.
+ *
+ * Estaba repetida, idéntica, en ColumnVisibilityControl, GroupByControl y
+ * MultiSelect — los tres popups siguen el mismo patrón: abren con estado
+ * local y se cierran al hacer clic afuera.
+ *
+ * Deps vacías a propósito, igual que el original: `ref` (de useRef) y
+ * `onOutside` (normalmente `() => setOpen(false)`, con `setOpen` estable)
+ * no necesitan volver a suscribir el listener en cada render.
+ */
+function useClickOutside(ref, onOutside) {
+  useEffect(() => {
+    const onClickFuera = (e) => { if (ref.current && !ref.current.contains(e.target)) onOutside(); };
+    document.addEventListener("mousedown", onClickFuera);
+    return () => document.removeEventListener("mousedown", onClickFuera);
+  }, []);
+}
+
+/**
+ * Agrega o quita `key` de un Set, sin mutar el original. El patrón "expandir
+ * o contraer" (grupos, filas seleccionadas) se repetía igual cinco veces con
+ * distinto nombre de variable; cada llamador sigue siendo dueño de a qué
+ * setState se lo pasa.
+ */
+const alternarEnSet = (prev, key) => {
+  const next = new Set(prev);
+  next.has(key) ? next.delete(key) : next.add(key);
+  return next;
+};
+
+/**
+ * Elimina una cuenta bancaria, con confirmación. Repetida idéntica en
+ * ProveedorPickerButton y ProveedoresPanel — ambos reciben `cuentasApi`
+ * como prop, así que se le pasa directo en vez de cerrar sobre ella.
+ */
+function eliminarCuentaBancaria(cuentasApi, id) {
+  if (!confirm("¿Eliminar esta cuenta bancaria? Esto no se puede deshacer.")) return;
+  cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
+}
+
 // Botón "Columnas" con un panel de checkboxes para mostrar/ocultar cada una.
 function ColumnVisibilityControl({ columns, hidden, onToggle, onShowAll, etiqueta = "Columnas" }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  useEffect(() => {
-    const onClickFuera = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", onClickFuera);
-    return () => document.removeEventListener("mousedown", onClickFuera);
-  }, []);
+  useClickOutside(ref, () => setOpen(false));
   const ocultas = columns.filter((c) => hidden.has(c.key)).length;
 
   return (
@@ -3229,11 +3218,7 @@ function ColumnVisibilityControl({ columns, hidden, onToggle, onShowAll, etiquet
 function GroupByControl({ options, value, onChange, maxLevels = 3, groupedTree, collapsed, setCollapsed }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  useEffect(() => {
-    const onClickFuera = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", onClickFuera);
-    return () => document.removeEventListener("mousedown", onClickFuera);
-  }, []);
+  useClickOutside(ref, () => setOpen(false));
 
   const usedFields = value.map((v) => v.field);
   const opcionesPara = (fieldActual) => options.filter((o) => o.value && (o.value === fieldActual || !usedFields.includes(o.value)));
@@ -3327,11 +3312,7 @@ function GroupByControl({ options, value, onChange, maxLevels = 3, groupedTree, 
 function MultiSelect({ opciones, seleccionados, onChange, todosLabel, unidadLabel = "" }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  useEffect(() => {
-    const onClickFuera = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
-    document.addEventListener("mousedown", onClickFuera);
-    return () => document.removeEventListener("mousedown", onClickFuera);
-  }, []);
+  useClickOutside(ref, () => setOpen(false));
 
   const label = seleccionados.length === 0 ? todosLabel : seleccionados.length === 1 ? String(seleccionados[0]) : `${seleccionados.length}${unidadLabel}`;
   const toggleValor = (v) => onChange(seleccionados.includes(v) ? seleccionados.filter((x) => x !== v) : [...seleccionados, v]);
@@ -4754,11 +4735,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
 
   const [groupBys, setGroupBys] = usePrefState("pref-partidas-groupbys", [], sanearGroupBys(GROUP_OPCIONES));
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
-  const toggleGroup = (path) => setCollapsedGroups((prev) => {
-    const next = new Set(prev);
-    next.has(path) ? next.delete(path) : next.add(path);
-    return next;
-  });
+  const toggleGroup = (path) => setCollapsedGroups((prev) => alternarEnSet(prev, path));
   const groupKeys = groupBys.map((g) => g.field);
   const grouped = groupKeys.length ? agruparRows(partidasOrdenadasVistaBase, groupBys) : null;
 
@@ -4995,9 +4972,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
          dólares —da por hecho que sin etiqueta son pesos— y en una fila donde
          conviven las dos, "$211,039.96 · $25,000.00 USD" invita a leer la
          primera cifra como parte del mismo total. */
-      const fmtTot = (t) => Object.entries(t)
-        .map(([m, v]) => `$${(Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${m}`)
-        .join("   ·   ");
+      const fmtTot = fmtTotalesPorMoneda;
 
       // Encabezado del documento
       /* Cada fusión usa el número REAL de su fila. Con números fijos, agregar
@@ -5007,13 +4982,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       const fusionar = (row) => ws.mergeCells(row.number, 1, row.number, anchoFusion);
 
       const tit = ws.addRow([`Reporte Presupuestal — ${unidad} — ${periodoForzado || etiquetaPeriodo}`]);
-      tit.font = { bold: true, size: 14 };
+      tit.font = { bold: true, size: 14, name: "Calibri" };
       fusionar(tit);
 
       if (revision) {
         // La revisión dentro del archivo, no solo en su nombre.
         const rr = ws.addRow([`REVISIÓN ${revision}   ·   enviado el ${new Date().toLocaleDateString("es-MX")}`]);
-        rr.font = { bold: true, size: 11, color: { argb: "FF3E5C76" } };
+        rr.font = { bold: true, size: 11, color: { argb: "FF3E5C76" }, name: "Calibri" };
         fusionar(rr);
       }
 
@@ -5022,13 +4997,13 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         (groupKeys.length ? `   ·   ordenado por ${groupBys.map((g) => (GROUP_OPCIONES.find((o) => o.value === g.field) || {}).label || g.field).join(" > ")}` : "") +
         (conDetalleEfectivo ? "   ·   el detalle de transacciones está en la hoja «Transacciones»" : ""),
       ]);
-      sub.font = { size: 10, color: { argb: "FF6B7785" } };
+      sub.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" };
       fusionar(sub);
       ws.addRow([]);
 
       const hr = ws.addRow(COLS.map((c) => c.header));
       hr.eachCell((cell) => {
-        cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+        cell.font = { bold: true, color: { argb: "FFFFFFFF" }, name: "Calibri" };
         cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF3E5C76" } };
         cell.alignment = { horizontal: "center", vertical: "center" };
       });
@@ -5060,7 +5035,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       ws.addRow([]);
       Object.entries(totalPorMoneda(partidasOrdenadasVista)).forEach(([m, v]) => {
         const row = ws.addRow([`TOTAL ${m}`, ...Array(Math.max(COLS.length - 2, 0)).fill(""), v]);
-        row.font = { bold: true };
+        row.font = { bold: true, name: "Calibri" };
         row.getCell(COLS.length).numFmt = '"$"#,##0.00';
       });
 
@@ -5179,11 +5154,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
   const [expandedIds, setExpandedIds] = useState(new Set());
   const [transaccionEditando, setTransaccionEditando] = useState(null);
-  const toggleExpand = (id) => setExpandedIds((prev) => {
-    const next = new Set(prev);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
+  const toggleExpand = (id) => setExpandedIds((prev) => alternarEnSet(prev, id));
 
   const [generandoPDF, setGenerandoPDF] = useState(false);
 
@@ -6152,11 +6123,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 
   const [groupBys, setGroupBys] = usePrefState("pref-transacciones-groupbys", [], sanearGroupBys(GROUP_OPCIONES_TRANS));
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
-  const toggleGroup = (path) => setCollapsedGroups((prev) => {
-    const next = new Set(prev);
-    next.has(path) ? next.delete(path) : next.add(path);
-    return next;
-  });
+  const toggleGroup = (path) => setCollapsedGroups((prev) => alternarEnSet(prev, path));
   const groupKeys = groupBys.map((g) => g.field);
   const grouped = groupKeys.length ? agruparRows(transEnriquecidas, groupBys, "importe") : null;
 
@@ -6192,11 +6159,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [filtrosSV, setFiltrosSV] = useSessionState("ss-transacciones-sv-filtros", { fechaDesde: "", fechaHasta: "" });
   const [groupBysSV, setGroupBysSV] = usePrefState("pref-transacciones-sv-groupbys", [], sanearGroupBys(GROUP_OPCIONES_SINVINC));
   const [collapsedGroupsSV, setCollapsedGroupsSV] = useState(new Set());
-  const toggleGroupSV = (path) => setCollapsedGroupsSV((prev) => {
-    const next = new Set(prev);
-    next.has(path) ? next.delete(path) : next.add(path);
-    return next;
-  });
+  const toggleGroupSV = (path) => setCollapsedGroupsSV((prev) => alternarEnSet(prev, path));
   const sinVincularFiltrado = sinVincular.filter((t) => {
     if (filtrosSV.fechaDesde && (!t.dia || t.dia < filtrosSV.fechaDesde)) return false;
     if (filtrosSV.fechaHasta && (!t.dia || t.dia > filtrosSV.fechaHasta)) return false;
@@ -6458,9 +6421,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         const m = (t.moneda || "MXP") === "USD" ? "USD" : "MXP";
         totales[m] = (totales[m] || 0) + (Number(t.importe) || 0);
       });
-      const fmtTot = (t) => Object.entries(t)
-        .map(([m, v]) => `$${(Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${m}`)
-        .join("   ·   ");
+      const fmtTot = fmtTotalesPorMoneda;
 
       const wbx = new ExcelJS.Workbook();
       const ws = wbx.addWorksheet(`${unidad} ${periodo}`.replace(/[:\\/?*[\]]/g, "-").slice(0, 31));
@@ -6662,11 +6623,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     transaccionesApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
   };
 
-  const toggleSeleccion = (id) => setSeleccionadas((prev) => {
-    const next = new Set(prev);
-    next.has(id) ? next.delete(id) : next.add(id);
-    return next;
-  });
+  const toggleSeleccion = (id) => setSeleccionadas((prev) => alternarEnSet(prev, id));
   const toggleSeleccionTodas = () => {
     const idsVisibles = transOrdenadas.map((t) => t.id);
     const todasSeleccionadas = idsVisibles.length > 0 && idsVisibles.every((id) => seleccionadas.has(id));
@@ -9306,10 +9263,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
       alert("No se pudo agregar la cuenta: " + (err.message || err));
     }
   };
-  const eliminarCuenta = (id) => {
-    if (!confirm("¿Eliminar esta cuenta bancaria? Esto no se puede deshacer.")) return;
-    cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
-  };
+  const eliminarCuenta = (id) => eliminarCuentaBancaria(cuentasApi, id);
 
   // Exporta las tres compañías con UNA FILA POR CUENTA BANCARIA (un proveedor
   // con dos cuentas ocupa dos renglones). Así el preparador de transacciones

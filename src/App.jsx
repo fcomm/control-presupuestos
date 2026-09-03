@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.97.2";
+const APP_VERSION = "1.98.0";
 const CHANGELOG = [
+  { v: "1.98.0", desc: "Los reportes oficiales respetan ahora el agrupamiento de Partidas y Transacciones —comparten la misma preferencia, así que cambiarlo en cualquiera de las dos lo cambia en el reporte— y el control quedó también en la pestaña, para verlo y ajustarlo al momento de generar. Los FILTROS siguen sin aplicarse a propósito: un reporte oficial debe traer todo el periodo, porque si no, no habría forma de distinguir entre lo que no estaba presupuestado y lo que un filtro ocultó. Agrupar no oculta nada, filtrar sí" },
   { v: "1.97.2", desc: "Fix: al registrar un reporte oficial faltaba mandar la columna version, que es obligatoria — se calculaba correctamente pero no se incluía en la inserción. El mensaje mejorado de la 1.97.1 fue lo que permitió verlo de inmediato" },
   { v: "1.97.1", desc: "Fix: registrar un reporte oficial no hacía nada. Los identificadores se generaban en el navegador con uid(), que cuando crypto.randomUUID no está disponible devuelve una cadena de ocho caracteres — no un UUID válido — y Postgres rechazaba la inserción. Ahora los genera la base, que ya tenía gen_random_uuid() por defecto. Además los errores dicen en qué paso falló y quedan completos en la consola: el mensaje anterior era demasiado escueto para diagnosticar" },
   { v: "1.97.0", desc: "El reporte oficial genera ahora DOS archivos: el PDF para leer, sin detalle, y el Excel para analizar, con las transacciones vinculadas en hoja aparte cuando es el reporte de presupuesto. La REVISIÓN va dentro de ambos documentos, no solo en el nombre del archivo: los nombres se pierden al reenviar por correo, y sin la versión visible nadie puede saber cuál de dos copias es la vigente. Las descargas van separadas por una pausa porque los navegadores bloquean la segunda cuando salen juntas — el archivo desaparecería sin decir por qué" },
@@ -1233,7 +1234,7 @@ const nh = (v) => String(v || "").trim().toLowerCase();
  * permitiría que el documento enviado no coincida con la línea base, y
  * entonces la línea base mentiría — justo lo que se quiere evitar.
  */
-function generarPdfOficial({ compania, tipo, periodo, version, filas }) {
+function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, etiqueta = (x) => x }) {
   const esPres = tipo === "presupuesto";
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
   const M = 36;
@@ -1269,26 +1270,37 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas }) {
     M, 70
   );
 
-  // Agrupado por ÁREA: es la dimensión con la que se revisa después, así
-  // que el documento enviado ya viene ordenado igual que el reclamo.
-  const porArea = {};
-  filas.forEach((f) => { (porArea[f.area || "Sin área"] = porArea[f.area || "Sin área"] || []).push(f); });
-
-  const body = [];
-  Object.keys(porArea).sort().forEach((area) => {
-    const lista = porArea[area];
+  /* Respeta el agrupamiento de la pestaña de origen. Los FILTROS no se
+     respetan a propósito —un reporte oficial debe traer todo el periodo, o
+     no habría forma de saber qué quedó fuera— pero agrupar no oculta nada. */
+  const nCols = esPres ? 6 : 7;
+  const totalDe = (lista) => {
     const t = {};
     lista.forEach((f) => { const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP"; t[m] = (t[m] || 0) + (Number(f.importe) || 0); });
-    body.push([{
-      content: `${area}   (${lista.length})   ${Object.entries(t).map(([m, v]) => `${num(v)} ${m}`).join("  ·  ")}`,
-      colSpan: esPres ? 6 : 7,
-      styles: { fillColor: [236, 238, 241], fontStyle: "bold", halign: "left" },
-    }]);
-    lista.forEach((f) => body.push(esPres
-      ? [f.folio || "", f.concepto || "", f.rubro || "", f.categoria || "", f.proyecto || "", num(f.importe)]
-      : [f.dia || "", f.proveedor || "", f.concepto || "", f.categoria || "", f.solicitante || "", f.proyecto || "", num(f.importe)]
-    ));
-  });
+    return Object.entries(t).map(([m, v]) => `${num(v)} ${m}`).join("  ·  ");
+  };
+  const filaDe = (f) => esPres
+    ? [f.folio || "", f.concepto || "", f.rubro || "", f.categoria || "", f.proyecto || "", num(f.importe)]
+    : [f.dia || "", f.proveedor || "", f.concepto || "", f.categoria || "", f.solicitante || "", f.proyecto || "", num(f.importe)];
+
+  const body = [];
+  if (grupos && grupos.length) {
+    const hojas = (n) => n.type === "rows" ? n.rows : n.entries.flatMap((e) => hojas(e.child));
+    (function rec(nodo, nivel) {
+      if (nodo.type === "rows") { nodo.rows.forEach((f) => body.push(filaDe(f))); return; }
+      nodo.entries.forEach((e) => {
+        const lista = hojas(e.child);
+        body.push([{
+          content: `${"    ".repeat(nivel)}${etiqueta(nodo.key)}: ${e.value}   (${lista.length})   ${totalDe(lista)}`,
+          colSpan: nCols,
+          styles: { fillColor: nivel === 0 ? [236, 238, 241] : [246, 247, 249], fontStyle: "bold", halign: "left" },
+        }]);
+        rec(e.child, nivel + 1);
+      });
+    })(agruparRows(filas, grupos, "importe"), 0);
+  } else {
+    filas.forEach((f) => body.push(filaDe(f)));
+  }
 
   autoTable(doc, {
     startY: 84,
@@ -1312,7 +1324,7 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas }) {
  * sin detalle porque es para leerse, y el Excel lleva las transacciones
  * vinculadas en hoja aparte porque es para analizarse.
  */
-async function generarExcelOficial({ compania, tipo, periodo, version, filas, transacciones }) {
+async function generarExcelOficial({ compania, tipo, periodo, version, filas, transacciones, grupos, etiqueta = (x) => x }) {
   const esPres = tipo === "presupuesto";
   const wbx = new ExcelJS.Workbook();
   const num = '"$"#,##0.00';
@@ -1360,27 +1372,40 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
   });
   hr.height = 22;
 
-  // Agrupado por área, igual que el PDF: es la dimensión de la revisión.
-  const porArea = {};
-  filas.forEach((f) => { (porArea[f.area || "Sin área"] = porArea[f.area || "Sin área"] || []).push(f); });
-  Object.keys(porArea).sort().forEach((area) => {
-    const lista = porArea[area];
+  // Mismo agrupamiento que el PDF, tomado de la pestaña de origen.
+  const escribir = (f, sangria) => {
+    const row = ws.addRow(COLS.map((c) => c.g(f)));
+    COLS.forEach((c, i) => {
+      const cell = row.getCell(i + 1);
+      cell.font = { name: "Calibri", size: 10 };
+      cell.alignment = { horizontal: c.money ? "right" : (c.izq ? "left" : "center"),
+                         vertical: "top", wrapText: !!c.izq, indent: c.izq ? sangria : undefined };
+      if (c.money) cell.numFmt = num;
+    });
+  };
+  const totDe = (lista) => {
     const t = {};
     lista.forEach((f) => { const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP"; t[m] = (t[m] || 0) + (Number(f.importe) || 0); });
-    const rg = ws.addRow([`${area}   (${lista.length})   ${fmtTot(t)}`]);
-    ws.mergeCells(rg.number, 1, rg.number, COLS.length);
-    rg.getCell(1).font = { bold: true, name: "Calibri" };
-    rg.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } };
-    lista.forEach((f) => {
-      const row = ws.addRow(COLS.map((c) => c.g(f)));
-      COLS.forEach((c, i) => {
-        const cell = row.getCell(i + 1);
-        cell.font = { name: "Calibri", size: 10 };
-        cell.alignment = { horizontal: c.money ? "right" : (c.izq ? "left" : "center"), vertical: "top", wrapText: !!c.izq };
-        if (c.money) cell.numFmt = num;
+    return t;
+  };
+
+  if (grupos && grupos.length) {
+    const hojas = (n) => n.type === "rows" ? n.rows : n.entries.flatMap((e) => hojas(e.child));
+    (function rec(nodo, nivel) {
+      if (nodo.type === "rows") { nodo.rows.forEach((f) => escribir(f, nivel)); return; }
+      nodo.entries.forEach((e) => {
+        const lista = hojas(e.child);
+        const rg = ws.addRow([`${etiqueta(nodo.key)}: ${e.value}   (${lista.length})   ${fmtTot(totDe(lista))}`]);
+        ws.mergeCells(rg.number, 1, rg.number, COLS.length);
+        rg.getCell(1).font = { bold: true, name: "Calibri", color: { argb: nivel === 0 ? "FF232A31" : "FF4A5560" } };
+        rg.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: nivel === 0 ? GRIS : "FFF6F7F9" } };
+        rg.getCell(1).alignment = { indent: nivel };
+        rec(e.child, nivel + 1);
       });
-    });
-  });
+    })(agruparRows(filas, grupos, "importe"), 0);
+  } else {
+    filas.forEach((f) => escribir(f, 0));
+  }
 
   ws.addRow([]);
   Object.entries(tot).forEach(([m, v]) => {
@@ -1474,7 +1499,13 @@ async function registrarReporteOficial({ compania, tipo, periodo, periodoIni, pe
 
   // En lotes: con doscientos registros una sola inserción puede exceder el
   // límite de la petición.
-  const detalle = filas.map((f) => ({ reporte_id: cab.id, ...f }));
+  /* Los campos que empiezan con guion bajo son solo para agrupar en pantalla
+     y no existen como columnas: enviarlos haría fallar la inserción. */
+  const detalle = filas.map((f) => {
+    const limpio = {};
+    Object.entries(f).forEach(([k, v]) => { if (!k.startsWith("_")) limpio[k] = v; });
+    return { reporte_id: cab.id, ...limpio };
+  });
   for (let i = 0; i < detalle.length; i += 100) {
     const { error } = await supabase.from("reportes_oficiales_detalle").insert(detalle.slice(i, i + 100));
     if (error) throw new Error(`al guardar el detalle (registro ${i + 1} en adelante): ${error.message}`);
@@ -8195,6 +8226,8 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
     categoria: p.categoria || "", rubro: p.rubro || "", proyecto: p.proyecto || "",
     zona: p.zona || "", concepto: p.concepto || "", proveedor: null, solicitante: null,
     importe: Number(p.monto_estimado) || 0, moneda: p.moneda || "MXP", dia: null,
+    // Solo para agrupar; no se guardan en el detalle congelado.
+    _mes: p.mes, _anio: p.anio,
   }));
 
   // --- Transacciones de la semana elegida ---
@@ -8208,10 +8241,23 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
       zona: t.zona || "", concepto: t.concepto_detallado || "", proveedor: t.proveedor || "",
       solicitante: t.solicitante || "", importe: Number(t.importe) || 0,
       moneda: t.moneda || "MXP", dia: t.dia || null,
+      _status: t.status || "", _rubro: p?.rubro || "", _proyecto: t.proyecto || p?.proyecto || "",
+      _mes: p?.mes || "", _anio: p?.anio || null,
     };
   });
 
   const esPresupuesto = sub === "presupuesto";
+
+  /* MISMA preferencia que la pestaña de origen —la clave de almacenamiento es
+     la misma— así que agrupar en Partidas cambia también el reporte oficial.
+     Se muestra aquí para que sea visible y ajustable en el momento de generar,
+     en vez de depender de algo que se configuró en otra pantalla. */
+  const [gbPres, setGbPres] = usePrefState("pref-partidas-groupbys", [], sanearGroupBys(GROUP_OPCIONES));
+  const [gbTrans, setGbTrans] = usePrefState("pref-transacciones-groupbys", [], sanearGroupBys(GROUP_OPCIONES_TRANS));
+  const groupBysRep = esPresupuesto ? gbPres : gbTrans;
+  const setGroupBysRep = esPresupuesto ? setGbPres : setGbTrans;
+  const opcionesRep = esPresupuesto ? GROUP_OPCIONES : GROUP_OPCIONES_TRANS;
+  const etiquetaRep = (campo) => (opcionesRep.find((o) => o.value === campo) || {}).label || campo;
   const filas = esPresupuesto ? filasPresupuesto : filasTrans;
   const periodo = esPresupuesto ? `${mesRep} ${anioRep}` : `Semana ${semanaRep}`;
   const yaEnviados = reportes.filter((r) => r.tipo === (esPresupuesto ? "presupuesto" : "transacciones") && r.periodo === periodo);
@@ -8275,9 +8321,9 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
          segunda descarga automática cuando salen juntas, y el archivo
          desaparecería sin decir por qué. */
       const txPartidas = esPresupuesto ? transaccionesDeLasPartidas() : [];
-      generarPdfOficial({ compania: unidad, tipo, periodo, version: r.version, filas });
+      generarPdfOficial({ compania: unidad, tipo, periodo, version: r.version, filas, grupos: groupBysRep, etiqueta: etiquetaRep });
       await new Promise((res) => setTimeout(res, 900));
-      await generarExcelOficial({ compania: unidad, tipo, periodo, version: r.version, filas, transacciones: txPartidas });
+      await generarExcelOficial({ compania: unidad, tipo, periodo, version: r.version, filas, transacciones: txPartidas, grupos: groupBysRep, etiqueta: etiquetaRep });
       setRecarga((x) => x + 1);
     } catch (err) {
       // A la consola además del aviso: el mensaje de Supabase suele traer
@@ -8318,9 +8364,19 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
         title={`Reporte oficial a Dirección — ${unidad}`}
         subtitle={`${filas.length} registros en ${periodo}` + (yaEnviados.length ? ` · ${yaEnviados.length} versión(es) enviada(s)` : " · sin enviar")}
         right={
+          <div style={{ display: "flex", gap: 8 }}>
+            {/* El mismo agrupamiento que la pestaña de origen: cambiarlo aquí
+                lo cambia allá, porque comparten la preferencia. */}
+            <GroupByControl
+              options={opcionesRep}
+              value={groupBysRep}
+              onChange={setGroupBysRep}
+              maxLevels={3}
+            />
           <Button onClick={generar} disabled={generando || !filas.length}>
             {generando ? "Registrando…" : `Registrar versión ${yaEnviados.length + 1}`}
           </Button>
+          </div>
         }
       >
         <div style={{ display: "flex", gap: 10, alignItems: "flex-end", marginBottom: 14, flexWrap: "wrap" }}>

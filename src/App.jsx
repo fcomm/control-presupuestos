@@ -291,8 +291,9 @@ const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.r
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "1.97.1";
+const APP_VERSION = "1.97.2";
 const CHANGELOG = [
+  { v: "1.97.2", desc: "Fix: al registrar un reporte oficial faltaba mandar la columna version, que es obligatoria — se calculaba correctamente pero no se incluía en la inserción. El mensaje mejorado de la 1.97.1 fue lo que permitió verlo de inmediato" },
   { v: "1.97.1", desc: "Fix: registrar un reporte oficial no hacía nada. Los identificadores se generaban en el navegador con uid(), que cuando crypto.randomUUID no está disponible devuelve una cadena de ocho caracteres — no un UUID válido — y Postgres rechazaba la inserción. Ahora los genera la base, que ya tenía gen_random_uuid() por defecto. Además los errores dicen en qué paso falló y quedan completos en la consola: el mensaje anterior era demasiado escueto para diagnosticar" },
   { v: "1.97.0", desc: "El reporte oficial genera ahora DOS archivos: el PDF para leer, sin detalle, y el Excel para analizar, con las transacciones vinculadas en hoja aparte cuando es el reporte de presupuesto. La REVISIÓN va dentro de ambos documentos, no solo en el nombre del archivo: los nombres se pierden al reenviar por correo, y sin la versión visible nadie puede saber cuál de dos copias es la vigente. Las descargas van separadas por una pausa porque los navegadores bloquean la segunda cuando salen juntas — el archivo desaparecería sin decir por qué" },
   { v: "1.96.1", desc: "Registrar un reporte oficial genera ahora el PDF en el mismo acto. Estaban separados —se registraba aquí y el documento se generaba desde Partidas— y eso permitía que el archivo enviado no coincidiera con lo congelado: bastaba cambiar un filtro entre un paso y otro para que la línea base mintiera. El PDF viene agrupado por área, que es la dimensión con la que se revisa después. Y las versiones ya registradas se pueden volver a descargar: el documento se reconstruye del contenido congelado, no de los datos actuales, así que sale idéntico al que se envió" },
@@ -1461,7 +1462,9 @@ async function registrarReporteOficial({ compania, tipo, periodo, periodoIni, pe
      un UUID válido: Postgres rechaza la inserción y el fallo aparece como
      "no pasó nada". Las tablas ya tienen gen_random_uuid() por defecto. */
   const { data: cab, error: e2 } = await supabase.from("reportes_oficiales").insert({
-    compania, tipo, periodo,
+    // `version` se calcula arriba y es NOT NULL: omitirla hacía fallar la
+    // inserción entera.
+    compania, tipo, periodo, version,
     periodo_ini: periodoIni || null, periodo_fin: periodoFin || null,
     n_registros: filas.length, importe_mxp: tot.MXP, importe_usd: tot.USD,
     notas: notas || null,

@@ -284,15 +284,46 @@ function aplicarCatalogo(rubrosRows, categoriasRows) {
 
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
-const uid = () => (typeof crypto !== "undefined" && crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).slice(2, 10));
+/**
+ * Identificador para filas nuevas. SIEMPRE devuelve un UUID válido.
+ *
+ * El respaldo anterior daba una cadena de ocho caracteres cuando
+ * crypto.randomUUID no estaba disponible —pasa en navegadores viejos y en
+ * cualquier origen sin HTTPS— y Postgres rechaza eso en una columna uuid.
+ * El insert fallaba y el síntoma era "no pasó nada": ya nos costó una
+ * sesión de diagnóstico con los reportes oficiales.
+ *
+ * Se prueban tres vías, de la más confiable a la menos: randomUUID,
+ * getRandomValues (disponible mucho más ampliamente) y, como último
+ * recurso, Math.random con el formato correcto.
+ */
+const uid = () => {
+  if (typeof crypto !== "undefined") {
+    if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
+    if (typeof crypto.getRandomValues === "function") {
+      const b = crypto.getRandomValues(new Uint8Array(16));
+      b[6] = (b[6] & 0x0f) | 0x40;   // versión 4
+      b[8] = (b[8] & 0x3f) | 0x80;   // variante RFC 4122
+      const h = [...b].map((x) => x.toString(16).padStart(2, "0")).join("");
+      return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(16, 20)}-${h.slice(20)}`;
+    }
+  }
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+};
 
 // ----------------------------------------------------------------------
 // VERSIÓN — súbela cada vez que cambies este archivo. Formato MAJOR.MINOR.PATCH:
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.0.0";
+const APP_VERSION = "2.2.1";
 const CHANGELOG = [
+  { v: "2.2.1", desc: "uid() devuelve ahora SIEMPRE un UUID válido. Su respaldo anterior daba una cadena de ocho caracteres cuando crypto.randomUUID no estaba disponible —navegadores viejos, cualquier origen sin HTTPS— y Postgres rechaza eso en una columna uuid: el insert fallaba y el síntoma era «no pasó nada», que es justo lo que costó diagnosticar con los reportes oficiales. Se arregla en la función en vez de en las diecisiete llamadas, así que cubre también las que se agreguen después" },
+  { v: "2.2.0", desc: "Las zonas pasan a ser por compañía: OSB dejaba de ver Guaymas entre zonas de CTM y viceversa, y el selector ofrecía lugares donde esa compañía no opera. Cada zona conserva su grupo editable, así que el reporte a Dirección puede agrupar distinto en cada compañía si hiciera falta. El SQL reparte las zonas existentes según su USO REAL en partidas y transacciones —no las replica a todas— y unifica QRO con Queretaro, moviendo también el detalle congelado de los reportes ya enviados: sin eso la línea base seguiría distinguiendo dos zonas que ya no existen. Requiere 23-zonas-por-compania.sql" },
+  { v: "2.1.0", desc: "Las zonas ganan un GRUPO editable en Catálogo, que es como Dirección las conoce: Poza Rica, Altamira, Cerro Azul, Cotaxtla y Tamaulipas son 'Zona Norte' para ellos. El reporte mensual oficial corta por grupo en vez de por zona suelta, y el Excel lleva el grupo como columna propia para poder filtrar por él sin perder la zona real. Una zona sin grupo se reporta con su propio nombre, que es preferible a mandarla a un cajón genérico donde nadie la buscaría. Requiere 22-grupo-zonas.sql" },
   { v: "2.0.0", desc: "El reporte semanal se rehace con formato propio. Los archivos se llaman 'Reporte Pagos del dia 07 - 13 de Septiembre'. El PDF abre con un resumen ejecutivo —cuánto se va a pagar, por zona y moneda— y debajo una tabla plana con la zona y el día como columnas, para que se lea de corrido. El Excel lleva una tabla por zona y moneda apiladas verticalmente, cada una con su subtotal, más una hoja «Datos» plana con autofiltro: Excel admite un solo autofiltro por hoja, así que las tablas apiladas no pueden filtrarse cada una por su cuenta y la hoja plana cubre ese uso" },
   { v: "1.99.2", desc: "Fix: el Excel del reporte oficial fallaba con 'Cannot merge already merged cells'. Las fusiones del encabezado usaban números de fila fijos, así que al agregar el renglón de REVISIÓN todo se recorría y se intentaba fusionar dos veces la misma fila. Ahora cada fusión usa el número real de su renglón, que es lo que ExcelJS ya devuelve al agregarlo — y se corrigió el mismo patrón frágil en los otros cuatro generadores, donde todavía no fallaba pero fallaría al agregar cualquier renglón" },
   { v: "1.99.1", desc: "La hoja de Presupuesto del Reporte Excel pasa a tabla plana: una partida por renglón, sin encabezados de grupo. Esos encabezados eran texto en celdas fusionadas —no se podían filtrar ni resumir con tabla dinámica— y además duplicaban lo que Zona y Rubro ya dicen en sus propias columnas. El agrupamiento se conserva en el ORDEN de los renglones, que es lo único que aportaba sin estorbar, y ahora el autofiltro sí funciona: antes las filas de grupo lo rompían porque no tenían la misma forma que los datos" },
@@ -4667,7 +4698,7 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
   );
 }
 
-function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, zonas = ZONAS_RESPALDO }) {
+function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, zonas = ZONAS_RESPALDO, gruposZona = {} }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadores = marcadoresDisponibles(proyectosUnidad);
   const anioDefault = (() => {
@@ -4817,6 +4848,10 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     { key: "rubro",       header: "Rubro",       width: 26, get: (p) => p.rubro, izq: true },
     { key: "categoria",   header: "Categoría",   width: 30, get: (p) => p.categoria || "", izq: true },
     { key: "zona",        header: "Zona",        width: 16, get: (p) => p.zona || "Cualquiera" },
+    // El grupo como columna aparte: en una tabla plana permite filtrar por
+    // "Zona Norte" sin perder de vista la zona real de cada partida.
+    { key: "grupo_zona",  header: "Grupo de zona", width: 16,
+      get: (p) => (p.zona ? (gruposZona[String(p.zona).trim().toLowerCase()] || p.zona) : "Cualquiera") },
     { key: "proyecto",    header: "Proyecto",    width: 18, get: (p) => p.proyecto || "" },
     { key: "smi",         header: "SMI",         width: 11, get: (p) => p.smi || "" },
     { key: "moneda",      header: "Moneda",      width: 9,  get: (p) => p.moneda || "MXP" },
@@ -5169,6 +5204,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
      pero sobre todas las partidas del mes, no sobre las filtradas. */
   const generarReportePDF = async (rows = null, revision = null) => {
     const partidasOrdenadas = rows || partidasOrdenadasVistaBase;
+    const esOficial = !!revision;
     if (!partidasOrdenadas.length) {
       alert("No hay partidas en el filtro actual para generar el reporte.");
       return;
@@ -5318,10 +5354,26 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         seccion("Flotilla: combustible y mantenimiento vehicular", filas);
       }
       seccion("Proyecto", cortePor("proyecto", "Sin proyecto"));
-      const porZona = cortePor("zona", "Cualquier zona");
+      /* El corte va por GRUPO de zona, que es como Dirección las conoce.
+         Una zona sin grupo se reporta con su propio nombre: es preferible a
+         mandarla a un cajón genérico donde nadie la buscaría. */
+      const grupoDe = (p) => {
+        const z = String(p.zona || "").trim();
+        if (!z) return "Cualquier zona";
+        return gruposZona[z.toLowerCase()] || z;
+      };
+      const mapaZ = {};
+      partidasOrdenadas.forEach((p) => {
+        const k = grupoDe(p);
+        const m = monedaDe(p);
+        if (!mapaZ[k]) mapaZ[k] = { clave: k, MXP: 0, USD: 0, n: 0 };
+        mapaZ[k][m] += Number(p.monto_estimado) || 0;
+        mapaZ[k].n++;
+      });
+      const porZona = Object.values(mapaZ).sort((a, b) => (b.MXP + b.USD) - (a.MXP + a.USD));
       // Si ninguna partida tiene zona, el corte no aporta nada y se omite.
       if (!(porZona.length === 1 && porZona[0].clave === "Cualquier zona")) {
-        seccion("Zona", porZona);
+        seccion(esOficial ? "Zona (como la conoce Dirección)" : "Zona", porZona);
       }
 
       /* Con el detalle activado se agrega el gasto REAL de esas partidas,
@@ -8134,9 +8186,10 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
  *     conservan el texto, porque `transacciones.zona` no es llave foránea.
  *     Por eso se avisa cuántas quedarían con una zona fuera de catálogo.
  */
-function ZonasPanel({ zonasApi, transacciones = [] }) {
+function ZonasPanel({ zonasApi, transacciones = [], unidad }) {
   const [nueva, setNueva] = useState("");
   const [editandoId, setEditandoId] = useState(null);
+  const [borradorGrupo, setBorradorGrupo] = useState("");
   const [borrador, setBorrador] = useState("");
 
   const zonas = [...zonasApi.rows].sort(
@@ -8159,7 +8212,9 @@ function ZonasPanel({ zonasApi, transacciones = [] }) {
     if (!nombre) return;
     if (enCatalogo.has(nombre.toLowerCase())) { alert(`"${nombre}" ya está en el catálogo.`); return; }
     try {
-      await zonasApi.insert({ id: uid(), nombre, activa: true, orden: (zonas[zonas.length - 1]?.orden ?? zonas.length) + 1 });
+      // Sin `id`: lo genera la base. uid() cae en una cadena de ocho
+      // caracteres cuando crypto.randomUUID no está, y Postgres la rechaza.
+      await zonasApi.insert({ unidad, nombre, activa: true, orden: (zonas[zonas.length - 1]?.orden ?? zonas.length) + 1 });
       setNueva("");
     } catch (err) { alert("No se pudo agregar: " + (err.message || err)); }
   };
@@ -8168,7 +8223,7 @@ function ZonasPanel({ zonasApi, transacciones = [] }) {
     const nombre = borrador.trim();
     if (!nombre) return;
     try {
-      await zonasApi.update(id, { nombre });
+      await zonasApi.update(id, { nombre, grupo: borradorGrupo.trim() || null });
       setEditandoId(null);
     } catch (err) { alert("No se pudo actualizar: " + (err.message || err)); }
   };
@@ -8220,7 +8275,7 @@ function ZonasPanel({ zonasApi, transacciones = [] }) {
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
             {huerfanas.map((h) => (
               <Button key={h} variant="ghost" style={{ padding: "3px 9px", fontSize: 11 }}
-                onClick={() => zonasApi.insert({ id: uid(), nombre: h, activa: true, orden: 900 })
+                onClick={() => zonasApi.insert({ unidad, nombre: h, activa: true, orden: 900 })
                   .catch((err) => alert("No se pudo agregar: " + (err.message || err)))}>
                 + {h} <span style={{ color: T.textFaint }}>({usos(h)})</span>
               </Button>
@@ -8233,6 +8288,7 @@ function ZonasPanel({ zonasApi, transacciones = [] }) {
         <thead>
           <tr>
             <th style={thStyle}>Zona</th>
+            <th style={thStyle}>Grupo (como lo ve Dirección)</th>
             <th style={thStyle}>Transacciones</th>
             <th style={thStyle}>Estado</th>
             <th style={thStyle}></th>
@@ -8246,6 +8302,15 @@ function ZonasPanel({ zonasApi, transacciones = [] }) {
                   <TextInput value={borrador} onChange={(e) => setBorrador(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") guardar(z.id); }} style={{ width: 220 }} />
                 ) : z.nombre}
+              </td>
+              {/* El grupo es cómo Dirección conoce la zona en el reporte
+                  mensual. Vacío significa que se reporta con su propio nombre. */}
+              <td style={tdStyle}>
+                {editandoId === z.id ? (
+                  <TextInput value={borradorGrupo} onChange={(e) => setBorradorGrupo(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter") guardar(z.id); }}
+                    placeholder="Zona Norte" style={{ width: 150 }} />
+                ) : (z.grupo ? <Pill>{z.grupo}</Pill> : <span style={{ color: T.textFaint }}>propio nombre</span>)}
               </td>
               <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{usos(z.nombre) || "—"}</td>
               <td style={tdStyle}>
@@ -8261,7 +8326,7 @@ function ZonasPanel({ zonasApi, transacciones = [] }) {
                   ) : (
                     <>
                       <IconButton icon="✎" label="Renombrar" tone={T.accent}
-                        onClick={() => { setEditandoId(z.id); setBorrador(z.nombre); }} />
+                        onClick={() => { setEditandoId(z.id); setBorrador(z.nombre); setBorradorGrupo(z.grupo || ""); }} />
                       <IconButton icon={z.activa === false ? "◻" : "◼"}
                         label={z.activa === false ? "Activar" : "Desactivar"}
                         onClick={() => alternarActiva(z)} />
@@ -8975,7 +9040,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
       {sub === "rubros" && (
         <RubrosPanel rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} />
       )}
-      {sub === "zonas" && <ZonasPanel zonasApi={zonasApi} transacciones={transacciones} />}
+      {sub === "zonas" && <ZonasPanel zonasApi={zonasApi} transacciones={transacciones} unidad={unidad} />}
       {sub === "proveedores" && (
         <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />
       )}
@@ -10679,8 +10744,19 @@ export default function App() {
   const partidas = partidasApi.rows;
   // Solo las activas, en el orden del catálogo. Si la tabla no responde
   // —migración pendiente— se cae al respaldo en vez de quedarse en blanco.
-  const zonas = zonasApi.rows.length
-    ? zonasApi.rows.filter((z) => z.activa !== false)
+  /* Dirección conoce las zonas agrupadas —Poza Rica, Altamira y Cerro Azul
+     son "Zona Norte" para ellos— así que el reporte mensual oficial debe
+     hablar en esos términos. El mapa se arma aquí y viaja a Partidas. */
+  const gruposZona = {};
+  zonasApi.rows
+    .filter((z) => z.unidad === unidad || !z.unidad)
+    .forEach((z) => { if (z.grupo) gruposZona[String(z.nombre).trim().toLowerCase()] = z.grupo; });
+
+  /* Solo las zonas de la compañía activa. Un selector con las de las tres
+     ofrecía lugares donde esa compañía no opera. */
+  const zonasDeLaUnidad = zonasApi.rows.filter((z) => z.unidad === unidad || !z.unidad);
+  const zonas = zonasDeLaUnidad.length
+    ? zonasDeLaUnidad.filter((z) => z.activa !== false)
         .sort((a, b) => (a.orden ?? 999) - (b.orden ?? 999) || String(a.nombre).localeCompare(String(b.nombre)))
         .map((z) => z.nombre)
     : ZONAS_RESPALDO;
@@ -10803,7 +10879,7 @@ export default function App() {
       ) : (
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
-          {tab === "partidas" && <PartidasTab zonas={zonas} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "partidas" && <PartidasTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "transacciones" && <TransaccionesTab zonas={zonas} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}

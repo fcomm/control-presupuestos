@@ -318,8 +318,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.2.3";
+const APP_VERSION = "2.3.0";
 const CHANGELOG = [
+  { v: "2.3.0", desc: "El reporte semanal de pagos (PDF y Excel) agrupa por GRUPO de zona —Zona Norte, Zona Sur— en vez de por zona suelta: Poza Rica, Altamira, Cerro Azul, Cotaxtla y Tamaulipas se suman juntas bajo 'Zona Norte', que es como Dirección lo revisa. Una zona sin grupo asignado se reporta con su propio nombre, igual que en el corte del reporte mensual. La hoja plana del Excel gana una columna 'Grupo de zona' junto a la Zona real, para filtrar por el grupo sin perder la zona de cada pago. Aplica también al volver a descargar una versión ya enviada" },
+  { v: "2.2.4", desc: "El reporte semanal de pagos a Dirección (PDF y Excel) cambia su nomenclatura a 'Pagos COMPAÑIA Del XX al XX de MES', con la compañía en su código de 3 letras (OSB/CTM/ISE) y el mes abreviado a 3 letras. Aplica al nombre del archivo y al título dentro del documento, para que ambos coincidan. Cuando la semana cruza de un mes a otro, el formato se extiende poniendo el mes junto a cada día ('Del 28 Sep al 04 Oct'), porque la plantilla original solo tenía espacio para uno" },
   { v: "2.2.3", desc: "Limpieza de código, sin cambios de comportamiento. Se eliminan dos funciones muertas (opcionesPartidaPorMes, SlidingToggle, reemplazadas hace tiempo por otros componentes) y ocho imports sin usar (useCallback y todo lucide-react — la app resuelve sus íconos con símbolos de texto). Se consolidan cuatro patrones que se habían repetido, idénticos, en varios puntos por construirse en sesiones separadas: el formateador de totales por moneda (3 sitios), el cierre de popups al hacer clic fuera (3 sitios, ahora un hook useClickOutside), el alternar membresía en un Set para expandir/contraer (5 sitios), y eliminar una cuenta bancaria (2 sitios). Cada consolidación se verificó con equivalencia de salida antes de aplicarse. De paso, el reporte Excel de Partidas —el más usado de la app— tenía cinco celdas de encabezado sin fuente Calibri explícita, a diferencia de todos los demás reportes; se corrige por consistencia" },
   { v: "2.2.2", desc: "Fix: el catálogo de zonas seguía mostrando las de las tres compañías juntas —de ahí que Queretaro apareciera tres veces— porque el filtro por compañía nunca llegó a aplicarse en el panel. Se corrige también el conteo de transacciones, que sumaba las tres y por eso daba el mismo número en cada fila, y la detección de zonas huérfanas, que ahora mira solo las de la compañía activa" },
   { v: "2.2.1", desc: "uid() devuelve ahora SIEMPRE un UUID válido. Su respaldo anterior daba una cadena de ocho caracteres cuando crypto.randomUUID no estaba disponible —navegadores viejos, cualquier origen sin HTTPS— y Postgres rechaza eso en una columna uuid: el insert fallaba y el síntoma era «no pasó nada», que es justo lo que costó diagnosticar con los reportes oficiales. Se arregla en la función en vez de en las diecisiete llamadas, así que cubre también las que se agreguen después" },
@@ -1489,31 +1491,53 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
 }
 
 /** "07 - 13 de Septiembre", o con los dos meses si la semana los cruza. */
+/**
+ * "Del 07 al 13 de Sep", o con el mes junto a cada día si la semana cruza de
+ * un mes a otro ("Del 28 Sep al 04 Oct") — el formato de Dirección solo trae
+ * espacio para un mes, así que se extiende de esta forma cuando hace falta.
+ *
+ * El mes se abrevia a 3 letras tomando el prefijo del nombre completo: en
+ * español coincide siempre con la abreviatura estándar (Ene, Feb... Dic),
+ * sin necesidad de una segunda lista.
+ */
 function rangoSemana(ini, fin) {
   if (!ini || !fin) return "Sin periodo";
   const a = new Date(`${ini}T12:00:00`), b = new Date(`${fin}T12:00:00`);
   const dd = (d) => String(d.getDate()).padStart(2, "0");
+  const mes3 = (d) => MESES[d.getMonth()].slice(0, 3);
   return a.getMonth() === b.getMonth()
-    ? `${dd(a)} - ${dd(b)} de ${MESES[b.getMonth()]}`
-    : `${dd(a)} de ${MESES[a.getMonth()]} - ${dd(b)} de ${MESES[b.getMonth()]}`;
+    ? `Del ${dd(a)} al ${dd(b)} de ${mes3(b)}`
+    : `Del ${dd(a)} ${mes3(a)} al ${dd(b)} ${mes3(b)}`;
 }
 
 const numMx = (v) => (Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-/** Agrupa por zona y moneda, que es como Pagos ejecuta las transferencias. */
-function bloquesZonaMoneda(filas) {
+/**
+ * Agrupa por GRUPO de zona (Zona Norte, Zona Sur...) y moneda, que es como
+ * Dirección revisa el reporte semanal — no por la zona suelta.
+ *
+ * Una zona sin grupo asignado se reporta con su propio nombre: es preferible
+ * a mandarla a un cajón genérico donde nadie la buscaría. Misma regla que ya
+ * se usa en el corte por zona del reporte mensual.
+ */
+function bloquesZonaMoneda(filas, gruposZona = {}) {
+  const grupoDe = (zona) => {
+    const z = String(zona || "").trim();
+    if (!z) return "Sin zona";
+    return gruposZona[z.toLowerCase()] || z;
+  };
   const mapa = new Map();
   filas.forEach((f) => {
-    const zona = String(f.zona || "").trim() || "Sin zona";
+    const grupo = grupoDe(f.zona);
     const moneda = (f.moneda || "MXP") === "USD" ? "USD" : "MXP";
-    const k = `${zona}|${moneda}`;
-    if (!mapa.has(k)) mapa.set(k, { zona, moneda, filas: [], total: 0 });
+    const k = `${grupo}|${moneda}`;
+    if (!mapa.has(k)) mapa.set(k, { grupo, moneda, filas: [], total: 0 });
     const b = mapa.get(k);
     b.filas.push(f);
     b.total += Number(f.importe) || 0;
   });
   return [...mapa.values()].sort((a, b) =>
-    a.zona.localeCompare(b.zona) || a.moneda.localeCompare(b.moneda));
+    a.grupo.localeCompare(b.grupo) || a.moneda.localeCompare(b.moneda));
 }
 
 /**
@@ -1524,19 +1548,19 @@ function bloquesZonaMoneda(filas) {
  * lugar de como encabezados de sección: así el documento se lee de corrido y
  * el resumen de arriba ya dio la vista agrupada.
  */
-function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas }) {
+function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas, gruposZona = {} }) {
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
   const M = 36, A = 792 - M * 2;
   const rango = rangoSemana(periodoIni, periodoFin);
-  const bloques = bloquesZonaMoneda(filas);
+  const bloques = bloquesZonaMoneda(filas, gruposZona);
 
   const tot = {};
   filas.forEach((f) => { const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP"; tot[m] = (tot[m] || 0) + (Number(f.importe) || 0); });
 
   doc.setFontSize(15).setFont(undefined, "bold").setTextColor(35, 42, 49);
-  doc.text(`Reporte de Pagos — ${compania}`, M, 38);
+  doc.text(`Pagos ${compania} ${rango}`, M, 38);
   doc.setFontSize(10).setFont(undefined, "normal").setTextColor(107, 119, 133);
-  doc.text(`Del día ${rango}   ·   ${filas.length} pagos`, M, 54);
+  doc.text(`${filas.length} pagos`, M, 54);
 
   if (version) {
     doc.setFillColor(62, 92, 118);
@@ -1559,7 +1583,7 @@ function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas })
   doc.setFontSize(9).setTextColor(35, 42, 49);
   let yb = y + 30;
   bloques.forEach((b) => {
-    doc.text(`${b.zona}   ${b.moneda}`, M + 14, yb);
+    doc.text(`${b.grupo}   ${b.moneda}`, M + 14, yb);
     doc.text(`${b.filas.length} pago(s)`, M + 220, yb);
     doc.setFont(undefined, "bold");
     doc.text(`$${numMx(b.total)}`, M + 330, yb, { align: "right" });
@@ -1593,7 +1617,7 @@ function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas })
     margin: { left: M, right: M },
   });
 
-  doc.save(`Reporte Pagos del dia ${rango}.pdf`);
+  doc.save(`Pagos ${compania} ${rango}.pdf`);
 }
 
 /**
@@ -1604,9 +1628,9 @@ function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas })
  * leer y entregar, y una plana con autofiltro para filtrar y hacer tablas
  * dinámicas. Es la misma división que ya usamos en el reporte presupuestal.
  */
-async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, filas }) {
+async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, filas, gruposZona = {} }) {
   const rango = rangoSemana(periodoIni, periodoFin);
-  const bloques = bloquesZonaMoneda(filas);
+  const bloques = bloquesZonaMoneda(filas, gruposZona);
   const fmt = '"$"#,##0.00';
   const AZUL = "FF3E5C76", GRIS = "FFECEEF1";
 
@@ -1626,7 +1650,7 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
   const ws = wbx.addWorksheet("Por zona y moneda");
   ws.columns = COLS.map((c) => ({ width: c.w }));
 
-  const tit = ws.addRow([`Reporte de Pagos — ${compania} — del día ${rango}`]);
+  const tit = ws.addRow([`Pagos ${compania} ${rango}`]);
   tit.font = { bold: true, size: 14, name: "Calibri" };
   ws.mergeCells(tit.number, 1, tit.number, COLS.length);
   if (version) {
@@ -1637,7 +1661,7 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
   ws.addRow([]);
 
   bloques.forEach((b) => {
-    const enc = ws.addRow([`${b.zona}   ·   ${b.moneda}   ·   ${b.filas.length} pago(s)   ·   $${numMx(b.total)} ${b.moneda}`]);
+    const enc = ws.addRow([`${b.grupo}   ·   ${b.moneda}   ·   ${b.filas.length} pago(s)   ·   $${numMx(b.total)} ${b.moneda}`]);
     ws.mergeCells(enc.number, 1, enc.number, COLS.length);
     enc.font = { bold: true, size: 12, name: "Calibri" };
     enc.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } };
@@ -1662,7 +1686,7 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
         });
       });
 
-    const tr = ws.addRow([`Total ${b.zona} ${b.moneda}`, ...Array(COLS.length - 2).fill(""), b.total]);
+    const tr = ws.addRow([`Total ${b.grupo} ${b.moneda}`, ...Array(COLS.length - 2).fill(""), b.total]);
     tr.font = { bold: true, name: "Calibri" };
     tr.getCell(COLS.length).numFmt = fmt;
     tr.eachCell((cell) => { cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } }; });
@@ -1670,7 +1694,19 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
   });
 
   // Hoja plana: es la que se puede filtrar y resumir.
-  const PL = [{ h: "Zona", w: 16, g: (f) => f.zona }, { h: "Moneda", w: 9, g: (f) => f.moneda }, ...COLS];
+  // El grupo va como columna aparte: permite filtrar por "Zona Norte" en la
+  // hoja plana sin perder de vista la zona real de cada pago.
+  const grupoDe = (zona) => {
+    const z = String(zona || "").trim();
+    if (!z) return "Sin zona";
+    return gruposZona[z.toLowerCase()] || z;
+  };
+  const PL = [
+    { h: "Zona", w: 16, g: (f) => f.zona },
+    { h: "Grupo de zona", w: 16, g: (f) => grupoDe(f.zona) },
+    { h: "Moneda", w: 9, g: (f) => f.moneda },
+    ...COLS,
+  ];
   const wp = wbx.addWorksheet("Datos");
   wp.columns = PL.map((c) => ({ width: c.w }));
   const hp = wp.addRow(PL.map((c) => c.h));
@@ -1696,7 +1732,7 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `Reporte Pagos del dia ${rango}.xlsx`;
+  a.download = `Pagos ${compania} ${rango}.xlsx`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -6054,7 +6090,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
   );
 }
 
-function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO }) {
+function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO, gruposZona = {} }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
@@ -6392,10 +6428,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         periodoIni: semanaOf, periodoFin: finSemanaOf, filas,
       });
       generarPdfSemanal({ compania: unidad, periodoIni: semanaOf, periodoFin: finSemanaOf,
-        version: r.version, filas });
+        version: r.version, filas, gruposZona });
       await new Promise((res) => setTimeout(res, 900));
       await generarExcelSemanal({ compania: unidad, periodoIni: semanaOf, periodoFin: finSemanaOf,
-        version: r.version, filas });
+        version: r.version, filas, gruposZona });
       setRecargaSem((x) => x + 1);
     } catch (err) {
       console.error("Reporte semanal:", err);
@@ -8625,7 +8661,7 @@ const SUBS_CATALOGO = [
  * botones de exportar invitaría a generarlo por costumbre y a versionar
  * envíos que nunca salieron.
  */
-function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
+function ReportesDireccionTab({ unidad, partidas, transacciones, session, gruposZona = {} }) {
   const [sub, setSub] = useSessionState("ss-repdir-sub", "presupuesto");
   const [reportes, setReportes] = useState([]);
   const [reportado, setReportado] = useState([]);
@@ -8725,10 +8761,10 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session }) {
        con la que Dirección tiene, y el archivo dejaría de servir de evidencia. */
     if (r.tipo === "transacciones") {
       generarPdfSemanal({ compania: r.compania, periodoIni: r.periodo_ini, periodoFin: r.periodo_fin,
-        version: r.version, filas: data || [] });
+        version: r.version, filas: data || [], gruposZona });
       await new Promise((res) => setTimeout(res, 900));
       await generarExcelSemanal({ compania: r.compania, periodoIni: r.periodo_ini, periodoFin: r.periodo_fin,
-        version: r.version, filas: data || [] });
+        version: r.version, filas: data || [], gruposZona });
     } else {
       generarPdfOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [] });
       await new Promise((res) => setTimeout(res, 900));
@@ -10840,10 +10876,10 @@ export default function App() {
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
           {tab === "partidas" && <PartidasTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
-          {tab === "transacciones" && <TransaccionesTab zonas={zonas} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
+          {tab === "transacciones" && <TransaccionesTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
-          {tab === "reportes-direccion" && <ReportesDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} session={session} />}
+          {tab === "reportes-direccion" && <ReportesDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} session={session} gruposZona={gruposZona} />}
           {tab === "vehiculos" && (
             <VehiculosTab
               vehiculos={vehiculosApi.rows}

@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.3.2";
+const APP_VERSION = "2.3.3";
 const CHANGELOG = [
+  { v: "2.3.3", desc: "El Excel de la pestaña Reporte de Pagos gana el mismo resumen ejecutivo que ya tienen los reportes a Dirección: cuánto se va a pagar por zona y moneda, arriba de los bloques de detalle. Se calculó con el mismo filtrado que ya usaba el ciclo de bloques existente, sin tocar ese ciclo, para garantizar que el resumen y el detalle digan exactamente lo mismo — este reporte ejecuta pagos reales contra el banco" },
   { v: "2.3.2", desc: "El Excel del reporte semanal gana el mismo resumen ejecutivo que ya tenía el PDF: cuánto se va a pagar por grupo de zona y moneda, arriba del detalle. Va en renglones fusionados con fondo suave, como el texto del PDF, en vez de una tabla de columnas nueva — las columnas de la hoja ya están dimensionadas para el detalle y un resumen angosto ahí se vería descuadrado" },
   { v: "2.3.1", desc: "El nombre del archivo del reporte semanal (PDF y Excel) incluye la revisión: 'Pagos OSB Del 07 al 13 de Sep-REV2'. Antes solo aparecía dentro del documento; con varias revisiones de la misma semana, los archivos se veían idénticos en la carpeta de descargas y había que abrir cada uno para saber cuál era cuál" },
   { v: "2.3.0", desc: "El reporte semanal de pagos (PDF y Excel) agrupa por GRUPO de zona —Zona Norte, Zona Sur— en vez de por zona suelta: Poza Rica, Altamira, Cerro Azul, Cotaxtla y Tamaulipas se suman juntas bajo 'Zona Norte', que es como Dirección lo revisa. Una zona sin grupo asignado se reporta con su propio nombre, igual que en el corte del reporte mensual. La hoja plana del Excel gana una columna 'Grupo de zona' junto a la Zona real, para filtrar por el grupo sin perder la zona de cada pago. Aplica también al volver a descargar una versión ya enviada" },
@@ -7419,7 +7420,56 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
     const zonas = [...new Set(filasOrdenadas.map((f) => f.zona).filter(Boolean))].sort();
     const ordenMoneda = (m) => (m === "MXP" ? 0 : m === "USD" ? 1 : 2);
+
+    /* Resumen ejecutivo arriba de los bloques, igual que en los reportes de
+       Dirección: cuánto se va a pagar por zona y moneda, sin recorrer todo
+       el archivo. Se calcula con el MISMO filtrado que usa el ciclo de abajo
+       —no se toca ese ciclo— para garantizar que el resumen y el detalle
+       digan exactamente lo mismo. */
+    const bloquesResumen = [];
+    zonas.forEach((zona) => {
+      const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
+        .sort((a, b) => ordenMoneda(a) - ordenMoneda(b));
+      monedasEnZona.forEach((moneda) => {
+        const filasGrupo = filasOrdenadas.filter((f) => f.zona === zona && f.moneda === moneda);
+        if (!filasGrupo.length) return;
+        bloquesResumen.push({
+          zona, moneda, n: filasGrupo.length,
+          total: filasGrupo.reduce((s, f) => s + (Number(f.importe) || 0), 0),
+        });
+      });
+    });
+    const totGeneralRP = {};
+    filasOrdenadas.forEach((f) => {
+      const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP";
+      totGeneralRP[m] = (totGeneralRP[m] || 0) + (Number(f.importe) || 0);
+    });
+    const FONDO_RESUMEN_RP = "FFF6F7F9";
+    const anchoResumen = Math.max(columnasExcel.length, 4);
+
     let fila = 1;
+    {
+      const tCell = ws.getCell(`A${fila}`);
+      tCell.value = "RESUMEN — LO QUE SE VA A PAGAR";
+      tCell.font = { bold: true, size: 10.5, name: "Calibri", color: { argb: "FF6B7785" } };
+      for (let i = 1; i <= anchoResumen; i++) ws.getRow(fila).getCell(i).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN_RP } };
+      fila += 1;
+
+      bloquesResumen.forEach((b) => {
+        const rCell = ws.getCell(`A${fila}`);
+        rCell.value = `${b.zona}   ·   ${b.moneda}   ·   ${b.n} pago(s)   ·   $${numMx(b.total)}`;
+        rCell.font = { name: "Calibri", size: 10 };
+        for (let i = 1; i <= anchoResumen; i++) ws.getRow(fila).getCell(i).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN_RP } };
+        fila += 1;
+      });
+
+      const totCell = ws.getCell(`A${fila}`);
+      totCell.value = Object.entries(totGeneralRP).map(([m, v]) => `TOTAL ${m}: $${numMx(v)}`).join("      ");
+      totCell.font = { bold: true, size: 11, name: "Calibri" };
+      for (let i = 1; i <= anchoResumen; i++) ws.getRow(fila).getCell(i).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN_RP } };
+      fila += 3; // dos renglones en blanco antes del primer bloque de detalle
+    }
+
     zonas.forEach((zona) => {
       const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
         .sort((a, b) => ordenMoneda(a) - ordenMoneda(b));

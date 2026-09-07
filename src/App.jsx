@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.3.1";
+const APP_VERSION = "2.3.2";
 const CHANGELOG = [
+  { v: "2.3.2", desc: "El Excel del reporte semanal gana el mismo resumen ejecutivo que ya tenía el PDF: cuánto se va a pagar por grupo de zona y moneda, arriba del detalle. Va en renglones fusionados con fondo suave, como el texto del PDF, en vez de una tabla de columnas nueva — las columnas de la hoja ya están dimensionadas para el detalle y un resumen angosto ahí se vería descuadrado" },
   { v: "2.3.1", desc: "El nombre del archivo del reporte semanal (PDF y Excel) incluye la revisión: 'Pagos OSB Del 07 al 13 de Sep-REV2'. Antes solo aparecía dentro del documento; con varias revisiones de la misma semana, los archivos se veían idénticos en la carpeta de descargas y había que abrir cada uno para saber cuál era cuál" },
   { v: "2.3.0", desc: "El reporte semanal de pagos (PDF y Excel) agrupa por GRUPO de zona —Zona Norte, Zona Sur— en vez de por zona suelta: Poza Rica, Altamira, Cerro Azul, Cotaxtla y Tamaulipas se suman juntas bajo 'Zona Norte', que es como Dirección lo revisa. Una zona sin grupo asignado se reporta con su propio nombre, igual que en el corte del reporte mensual. La hoja plana del Excel gana una columna 'Grupo de zona' junto a la Zona real, para filtrar por el grupo sin perder la zona de cada pago. Aplica también al volver a descargar una versión ya enviada" },
   { v: "2.2.4", desc: "El reporte semanal de pagos a Dirección (PDF y Excel) cambia su nomenclatura a 'Pagos COMPAÑIA Del XX al XX de MES', con la compañía en su código de 3 letras (OSB/CTM/ISE) y el mes abreviado a 3 letras. Aplica al nombre del archivo y al título dentro del documento, para que ambos coincidan. Cuando la semana cruza de un mes a otro, el formato se extiende poniendo el mes junto a cada día ('Del 28 Sep al 04 Oct'), porque la plantilla original solo tenía espacio para uno" },
@@ -1659,6 +1660,41 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
     rv.font = { bold: true, size: 11, color: { argb: AZUL }, name: "Calibri" };
     ws.mergeCells(rv.number, 1, rv.number, COLS.length);
   }
+  ws.addRow([]);
+
+  /* Resumen ejecutivo, igual que en el PDF: lo que Dirección necesita ver
+     primero es cuánto se va a pagar y a dónde, sin sumar cada bloque de abajo
+     a mano. Merged en una sola celda por renglón —como el texto del PDF— en
+     vez de una tabla de columnas nueva: las columnas de la hoja ya están
+     dimensionadas para el detalle (Concepto a 46, Proveedor a 34...) y un
+     resumen de pocas columnas ahí quedaría descuadrado. */
+  const totGeneral = {};
+  filas.forEach((f) => {
+    const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP";
+    totGeneral[m] = (totGeneral[m] || 0) + (Number(f.importe) || 0);
+  });
+  const FONDO_RESUMEN = "FFF6F7F9";
+
+  const rTitResumen = ws.addRow(["RESUMEN — LO QUE SE VA A PAGAR"]);
+  ws.mergeCells(rTitResumen.number, 1, rTitResumen.number, COLS.length);
+  rTitResumen.font = { bold: true, size: 10.5, name: "Calibri", color: { argb: "FF6B7785" } };
+  rTitResumen.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN } };
+
+  bloques.forEach((b) => {
+    const row = ws.addRow([`${b.grupo}   ·   ${b.moneda}   ·   ${b.filas.length} pago(s)   ·   $${numMx(b.total)}`]);
+    ws.mergeCells(row.number, 1, row.number, COLS.length);
+    row.font = { name: "Calibri", size: 10 };
+    row.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN } };
+  });
+
+  const rTotResumen = ws.addRow([
+    Object.entries(totGeneral).map(([m, v]) => `TOTAL ${m}: $${numMx(v)}`).join("      "),
+  ]);
+  ws.mergeCells(rTotResumen.number, 1, rTotResumen.number, COLS.length);
+  rTotResumen.font = { bold: true, size: 11, name: "Calibri" };
+  rTotResumen.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN } };
+
+  ws.addRow([]);
   ws.addRow([]);
 
   bloques.forEach((b) => {

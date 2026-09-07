@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.3.3";
+const APP_VERSION = "2.3.4";
 const CHANGELOG = [
+  { v: "2.3.4", desc: "Se corrige el aspecto del resumen ejecutivo agregado en la versión anterior, en ambos reportes (Reporte de Pagos y el semanal a Dirección). Dos problemas: el color de fondo (FFF6F7F9) era tan tenue que no se distinguía del blanco, y en el Reporte de Pagos las celdas nunca se fusionaron, así que cada línea quedaba como texto suelto sobre la columna A en vez de leerse como un panel. Ahora usa el mismo gris que ya llevan los subtotales de cada bloque (FFECEEF1) y cada renglón se fusiona a lo ancho de la tabla" },
   { v: "2.3.3", desc: "El Excel de la pestaña Reporte de Pagos gana el mismo resumen ejecutivo que ya tienen los reportes a Dirección: cuánto se va a pagar por zona y moneda, arriba de los bloques de detalle. Se calculó con el mismo filtrado que ya usaba el ciclo de bloques existente, sin tocar ese ciclo, para garantizar que el resumen y el detalle digan exactamente lo mismo — este reporte ejecuta pagos reales contra el banco" },
   { v: "2.3.2", desc: "El Excel del reporte semanal gana el mismo resumen ejecutivo que ya tenía el PDF: cuánto se va a pagar por grupo de zona y moneda, arriba del detalle. Va en renglones fusionados con fondo suave, como el texto del PDF, en vez de una tabla de columnas nueva — las columnas de la hoja ya están dimensionadas para el detalle y un resumen angosto ahí se vería descuadrado" },
   { v: "2.3.1", desc: "El nombre del archivo del reporte semanal (PDF y Excel) incluye la revisión: 'Pagos OSB Del 07 al 13 de Sep-REV2'. Antes solo aparecía dentro del documento; con varias revisiones de la misma semana, los archivos se veían idénticos en la carpeta de descargas y había que abrir cada uno para saber cuál era cuál" },
@@ -1674,26 +1675,32 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
     const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP";
     totGeneral[m] = (totGeneral[m] || 0) + (Number(f.importe) || 0);
   });
-  const FONDO_RESUMEN = "FFF6F7F9";
 
+  /* Mismo GRIS que ya usan los subtotales de cada bloque más abajo, en vez
+     de un tono aparte: el primer intento (FFF6F7F9) era tan tenue que casi
+     no se distinguía del blanco, y el resumen se leía como texto suelto sin
+     ninguna caja que lo contuviera. */
   const rTitResumen = ws.addRow(["RESUMEN — LO QUE SE VA A PAGAR"]);
   ws.mergeCells(rTitResumen.number, 1, rTitResumen.number, COLS.length);
-  rTitResumen.font = { bold: true, size: 10.5, name: "Calibri", color: { argb: "FF6B7785" } };
-  rTitResumen.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN } };
+  rTitResumen.font = { bold: true, size: 11, name: "Calibri", color: { argb: "FF232A31" } };
+  rTitResumen.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } };
+  rTitResumen.height = 20;
 
   bloques.forEach((b) => {
     const row = ws.addRow([`${b.grupo}   ·   ${b.moneda}   ·   ${b.filas.length} pago(s)   ·   $${numMx(b.total)}`]);
     ws.mergeCells(row.number, 1, row.number, COLS.length);
-    row.font = { name: "Calibri", size: 10 };
-    row.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN } };
+    row.font = { name: "Calibri", size: 10.5 };
+    row.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } };
+    row.height = 20;
   });
 
   const rTotResumen = ws.addRow([
     Object.entries(totGeneral).map(([m, v]) => `TOTAL ${m}: $${numMx(v)}`).join("      "),
   ]);
   ws.mergeCells(rTotResumen.number, 1, rTotResumen.number, COLS.length);
-  rTotResumen.font = { bold: true, size: 11, name: "Calibri" };
-  rTotResumen.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN } };
+  rTotResumen.font = { bold: true, size: 11.5, name: "Calibri" };
+  rTotResumen.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } };
+  rTotResumen.height = 20;
 
   ws.addRow([]);
   ws.addRow([]);
@@ -7444,30 +7451,47 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP";
       totGeneralRP[m] = (totGeneralRP[m] || 0) + (Number(f.importe) || 0);
     });
-    const FONDO_RESUMEN_RP = "FFF6F7F9";
+    /* Mismo gris que ya usan los subtotales de cada bloque de zona más abajo
+       en este mismo reporte (FFECEEF1), en vez de un tono aparte: el primer
+       intento era tan tenue que casi no se distinguía del blanco.
+       Y cada renglón se FUSIONA a lo ancho de la tabla — sin merge, el texto
+       largo solo "flota" sobre la columna A sin verse contenido en nada. */
+    const GRIS_RESUMEN_RP = "FFECEEF1";
     const anchoResumen = Math.max(columnasExcel.length, 4);
 
     let fila = 1;
     {
+      const filaTitulo = fila;
       const tCell = ws.getCell(`A${fila}`);
       tCell.value = "RESUMEN — LO QUE SE VA A PAGAR";
-      tCell.font = { bold: true, size: 10.5, name: "Calibri", color: { argb: "FF6B7785" } };
-      for (let i = 1; i <= anchoResumen; i++) ws.getRow(fila).getCell(i).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN_RP } };
+      tCell.font = { bold: true, size: 11, name: "Calibri", color: { argb: "FF232A31" } };
+      ws.getRow(fila).height = 20;
       fila += 1;
 
       bloquesResumen.forEach((b) => {
         const rCell = ws.getCell(`A${fila}`);
         rCell.value = `${b.zona}   ·   ${b.moneda}   ·   ${b.n} pago(s)   ·   $${numMx(b.total)}`;
-        rCell.font = { name: "Calibri", size: 10 };
-        for (let i = 1; i <= anchoResumen; i++) ws.getRow(fila).getCell(i).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN_RP } };
+        rCell.font = { name: "Calibri", size: 10.5 };
+        ws.getRow(fila).height = 20;
         fila += 1;
       });
 
       const totCell = ws.getCell(`A${fila}`);
       totCell.value = Object.entries(totGeneralRP).map(([m, v]) => `TOTAL ${m}: $${numMx(v)}`).join("      ");
-      totCell.font = { bold: true, size: 11, name: "Calibri" };
-      for (let i = 1; i <= anchoResumen; i++) ws.getRow(fila).getCell(i).fill = { type: "pattern", pattern: "solid", fgColor: { argb: FONDO_RESUMEN_RP } };
-      fila += 3; // dos renglones en blanco antes del primer bloque de detalle
+      totCell.font = { bold: true, size: 11.5, name: "Calibri" };
+      ws.getRow(fila).height = 20;
+      const filaTotal = fila;
+      fila += 1;
+
+      // Fusionar cada renglón a lo ancho, y aplicar el fondo sobre la celda
+      // resultante (ExcelJS conserva el estilo de la celda superior-izquierda
+      // al fusionar, así que basta con pintarla a ella).
+      for (let r = filaTitulo; r <= filaTotal; r++) {
+        ws.mergeCells(r, 1, r, anchoResumen);
+        ws.getCell(`A${r}`).fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS_RESUMEN_RP } };
+      }
+
+      fila += 2; // dos renglones en blanco antes del primer bloque de detalle
     }
 
     zonas.forEach((zona) => {

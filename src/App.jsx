@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.3.0";
+const APP_VERSION = "2.3.1";
 const CHANGELOG = [
+  { v: "2.3.1", desc: "El nombre del archivo del reporte semanal (PDF y Excel) incluye la revisión: 'Pagos OSB Del 07 al 13 de Sep-REV2'. Antes solo aparecía dentro del documento; con varias revisiones de la misma semana, los archivos se veían idénticos en la carpeta de descargas y había que abrir cada uno para saber cuál era cuál" },
   { v: "2.3.0", desc: "El reporte semanal de pagos (PDF y Excel) agrupa por GRUPO de zona —Zona Norte, Zona Sur— en vez de por zona suelta: Poza Rica, Altamira, Cerro Azul, Cotaxtla y Tamaulipas se suman juntas bajo 'Zona Norte', que es como Dirección lo revisa. Una zona sin grupo asignado se reporta con su propio nombre, igual que en el corte del reporte mensual. La hoja plana del Excel gana una columna 'Grupo de zona' junto a la Zona real, para filtrar por el grupo sin perder la zona de cada pago. Aplica también al volver a descargar una versión ya enviada" },
   { v: "2.2.4", desc: "El reporte semanal de pagos a Dirección (PDF y Excel) cambia su nomenclatura a 'Pagos COMPAÑIA Del XX al XX de MES', con la compañía en su código de 3 letras (OSB/CTM/ISE) y el mes abreviado a 3 letras. Aplica al nombre del archivo y al título dentro del documento, para que ambos coincidan. Cuando la semana cruza de un mes a otro, el formato se extiende poniendo el mes junto a cada día ('Del 28 Sep al 04 Oct'), porque la plantilla original solo tenía espacio para uno" },
   { v: "2.2.3", desc: "Limpieza de código, sin cambios de comportamiento. Se eliminan dos funciones muertas (opcionesPartidaPorMes, SlidingToggle, reemplazadas hace tiempo por otros componentes) y ocho imports sin usar (useCallback y todo lucide-react — la app resuelve sus íconos con símbolos de texto). Se consolidan cuatro patrones que se habían repetido, idénticos, en varios puntos por construirse en sesiones separadas: el formateador de totales por moneda (3 sitios), el cierre de popups al hacer clic fuera (3 sitios, ahora un hook useClickOutside), el alternar membresía en un Set para expandir/contraer (5 sitios), y eliminar una cuenta bancaria (2 sitios). Cada consolidación se verificó con equivalencia de salida antes de aplicarse. De paso, el reporte Excel de Partidas —el más usado de la app— tenía cinco celdas de encabezado sin fuente Calibri explícita, a diferencia de todos los demás reportes; se corrige por consistencia" },
@@ -1617,7 +1618,7 @@ function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas, g
     margin: { left: M, right: M },
   });
 
-  doc.save(`Pagos ${compania} ${rango}.pdf`);
+  doc.save(`Pagos ${compania} ${rango}${version ? `-REV${version}` : ""}.pdf`);
 }
 
 /**
@@ -1732,7 +1733,7 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `Pagos ${compania} ${rango}.xlsx`;
+  a.download = `Pagos ${compania} ${rango}${version ? `-REV${version}` : ""}.xlsx`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }

@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.3.4";
+const APP_VERSION = "2.4.0";
 const CHANGELOG = [
+  { v: "2.4.0", desc: "El filtro Desde-Hasta del Dashboard puede cruzar de un año a otro —ej. Julio 2025 a Agosto 2026—, algo que antes era estructuralmente imposible: había un solo selector de Año y Desde/Hasta eran solo meses dentro de ese año. Ahora, en modo rango, cada extremo lleva su propio Mes y Año. El resto del panel ya sabía leer varios años a la vez —las columnas se etiquetan 'Julio 2025' vs 'Julio 2026' automáticamente cuando el rango repite un mes— así que el cambio quedó acotado al filtro mismo, sin tocar las tablas ni las tarjetas KPI. Todo y YTD siguen exactamente igual que antes" },
   { v: "2.3.4", desc: "Se corrige el aspecto del resumen ejecutivo agregado en la versión anterior, en ambos reportes (Reporte de Pagos y el semanal a Dirección). Dos problemas: el color de fondo (FFF6F7F9) era tan tenue que no se distinguía del blanco, y en el Reporte de Pagos las celdas nunca se fusionaron, así que cada línea quedaba como texto suelto sobre la columna A en vez de leerse como un panel. Ahora usa el mismo gris que ya llevan los subtotales de cada bloque (FFECEEF1) y cada renglón se fusiona a lo ancho de la tabla" },
   { v: "2.3.3", desc: "El Excel de la pestaña Reporte de Pagos gana el mismo resumen ejecutivo que ya tienen los reportes a Dirección: cuánto se va a pagar por zona y moneda, arriba de los bloques de detalle. Se calculó con el mismo filtrado que ya usaba el ciclo de bloques existente, sin tocar ese ciclo, para garantizar que el resumen y el detalle digan exactamente lo mismo — este reporte ejecuta pagos reales contra el banco" },
   { v: "2.3.2", desc: "El Excel del reporte semanal gana el mismo resumen ejecutivo que ya tenía el PDF: cuánto se va a pagar por grupo de zona y moneda, arriba del detalle. Va en renglones fusionados con fondo suave, como el texto del PDF, en vez de una tabla de columnas nueva — las columnas de la hoja ya están dimensionadas para el detalle y un resumen angosto ahí se vería descuadrado" },
@@ -2543,10 +2544,14 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
      de abajo, así que sube aquí. Antes había dos juegos de filtros en la
      misma pantalla —uno arriba y otro a media página— y no se veía cuál
      mandaba sobre qué.
-     Cascada de tres niveles:
-       1. Año     -> "YTD" o un año concreto con datos
-       2. Periodo -> todo el año, o un rango de meses (no aplica en YTD)
-       3. Desde/Hasta -> meses sueltos, porque el año ya quedó fijo arriba
+     Cascada:
+       1. Periodo -> Todo (un año), YTD, o Desde-Hasta
+       2a. Todo/YTD -> un selector de Año (YTD fija el año actual)
+       2b. Desde-Hasta -> CADA extremo lleva su propio Mes Y Año, para poder
+           cruzar de un año a otro (ej. Julio 2025 a Agosto 2026). El resto
+           del panel (columnas del pivot, KPIs) ya sabía leer varios años a
+           la vez — lo único que hacía falta era dejar de forzar un solo año
+           arriba, en el filtro.
      ----------------------------------------------------------------- */
   // Filtro de Proyecto. Va ANTES de `controlesFiltro`: ese const arma su JSX
   // al evaluarse, así que si la declaración quedara más abajo, el propio
@@ -2558,6 +2563,7 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
   const mesActualIdx = hoy.getMonth();
 
   const aniosConDatos = [...new Set(partidasUnidad.map((p) => Number(p.anio)).filter(Boolean))].sort((a, b) => b - a);
+  const aniosAscendente = [...aniosConDatos].sort((a, b) => a - b);
   const hayYTD = partidasUnidad.some((p) => Number(p.anio) === anioActual && MESES.indexOf(p.mes) <= mesActualIdx);
   const opcionesAnio = [...(hayYTD ? ["YTD"] : []), ...aniosConDatos.map(String)];
 
@@ -2568,28 +2574,57 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 
   const [modoGuardado, setModo] = useSessionState("ss-dashboard-f2-periodo", "todo");
   const modo = esYTD ? "todo" : (modoGuardado === "rango" ? "rango" : "todo");
+  const esRango = !esYTD && modo === "rango";
 
-  // Solo se listan los meses que existen en datos para ese año, para que no se
-  // pueda elegir un rango que garantiza tablas vacías.
-  const mesesDelAnio = MESES.filter((m) => partidasUnidad.some((p) => Number(p.anio) === anioEfectivo && p.mes === m));
+  // Un índice lineal (año*12 + mes) para poder comparar y ordenar dos
+  // extremos que pueden caer en años distintos, como si fueran un solo eje.
+  const indiceLineal = (anio, mes) => (Number(anio) || 0) * 12 + MESES.indexOf(mes);
+
+  // Cada extremo del rango lleva su propio año — es lo que permite cruzar de
+  // un año a otro. Se listan solo los meses con datos para el año de CADA
+  // extremo, para no ofrecer una combinación que garantice una tabla vacía.
+  const [anioDesdeGuardado, setAnioDesde] = useSessionState("ss-dashboard-f3-anio-desde", null);
+  const [anioHastaGuardado, setAnioHasta] = useSessionState("ss-dashboard-f3-anio-hasta", null);
+  const anioDesde = aniosAscendente.includes(Number(anioDesdeGuardado)) ? Number(anioDesdeGuardado) : (aniosAscendente[0] ?? anioActual);
+  const anioHasta = aniosAscendente.includes(Number(anioHastaGuardado)) ? Number(anioHastaGuardado) : (aniosAscendente[aniosAscendente.length - 1] ?? anioActual);
+
+  const mesesDelAnioDesde = MESES.filter((m) => partidasUnidad.some((p) => Number(p.anio) === anioDesde && p.mes === m));
+  const mesesDelAnioHasta = MESES.filter((m) => partidasUnidad.some((p) => Number(p.anio) === anioHasta && p.mes === m));
   const [desdeGuardado, setMesDesde] = useSessionState("ss-dashboard-f3-desde", null);
   const [hastaGuardado, setMesHasta] = useSessionState("ss-dashboard-f3-hasta", null);
-  const mesDesde = mesesDelAnio.includes(desdeGuardado) ? desdeGuardado : (mesesDelAnio[0] ?? MESES[0]);
-  const mesHasta = mesesDelAnio.includes(hastaGuardado) ? hastaGuardado : (mesesDelAnio[mesesDelAnio.length - 1] ?? MESES[11]);
-  const cambiarDesde = (m) => { setMesDesde(m); if (MESES.indexOf(m) > MESES.indexOf(mesHasta)) setMesHasta(m); };
-  const cambiarHasta = (m) => { setMesHasta(m); if (MESES.indexOf(m) < MESES.indexOf(mesDesde)) setMesDesde(m); };
+  const mesDesde = mesesDelAnioDesde.includes(desdeGuardado) ? desdeGuardado : (mesesDelAnioDesde[0] ?? MESES[0]);
+  const mesHasta = mesesDelAnioHasta.includes(hastaGuardado) ? hastaGuardado : (mesesDelAnioHasta[mesesDelAnioHasta.length - 1] ?? MESES[11]);
 
-  // Ventana efectiva de meses (índices inclusivos) que resulta de los 3 filtros.
-  const [iDesde, iHasta] = esYTD
-    ? [0, mesActualIdx]
-    : modo === "rango"
-      ? [MESES.indexOf(mesDesde), MESES.indexOf(mesHasta)]
-      : [0, 11];
+  // Si mover un extremo lo deja "después" del otro, se arrastra el otro con
+  // él en vez de rechazar el cambio — mismo criterio que ya usaba el filtro
+  // de un solo año, ahora comparando por el índice lineal (año, mes).
+  const idxHastaActual = indiceLineal(anioHasta, mesHasta);
+  const idxDesdeActual = indiceLineal(anioDesde, mesDesde);
+  const cambiarAnioDesde = (a) => {
+    setAnioDesde(a);
+    if (indiceLineal(a, mesDesde) > idxHastaActual) { setAnioHasta(a); setMesHasta(mesDesde); }
+  };
+  const cambiarMesDesde = (m) => {
+    setMesDesde(m);
+    if (indiceLineal(anioDesde, m) > idxHastaActual) { setAnioHasta(anioDesde); setMesHasta(m); }
+  };
+  const cambiarAnioHasta = (a) => {
+    setAnioHasta(a);
+    if (idxDesdeActual > indiceLineal(a, mesHasta)) { setAnioDesde(a); setMesDesde(mesHasta); }
+  };
+  const cambiarMesHasta = (m) => {
+    setMesHasta(m);
+    if (idxDesdeActual > indiceLineal(anioHasta, m)) { setAnioDesde(anioHasta); setMesDesde(m); }
+  };
 
   const partidasRango = partidasUnidad.filter((p) => {
-    if (Number(p.anio) !== anioEfectivo) return false;
-    const i = MESES.indexOf(p.mes);
-    return i >= iDesde && i <= iHasta;
+    if (esYTD) return Number(p.anio) === anioActual && MESES.indexOf(p.mes) <= mesActualIdx;
+    if (esRango) {
+      const i = indiceLineal(p.anio, p.mes);
+      return i >= idxDesdeActual && i <= idxHastaActual;
+    }
+    // "Todo": el único año seleccionado arriba, sin cambios respecto de antes.
+    return Number(p.anio) === anioEfectivo;
   });
   const idsRango = new Set(partidasRango.map((p) => p.id));
 
@@ -2607,30 +2642,42 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
           {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
         </Select>
       </Field>
-      <Field label="Año">
-        <Select value={anioSel ?? ""} onChange={(e) => setAnioSel(e.target.value)} style={{ width: 110 }} disabled={!opcionesAnio.length}>
-          {opcionesAnio.map((o) => <option key={o} value={o}>{o}</option>)}
-        </Select>
-      </Field>
+      {!esRango && (
+        <Field label="Año">
+          <Select value={anioSel ?? ""} onChange={(e) => setAnioSel(e.target.value)} style={{ width: 110 }} disabled={!opcionesAnio.length}>
+            {opcionesAnio.map((o) => <option key={o} value={o}>{o}</option>)}
+          </Select>
+        </Field>
+      )}
       {!esYTD && (
         <Field label="Periodo">
           <Select value={modo} onChange={(e) => setModo(e.target.value)} style={{ width: 150 }}>
-            <option value="todo">Todo</option>
+            <option value="todo">Todo (un año)</option>
             <option value="rango">Desde - Hasta</option>
           </Select>
         </Field>
       )}
-      {!esYTD && modo === "rango" && (
+      {esRango && (
         <>
           <Field label="Desde">
-            <Select value={mesDesde} onChange={(e) => cambiarDesde(e.target.value)} style={{ width: 135 }}>
-              {mesesDelAnio.map((m) => <option key={m} value={m}>{m}</option>)}
-            </Select>
+            <div style={{ display: "flex", gap: 6 }}>
+              <Select value={mesDesde} onChange={(e) => cambiarMesDesde(e.target.value)} style={{ width: 115 }}>
+                {mesesDelAnioDesde.map((m) => <option key={m} value={m}>{m}</option>)}
+              </Select>
+              <Select value={anioDesde} onChange={(e) => cambiarAnioDesde(Number(e.target.value))} style={{ width: 90 }}>
+                {aniosAscendente.map((a) => <option key={a} value={a}>{a}</option>)}
+              </Select>
+            </div>
           </Field>
           <Field label="Hasta">
-            <Select value={mesHasta} onChange={(e) => cambiarHasta(e.target.value)} style={{ width: 135 }}>
-              {mesesDelAnio.map((m) => <option key={m} value={m}>{m}</option>)}
-            </Select>
+            <div style={{ display: "flex", gap: 6 }}>
+              <Select value={mesHasta} onChange={(e) => cambiarMesHasta(e.target.value)} style={{ width: 115 }}>
+                {mesesDelAnioHasta.map((m) => <option key={m} value={m}>{m}</option>)}
+              </Select>
+              <Select value={anioHasta} onChange={(e) => cambiarAnioHasta(Number(e.target.value))} style={{ width: 90 }}>
+                {aniosAscendente.map((a) => <option key={a} value={a}>{a}</option>)}
+              </Select>
+            </div>
           </Field>
         </>
       )}
@@ -2639,8 +2686,8 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 
   const mesLabel = esYTD
     ? ` · YTD ${anioActual}`
-    : modo === "rango"
-      ? ` · ${mesDesde} a ${mesHasta} ${anioEfectivo}`
+    : esRango
+      ? (anioDesde === anioHasta ? ` · ${mesDesde} a ${mesHasta} ${anioDesde}` : ` · ${mesDesde} ${anioDesde} a ${mesHasta} ${anioHasta}`)
       : ` · ${anioEfectivo}`;
 
 

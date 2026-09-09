@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.5.2";
+const APP_VERSION = "2.6.0";
 const CHANGELOG = [
+  { v: "2.6.0", desc: "El PDF del Reporte de Pagos gana el mismo resumen ejecutivo que ya tenía el Excel —cuánto se va a pagar por zona y moneda, antes del detalle— y ambos lo calculan ahora de la MISMA función compartida en vez de cada uno por su cuenta, para que nunca puedan decir cosas distintas. Además Proveedor y Concepto de pago ganan un ancho mínimo garantizado (95pt y 110pt) en la tabla: antes competían en igualdad de condiciones contra columnas cortas como SWIFT o Forma de Pago, y con texto libre mucho más largo (razón social completa, descripción del servicio) perdían esa competencia y el texto terminaba partido letra por letra. La advertencia de que la tabla no cabe se mantiene para cuando de verdad hay demasiadas columnas encendidas a la vez" },
   { v: "2.5.2", desc: "Fix: en el Excel del Reporte de Pagos, las columnas Proveedor y Concepto de pago salían casi ilegibles — el ajuste de texto (wrapText) sí estaba activo, pero el ancho de columna (17.6 y 13.6) era demasiado angosto para razones sociales y descripciones de servicio, así que el texto se partía letra por letra en una columna casi vertical. Se amplían a 32 y 40, y Notas de 8.9 a 20. El PDF del mismo reporte no tenía este problema: no fija anchos, deja que autoTable calcule según el contenido real" },
   { v: "2.5.1", desc: "Al abrir + Nueva transacción, ya no arranca en blanco: el Día de Pago Programado se llena con la fecha de hoy, Forma de Pago con 03 (Transferencia electrónica) y Método de Pago con PPD (Pago en parcialidades o diferido) — el caso más común, para no repetirlo a mano en cada captura. Status ya arrancaba en No Pagado, sin cambio. Cualquiera de los cuatro se puede editar igual que antes si el pago real fue distinto" },
   { v: "2.5.0", desc: "Un clic accidental fuera del diálogo ya no cierra un formulario con datos capturados. El Modal compartido cerraba con cualquier clic en el fondo oscuro, sin distinguir un descuido de una intención real de salir; ahora, en los formularios de verdad —crear o editar Partida, Transacción, Proveedor, Vehículo, SMI, y la Solicitud de Pago— solo la ✕ o el botón Cancelar del propio formulario pueden cerrarlo. En los selectores de Partida y Proveedor el bloqueo es condicional: solo se activa mientras el formulario de '+ Nuevo' está abierto, para no estorbar cuando solo se está buscando. La vista previa de PDF, que no tiene nada que perder, se dejó como estaba" },
@@ -7466,6 +7467,30 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   const limpiarFechas = () => { setFechaDesde(""); setFechaHasta(""); };
   const filasOrdenadas = sortRows(filasFiltradas, sort, { importe: (r) => r.importe });
 
+  /* Compartido entre el PDF y el Excel: antes cada uno lo calculaba por su
+     cuenta (y el PDF ni siquiera tenía el resumen). Con una sola versión,
+     el resumen del PDF y el del Excel están obligados a decir lo mismo. */
+  const zonas = [...new Set(filasOrdenadas.map((f) => f.zona).filter(Boolean))].sort();
+  const ordenMoneda = (m) => (m === "MXP" ? 0 : m === "USD" ? 1 : 2);
+  const bloquesResumen = [];
+  zonas.forEach((zona) => {
+    const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
+      .sort((a, b) => ordenMoneda(a) - ordenMoneda(b));
+    monedasEnZona.forEach((moneda) => {
+      const filasGrupo = filasOrdenadas.filter((f) => f.zona === zona && f.moneda === moneda);
+      if (!filasGrupo.length) return;
+      bloquesResumen.push({
+        zona, moneda, n: filasGrupo.length,
+        total: filasGrupo.reduce((s, f) => s + (Number(f.importe) || 0), 0),
+      });
+    });
+  });
+  const totGeneralRP = {};
+  filasOrdenadas.forEach((f) => {
+    const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP";
+    totGeneralRP[m] = (totGeneralRP[m] || 0) + (Number(f.importe) || 0);
+  });
+
   const colVisibility = useColumnVisibility("colv-reporte", COLUMNAS_REPORTE);
   const pdfVis = useVisibilidadColumnas("colv-reporte-pdf", COLUMNAS_PDF, PDF_OCULTAS_INICIAL);
   const columnasPDF = pdfVis.visibles;
@@ -7505,32 +7530,6 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     const inicio = fechaDesde || diasOrdenados[0] || "";
     const fin = fechaHasta || diasOrdenados[diasOrdenados.length - 1] || "";
 
-    const zonas = [...new Set(filasOrdenadas.map((f) => f.zona).filter(Boolean))].sort();
-    const ordenMoneda = (m) => (m === "MXP" ? 0 : m === "USD" ? 1 : 2);
-
-    /* Resumen ejecutivo arriba de los bloques, igual que en los reportes de
-       Dirección: cuánto se va a pagar por zona y moneda, sin recorrer todo
-       el archivo. Se calcula con el MISMO filtrado que usa el ciclo de abajo
-       —no se toca ese ciclo— para garantizar que el resumen y el detalle
-       digan exactamente lo mismo. */
-    const bloquesResumen = [];
-    zonas.forEach((zona) => {
-      const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
-        .sort((a, b) => ordenMoneda(a) - ordenMoneda(b));
-      monedasEnZona.forEach((moneda) => {
-        const filasGrupo = filasOrdenadas.filter((f) => f.zona === zona && f.moneda === moneda);
-        if (!filasGrupo.length) return;
-        bloquesResumen.push({
-          zona, moneda, n: filasGrupo.length,
-          total: filasGrupo.reduce((s, f) => s + (Number(f.importe) || 0), 0),
-        });
-      });
-    });
-    const totGeneralRP = {};
-    filasOrdenadas.forEach((f) => {
-      const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP";
-      totGeneralRP[m] = (totGeneralRP[m] || 0) + (Number(f.importe) || 0);
-    });
     /* Mismo gris que ya usan los subtotales de cada bloque de zona más abajo
        en este mismo reporte (FFECEEF1), en vez de un tono aparte: el primer
        intento era tan tenue que casi no se distinguía del blanco.
@@ -7684,13 +7683,40 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
       const inicio = fechaDesde || diasOrdenados[0] || "";
       const fin = fechaHasta || diasOrdenados[diasOrdenados.length - 1] || "";
-      const zonas = [...new Set(filasOrdenadas.map((f) => f.zona).filter(Boolean))].sort();
-      const ordenMoneda = (m) => (m === "MXP" ? 0 : m === "USD" ? 1 : 2);
 
       const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
       const alturaPagina = doc.internal.pageSize.getHeight();
       const margenInferior = 40;
       let cursorY = 30; // dónde va el próximo título — solo salta de página si de verdad no cabe
+
+      /* Resumen ejecutivo, igual que el Excel y que el reporte semanal a
+         Dirección: cuánto se va a pagar por zona y moneda, antes de entrar
+         al detalle bloque por bloque. Usa los MISMOS bloquesResumen que ya
+         calcula el Excel — un solo cálculo, no dos que puedan desalinearse. */
+      if (bloquesResumen.length) {
+        const altoResumen = 24 + bloquesResumen.length * 13 + 6;
+        doc.setFillColor(236, 238, 241);
+        doc.rect(30, cursorY, 732, altoResumen, "F");
+        doc.setFontSize(9).setTextColor(107, 119, 133);
+        doc.text("RESUMEN — LO QUE SE VA A PAGAR", 40, cursorY + 14);
+        doc.setFontSize(9).setTextColor(35, 42, 49);
+        let yb = cursorY + 28;
+        bloquesResumen.forEach((b) => {
+          doc.text(`${b.zona}   ${b.moneda}`, 44, yb);
+          doc.text(`${b.n} pago(s)`, 300, yb);
+          doc.setFont(undefined, "bold");
+          doc.text(`$${numMx(b.total)}`, 420, yb, { align: "right" });
+          doc.setFont(undefined, "normal");
+          yb += 13;
+        });
+        doc.setFont(undefined, "bold").setFontSize(10);
+        doc.text(
+          Object.entries(totGeneralRP).map(([m, v]) => `TOTAL ${m}: $${numMx(v)}`).join("      "),
+          762, cursorY + 14, { align: "right" }
+        );
+        doc.setFont(undefined, "normal");
+        cursorY += altoResumen + 14;
+      }
 
       zonas.forEach((zona) => {
         const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
@@ -7725,8 +7751,16 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
             headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
             bodyStyles: { halign: "center" },
             // Los textos largos se alinean a la izquierda; lo demás centrado.
+            // Proveedor y Concepto llevan un ancho MÍNIMO garantizado: son
+            // texto libre (razón social completa, descripción del servicio) y
+            // sin esto, con muchas columnas encendidas, terminan partidos
+            // letra por letra en vez de en palabras completas.
             columnStyles: Object.fromEntries(
-              columnasPDF.map((c, i) => [i, { halign: c.ancho === "left" ? "left" : "center" }])
+              columnasPDF.map((c, i) => [i, {
+                halign: c.ancho === "left" ? "left" : "center",
+                ...(c.key === "proveedor" ? { cellWidth: 95 } : {}),
+                ...(c.key === "concepto" ? { cellWidth: 110 } : {}),
+              }])
             ),
             margin: { bottom: margenInferior },
           });

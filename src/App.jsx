@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.5.0";
+const APP_VERSION = "2.5.1";
 const CHANGELOG = [
+  { v: "2.5.1", desc: "Al abrir + Nueva transacción, ya no arranca en blanco: el Día de Pago Programado se llena con la fecha de hoy, Forma de Pago con 03 (Transferencia electrónica) y Método de Pago con PPD (Pago en parcialidades o diferido) — el caso más común, para no repetirlo a mano en cada captura. Status ya arrancaba en No Pagado, sin cambio. Cualquiera de los cuatro se puede editar igual que antes si el pago real fue distinto" },
   { v: "2.5.0", desc: "Un clic accidental fuera del diálogo ya no cierra un formulario con datos capturados. El Modal compartido cerraba con cualquier clic en el fondo oscuro, sin distinguir un descuido de una intención real de salir; ahora, en los formularios de verdad —crear o editar Partida, Transacción, Proveedor, Vehículo, SMI, y la Solicitud de Pago— solo la ✕ o el botón Cancelar del propio formulario pueden cerrarlo. En los selectores de Partida y Proveedor el bloqueo es condicional: solo se activa mientras el formulario de '+ Nuevo' está abierto, para no estorbar cuando solo se está buscando. La vista previa de PDF, que no tiene nada que perder, se dejó como estaba" },
   { v: "2.4.1", desc: "La tabla de Transacciones gana la columna Folio Compra SAE, que faltaba por completo: no estaba oculta por el selector de Columnas, nunca se había agregado a la lista de columnas de esta pantalla, aunque el campo sí se captura en el formulario y sí se usa en el Reporte de Pagos, la SPP y el detector de anticipos. Va junto a Status y Fecha de Pago, con las demás columnas de seguimiento del pago" },
   { v: "2.4.0", desc: "El filtro Desde-Hasta del Dashboard puede cruzar de un año a otro —ej. Julio 2025 a Agosto 2026—, algo que antes era estructuralmente imposible: había un solo selector de Año y Desde/Hasta eran solo meses dentro de ese año. Ahora, en modo rango, cada extremo lleva su propio Mes y Año. El resto del panel ya sabía leer varios años a la vez —las columnas se etiquetan 'Julio 2025' vs 'Julio 2026' automáticamente cuando el rango repite un mes— así que el cambio quedó acotado al filtro mismo, sin tocar las tablas ni las tarjetas KPI. Todo y YTD siguen exactamente igual que antes" },
@@ -6198,9 +6199,20 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const blank = {
-    partida_id: partidasUnidad[0]?.id || "", unidad_detectada: unidad, dia: "", solicitante: "", smi: "", proyecto: "", zona: "", area: "",
+    partida_id: partidasUnidad[0]?.id || "", unidad_detectada: unidad,
+    // Se recalcula en cada render, así que si la app se queda abierta de un
+    // día para otro, una transacción nueva sigue arrancando con la fecha
+    // de HOY, no con la que tenía la pestaña abierta desde ayer.
+    dia: new Date().toISOString().slice(0, 10),
+    solicitante: "", smi: "", proyecto: "", zona: "", area: "",
     proveedor: "", proveedor_id: "", cuenta_id: "", concepto_detallado: "", importe: "", moneda: "MXP", status: "No Pagado", fecha_pago: "",
-    folio_compra_sae: "", folio_factura: "", forma_pago: "", metodo_pago: "", referencia_pago: "", categoria: "",
+    folio_compra_sae: "", folio_factura: "",
+    // "03 - Transferencia electrónica de fondos" y "PPD - Pago en
+    // parcialidades o diferido": el caso más común, para no repetirlo a
+    // mano en cada transacción. Se cambia igual que cualquier otro campo si
+    // el pago real fue distinto.
+    forma_pago: "03", metodo_pago: "PPD",
+    referencia_pago: "", categoria: "",
   };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);

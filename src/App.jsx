@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.4.1";
+const APP_VERSION = "2.5.0";
 const CHANGELOG = [
+  { v: "2.5.0", desc: "Un clic accidental fuera del diálogo ya no cierra un formulario con datos capturados. El Modal compartido cerraba con cualquier clic en el fondo oscuro, sin distinguir un descuido de una intención real de salir; ahora, en los formularios de verdad —crear o editar Partida, Transacción, Proveedor, Vehículo, SMI, y la Solicitud de Pago— solo la ✕ o el botón Cancelar del propio formulario pueden cerrarlo. En los selectores de Partida y Proveedor el bloqueo es condicional: solo se activa mientras el formulario de '+ Nuevo' está abierto, para no estorbar cuando solo se está buscando. La vista previa de PDF, que no tiene nada que perder, se dejó como estaba" },
   { v: "2.4.1", desc: "La tabla de Transacciones gana la columna Folio Compra SAE, que faltaba por completo: no estaba oculta por el selector de Columnas, nunca se había agregado a la lista de columnas de esta pantalla, aunque el campo sí se captura en el formulario y sí se usa en el Reporte de Pagos, la SPP y el detector de anticipos. Va junto a Status y Fecha de Pago, con las demás columnas de seguimiento del pago" },
   { v: "2.4.0", desc: "El filtro Desde-Hasta del Dashboard puede cruzar de un año a otro —ej. Julio 2025 a Agosto 2026—, algo que antes era estructuralmente imposible: había un solo selector de Año y Desde/Hasta eran solo meses dentro de ese año. Ahora, en modo rango, cada extremo lleva su propio Mes y Año. El resto del panel ya sabía leer varios años a la vez —las columnas se etiquetan 'Julio 2025' vs 'Julio 2026' automáticamente cuando el rango repite un mes— así que el cambio quedó acotado al filtro mismo, sin tocar las tablas ni las tarjetas KPI. Todo y YTD siguen exactamente igual que antes" },
   { v: "2.3.4", desc: "Se corrige el aspecto del resumen ejecutivo agregado en la versión anterior, en ambos reportes (Reporte de Pagos y el semanal a Dirección). Dos problemas: el color de fondo (FFF6F7F9) era tan tenue que no se distinguía del blanco, y en el Reporte de Pagos las celdas nunca se fusionaron, así que cada línea quedaba como texto suelto sobre la columna A en vez de leerse como un panel. Ahora usa el mismo gris que ya llevan los subtotales de cada bloque (FFECEEF1) y cada renglón se fusiona a lo ancho de la tabla" },
@@ -802,7 +803,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
       </button>
 
       {open && (
-        <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto — Total y Usado por partida" onClose={() => { setOpen(false); setCreando(false); }} width={620} zIndex={1100}>
+        <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto — Total y Usado por partida" onClose={() => { setOpen(false); setCreando(false); }} width={620} zIndex={1100} cerrarAlHacerClicFuera={!creando}>
           {partidasApi && !creando && (
             <Button type="button" variant="ghost" onClick={() => setCreando(true)} style={{ marginBottom: 10 }}>
               + Nueva partida
@@ -1049,7 +1050,7 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
       </button>
 
       {open && (
-        <Modal title="Elegir proveedor" subtitle="Busca por nombre, RFC o Id SAE" onClose={cerrar} width={560} zIndex={1100}>
+        <Modal title="Elegir proveedor" subtitle="Busca por nombre, RFC o Id SAE" onClose={cerrar} width={560} zIndex={1100} cerrarAlHacerClicFuera={!editando}>
           {editando ? (
             <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 6, padding: 14 }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>
@@ -3489,7 +3490,7 @@ function AnioMultiSelect({ aniosDisponibles, seleccionados, onChange }) {
 
 
 
-function Modal({ title, subtitle, onClose, children, width = 720, zIndex = 1000 }) {
+function Modal({ title, subtitle, onClose, children, width = 720, zIndex = 1000, cerrarAlHacerClicFuera = true }) {
   useEffect(() => {
     const onKey = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", onKey);
@@ -3502,7 +3503,13 @@ function Modal({ title, subtitle, onClose, children, width = 720, zIndex = 1000 
         position: "fixed", inset: 0, background: "rgba(6,9,10,0.72)", zIndex,
         display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 20px", overflowY: "auto",
       }}
-      onClick={onClose}
+      // Un clic fuera del diálogo lo cierra por defecto — cómodo para
+      // selectores y vistas previas. Pero en un formulario con datos
+      // capturados (una transacción, una partida a medio llenar), ese mismo
+      // descuido borra el trabajo sin avisar. `cerrarAlHacerClicFuera={false}`
+      // apaga esto: solo la ✕ o el botón Cancelar del propio formulario
+      // pueden cerrarlo, que son acciones deliberadas.
+      onClick={cerrarAlHacerClicFuera ? onClose : undefined}
     >
       <div
         style={{ ...panelStyle, width: "100%", maxWidth: width, position: "relative" }}
@@ -4548,7 +4555,7 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
   return (
     <Modal title={`Solicitud de Pago a Proveedores — ${unidad}`}
       subtitle="Revisa cada cifra antes de generar: el desglose fiscal se deduce del importe pagado y solo es exacto si corresponde al esquema elegido"
-      onClose={onClose} width={900}>
+      onClose={onClose} width={900} cerrarAlHacerClicFuera={false}>
       {faltantes.length > 0 && (
         <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 14 }}>
           <b>La solicitud va a salir incompleta</b>
@@ -4712,6 +4719,7 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
       onClose={onClose}
       width={760}
       zIndex={1100}
+      cerrarAlHacerClicFuera={false}
     >
       <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
         <Field label="Día de Pago Programado">
@@ -5875,6 +5883,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           title={editId ? "Editar partida" : "Nueva partida presupuestal"}
           subtitle="Una fila por partida — puede recibir varias transacciones reales"
           onClose={closeModal}
+          cerrarAlHacerClicFuera={false}
         >
           <AutoriaCaption record={form} perfilesApi={perfilesApi} />
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
@@ -7087,6 +7096,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           title={editId ? "Editar transacción" : "Nueva transacción real"}
           subtitle={form.folio_transaccion ? `ID: ${form.folio_transaccion} — se vincula a una partida` : "Se vincula a una partida — una partida puede tener varias"}
           onClose={closeModal}
+          cerrarAlHacerClicFuera={false}
         >
           <AutoriaCaption record={form} perfilesApi={perfilesApi} />
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
@@ -9573,7 +9583,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
       </div>
 
       {modalOpen && (
-        <Modal title={editId ? "Editar proveedor" : "Nuevo proveedor"} subtitle={`Catálogo de ${unidad}`} onClose={closeModal} width={820}>
+        <Modal title={editId ? "Editar proveedor" : "Nuevo proveedor"} subtitle={`Catálogo de ${unidad}`} onClose={closeModal} width={820} cerrarAlHacerClicFuera={false}>
           <AutoriaCaption record={form} perfilesApi={perfilesApi} />
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
             <Field label="Nombre" style={{ gridColumn: "span 3" }}>
@@ -10176,6 +10186,7 @@ function VehiculoModal({ inicial, ubicaciones, proyectosOpciones, companiasOpcio
       subtitle={inicial && inicial.id ? "Los cambios quedan registrados con tu usuario" : "Alta manual de una unidad"}
       onClose={onClose}
       width={860}
+      cerrarAlHacerClicFuera={false}
     >
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
         <Field label="No. Económico *">
@@ -10326,6 +10337,7 @@ function MantenimientoModal({ inicial, vehiculos, onGuardar, onClose, perfilesAp
       subtitle="Solicitud de mantenimiento"
       onClose={onClose}
       width={780}
+      cerrarAlHacerClicFuera={false}
     >
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 14 }}>
         <Field label="Folio *">

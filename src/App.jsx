@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.4.0";
+const APP_VERSION = "2.4.1";
 const CHANGELOG = [
+  { v: "2.4.1", desc: "La tabla de Transacciones gana la columna Folio Compra SAE, que faltaba por completo: no estaba oculta por el selector de Columnas, nunca se había agregado a la lista de columnas de esta pantalla, aunque el campo sí se captura en el formulario y sí se usa en el Reporte de Pagos, la SPP y el detector de anticipos. Va junto a Status y Fecha de Pago, con las demás columnas de seguimiento del pago" },
   { v: "2.4.0", desc: "El filtro Desde-Hasta del Dashboard puede cruzar de un año a otro —ej. Julio 2025 a Agosto 2026—, algo que antes era estructuralmente imposible: había un solo selector de Año y Desde/Hasta eran solo meses dentro de ese año. Ahora, en modo rango, cada extremo lleva su propio Mes y Año. El resto del panel ya sabía leer varios años a la vez —las columnas se etiquetan 'Julio 2025' vs 'Julio 2026' automáticamente cuando el rango repite un mes— así que el cambio quedó acotado al filtro mismo, sin tocar las tablas ni las tarjetas KPI. Todo y YTD siguen exactamente igual que antes" },
   { v: "2.3.4", desc: "Se corrige el aspecto del resumen ejecutivo agregado en la versión anterior, en ambos reportes (Reporte de Pagos y el semanal a Dirección). Dos problemas: el color de fondo (FFF6F7F9) era tan tenue que no se distinguía del blanco, y en el Reporte de Pagos las celdas nunca se fusionaron, así que cada línea quedaba como texto suelto sobre la columna A en vez de leerse como un panel. Ahora usa el mismo gris que ya llevan los subtotales de cada bloque (FFECEEF1) y cada renglón se fusiona a lo ancho de la tabla" },
   { v: "2.3.3", desc: "El Excel de la pestaña Reporte de Pagos gana el mismo resumen ejecutivo que ya tienen los reportes a Dirección: cuánto se va a pagar por zona y moneda, arriba de los bloques de detalle. Se calculó con el mismo filtrado que ya usaba el ciclo de bloques existente, sin tocar ese ciclo, para garantizar que el resumen y el detalle digan exactamente lo mismo — este reporte ejecuta pagos reales contra el banco" },
@@ -6387,6 +6388,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { key: "categoria", label: "Categoría", render: (t) => t.categoria ? <Pill>{t.categoria}</Pill> : <span style={{ color: T.textFaint }}>—</span> },
     { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
     { key: "status", label: "Status", render: (t) => t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—" },
+    {
+      // Se captura en el formulario y se usa en otros reportes (Reporte de
+      // Pagos, la SPP, el detector de anticipos) pero nunca se agregó como
+      // columna aquí — no estaba oculta, simplemente no existía.
+      key: "folio_compra_sae", label: "Folio Compra SAE",
+      render: (t) => t.folio_compra_sae
+        ? <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{t.folio_compra_sae}</span>
+        : "—",
+    },
     { key: "fecha_pago", label: "Fecha de Pago", render: (t) => t.fecha_pago || "—" },
     {
       key: "reportado_at", label: "Reportado a Dirección",

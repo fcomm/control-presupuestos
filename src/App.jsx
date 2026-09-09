@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.5.1";
+const APP_VERSION = "2.5.2";
 const CHANGELOG = [
+  { v: "2.5.2", desc: "Fix: en el Excel del Reporte de Pagos, las columnas Proveedor y Concepto de pago salían casi ilegibles — el ajuste de texto (wrapText) sí estaba activo, pero el ancho de columna (17.6 y 13.6) era demasiado angosto para razones sociales y descripciones de servicio, así que el texto se partía letra por letra en una columna casi vertical. Se amplían a 32 y 40, y Notas de 8.9 a 20. El PDF del mismo reporte no tenía este problema: no fija anchos, deja que autoTable calcule según el contenido real" },
   { v: "2.5.1", desc: "Al abrir + Nueva transacción, ya no arranca en blanco: el Día de Pago Programado se llena con la fecha de hoy, Forma de Pago con 03 (Transferencia electrónica) y Método de Pago con PPD (Pago en parcialidades o diferido) — el caso más común, para no repetirlo a mano en cada captura. Status ya arrancaba en No Pagado, sin cambio. Cualquiera de los cuatro se puede editar igual que antes si el pago real fue distinto" },
   { v: "2.5.0", desc: "Un clic accidental fuera del diálogo ya no cierra un formulario con datos capturados. El Modal compartido cerraba con cualquier clic en el fondo oscuro, sin distinguir un descuido de una intención real de salir; ahora, en los formularios de verdad —crear o editar Partida, Transacción, Proveedor, Vehículo, SMI, y la Solicitud de Pago— solo la ✕ o el botón Cancelar del propio formulario pueden cerrarlo. En los selectores de Partida y Proveedor el bloqueo es condicional: solo se activa mientras el formulario de '+ Nuevo' está abierto, para no estorbar cuando solo se está buscando. La vista previa de PDF, que no tiene nada que perder, se dejó como estaba" },
   { v: "2.4.1", desc: "La tabla de Transacciones gana la columna Folio Compra SAE, que faltaba por completo: no estaba oculta por el selector de Columnas, nunca se había agregado a la lista de columnas de esta pantalla, aunque el campo sí se captura en el formulario y sí se usa en el Reporte de Pagos, la SPP y el detector de anticipos. Va junto a Status y Fecha de Pago, con las demás columnas de seguimiento del pago" },
@@ -7374,16 +7375,16 @@ const COLUMNAS_EXCEL = [
   { key: "folio_factura",    header: "Folio Factura",       width: 8.25,  get: (f) => f.folio_factura },
   { key: "forma_pago",       header: "Forma de Pago",       width: 15,    get: (f) => f.forma_pago },
   { key: "metodo_pago",      header: "Método de Pago",      width: 12,    get: (f) => f.metodo_pago },
-  { key: "proveedor",        header: "Proveedor",           width: 17.625, fija: true, get: (f) => f.proveedor },
+  { key: "proveedor",        header: "Proveedor",           width: 32,    fija: true, get: (f) => f.proveedor },
   { key: "referencia_pago",  header: "Referencia de Pago",  width: 14,    get: (f) => f.referencia_pago },
-  { key: "concepto",         header: "Concepto de pago",    width: 13.625, fija: true, get: (f) => f.concepto },
+  { key: "concepto",         header: "Concepto de pago",    width: 40,    fija: true, get: (f) => f.concepto },
   { key: "banco",            header: "Banco",               width: 15.5,  get: (f) => f.banco },
   { key: "clabe",            header: "Cuenta CLABE",        width: 18,    get: (f) => f.clabe },
   { key: "numero_cuenta",    header: "No. Cuenta",          width: 12.5,  get: (f) => f.numero_cuenta },
   { key: "swift",            header: "SWIFT",               width: 9,     get: (f) => f.swift },
   { key: "importe",          header: "Importe",             width: 10.5,  fija: true, money: true, get: (f) => f.importe },
   { key: "moneda",           header: "Moneda",              width: 10.5,  get: (f) => f.moneda },
-  { key: "notas",            header: "Notas",               width: 8.875, get: (f) => f.notas },
+  { key: "notas",            header: "Notas",               width: 20,    get: (f) => f.notas },
 ];
 
 const COLUMNAS_REPORTE = [

@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.6.2";
+const APP_VERSION = "2.7.0";
 const CHANGELOG = [
+  { v: "2.7.0", desc: "Transacciones gana un filtro por Moneda, y los controles se reorganizan en dos filas por propósito: la primera filtra qué transacciones se ven (Buscar, Desde, Hasta, Reportado, Enviado, Proyecto, Moneda), la segunda controla cómo se ven las que quedaron (Agrupar, Contraer todo, Columnas). Antes once controles vivían en una sola fila que se envolvía sin orden aparente conforme se agregaba cada filtro nuevo. Moneda respeta la misma convención del resto de la app: un registro sin moneda cuenta como MXP" },
   { v: "2.6.2", desc: "Transacciones gana un filtro por Proyecto, junto a Reportado a Dirección y Enviado a Pagos. Usa la misma lista de marcadores que ya ofrece el formulario de captura, así que las opciones coinciden exactamente con lo que se puede elegir al crear una transacción. El sentinela de \u201csin filtro\u201d es un valor vacío, no la palabra Todos: la app ya tiene un marcador de proyecto que literalmente se llama Todos (el de prorrateo), y usar esa misma palabra como comodín habría hecho imposible filtrar específicamente por las transacciones marcadas así" },
   { v: "2.6.1", desc: "El ancho de columnas del PDF de Reporte de Pagos se calcula ahora proporcionalmente al contenido real de CADA columna, en vez de reservar un mínimo fijo para Proveedor y Concepto a costa de las demás. El intento anterior tapaba ese hueco en dos columnas pero se lo abría a otras — Solicitante y hasta los propios encabezados de Forma de Pago/Metodo de Pago terminaban igual de apretados. Ahora, si la suma de anchos naturales no cabe en la página, TODAS ceden proporcionalmente. La advertencia de que la tabla no cabe usa la misma fórmula que el dibujo real, así que nunca puede decir algo distinto de lo que sale" },
   { v: "2.6.0", desc: "El PDF del Reporte de Pagos gana el mismo resumen ejecutivo que ya tenía el Excel —cuánto se va a pagar por zona y moneda, antes del detalle— y ambos lo calculan ahora de la MISMA función compartida en vez de cada uno por su cuenta, para que nunca puedan decir cosas distintas. Además Proveedor y Concepto de pago ganan un ancho mínimo garantizado (95pt y 110pt) en la tabla: antes competían en igualdad de condiciones contra columnas cortas como SWIFT o Forma de Pago, y con texto libre mucho más largo (razón social completa, descripción del servicio) perdían esa competencia y el texto terminaba partido letra por letra. La advertencia de que la tabla no cabe se mantiene para cuando de verdad hay demasiadas columnas encendidas a la vez" },
@@ -6230,13 +6231,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const transUnidad = transacciones.filter((t) => t.unidad_detectada === unidad);
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
-  const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", proyecto: "" });
+  const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", proyecto: "", moneda: "" });
   const [sort, setSort] = usePrefState("pref-transacciones-sort", { key: "dia", dir: "desc" }, sanearSort(["dia","folio_transaccion","partida","proveedor","proyecto","zona","area","concepto_detallado","importe","status","fecha_pago","updated_at"]));
   const [seleccionadas, setSeleccionadas] = useState(new Set());
   const [marcandoReportado, setMarcandoReportado] = useState(false);
   const [marcandoEnviado, setMarcandoEnviado] = useState(false);
 
   const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
+  // MXP primero, como en el resto de la app — no alfabético, que pondría USD antes.
+  const monedasDisponibles = [...new Set(transUnidad.map((t) => t.moneda || "MXP"))]
+    .sort((a, b) => (a === "MXP" ? -1 : b === "MXP" ? 1 : a.localeCompare(b)));
 
   const transFiltradas = transUnidad.filter((t) => {
     if (filtros.fechaDesde && (!t.dia || t.dia < filtros.fechaDesde)) return false;
@@ -6249,6 +6253,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     // mismo texto que se eligió al capturarla (incluye "Todos" y los "<X>
     // Gral" de grupo como opciones propias, no como comodín de "sin filtro").
     if (filtros.proyecto && (t.proyecto || "") !== filtros.proyecto) return false;
+    if (filtros.moneda && (t.moneda || "MXP") !== filtros.moneda) return false;
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const partida = partidaDe(t);
@@ -6258,8 +6263,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtros.proyecto;
-  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", proyecto: "" });
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtros.proyecto || filtros.moneda;
+  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", proyecto: "", moneda: "" });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
@@ -6841,61 +6846,74 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           </div>
         }
       >
-        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
-          <Field label="Buscar">
-            <TextInput
-              value={filtros.texto}
-              onChange={(e) => setFiltros({ ...filtros, texto: e.target.value })}
-              placeholder="Proveedor, concepto, folio, área…"
-              style={{ width: 220 }}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
+          {/* Fila 1 — qué transacciones se ven. Fila 2 — cómo se ven las que
+              ya quedaron. Antes vivían once controles en una sola fila que
+              se envolvía sin orden aparente; separarlas por propósito hace
+              más fácil encontrar cada una. */}
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <Field label="Buscar">
+              <TextInput
+                value={filtros.texto}
+                onChange={(e) => setFiltros({ ...filtros, texto: e.target.value })}
+                placeholder="Proveedor, concepto, folio, área…"
+                style={{ width: 220 }}
+              />
+            </Field>
+            <Field label="Desde">
+              <TextInput type="date" value={filtros.fechaDesde} onChange={(e) => setFiltros({ ...filtros, fechaDesde: e.target.value })} />
+            </Field>
+            <Field label="Hasta">
+              <TextInput type="date" value={filtros.fechaHasta} onChange={(e) => setFiltros({ ...filtros, fechaHasta: e.target.value })} />
+            </Field>
+            <Field label="Reportado a Dirección">
+              <Select value={filtros.reportado} onChange={(e) => setFiltros({ ...filtros, reportado: e.target.value })} style={{ width: 170 }}>
+                <option>Todos</option>
+                <option>Reportado</option>
+                <option>No reportado</option>
+              </Select>
+            </Field>
+            <Field label="Enviado a Pagos">
+              <Select value={filtros.enviadoPagos} onChange={(e) => setFiltros({ ...filtros, enviadoPagos: e.target.value })} style={{ width: 160 }}>
+                <option>Todos</option>
+                <option>Enviado</option>
+                <option>No enviado</option>
+              </Select>
+            </Field>
+            <Field label="Proyecto">
+              <Select value={filtros.proyecto} onChange={(e) => setFiltros({ ...filtros, proyecto: e.target.value })} style={{ width: 190 }}>
+                <option value="">Todos los proyectos</option>
+                {marcadoresProyecto.map((p) => <option key={p} value={p}>{p}</option>)}
+              </Select>
+            </Field>
+            <Field label="Moneda">
+              <Select value={filtros.moneda} onChange={(e) => setFiltros({ ...filtros, moneda: e.target.value })} style={{ width: 130 }}>
+                <option value="">Todas</option>
+                {monedasDisponibles.map((m) => <option key={m} value={m}>{m}</option>)}
+              </Select>
+            </Field>
+            {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
+          </div>
+          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <GroupByControl
+              options={GROUP_OPCIONES_TRANS}
+              value={groupBys}
+              onChange={(v) => { setGroupBys(v); setCollapsedGroups(new Set()); }}
+              maxLevels={3}
+              groupedTree={grouped}
+              collapsed={collapsedGroups}
+              setCollapsed={setCollapsedGroups}
             />
-          </Field>
-          <Field label="Desde">
-            <TextInput type="date" value={filtros.fechaDesde} onChange={(e) => setFiltros({ ...filtros, fechaDesde: e.target.value })} />
-          </Field>
-          <Field label="Hasta">
-            <TextInput type="date" value={filtros.fechaHasta} onChange={(e) => setFiltros({ ...filtros, fechaHasta: e.target.value })} />
-          </Field>
-          <Field label="Reportado a Dirección">
-            <Select value={filtros.reportado} onChange={(e) => setFiltros({ ...filtros, reportado: e.target.value })} style={{ width: 170 }}>
-              <option>Todos</option>
-              <option>Reportado</option>
-              <option>No reportado</option>
-            </Select>
-          </Field>
-          <Field label="Enviado a Pagos">
-            <Select value={filtros.enviadoPagos} onChange={(e) => setFiltros({ ...filtros, enviadoPagos: e.target.value })} style={{ width: 160 }}>
-              <option>Todos</option>
-              <option>Enviado</option>
-              <option>No enviado</option>
-            </Select>
-          </Field>
-          <Field label="Proyecto">
-            <Select value={filtros.proyecto} onChange={(e) => setFiltros({ ...filtros, proyecto: e.target.value })} style={{ width: 190 }}>
-              <option value="">Todos los proyectos</option>
-              {marcadoresProyecto.map((p) => <option key={p} value={p}>{p}</option>)}
-            </Select>
-          </Field>
-          {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
-          <div style={{ width: 1, alignSelf: "stretch", background: T.borderSoft, margin: "0 4px" }} />
-          <GroupByControl
-            options={GROUP_OPCIONES_TRANS}
-            value={groupBys}
-            onChange={(v) => { setGroupBys(v); setCollapsedGroups(new Set()); }}
-            maxLevels={3}
-            groupedTree={grouped}
-            collapsed={collapsedGroups}
-            setCollapsed={setCollapsedGroups}
-          />
-          {groupKeys.length > 0 && (
-            <Button variant="ghost" onClick={() => setCollapsedGroups(new Set(collectGroupPaths(grouped)))}>Contraer todo</Button>
-          )}
-          <ColumnVisibilityControl
-            columns={COLUMNAS_TRANS}
-            hidden={colVisibility.hidden}
-            onToggle={colVisibility.toggle}
-            onShowAll={colVisibility.showAll}
-          />
+            {groupKeys.length > 0 && (
+              <Button variant="ghost" onClick={() => setCollapsedGroups(new Set(collectGroupPaths(grouped)))}>Contraer todo</Button>
+            )}
+            <ColumnVisibilityControl
+              columns={COLUMNAS_TRANS}
+              hidden={colVisibility.hidden}
+              onToggle={colVisibility.toggle}
+              onShowAll={colVisibility.showAll}
+            />
+          </div>
         </div>
 
         {seleccionadas.size > 0 && (

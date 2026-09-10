@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.6.1";
+const APP_VERSION = "2.6.2";
 const CHANGELOG = [
+  { v: "2.6.2", desc: "Transacciones gana un filtro por Proyecto, junto a Reportado a Dirección y Enviado a Pagos. Usa la misma lista de marcadores que ya ofrece el formulario de captura, así que las opciones coinciden exactamente con lo que se puede elegir al crear una transacción. El sentinela de \u201csin filtro\u201d es un valor vacío, no la palabra Todos: la app ya tiene un marcador de proyecto que literalmente se llama Todos (el de prorrateo), y usar esa misma palabra como comodín habría hecho imposible filtrar específicamente por las transacciones marcadas así" },
   { v: "2.6.1", desc: "El ancho de columnas del PDF de Reporte de Pagos se calcula ahora proporcionalmente al contenido real de CADA columna, en vez de reservar un mínimo fijo para Proveedor y Concepto a costa de las demás. El intento anterior tapaba ese hueco en dos columnas pero se lo abría a otras — Solicitante y hasta los propios encabezados de Forma de Pago/Metodo de Pago terminaban igual de apretados. Ahora, si la suma de anchos naturales no cabe en la página, TODAS ceden proporcionalmente. La advertencia de que la tabla no cabe usa la misma fórmula que el dibujo real, así que nunca puede decir algo distinto de lo que sale" },
   { v: "2.6.0", desc: "El PDF del Reporte de Pagos gana el mismo resumen ejecutivo que ya tenía el Excel —cuánto se va a pagar por zona y moneda, antes del detalle— y ambos lo calculan ahora de la MISMA función compartida en vez de cada uno por su cuenta, para que nunca puedan decir cosas distintas. Además Proveedor y Concepto de pago ganan un ancho mínimo garantizado (95pt y 110pt) en la tabla: antes competían en igualdad de condiciones contra columnas cortas como SWIFT o Forma de Pago, y con texto libre mucho más largo (razón social completa, descripción del servicio) perdían esa competencia y el texto terminaba partido letra por letra. La advertencia de que la tabla no cabe se mantiene para cuando de verdad hay demasiadas columnas encendidas a la vez" },
   { v: "2.5.2", desc: "Fix: en el Excel del Reporte de Pagos, las columnas Proveedor y Concepto de pago salían casi ilegibles — el ajuste de texto (wrapText) sí estaba activo, pero el ancho de columna (17.6 y 13.6) era demasiado angosto para razones sociales y descripciones de servicio, así que el texto se partía letra por letra en una columna casi vertical. Se amplían a 32 y 40, y Notas de 8.9 a 20. El PDF del mismo reporte no tenía este problema: no fija anchos, deja que autoTable calcule según el contenido real" },
@@ -6229,7 +6230,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const transUnidad = transacciones.filter((t) => t.unidad_detectada === unidad);
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
-  const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos" });
+  const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", proyecto: "" });
   const [sort, setSort] = usePrefState("pref-transacciones-sort", { key: "dia", dir: "desc" }, sanearSort(["dia","folio_transaccion","partida","proveedor","proyecto","zona","area","concepto_detallado","importe","status","fecha_pago","updated_at"]));
   const [seleccionadas, setSeleccionadas] = useState(new Set());
   const [marcandoReportado, setMarcandoReportado] = useState(false);
@@ -6244,6 +6245,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     if (filtros.reportado === "No reportado" && t.reportado_at) return false;
     if (filtros.enviadoPagos === "Enviado" && !t.enviado_pagos_at) return false;
     if (filtros.enviadoPagos === "No enviado" && t.enviado_pagos_at) return false;
+    // Coincidencia exacta con el marcador guardado en la transacción — el
+    // mismo texto que se eligió al capturarla (incluye "Todos" y los "<X>
+    // Gral" de grupo como opciones propias, no como comodín de "sin filtro").
+    if (filtros.proyecto && (t.proyecto || "") !== filtros.proyecto) return false;
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const partida = partidaDe(t);
@@ -6253,8 +6258,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos";
-  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos" });
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtros.proyecto;
+  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", proyecto: "" });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
@@ -6863,6 +6868,12 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               <option>Todos</option>
               <option>Enviado</option>
               <option>No enviado</option>
+            </Select>
+          </Field>
+          <Field label="Proyecto">
+            <Select value={filtros.proyecto} onChange={(e) => setFiltros({ ...filtros, proyecto: e.target.value })} style={{ width: 190 }}>
+              <option value="">Todos los proyectos</option>
+              {marcadoresProyecto.map((p) => <option key={p} value={p}>{p}</option>)}
             </Select>
           </Field>
           {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}

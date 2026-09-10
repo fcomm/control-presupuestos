@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.6.0";
+const APP_VERSION = "2.6.1";
 const CHANGELOG = [
+  { v: "2.6.1", desc: "El ancho de columnas del PDF de Reporte de Pagos se calcula ahora proporcionalmente al contenido real de CADA columna, en vez de reservar un mínimo fijo para Proveedor y Concepto a costa de las demás. El intento anterior tapaba ese hueco en dos columnas pero se lo abría a otras — Solicitante y hasta los propios encabezados de Forma de Pago/Metodo de Pago terminaban igual de apretados. Ahora, si la suma de anchos naturales no cabe en la página, TODAS ceden proporcionalmente. La advertencia de que la tabla no cabe usa la misma fórmula que el dibujo real, así que nunca puede decir algo distinto de lo que sale" },
   { v: "2.6.0", desc: "El PDF del Reporte de Pagos gana el mismo resumen ejecutivo que ya tenía el Excel —cuánto se va a pagar por zona y moneda, antes del detalle— y ambos lo calculan ahora de la MISMA función compartida en vez de cada uno por su cuenta, para que nunca puedan decir cosas distintas. Además Proveedor y Concepto de pago ganan un ancho mínimo garantizado (95pt y 110pt) en la tabla: antes competían en igualdad de condiciones contra columnas cortas como SWIFT o Forma de Pago, y con texto libre mucho más largo (razón social completa, descripción del servicio) perdían esa competencia y el texto terminaba partido letra por letra. La advertencia de que la tabla no cabe se mantiene para cuando de verdad hay demasiadas columnas encendidas a la vez" },
   { v: "2.5.2", desc: "Fix: en el Excel del Reporte de Pagos, las columnas Proveedor y Concepto de pago salían casi ilegibles — el ajuste de texto (wrapText) sí estaba activo, pero el ancho de columna (17.6 y 13.6) era demasiado angosto para razones sociales y descripciones de servicio, así que el texto se partía letra por letra en una columna casi vertical. Se amplían a 32 y 40, y Notas de 8.9 a 20. El PDF del mismo reporte no tenía este problema: no fija anchos, deja que autoTable calcule según el contenido real" },
   { v: "2.5.1", desc: "Al abrir + Nueva transacción, ya no arranca en blanco: el Día de Pago Programado se llena con la fecha de hoy, Forma de Pago con 03 (Transferencia electrónica) y Método de Pago con PPD (Pago en parcialidades o diferido) — el caso más común, para no repetirlo a mano en cada captura. Status ya arrancaba en No Pagado, sin cambio. Cualquiera de los cuatro se puede editar igual que antes si el pago real fue distinto" },
@@ -7410,6 +7411,38 @@ const COLUMNAS_REPORTE = [
   { key: "notas", label: "Notas" },
 ];
 
+/**
+ * Ancho "natural" de una columna del PDF de pagos: el máximo entre su
+ * encabezado y su contenido real, en puntos. Piso de 28pt para no llegar a
+ * columnas absurdas con contenido muy corto (un código de 2 letras), techo
+ * de 148pt para que un proveedor con nombre kilométrico no acapare media
+ * página.
+ */
+function anchoNaturalColumnaPDF(columna, filas) {
+  const largos = filas.map((f) => String(columna.get(f) ?? "").length);
+  const max = Math.max(columna.label.length, ...(largos.length ? largos : [0]));
+  // A 8 pt, cada carácter mide ~4.4 pt; más 8 pt de relleno por celda.
+  return Math.min(Math.max(max * 4.4 + 8, 28), 148);
+}
+
+/**
+ * Reparte el ancho disponible entre columnas según su contenido real.
+ *
+ * Antes se reservaba un mínimo fijo para Proveedor y Concepto, a costa de
+ * lo que quedara para las demás — funcionaba para esas dos, pero cuando
+ * había muchas columnas encendidas a la vez, la que perdía la apuesta
+ * simplemente cambiaba (Solicitante, o hasta el propio encabezado de
+ * "Forma de Pago"). Repartiendo PROPORCIONALMENTE, si la suma natural no
+ * cabe en la página, TODAS ceden un poco por igual — nadie se queda con
+ * el mínimo garantizado mientras otra se parte letra por letra.
+ */
+function anchosProporcionalesPDF(columnas, filas, disponible) {
+  const natural = columnas.map((c) => anchoNaturalColumnaPDF(c, filas));
+  const total = natural.reduce((s, w) => s + w, 0);
+  const factor = total > disponible ? disponible / total : 1;
+  return natural.map((w) => Math.round(w * factor));
+}
+
 function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi, cuentasApi }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
@@ -7658,19 +7691,14 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
   const [generandoReporte, setGenerandoReporte] = useState(false);
   /**
-   * Estima si la tabla cabe a lo ancho de la hoja. autoTable no falla cuando
-   * se pasa: reparte el sobrante partiendo palabras, y el resultado se vuelve
-   * ilegible sin previo aviso. Vale más advertirlo antes de mandarlo a Pagos.
+   * Estima si la tabla cabe a lo ancho de la hoja. Ahora es solo la suma de
+   * los anchos naturales — el mismo cálculo que reparte anchosProporcionalesPDF
+   * al construir el documento, así que la advertencia y lo que realmente se
+   * dibuja nunca pueden decir cosas distintas.
    */
   const anchoEstimadoPDF = () => {
-    // Carta horizontal son 792 pt; quedan ~712 descontando márgenes.
-    const disponible = 712;
-    const usado = columnasPDF.reduce((suma, c) => {
-      const largos = filasOrdenadas.map((f) => String(c.get(f) ?? "").length);
-      const max = Math.max(c.label.length, ...(largos.length ? largos : [0]));
-      // A 8 pt, cada carácter mide ~4.4 pt; más 8 pt de relleno por celda.
-      return suma + Math.min(max * 4.4, 140) + 8;
-    }, 0);
+    const disponible = 712; // carta horizontal son 792 pt; quedan ~712 descontando márgenes
+    const usado = columnasPDF.reduce((suma, c) => suma + anchoNaturalColumnaPDF(c, filasOrdenadas), 0);
     return { usado: Math.round(usado), disponible, cabe: usado <= disponible };
   };
 
@@ -7718,6 +7746,11 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         cursorY += altoResumen + 14;
       }
 
+      // Se calcula UNA sola vez, con todas las filas del reporte — no por
+      // bloque — para que las tablas de todas las zonas compartan el mismo
+      // ancho de columna en vez de verse distintas entre sí.
+      const anchosCols = anchosProporcionalesPDF(columnasPDF, filasOrdenadas, 712);
+
       zonas.forEach((zona) => {
         const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
           .sort((a, b) => ordenMoneda(a) - ordenMoneda(b));
@@ -7751,15 +7784,13 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
             headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
             bodyStyles: { halign: "center" },
             // Los textos largos se alinean a la izquierda; lo demás centrado.
-            // Proveedor y Concepto llevan un ancho MÍNIMO garantizado: son
-            // texto libre (razón social completa, descripción del servicio) y
-            // sin esto, con muchas columnas encendidas, terminan partidos
-            // letra por letra en vez de en palabras completas.
+            // El ancho de cada columna viene de anchosCols — repartido
+            // proporcionalmente según el contenido real de TODO el reporte,
+            // no un mínimo fijo para un par de columnas a costa del resto.
             columnStyles: Object.fromEntries(
               columnasPDF.map((c, i) => [i, {
                 halign: c.ancho === "left" ? "left" : "center",
-                ...(c.key === "proveedor" ? { cellWidth: 95 } : {}),
-                ...(c.key === "concepto" ? { cellWidth: 110 } : {}),
+                cellWidth: anchosCols[i],
               }])
             ),
             margin: { bottom: margenInferior },

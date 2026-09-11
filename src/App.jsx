@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.10.0";
+const APP_VERSION = "2.10.1";
 const CHANGELOG = [
+  { v: "2.10.1", desc: "El error al leer la hoja de Google Sheets solo mostraba el numero de estado (ej. 400), sin el mensaje real que Google manda explicando la causa. Ahora se lee y se muestra ese detalle, y el ID de hoja usado queda en la consola del navegador (F12) para diagnosticar mas rapido" },
   { v: "2.10.0", desc: "Importador de Google Sheets, completo. Boton nuevo en Transacciones: se conecta a la cuenta de Google via OAuth, lee la hoja configurada para la compania activa (columnas por nombre, no por posicion -- tolera que se reordenen), y muestra una vista previa antes de guardar nada. El proveedor se cruza por Id SAE contra el catalogo de la compania, y la cuenta bancaria por CLABE contra las cuentas de ese proveedor -- sin coincidencia exacta, no se vincula nada a ciegas: banco y CLABE quedan como texto suelto y la fila se marca con aviso. Forma de Pago y Metodo de Pago se validan contra el catalogo SAT con el mismo criterio. Las filas importadas quedan Sin vincular a proposito -- elegir la partida correcta necesita criterio humano. Procesado se marca en la hoja SOLO despues de que el guardado en Supabase tuvo exito, para que un fallo a medio camino no pierda filas en silencio. Requiere 25-importar-transacciones-campos.sql (ademas de 24-google-sheet-por-compania.sql de la version anterior)" },
   { v: "2.9.0", desc: "Primer paso del importador de Google Sheets: cada compañia gana su propio ID de hoja de origen, configurable en Catalogo, junto a la configuracion de la Solicitud de Pago (misma tabla config_companias). Se puede pegar el ID solo o la URL completa de la hoja -- se extrae el ID automaticamente en cualquier caso. Todavia no hay boton de importar: falta la conexion OAuth con Google y confirmar el mapeo de columnas antes de construir esa parte. Requiere 24-google-sheet-por-compania.sql" },
   { v: "2.8.1", desc: "Al marcar una transaccion como Pagada en el formulario, la Fecha de Pago se llena sola con el Dia de Pago Programado -- antes el formulario solo bloqueaba el guardado pidiendo esa fecha a mano, sin ofrecerla. Solo llena si estaba vacia: si ya habia una fecha de pago distinta capturada antes, no se sobreescribe. No hay una accion masiva de marcar-pagado en la app, asi que este era el unico lugar que necesitaba el ajuste" },
@@ -6343,7 +6344,14 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
         { headers: { Authorization: `Bearer ${token}` } }
       );
       if (resp.status === 401) { setToken(null); throw new Error("La sesión con Google expiró — conéctate de nuevo."); }
-      if (!resp.ok) throw new Error(`Google respondió con error ${resp.status}`);
+      if (!resp.ok) {
+        // Google manda el detalle real en el cuerpo — mostrar solo el
+        // número de estado no dice nada de POR QUÉ falló.
+        let detalle = "";
+        try { detalle = (await resp.json())?.error?.message || ""; } catch { /* el cuerpo no era JSON */ }
+        console.error("Sheets API — ID usado:", sheetId, "— respuesta:", resp.status, detalle);
+        throw new Error(`Google respondió con error ${resp.status}${detalle ? `: ${detalle}` : ""}`);
+      }
       const data = await resp.json();
       const filas = data.values || [];
       if (!filas.length) { setPreview({ importables: [], noImportables: [], colProcesadoIdx: -1 }); return; }

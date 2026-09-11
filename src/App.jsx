@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.10.3";
+const APP_VERSION = "2.11.0";
 const CHANGELOG = [
+  { v: "2.11.0", desc: "En Transacciones importadas sin partida vinculada, el crear una partida a partir de la transaccion funcionaba pero estaba escondido: habia que abrir Elegir partida y recien ahi descubrir el boton + Nueva partida dentro del modal. Ahora hay un boton directo en la fila, junto al selector, que abre el formulario YA en modo crear y YA precargado -- mismo mecanismo de disparador que seedTransaccion, consumido y limpiado por si solo. Nada del flujo de revision antes de guardar cambia, solo se ahorra el paso intermedio de abrir el buscador generico primero" },
   { v: "2.10.3", desc: "Fix: reintentar una importacion de Google Sheets despues de un fallo a medio camino (como el bug de fechas de la v2.10.2) tronaba con duplicate key value violates unique constraint idx_transacciones_folio_transaccion -- algunas filas del intento anterior si se habian guardado, pero nunca se marcaron Procesado porque el proceso completo no habia terminado con exito, asi que volvian a intentar insertarse. Ahora el importador consulta contra la base ANTES de insertar: lo que ya existe se marca Procesado sin reinsertarse, lo genuinamente nuevo se importa, y si dos filas de la MISMA hoja comparten folio, ninguna de las dos se toca -- quedan senaladas para revision manual en vez de perderse en silencio" },
   { v: "2.10.2", desc: "Fix: la importacion de Google Sheets fallaba con date/time field value out of range al guardar. Google devuelve las fechas en formato de despliegue local (18/9/2026, dia/mes/ano), y ese texto se mandaba tal cual a Postgres, que lo intenta leer como mes/dia/ano -- 18 no es un mes valido y truena. Ahora la fecha se convierte a ISO antes de guardar. El resto de la importacion (proveedor, cuenta, catalogos de pago) no se toco" },
   { v: "2.10.1", desc: "El error al leer la hoja de Google Sheets solo mostraba el numero de estado (ej. 400), sin el mensaje real que Google manda explicando la causa. Ahora se lee y se muestra ese detalle, y el ID de hoja usado queda en la consola del navegador (F12) para diagnosticar mas rapido" },
@@ -716,7 +717,7 @@ function marcadoresDisponibles(proyectosUnidad) {
 
 // Botón que abre un popup con buscador para elegir una partida — más cómodo
 // que un <select> plano cuando hay muchas. Agrupa por mes, en orden cronológico.
-function PartidaPickerButton({ partidas, transacciones = [], value, onChange, placeholder = "Elegir partida…", allowClear = false, partidasApi, unidad, proyectosOpciones = [], ocultasPorMoneda = 0, moneda, origenTransaccion }) {
+function PartidaPickerButton({ partidas, transacciones = [], value, onChange, placeholder = "Elegir partida…", allowClear = false, partidasApi, unidad, proyectosOpciones = [], ocultasPorMoneda = 0, moneda, origenTransaccion, abrirEnCrear = false, onAbierto }) {
   const [open, setOpen] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const [filtroRubro, setFiltroRubro] = useState("Todos");
@@ -768,6 +769,20 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
   const [creando, setCreando] = useState(false);
   const [nuevaPartida, setNuevaPartida] = useState(nuevaPartidaBlank);
   const [guardandoPartida, setGuardandoPartida] = useState(false);
+
+  /* Un botón externo a este componente (uno por fila, en "Sin vincular")
+     puede pedir que se abra YA directo en el formulario de creación, en vez
+     de que la persona tenga que abrir el buscador genérico y solo ahí
+     descubrir que "+ Nueva partida" existía. Mismo patrón de disparador que
+     seedTransaccion: el padre prende abrirEnCrear, este efecto lo consume y
+     avisa para que el padre lo apague, así no se vuelve a abrir solo. */
+  useEffect(() => {
+    if (!abrirEnCrear) return;
+    setNuevaPartida(nuevaPartidaBlank);
+    setCreando(true);
+    setOpen(true);
+    onAbierto?.();
+  }, [abrirEnCrear]);
 
   const crearPartida = async () => {
     if (!nuevaPartida.concepto.trim() || !nuevaPartida.monto_estimado) return;
@@ -6766,6 +6781,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   });
   const filtrosSVActivos = filtrosSV.fechaDesde || filtrosSV.fechaHasta;
   const limpiarFiltrosSV = () => setFiltrosSV({ fechaDesde: "", fechaHasta: "" });
+  // Qué fila pidió abrir directo en "+ Nueva partida" — una a la vez, se
+  // limpia sola en cuanto PartidaPickerButton la consume.
+  const [filaCreandoPartida, setFilaCreandoPartida] = useState(null);
   const groupKeysSV = groupBysSV.map((g) => g.field);
   const groupedSV = groupKeysSV.length ? agruparRows(sinVincularFiltrado, groupBysSV, "importe") : null;
   const colVisibilitySV = useColumnVisibility("colv-sinvinc", COLUMNAS_SINVINC);
@@ -6780,6 +6798,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     <tr key={t.id}>
       {columnasSV.map((c) => <td key={c.key} style={{ ...tdStyle, paddingLeft: depth ? 14 + depth * 26 : undefined }}>{c.render(t)}</td>)}
       <td style={tdStyle}>
+        <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
         {/* Mismo criterio que el formulario: solo partidas de la moneda de ESTA
             transacción. Sin esto, vincular desde la tabla se saltaba el bloqueo
             entre monedas que el formulario sí aplica. */}
@@ -6788,6 +6807,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, t.moneda)).length}
           moneda={t.moneda}
           origenTransaccion={t}
+          abrirEnCrear={filaCreandoPartida === t.id}
+          onAbierto={() => setFilaCreandoPartida(null)}
           transacciones={transUnidad}
           partidasApi={partidasApi}
           unidad={unidad}
@@ -6801,6 +6822,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               .catch((err) => alert("No se pudo vincular: " + (err.message || err)));
           }}
         />
+        <IconButton
+          icon="＋"
+          label="Crear partida a partir de esta transacción"
+          tone={T.teal}
+          onClick={() => setFilaCreandoPartida(t.id)}
+        />
+        </div>
       </td>
     </tr>
   );
@@ -7541,7 +7569,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <table style={{ ...tableStyle, tableLayout: "fixed" }}>
               <colgroup>
                 {columnasSV.map((c) => <col key={c.key} style={{ width: colWidthsSV.getWidth(c.key) }} />)}
-                <col style={{ width: 230 }} />
+                <col style={{ width: 270 }} />
               </colgroup>
               <thead>
                 <tr>

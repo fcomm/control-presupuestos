@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.10.2";
+const APP_VERSION = "2.10.3";
 const CHANGELOG = [
+  { v: "2.10.3", desc: "Fix: reintentar una importacion de Google Sheets despues de un fallo a medio camino (como el bug de fechas de la v2.10.2) tronaba con duplicate key value violates unique constraint idx_transacciones_folio_transaccion -- algunas filas del intento anterior si se habian guardado, pero nunca se marcaron Procesado porque el proceso completo no habia terminado con exito, asi que volvian a intentar insertarse. Ahora el importador consulta contra la base ANTES de insertar: lo que ya existe se marca Procesado sin reinsertarse, lo genuinamente nuevo se importa, y si dos filas de la MISMA hoja comparten folio, ninguna de las dos se toca -- quedan senaladas para revision manual en vez de perderse en silencio" },
   { v: "2.10.2", desc: "Fix: la importacion de Google Sheets fallaba con date/time field value out of range al guardar. Google devuelve las fechas en formato de despliegue local (18/9/2026, dia/mes/ano), y ese texto se mandaba tal cual a Postgres, que lo intenta leer como mes/dia/ano -- 18 no es un mes valido y truena. Ahora la fecha se convierte a ISO antes de guardar. El resto de la importacion (proveedor, cuenta, catalogos de pago) no se toco" },
   { v: "2.10.1", desc: "El error al leer la hoja de Google Sheets solo mostraba el numero de estado (ej. 400), sin el mensaje real que Google manda explicando la causa. Ahora se lee y se muestra ese detalle, y el ID de hoja usado queda en la consola del navegador (F12) para diagnosticar mas rapido" },
   { v: "2.10.0", desc: "Importador de Google Sheets, completo. Boton nuevo en Transacciones: se conecta a la cuenta de Google via OAuth, lee la hoja configurada para la compania activa (columnas por nombre, no por posicion -- tolera que se reordenen), y muestra una vista previa antes de guardar nada. El proveedor se cruza por Id SAE contra el catalogo de la compania, y la cuenta bancaria por CLABE contra las cuentas de ese proveedor -- sin coincidencia exacta, no se vincula nada a ciegas: banco y CLABE quedan como texto suelto y la fila se marca con aviso. Forma de Pago y Metodo de Pago se validan contra el catalogo SAT con el mismo criterio. Las filas importadas quedan Sin vincular a proposito -- elegir la partida correcta necesita criterio humano. Procesado se marca en la hoja SOLO despues de que el guardado en Supabase tuvo exito, para que un fallo a medio camino no pierda filas en silencio. Requiere 25-importar-transacciones-campos.sql (ademas de 24-google-sheet-por-compania.sql de la version anterior)" },
@@ -6447,7 +6448,40 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
         });
       });
 
-      setPreview({ importables, noImportables, colProcesadoIdx: col.procesado });
+      /* Antes de armar el resultado final: si un intento anterior se cayó a
+         medio camino (por ejemplo, el bug de fechas de la v2.10.2), algunas
+         de estas filas pueden YA estar guardadas —nunca se marcó Procesado
+         porque el proceso completo no terminó con éxito—. Insertarlas de
+         nuevo chocaría contra folio_transaccion, que es único. Se revisan
+         contra la base ANTES de insertar, no se descubre por el error. */
+      const foliosDelLote = [...new Set(importables.map((f) => f.registro.folio_transaccion).filter(Boolean))];
+      let foliosYaEnBase = new Set();
+      if (foliosDelLote.length) {
+        const { data: existentes, error: errFolios } = await supabase
+          .from("transacciones").select("folio_transaccion")
+          .eq("unidad_detectada", unidad).in("folio_transaccion", foliosDelLote);
+        if (errFolios) throw errFolios;
+        foliosYaEnBase = new Set((existentes || []).map((r) => r.folio_transaccion));
+      }
+
+      // Dos filas de la MISMA hoja con el mismo folio: no es un choque contra
+      // la base, es un dato repetido en el origen. Se separan para que la
+      // persona lo revise en vez de importar una y perder la otra en silencio.
+      const conteoFolios = {};
+      importables.forEach((f) => {
+        const fo = f.registro.folio_transaccion;
+        if (fo) conteoFolios[fo] = (conteoFolios[fo] || 0) + 1;
+      });
+
+      const nuevas = [], yaExistian = [], duplicadasEnHoja = [];
+      importables.forEach((f) => {
+        const fo = f.registro.folio_transaccion;
+        if (fo && conteoFolios[fo] > 1) { duplicadasEnHoja.push(f); return; }
+        if (fo && foliosYaEnBase.has(fo)) { yaExistian.push(f); return; }
+        nuevas.push(f);
+      });
+
+      setPreview({ nuevas, yaExistian, duplicadasEnHoja, noImportables, colProcesadoIdx: col.procesado });
     } catch (err) {
       alert("No se pudo leer la hoja: " + (err.message || err));
     } finally {
@@ -6456,15 +6490,21 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
   };
 
   const confirmarImportacion = async () => {
-    if (!preview?.importables.length) return;
-    if (!confirm(`Se van a importar ${preview.importables.length} transacción(es) a ${unidad}, sin partida vinculada — quedan en "Sin vincular" para resolverlas a mano.`)) return;
+    const totalAResolver = (preview?.nuevas.length || 0) + (preview?.yaExistian.length || 0);
+    if (!totalAResolver) return;
+    const partes = [`${preview.nuevas.length} nueva(s)`];
+    if (preview.yaExistian.length) partes.push(`${preview.yaExistian.length} que ya estaban en la base (solo se marcan como Procesado)`);
+    if (!confirm(`Se van a resolver ${partes.join(" y ")}, en ${unidad}. Las nuevas quedan sin partida vinculada — "Sin vincular" para resolverlas a mano.`)) return;
     setImportando(true);
     try {
-      await transaccionesApi.bulkInsert(preview.importables.map((f) => f.registro));
-      // "Procesado" se marca DESPUÉS de guardar con éxito — si el insert
-      // hubiera fallado, estas filas deben seguir apareciendo la próxima vez.
+      if (preview.nuevas.length) await transaccionesApi.bulkInsert(preview.nuevas.map((f) => f.registro));
+      /* "Procesado" se marca DESPUÉS de guardar con éxito, para las nuevas
+         Y para las que ya existían —ambas quedan resueltas—, pero NO para
+         las duplicadas dentro de la propia hoja: esas necesitan que alguien
+         las revise, y marcarlas las escondería para siempre. */
+      const resueltas = [...preview.nuevas, ...preview.yaExistian];
       const letra = columnaLetra(preview.colProcesadoIdx);
-      const dataUpdate = preview.importables.map((f) => ({ range: `${letra}${f.numeroFila}`, values: [["TRUE"]] }));
+      const dataUpdate = resueltas.map((f) => ({ range: `${letra}${f.numeroFila}`, values: [["TRUE"]] }));
       const resp = await fetch(
         `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
         {
@@ -6473,10 +6513,13 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
           body: JSON.stringify({ valueInputOption: "RAW", data: dataUpdate }),
         }
       );
+      const pendienteDuplicadas = preview.duplicadasEnHoja.length
+        ? ` ${preview.duplicadasEnHoja.length} fila(s) con folio repetido en la propia hoja se dejaron sin marcar — corrígelas ahí y vuelve a buscar.`
+        : "";
       if (!resp.ok) {
-        setResultado({ tono: "amber", texto: `Se importaron ${preview.importables.length} transacción(es), pero no se pudo marcar "Procesado" en la hoja (error ${resp.status}). Márcalas a mano ahí para no volver a importarlas.` });
+        setResultado({ tono: "amber", texto: `Se resolvieron ${resueltas.length} transacción(es), pero no se pudo marcar "Procesado" en la hoja (error ${resp.status}). Márcalas a mano ahí para no volver a importarlas.${pendienteDuplicadas}` });
       } else {
-        setResultado({ tono: "teal", texto: `${preview.importables.length} transacción(es) importadas y marcadas como Procesado en la hoja.` });
+        setResultado({ tono: "teal", texto: `${preview.nuevas.length} transacción(es) nuevas importadas${preview.yaExistian.length ? `, ${preview.yaExistian.length} que ya existían marcadas como Procesado` : ""}.${pendienteDuplicadas}` });
       }
       setPreview(null);
     } catch (err) {
@@ -6519,7 +6562,7 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
 
               {preview && (
                 <div style={{ marginTop: 14 }}>
-                  {!preview.importables.length && !preview.noImportables.length && (
+                  {!preview.nuevas.length && !preview.yaExistian.length && !preview.duplicadasEnHoja.length && !preview.noImportables.length && (
                     <div style={{ fontSize: 12.5, color: T.textFaint }}>No hay filas nuevas — todo lo de la hoja ya está marcado como Procesado.</div>
                   )}
 
@@ -6530,39 +6573,56 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
                     </div>
                   )}
 
-                  {preview.importables.length > 0 && (
-                    <>
-                      <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>
-                        {preview.importables.length} transacción(es) listas para importar
-                      </div>
-                      <div style={{ maxHeight: 320, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
-                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
-                          <thead>
-                            <tr style={{ background: T.panel, position: "sticky", top: 0 }}>
-                              <th style={{ ...tdStyle, textAlign: "left" }}>Día</th>
-                              <th style={{ ...tdStyle, textAlign: "left" }}>Proveedor</th>
-                              <th style={{ ...tdStyle, textAlign: "left" }}>Concepto</th>
-                              <th style={{ ...tdStyle, textAlign: "right" }}>Importe</th>
-                              <th style={{ ...tdStyle, textAlign: "left" }}>Avisos</th>
+                  {preview.duplicadasEnHoja.length > 0 && (
+                    <div style={{ fontSize: 11.5, color: T.red, marginBottom: 10 }}>
+                      {preview.duplicadasEnHoja.length} fila(s) repiten un folio dentro de la misma hoja —no se importan
+                      ni se marcan como Procesado, para no perder ninguna en silencio. Corrige el folio duplicado en la hoja
+                      y vuelve a buscar (fila{preview.duplicadasEnHoja.length > 1 ? "s" : ""} {preview.duplicadasEnHoja.map((n) => n.numeroFila).join(", ")}).
+                    </div>
+                  )}
+
+                  {preview.yaExistian.length > 0 && (
+                    <div style={{ fontSize: 11.5, color: T.textDim, marginBottom: 10 }}>
+                      {preview.yaExistian.length} fila(s) ya estaban guardadas —probablemente de un intento anterior que no
+                      terminó de marcar Procesado— no se van a duplicar, solo se marcan como Procesado en la hoja.
+                    </div>
+                  )}
+
+                  {preview.nuevas.length > 0 && (
+                    <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 8 }}>
+                      {preview.nuevas.length} transacción(es) nuevas, listas para importar
+                    </div>
+                  )}
+                  {preview.nuevas.length > 0 && (
+                    <div style={{ maxHeight: 320, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+                        <thead>
+                          <tr style={{ background: T.panel, position: "sticky", top: 0 }}>
+                            <th style={{ ...tdStyle, textAlign: "left" }}>Día</th>
+                            <th style={{ ...tdStyle, textAlign: "left" }}>Proveedor</th>
+                            <th style={{ ...tdStyle, textAlign: "left" }}>Concepto</th>
+                            <th style={{ ...tdStyle, textAlign: "right" }}>Importe</th>
+                            <th style={{ ...tdStyle, textAlign: "left" }}>Avisos</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {preview.nuevas.map((f) => (
+                            <tr key={f.numeroFila} style={{ borderTop: `1px solid ${T.borderSoft}` }}>
+                              <td style={tdStyle}>{f.registro.dia}</td>
+                              <td style={tdStyle}>{f.registro.proveedor || "—"}</td>
+                              <td style={tdStyle}>{f.registro.concepto_detallado || "—"}</td>
+                              <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(f.registro.importe, f.registro.moneda)}</td>
+                              <td style={{ ...tdStyle, color: T.amber }}>{f.avisos.join(" · ") || ""}</td>
                             </tr>
-                          </thead>
-                          <tbody>
-                            {preview.importables.map((f) => (
-                              <tr key={f.numeroFila} style={{ borderTop: `1px solid ${T.borderSoft}` }}>
-                                <td style={tdStyle}>{f.registro.dia}</td>
-                                <td style={tdStyle}>{f.registro.proveedor || "—"}</td>
-                                <td style={tdStyle}>{f.registro.concepto_detallado || "—"}</td>
-                                <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(f.registro.importe, f.registro.moneda)}</td>
-                                <td style={{ ...tdStyle, color: T.amber }}>{f.avisos.join(" · ") || ""}</td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                      <Button onClick={confirmarImportacion} disabled={importando} style={{ marginTop: 10 }}>
-                        {importando ? "Importando…" : `Importar ${preview.importables.length} transacción(es)`}
-                      </Button>
-                    </>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                  {(preview.nuevas.length > 0 || preview.yaExistian.length > 0) && (
+                    <Button onClick={confirmarImportacion} disabled={importando} style={{ marginTop: 10 }}>
+                      {importando ? "Resolviendo…" : `Resolver ${preview.nuevas.length + preview.yaExistian.length} fila(s)`}
+                    </Button>
                   )}
                 </div>
               )}

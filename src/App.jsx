@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.8.0";
+const APP_VERSION = "2.8.1";
 const CHANGELOG = [
+  { v: "2.8.1", desc: "Al marcar una transaccion como Pagada en el formulario, la Fecha de Pago se llena sola con el Dia de Pago Programado -- antes el formulario solo bloqueaba el guardado pidiendo esa fecha a mano, sin ofrecerla. Solo llena si estaba vacia: si ya habia una fecha de pago distinta capturada antes, no se sobreescribe. No hay una accion masiva de marcar-pagado en la app, asi que este era el unico lugar que necesitaba el ajuste" },
   { v: "2.8.0", desc: "Dos formas nuevas de crear un registro a partir de otro que ya existe. Partida -> Transacción: un boton en la fila de la partida abre + Nueva transacción en la pestaña de Transacciones, ya con partida, proyecto, categoría y moneda precargados (el importe se deja en blanco a propósito, para no confundir una estimación con un pago real). Transacción -> Partida: el + Nueva partida que ya vivía dentro del selector de partida (alcanzable desde cualquier fila, y sobre todo desde Sin vincular) ahora nace con mes, año, concepto, proyecto, importe y moneda tomados de la transacción de origen -- el rubro se deja para elegir a mano, porque no hay una señal confiable para adivinarlo. De paso se corrige un descuido: ese mismo formulario fijaba la moneda en MXP sin importar la transacción de origen" },
   { v: "2.7.0", desc: "Transacciones gana un filtro por Moneda, y los controles se reorganizan en dos filas por propósito: la primera filtra qué transacciones se ven (Buscar, Desde, Hasta, Reportado, Enviado, Proyecto, Moneda), la segunda controla cómo se ven las que quedaron (Agrupar, Contraer todo, Columnas). Antes once controles vivían en una sola fila que se envolvía sin orden aparente conforme se agregaba cada filtro nuevo. Moneda respeta la misma convención del resto de la app: un registro sin moneda cuenta como MXP" },
   { v: "2.6.2", desc: "Transacciones gana un filtro por Proyecto, junto a Reportado a Dirección y Enviado a Pagos. Usa la misma lista de marcadores que ya ofrece el formulario de captura, así que las opciones coinciden exactamente con lo que se puede elegir al crear una transacción. El sentinela de \u201csin filtro\u201d es un valor vacío, no la palabra Todos: la app ya tiene un marcador de proyecto que literalmente se llama Todos (el de prorrateo), y usar esa misma palabra como comodín habría hecho imposible filtrar específicamente por las transacciones marcadas así" },
@@ -7358,7 +7359,21 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               </Select>
             </Field>
             <Field label="Status">
-              <Select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+              <Select
+                value={form.status}
+                onChange={(e) => {
+                  const status = e.target.value;
+                  setForm({
+                    ...form,
+                    status,
+                    // Al marcar como Pagado, la Fecha de Pago se llena con
+                    // la de programación — es el caso normal, pagar cuando
+                    // se programó. Solo si faltaba: no pisa una fecha real
+                    // distinta que ya se hubiera capturado a mano.
+                    fecha_pago: (status === "Pagado" && !form.fecha_pago) ? form.dia : form.fecha_pago,
+                  });
+                }}
+              >
                 <option value="">— Sin especificar —</option>
                 <option>Pagado</option>
                 <option>No Pagado</option>

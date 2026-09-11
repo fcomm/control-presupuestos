@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.7.0";
+const APP_VERSION = "2.8.0";
 const CHANGELOG = [
+  { v: "2.8.0", desc: "Dos formas nuevas de crear un registro a partir de otro que ya existe. Partida -> Transacción: un boton en la fila de la partida abre + Nueva transacción en la pestaña de Transacciones, ya con partida, proyecto, categoría y moneda precargados (el importe se deja en blanco a propósito, para no confundir una estimación con un pago real). Transacción -> Partida: el + Nueva partida que ya vivía dentro del selector de partida (alcanzable desde cualquier fila, y sobre todo desde Sin vincular) ahora nace con mes, año, concepto, proyecto, importe y moneda tomados de la transacción de origen -- el rubro se deja para elegir a mano, porque no hay una señal confiable para adivinarlo. De paso se corrige un descuido: ese mismo formulario fijaba la moneda en MXP sin importar la transacción de origen" },
   { v: "2.7.0", desc: "Transacciones gana un filtro por Moneda, y los controles se reorganizan en dos filas por propósito: la primera filtra qué transacciones se ven (Buscar, Desde, Hasta, Reportado, Enviado, Proyecto, Moneda), la segunda controla cómo se ven las que quedaron (Agrupar, Contraer todo, Columnas). Antes once controles vivían en una sola fila que se envolvía sin orden aparente conforme se agregaba cada filtro nuevo. Moneda respeta la misma convención del resto de la app: un registro sin moneda cuenta como MXP" },
   { v: "2.6.2", desc: "Transacciones gana un filtro por Proyecto, junto a Reportado a Dirección y Enviado a Pagos. Usa la misma lista de marcadores que ya ofrece el formulario de captura, así que las opciones coinciden exactamente con lo que se puede elegir al crear una transacción. El sentinela de \u201csin filtro\u201d es un valor vacío, no la palabra Todos: la app ya tiene un marcador de proyecto que literalmente se llama Todos (el de prorrateo), y usar esa misma palabra como comodín habría hecho imposible filtrar específicamente por las transacciones marcadas así" },
   { v: "2.6.1", desc: "El ancho de columnas del PDF de Reporte de Pagos se calcula ahora proporcionalmente al contenido real de CADA columna, en vez de reservar un mínimo fijo para Proveedor y Concepto a costa de las demás. El intento anterior tapaba ese hueco en dos columnas pero se lo abría a otras — Solicitante y hasta los propios encabezados de Forma de Pago/Metodo de Pago terminaban igual de apretados. Ahora, si la suma de anchos naturales no cabe en la página, TODAS ceden proporcionalmente. La advertencia de que la tabla no cabe usa la misma fórmula que el dibujo real, así que nunca puede decir algo distinto de lo que sale" },
@@ -709,7 +710,7 @@ function marcadoresDisponibles(proyectosUnidad) {
 
 // Botón que abre un popup con buscador para elegir una partida — más cómodo
 // que un <select> plano cuando hay muchas. Agrupa por mes, en orden cronológico.
-function PartidaPickerButton({ partidas, transacciones = [], value, onChange, placeholder = "Elegir partida…", allowClear = false, partidasApi, unidad, proyectosOpciones = [], ocultasPorMoneda = 0, moneda }) {
+function PartidaPickerButton({ partidas, transacciones = [], value, onChange, placeholder = "Elegir partida…", allowClear = false, partidasApi, unidad, proyectosOpciones = [], ocultasPorMoneda = 0, moneda, origenTransaccion }) {
   const [open, setOpen] = useState(false);
   const [busqueda, setBusqueda] = useState("");
   const [filtroRubro, setFiltroRubro] = useState("Todos");
@@ -739,7 +740,25 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
 
   const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
-  const nuevaPartidaBlank = { mes: MESES[0], anio: new Date().getFullYear(), concepto: "", rubro: RUBROS[0]?.rubro || "", proyecto: proyectosOpciones[0] || "", monto_estimado: "", moneda: "MXP" };
+  /* Sin origenTransaccion: el blanco de siempre. Con ella —se abre desde una
+     transacción, típicamente "sin vincular"— nace con lo que esa transacción
+     ya trae: mes y año de su fecha, el concepto como borrador, el proyecto,
+     el importe real como estimado inicial, y la moneda. Evita retipear datos
+     que ya están ahí, para la partida que ese gasto real debió tener desde
+     el principio.
+     El rubro NO se hereda: no hay una señal confiable en la transacción para
+     adivinarlo bien, así que se deja para elegir a mano como siempre. */
+  const nuevaPartidaBlank = {
+    mes: origenTransaccion?.dia ? MESES[new Date(`${origenTransaccion.dia}T12:00:00`).getMonth()] : MESES[0],
+    anio: origenTransaccion?.dia ? new Date(`${origenTransaccion.dia}T12:00:00`).getFullYear() : new Date().getFullYear(),
+    concepto: origenTransaccion?.concepto_detallado || "",
+    rubro: RUBROS[0]?.rubro || "",
+    proyecto: origenTransaccion?.proyecto || proyectosOpciones[0] || "",
+    monto_estimado: origenTransaccion?.importe ? String(origenTransaccion.importe) : "",
+    // Antes quedaba fija en "MXP" sin importar de qué moneda era esta
+    // transacción — un descuido aparte del pre-llenado, que se corrige de paso.
+    moneda: origenTransaccion?.moneda || moneda || "MXP",
+  };
   const [creando, setCreando] = useState(false);
   const [nuevaPartida, setNuevaPartida] = useState(nuevaPartidaBlank);
   const [guardandoPartida, setGuardandoPartida] = useState(false);
@@ -811,7 +830,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
       {open && (
         <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto — Total y Usado por partida" onClose={() => { setOpen(false); setCreando(false); }} width={620} zIndex={1100} cerrarAlHacerClicFuera={!creando}>
           {partidasApi && !creando && (
-            <Button type="button" variant="ghost" onClick={() => setCreando(true)} style={{ marginBottom: 10 }}>
+            <Button type="button" variant="ghost" onClick={() => { setNuevaPartida(nuevaPartidaBlank); setCreando(true); }} style={{ marginBottom: 10 }}>
               + Nueva partida
             </Button>
           )}
@@ -4823,7 +4842,7 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
   );
 }
 
-function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, zonas = ZONAS_RESPALDO, gruposZona = {} }) {
+function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, zonas = ZONAS_RESPALDO, gruposZona = {}, onCrearTransaccion }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadores = marcadoresDisponibles(proyectosUnidad);
   const anioDefault = (() => {
@@ -5548,6 +5567,25 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           ))}
           <td style={tdStyle}>
             <div style={{ display: "flex", gap: 4 }}>
+              {onCrearTransaccion && (
+                <IconButton
+                  icon="＋"
+                  label="Crear transacción a partir de esta partida"
+                  tone={T.teal}
+                  onClick={() => onCrearTransaccion({
+                    partida_id: p.id,
+                    proyecto: p.proyecto || "",
+                    zona: p.zona || "",
+                    categoria: p.categoria || "",
+                    moneda: p.moneda || "MXP",
+                    // El importe se deja en blanco a propósito: una
+                    // transacción registra lo que de verdad se pagó, y
+                    // precargar aquí el monto_estimado de la partida
+                    // arriesgaría que alguien confundiera una estimación
+                    // con un pago real y la dejara sin corregir.
+                  })}
+                />
+              )}
               <IconButton icon="✎" label="Editar" tone={T.accent} onClick={() => startEdit(p)} />
               <IconButton icon="⧉" label="Duplicar" tone={T.textDim} onClick={() => duplicar(p)} />
               <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => remove(p.id)} />
@@ -6198,7 +6236,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
   );
 }
 
-function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO, gruposZona = {} }) {
+function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO, gruposZona = {}, seedTransaccion, onSeedConsumido }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
@@ -6351,6 +6389,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           partidas={partidasUnidad.filter((p) => mismaMoneda(p.moneda, t.moneda))}
           ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, t.moneda)).length}
           moneda={t.moneda}
+          origenTransaccion={t}
           transacciones={transUnidad}
           partidasApi={partidasApi}
           unidad={unidad}
@@ -6391,6 +6430,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           partidas={partidasUnidad.filter((p) => mismaMoneda(p.moneda, t.moneda))}
           ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, t.moneda)).length}
           moneda={t.moneda}
+          origenTransaccion={t}
           transacciones={transUnidad}
           partidasApi={partidasApi}
           unidad={unidad}
@@ -6767,6 +6807,19 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
   };
   const openNew = () => { setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" }); setEditId(null); setNotaPrivada(""); setModalOpen(true); };
+  /* Consume el dato precargado que llega desde "Crear transacción" en la
+     fila de una partida. Mismos resets que openNew, solo que el form parte
+     de blank + lo que la partida ya traía (proyecto, zona, categoría,
+     moneda) en vez de partir vacío — y se avisa al padre para que no se
+     reabra con el mismo dato si se vuelve a entrar a esta pestaña después. */
+  useEffect(() => {
+    if (!seedTransaccion) return;
+    setForm({ ...blank, ...seedTransaccion });
+    setEditId(null);
+    setNotaPrivada("");
+    setModalOpen(true);
+    onSeedConsumido?.();
+  }, [seedTransaccion]);
   const startEdit = (t) => {
     // Quita campos internos (_proyecto, _rubro, _mes, _vinculo) que se agregan
     // solo para el agrupamiento — no existen como columnas reales en Supabase.
@@ -7151,6 +7204,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 partidas={partidasUnidad.filter((p) => mismaMoneda(p.moneda, form.moneda))}
                 ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, form.moneda)).length}
                 moneda={form.moneda}
+                origenTransaccion={form}
                 transacciones={transUnidad}
                 partidasApi={partidasApi}
                 unidad={unidad}
@@ -11000,6 +11054,11 @@ export default function App() {
   const vehUbicacionesApi = useCollection("vehiculo_ubicaciones", "nombre");
   const [unidad, setUnidad] = useState("CTM");
   const [tab, setTab] = useState("dashboard");
+  // Puente entre pestañas: al crear una transacción a partir de una
+  // partida, el dato precargado viaja aquí mientras se cambia de tab.
+  // Transacciones lo consume una sola vez y lo limpia, para que volver a
+  // cambiar de tab después no reabra el formulario con datos viejos.
+  const [seedTransaccion, setSeedTransaccion] = useState(null);
 
   const miPerfil = session ? perfilesApi.rows.find((p) => p.id === session.user.id) : null;
   const unidadesPermitidas = (miPerfil?.unidades_permitidas && miPerfil.unidades_permitidas.length)
@@ -11162,8 +11221,8 @@ export default function App() {
       ) : (
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
-          {tab === "partidas" && <PartidasTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
-          {tab === "transacciones" && <TransaccionesTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} />}
+          {tab === "partidas" && <PartidasTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} onCrearTransaccion={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} />}
+          {tab === "transacciones" && <TransaccionesTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} seedTransaccion={seedTransaccion} onSeedConsumido={() => setSeedTransaccion(null)} />}
           {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
           {tab === "reportes-direccion" && <ReportesDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} session={session} gruposZona={gruposZona} />}

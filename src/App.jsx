@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.10.1";
+const APP_VERSION = "2.10.2";
 const CHANGELOG = [
+  { v: "2.10.2", desc: "Fix: la importacion de Google Sheets fallaba con date/time field value out of range al guardar. Google devuelve las fechas en formato de despliegue local (18/9/2026, dia/mes/ano), y ese texto se mandaba tal cual a Postgres, que lo intenta leer como mes/dia/ano -- 18 no es un mes valido y truena. Ahora la fecha se convierte a ISO antes de guardar. El resto de la importacion (proveedor, cuenta, catalogos de pago) no se toco" },
   { v: "2.10.1", desc: "El error al leer la hoja de Google Sheets solo mostraba el numero de estado (ej. 400), sin el mensaje real que Google manda explicando la causa. Ahora se lee y se muestra ese detalle, y el ID de hoja usado queda en la consola del navegador (F12) para diagnosticar mas rapido" },
   { v: "2.10.0", desc: "Importador de Google Sheets, completo. Boton nuevo en Transacciones: se conecta a la cuenta de Google via OAuth, lee la hoja configurada para la compania activa (columnas por nombre, no por posicion -- tolera que se reordenen), y muestra una vista previa antes de guardar nada. El proveedor se cruza por Id SAE contra el catalogo de la compania, y la cuenta bancaria por CLABE contra las cuentas de ese proveedor -- sin coincidencia exacta, no se vincula nada a ciegas: banco y CLABE quedan como texto suelto y la fila se marca con aviso. Forma de Pago y Metodo de Pago se validan contra el catalogo SAT con el mismo criterio. Las filas importadas quedan Sin vincular a proposito -- elegir la partida correcta necesita criterio humano. Procesado se marca en la hoja SOLO despues de que el guardado en Supabase tuvo exito, para que un fallo a medio camino no pierda filas en silencio. Requiere 25-importar-transacciones-campos.sql (ademas de 24-google-sheet-por-compania.sql de la version anterior)" },
   { v: "2.9.0", desc: "Primer paso del importador de Google Sheets: cada compañia gana su propio ID de hoja de origen, configurable en Catalogo, junto a la configuracion de la Solicitud de Pago (misma tabla config_companias). Se puede pegar el ID solo o la URL completa de la hoja -- se extrae el ID automaticamente en cualquier caso. Todavia no hay boton de importar: falta la conexion OAuth con Google y confirmar el mapeo de columnas antes de construir esa parte. Requiere 24-google-sheet-por-compania.sql" },
@@ -6257,6 +6258,23 @@ const SHEETS_PROCESADO_VALORES = /^(true|si|sí|x|1|yes)$/i;
 const limpiarImporteSheet = (s) => Number(String(s || "").replace(/[^0-9.-]/g, "")) || 0;
 
 /**
+ * Convierte una fecha tal como la devuelve Sheets en formato local
+ * ("18/9/2026", día/mes/año) a ISO ("2026-09-18"), que es lo que Postgres
+ * espera. Sin esto, Postgres intenta leerla como mes/día/año, ve "18" como
+ * mes y truena con "date/time field value out of range" — justo lo que
+ * pasó con el primer intento de importar.
+ */
+function fechaSheetAIso(valor) {
+  const v = (valor || "").trim();
+  if (!v) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v; // ya viene en ISO, no tocar
+  const m = v.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return v; // formato inesperado: se deja tal cual, Postgres avisará si de verdad está mal
+  const [, dia, mes, anio] = m;
+  return `${anio}-${mes.padStart(2, "0")}-${dia.padStart(2, "0")}`;
+}
+
+/**
  * Cruza un valor de catálogo (Forma/Método de Pago) contra la lista SAT.
  * Si coincide por código o por texto del label, se normaliza al código.
  * Si no coincide con nada, se importa TAL CUAL —es solo texto en la base—
@@ -6381,7 +6399,7 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
         const idSae = dato(row, col.idProvSae);
         const clabeHoja = dato(row, col.clabe);
         const bancoHoja = dato(row, col.banco);
-        const fechaPago = dato(row, col.fechaPago);
+        const fechaPago = fechaSheetAIso(dato(row, col.fechaPago));
         const importe = limpiarImporteSheet(dato(row, col.importe));
 
         if (!fechaPago || !importe) {

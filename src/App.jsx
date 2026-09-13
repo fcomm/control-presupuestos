@@ -318,8 +318,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.11.0";
+const APP_VERSION = "2.12.0";
 const CHANGELOG = [
+  { v: "2.12.0", desc: "Nuevo panel Solicitudes de Pago generadas en Transacciones: historial de cada SPP emitida, con Editar para corregir cualquier campo -- incluidos banco, cuenta, CLABE y proveedor, que antes ni siquiera eran editables porque se derivaban en vivo del catalogo. Editar NO sobrescribe: guarda una fila NUEVA con el MISMO folio y una revision mayor, igual que los reportes oficiales -- el folio se conserva porque Pagos y el proveedor ya lo conocen, y el registro anterior queda como historial consultable, con quien y cuando via created_by/created_at. El desglose fiscal en la edicion son numeros sueltos editables, no se recalculan solos: es una herramienta para corregir un error puntual, no para rehacer el calculo. Requiere 26-revisiones-solicitudes-pago.sql" },
+  { v: "2.11.1", desc: "Fix: la Solicitud de Pago a Proveedor no jalaba la Referencia de Pago de la transaccion. El campo nunca se sembraba en el estado inicial del formulario, no existia como campo editable dentro del modal, y ademas ni el PDF ni el Excel de la SPP la mostraban en ningun lado -- se corrigen las tres partes. Es distinta de la Referencia Bancaria (la del proveedor en el catalogo), que ya existia" },
   { v: "2.11.0", desc: "En Transacciones importadas sin partida vinculada, el crear una partida a partir de la transaccion funcionaba pero estaba escondido: habia que abrir Elegir partida y recien ahi descubrir el boton + Nueva partida dentro del modal. Ahora hay un boton directo en la fila, junto al selector, que abre el formulario YA en modo crear y YA precargado -- mismo mecanismo de disparador que seedTransaccion, consumido y limpiado por si solo. Nada del flujo de revision antes de guardar cambia, solo se ahorra el paso intermedio de abrir el buscador generico primero" },
   { v: "2.10.3", desc: "Fix: reintentar una importacion de Google Sheets despues de un fallo a medio camino (como el bug de fechas de la v2.10.2) tronaba con duplicate key value violates unique constraint idx_transacciones_folio_transaccion -- algunas filas del intento anterior si se habian guardado, pero nunca se marcaron Procesado porque el proceso completo no habia terminado con exito, asi que volvian a intentar insertarse. Ahora el importador consulta contra la base ANTES de insertar: lo que ya existe se marca Procesado sin reinsertarse, lo genuinamente nuevo se importa, y si dos filas de la MISMA hoja comparten folio, ninguna de las dos se toca -- quedan senaladas para revision manual en vez de perderse en silencio" },
   { v: "2.10.2", desc: "Fix: la importacion de Google Sheets fallaba con date/time field value out of range al guardar. Google devuelve las fechas en formato de despliegue local (18/9/2026, dia/mes/ano), y ese texto se mandaba tal cual a Postgres, que lo intenta leer como mes/dia/ano -- 18 no es un mes valido y truena. Ahora la fecha se convierte a ISO antes de guardar. El resto de la importacion (proveedor, cuenta, catalogos de pago) no se toco" },
@@ -4283,6 +4285,9 @@ async function generarExcelSPP(r) {
   const fc = dato("Cuenta Bancaria", String(r.cuenta || ""));
   fc.getCell(2).numFmt = "@";
   dato("Referencia Bancaria", r.referencia_bancaria || "");
+  // Distinta de la Referencia Bancaria: esta es la de la transacción misma
+  // (folio SPEI, cheque, etc.), no la del proveedor en el catálogo.
+  dato("Referencia de Pago", r.referencia_pago || "");
   const fcl = dato("Cuenta CLABE", String(r.clabe || ""));
   fcl.getCell(2).numFmt = "@";
 
@@ -4427,6 +4432,7 @@ function generarPdfSPP(r) {
   filaDoble("Nombre o razón social", r.proveedor, "Banco", r.banco);
   filaDoble("Sucursal bancaria", r.sucursal, "Referencia bancaria", r.referencia_bancaria);
   filaDoble("Cuenta bancaria", r.cuenta, "Cuenta CLABE", r.clabe);
+  filaDoble("Referencia de pago", r.referencia_pago, "", "");
 
   doc.save(`SPP ${r.compania}-${r.folio} - ${String(r.proveedor || "").slice(0, 30)}.pdf`);
 }
@@ -4511,6 +4517,9 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
     descripcion: t.concepto_detallado || "",
     cantidad: 1,
     observaciones: "",
+    // Faltaba aquí: el campo ya existía en el formulario (editable), pero
+    // nunca se llenaba con el dato real de la transacción al abrir.
+    referencia_pago: t.referencia_pago || "",
     moneda: t.moneda === "USD" ? "Dólares" : "Pesos",
   });
 
@@ -4540,7 +4549,8 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
       const folio = Math.max(Number(cfg?.spp_ultimo) || 0, (ultimos && ultimos[0]?.folio) || 0) + 1;
 
       const reg = {
-        id: uid(), compania: unidad, folio, transaccion_id: t.id,
+        id: uid(), compania: unidad, folio, revision: 1, transaccion_id: t.id,
+        created_by: session?.user?.id || null, updated_by: session?.user?.id || null,
         fecha_elaboracion: f.fecha_elaboracion, fecha_pago: f.fecha_pago || null,
         zona: f.zona, proyecto: proyNombre, centro_costo: ccTexto,
         responsable: f.responsable, solicitante: f.solicitante,
@@ -4550,6 +4560,9 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
         banco: cuenta?.banco || "", sucursal: cuenta?.sucursal || "",
         cuenta: cuenta?.numero_cuenta || "", clabe: cuenta?.clabe || "",
         referencia_bancaria: proveedor?.referencia || "",
+        // Distinta de la Referencia Bancaria de arriba: esta es la de ESTA
+        // transacción (folio SPEI, cheque, etc.), no la del proveedor en el catálogo.
+        referencia_pago: f.referencia_pago || "",
         moneda: f.moneda, tipo_pago: f.tipo_pago, condicion_pago: f.condicion_pago,
         concepto: f.concepto, descripcion: f.descripcion,
         cantidad: Number(f.cantidad) || 1,
@@ -4614,6 +4627,7 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
         {campo("Fecha de elaboración", f.fecha_elaboracion, (v) => setF({ ...f, fecha_elaboracion: v }))}
         {campo("Fecha de pago", f.fecha_pago, (v) => setF({ ...f, fecha_pago: v }))}
         {campo("Zona", f.zona, (v) => setF({ ...f, zona: v }))}
+        {campo("Referencia de pago", f.referencia_pago, (v) => setF({ ...f, referencia_pago: v }))}
         <Field label={esProrrateo ? "Proyecto / Centros de costo (prorrateo)" : "Proyecto / Centro de costo"}>
           <TextInput value={`${proyNombre}${ccTexto ? ` · ${ccTexto}` : " · sin CC"}`} disabled />
           {esProrrateo && (
@@ -4726,6 +4740,257 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
         <Button variant="ghost" onClick={onClose}>Cancelar</Button>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Edita una Solicitud de Pago YA generada. A diferencia del modal de
+ * creación, aquí no hay transacción viva de la que derivar nada — se
+ * corrige el registro CONGELADO tal como quedó, campo por campo, en texto
+ * plano. No se recalcula el desglose fiscal automáticamente: es una
+ * herramienta para corregir un error puntual (una CLABE mal capturada, un
+ * concepto con una errata), no para rehacer el cálculo desde cero.
+ *
+ * Al guardar NO se sobrescribe el registro original: se inserta una fila
+ * nueva con el MISMO folio y revision = la anterior + 1. El folio se
+ * conserva —es lo que Pagos y el proveedor ya conocen— pero cada corrección
+ * queda como su propio registro completo, con quién y cuándo (via
+ * created_by/created_at, igual que en partidas y transacciones).
+ */
+function EditarSolicitudPagoModal({ solicitud, onClose, unidad, session, onGuardado }) {
+  const [f, setF] = useState({ ...solicitud });
+  const [formato, setFormato] = useState("pdf");
+  const [guardando, setGuardando] = useState(false);
+
+  const num = (key) => (
+    <TextInput type="number" value={f[key] ?? ""} onChange={(e) => setF({ ...f, [key]: e.target.value === "" ? "" : Number(e.target.value) })} />
+  );
+  const txt = (key, placeholder) => (
+    <TextInput value={f[key] || ""} onChange={(e) => setF({ ...f, [key]: e.target.value })} placeholder={placeholder} />
+  );
+
+  const guardar = async () => {
+    if (!confirm(`Se va a registrar una nueva revisión del folio ${solicitud.folio} (revisión ${(solicitud.revision || 1) + 1}), conservando el folio. El registro anterior no se borra, queda como historial.`)) return;
+    setGuardando(true);
+    try {
+      const nuevaRevision = (solicitud.revision || 1) + 1;
+      const reg = {
+        ...f,
+        id: uid(), // fila NUEVA, no se reutiliza el id del registro anterior
+        revision: nuevaRevision,
+        created_by: session?.user?.id || null,
+        updated_by: session?.user?.id || null,
+        updated_at: new Date().toISOString(),
+        cantidad: Number(f.cantidad) || 1,
+        precio_unitario: Number(f.precio_unitario) || 0,
+        subtotal: Number(f.subtotal) || 0, iva: Number(f.iva) || 0,
+        ret_isr: Number(f.ret_isr) || 0, ret_iva: Number(f.ret_iva) || 0,
+        descuento: Number(f.descuento) || 0, total: Number(f.total) || 0,
+        pct_pago: Number(f.pct_pago) || 0, total_a_pagar: Number(f.total_a_pagar) || 0,
+      };
+      const { error } = await supabase.from("solicitudes_pago").insert(reg);
+      if (error) throw error;
+      if (formato === "pdf") generarPdfSPP(reg); else await generarExcelSPP(reg);
+      onGuardado?.();
+      onClose();
+    } catch (err) {
+      alert("No se pudo guardar la revisión: " + (err.message || err));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Editar Solicitud de Pago — folio ${solicitud.folio}`}
+      subtitle={`Revisión actual: ${solicitud.revision || 1} → se guardará como revisión ${(solicitud.revision || 1) + 1}. El folio no cambia.`}
+      onClose={onClose}
+      width={880}
+      cerrarAlHacerClicFuera={false}
+    >
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, marginTop: 4 }}>Datos generales</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 16 }}>
+        <Field label="Fecha de elaboración">{txt("fecha_elaboracion")}</Field>
+        <Field label="Fecha de pago">{txt("fecha_pago")}</Field>
+        <Field label="Zona">{txt("zona")}</Field>
+        <Field label="Proyecto">{txt("proyecto")}</Field>
+        <Field label="Centro de costo">{txt("centro_costo")}</Field>
+        <Field label="Responsable">{txt("responsable")}</Field>
+        <Field label="Solicitante">{txt("solicitante")}</Field>
+        <Field label="Lugar de adquisición">{txt("lugar_adquisicion")}</Field>
+        <Field label="Tipo de pago">{txt("tipo_pago")}</Field>
+        <Field label="Condición de pago">{txt("condicion_pago")}</Field>
+        <Field label="Moneda">{txt("moneda")}</Field>
+        <Field label="Cantidad">{num("cantidad")}</Field>
+      </div>
+      <Field label="Concepto"><TextInput value={f.concepto || ""} onChange={(e) => setF({ ...f, concepto: e.target.value })} style={{ marginBottom: 10, width: "100%" }} /></Field>
+      <Field label="Descripción"><TextInput value={f.descripcion || ""} onChange={(e) => setF({ ...f, descripcion: e.target.value })} style={{ marginBottom: 16, width: "100%" }} /></Field>
+
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Datos bancarios del proveedor</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 16 }}>
+        <Field label="Proveedor">{txt("proveedor")}</Field>
+        <Field label="Proveedor ASPEL-SAE">{txt("proveedor_sae")}</Field>
+        <Field label="Banco">{txt("banco")}</Field>
+        <Field label="Sucursal">{txt("sucursal")}</Field>
+        <Field label="Cuenta bancaria">{txt("cuenta")}</Field>
+        <Field label="Cuenta CLABE">{txt("clabe")}</Field>
+        <Field label="Referencia bancaria">{txt("referencia_bancaria")}</Field>
+        <Field label="Referencia de pago">{txt("referencia_pago")}</Field>
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>
+        Desglose fiscal — números sueltos, no se recalculan solos
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
+        <Field label="Precio unitario">{num("precio_unitario")}</Field>
+        <Field label="Subtotal">{num("subtotal")}</Field>
+        <Field label="IVA">{num("iva")}</Field>
+        <Field label="Retención ISR">{num("ret_isr")}</Field>
+        <Field label="Retención IVA">{num("ret_iva")}</Field>
+        <Field label="Descuento">{num("descuento")}</Field>
+        <Field label="Total">{num("total")}</Field>
+        <Field label="% de pago">{num("pct_pago")}</Field>
+        <Field label="Total a pagar">{num("total_a_pagar")}</Field>
+      </div>
+      <Field label="Observaciones"><TextInput value={f.observaciones || ""} onChange={(e) => setF({ ...f, observaciones: e.target.value })} style={{ marginBottom: 16, width: "100%" }} /></Field>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button type="button" onClick={() => setFormato("pdf")}
+            style={{ padding: "6px 12px", borderRadius: 6, border: `1px solid ${T.border}`, cursor: "pointer",
+                     background: formato === "pdf" ? T.accent : "transparent", color: formato === "pdf" ? "#FFF" : T.textDim }}>
+            PDF
+          </button>
+          <button type="button" onClick={() => setFormato("excel")}
+            style={{ padding: "6px 12px", borderRadius: 6, border: `1px solid ${T.border}`, cursor: "pointer",
+                     background: formato === "excel" ? T.accent : "transparent", color: formato === "excel" ? "#FFF" : T.textDim }}>
+            Excel
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+          <Button onClick={guardar} disabled={guardando}>
+            {guardando ? "Guardando…" : `Guardar como revisión ${(solicitud.revision || 1) + 1}`}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Historial de Solicitudes de Pago generadas. Muestra la revisión VIGENTE
+ * de cada folio (la de mayor número); las anteriores quedan disponibles al
+ * expandir, nunca se borran — es evidencia de lo que se le envió a Pagos en
+ * cada momento, igual que los reportes oficiales.
+ */
+function SolicitudesPagoListaPanel({ unidad, session }) {
+  const [abierto, setAbierto] = useState(false);
+  const [filas, setFilas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [expandido, setExpandido] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const [recarga, setRecarga] = useState(0);
+
+  useEffect(() => {
+    if (!abierto) return;
+    let vivo = true;
+    (async () => {
+      setCargando(true);
+      const { data } = await supabase.from("solicitudes_pago").select("*")
+        .eq("compania", unidad).order("folio", { ascending: false }).order("revision", { ascending: false });
+      if (!vivo) return;
+      setFilas(data || []);
+      setCargando(false);
+    })();
+    return () => { vivo = false; };
+  }, [unidad, abierto, recarga]);
+
+  // Solo la revisión de mayor número por folio, para la lista principal.
+  const porFolio = {};
+  filas.forEach((s) => { if (!porFolio[s.folio] || s.revision > porFolio[s.folio].revision) porFolio[s.folio] = s; });
+  const vigentes = Object.values(porFolio).sort((a, b) => b.folio - a.folio);
+  const historialDe = (folio) => filas.filter((s) => s.folio === folio).sort((a, b) => b.revision - a.revision);
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <Button variant={abierto ? "primary" : "ghost"} onClick={() => setAbierto(!abierto)}>
+        Solicitudes de Pago generadas {abierto ? "▲" : "▼"}
+      </Button>
+
+      {abierto && (
+        <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 14, marginTop: 10 }}>
+          {cargando ? (
+            <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
+          ) : !vigentes.length ? (
+            <div style={{ fontSize: 12.5, color: T.textFaint }}>Todavía no se ha generado ninguna Solicitud de Pago en {unidad}.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${T.borderSoft}` }}>
+                  <th style={{ ...tdStyle, textAlign: "left" }}>Folio</th>
+                  <th style={{ ...tdStyle, textAlign: "left" }}>Fecha</th>
+                  <th style={{ ...tdStyle, textAlign: "left" }}>Proveedor</th>
+                  <th style={{ ...tdStyle, textAlign: "left" }}>Proyecto</th>
+                  <th style={{ ...tdStyle, textAlign: "right" }}>A pagar</th>
+                  <th style={{ ...tdStyle, textAlign: "center" }}>Revisión</th>
+                  <th style={{ ...tdStyle, textAlign: "right" }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vigentes.map((s) => (
+                  <React.Fragment key={s.folio}>
+                    <tr style={{ borderTop: `1px solid ${T.borderSoft}` }}>
+                      <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{s.folio}</td>
+                      <td style={tdStyle}>{s.fecha_elaboracion}</td>
+                      <td style={tdStyle}>{s.proveedor || "—"}</td>
+                      <td style={tdStyle}>{s.proyecto || "—"}</td>
+                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(s.total_a_pagar, s.moneda === "Dólares" ? "USD" : "MXP")}</td>
+                      <td style={{ ...tdStyle, textAlign: "center" }}>
+                        {historialDe(s.folio).length > 1 ? (
+                          <button type="button" onClick={() => setExpandido(expandido === s.folio ? null : s.folio)}
+                            style={{ background: "transparent", border: "none", color: T.accent, cursor: "pointer", fontSize: 11.5 }}>
+                            {s.revision} ({historialDe(s.folio).length}) {expandido === s.folio ? "▲" : "▼"}
+                          </button>
+                        ) : s.revision}
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: "right" }}>
+                        <Button variant="ghost" onClick={() => setEditando(s)}>Editar</Button>
+                        <Button variant="ghost" onClick={() => generarPdfSPP(s)}>PDF</Button>
+                        <Button variant="ghost" onClick={() => generarExcelSPP(s)}>Excel</Button>
+                      </td>
+                    </tr>
+                    {expandido === s.folio && historialDe(s.folio).slice(1).map((rev) => (
+                      <tr key={rev.id} style={{ background: T.panel }}>
+                        <td style={tdStyle}></td>
+                        <td style={{ ...tdStyle, color: T.textFaint }} colSpan={4}>
+                          Revisión {rev.revision} — {formatFechaHora(rev.created_at)}
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, color: T.textFaint }}>{money(rev.total_a_pagar, rev.moneda === "Dólares" ? "USD" : "MXP")}</td>
+                        <td style={{ ...tdStyle, textAlign: "right" }}>
+                          <Button variant="ghost" onClick={() => generarPdfSPP(rev)}>PDF</Button>
+                          <Button variant="ghost" onClick={() => generarExcelSPP(rev)}>Excel</Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {editando && (
+        <EditarSolicitudPagoModal
+          solicitud={editando}
+          unidad={unidad}
+          session={session}
+          onClose={() => setEditando(null)}
+          onGuardado={() => setRecarga((x) => x + 1)}
+        />
+      )}
+    </div>
   );
 }
 
@@ -7326,6 +7591,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         }
       >
         <ImportadorSheetsPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} transaccionesApi={transaccionesApi} />
+        <SolicitudesPagoListaPanel unidad={unidad} session={session} />
         <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
           {/* Fila 1 — qué transacciones se ven. Fila 2 — cómo se ven las que
               ya quedaron. Antes vivían once controles en una sola fila que

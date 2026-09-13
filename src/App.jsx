@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.12.2";
+const APP_VERSION = "2.13.0";
 const CHANGELOG = [
+  { v: "2.13.0", desc: "El importador de Google Sheets soporta ahora varias hojas por compania -- ISE necesitaba dos, una por zona. Catalogo gana una lista editable de hojas (etiqueta libre + ID), en vez de un solo campo. El boton Buscar filas nuevas las lee TODAS juntas en una sola pasada: si una hoja falla (permiso, URL mal puesta), las demas no se bloquean por eso, se avisa cual fallo y se sigue con el resto. Un folio repetido ahora se detecta tambien si aparece en DOS hojas distintas, no solo dentro de la misma. Procesado se marca por hoja de origen, respetando que la columna puede estar en una posicion distinta en cada una. Requiere 28-multiples-hojas-por-compania.sql, que migra el ID que ya tenias configurado para que no se pierda" },
   { v: "2.12.2", desc: "El folio de la Solicitud de Pago lleva ahora la revision: ISE-4-1 en el encabezado del PDF, 4-1 en la fila Folio del Excel, y ambos nombres de archivo (SPP ISE-4-1 - Proveedor.pdf). Antes dos revisiones del mismo folio se veian identicas en pantalla y en la carpeta de descargas, sin forma de distinguir a simple vista cual era la vigente" },
   { v: "2.12.1", desc: "Se quita Referencia Bancaria del PDF y Excel de la Solicitud de Pago -- casi siempre salia vacia y no se estaba usando. El campo sigue existiendo en Proveedores y en el registro guardado, por si algun dia hace falta; solo se dejo de imprimir en los dos documentos. En el PDF, Sucursal bancaria pasa a su propio renglon en vez de compartirlo con Referencia bancaria" },
   { v: "2.12.0", desc: "Nuevo panel Solicitudes de Pago generadas en Transacciones: historial de cada SPP emitida, con Editar para corregir cualquier campo -- incluidos banco, cuenta, CLABE y proveedor, que antes ni siquiera eran editables porque se derivaban en vivo del catalogo. Editar NO sobrescribe: guarda una fila NUEVA con el MISMO folio y una revision mayor, igual que los reportes oficiales -- el folio se conserva porque Pagos y el proveedor ya lo conocen, y el registro anterior queda como historial consultable, con quien y cuando via created_by/created_at. El desglose fiscal en la edicion son numeros sueltos editables, no se recalculan solos: es una herramienta para corregir un error puntual, no para rehacer el calculo. Requiere 26-revisiones-solicitudes-pago.sql" },
@@ -6587,13 +6588,14 @@ function cruzarCatalogoPago(valor, catalogo) {
  */
 function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccionesApi }) {
   const [abierto, setAbierto] = useState(false);
-  const [sheetId, setSheetId] = useState(null);
+  const [hojas, setHojas] = useState([]);
   const [cargandoConfig, setCargandoConfig] = useState(true);
   const [gsiListo, setGsiListo] = useState(!!window.google?.accounts?.oauth2);
   const [token, setToken] = useState(null);
   const [conectando, setConectando] = useState(false);
   const [buscando, setBuscando] = useState(false);
-  const [preview, setPreview] = useState(null); // { importables: [], noImportables: [], colProcesadoIdx }
+  const [preview, setPreview] = useState(null); // { nuevas, yaExistian, duplicadasEnHoja, noImportables }
+  const [erroresHojas, setErroresHojas] = useState([]); // hojas que fallaron al leer, sin bloquear las demás
   const [importando, setImportando] = useState(false);
   const [resultado, setResultado] = useState(null);
 
@@ -6601,11 +6603,12 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
     let vivo = true;
     (async () => {
       setCargandoConfig(true);
-      const { data } = await supabase.from("config_companias").select("google_sheet_id").eq("compania", unidad).maybeSingle();
+      const { data } = await supabase.from("sheets_importacion_transacciones")
+        .select("*").eq("compania", unidad).eq("activo", true).order("etiqueta");
       if (!vivo) return;
-      setSheetId(data?.google_sheet_id || null);
+      setHojas(data || []);
       setCargandoConfig(false);
-      setToken(null); setPreview(null); setResultado(null); // cambiar de compañía obliga a reconectar y rebuscar
+      setToken(null); setPreview(null); setResultado(null); setErroresHojas([]); // cambiar de compañía obliga a reconectar y rebuscar
     })();
     return () => { vivo = false; };
   }, [unidad]);
@@ -6634,107 +6637,137 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
     client.requestAccessToken();
   };
 
+  /**
+   * Lee UNA hoja y devuelve sus filas ya clasificadas. Cada fila importable
+   * lleva consigo la etiqueta, el id de la hoja y el índice de su columna
+   * "Procesado" —puede estar en una posición distinta en cada hoja— para
+   * poder marcarla de vuelta en el lugar correcto después.
+   */
+  const leerHoja = async (hoja) => {
+    const resp = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${hoja.google_sheet_id}/values/A:Z`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (resp.status === 401) { setToken(null); throw new Error("La sesión con Google expiró — conéctate de nuevo."); }
+    if (!resp.ok) {
+      let detalle = "";
+      try { detalle = (await resp.json())?.error?.message || ""; } catch { /* el cuerpo no era JSON */ }
+      console.error("Sheets API —", hoja.etiqueta, hoja.google_sheet_id, "— respuesta:", resp.status, detalle);
+      throw new Error(`Google respondió con error ${resp.status}${detalle ? `: ${detalle}` : ""}`);
+    }
+    const data = await resp.json();
+    const filas = data.values || [];
+    if (!filas.length) return { importables: [], noImportables: [] };
+
+    const encabezados = filas[0].map((h) => (h || "").trim());
+    const idx = (nombre) => encabezados.findIndex((h) => h.toLowerCase() === nombre.toLowerCase());
+    const col = {
+      fechaPago: idx("Fecha Pago"), compania: idx("Compañía"), cnt: idx("Cnt"), zona: idx("Zona"),
+      solicitante: idx("Solicitante"), proyecto: idx("Proyecto"), area: idx("Área"), smi: idx("SMI"),
+      idProvSae: idx("Id Prov SAE"), folioCompraSae: idx("Folio Compra SAE"), folioFactura: idx("Folio Factura"),
+      formaPago: idx("Forma de Pago"), metodoPago: idx("Método de Pago"), proveedor: idx("Proveedor"),
+      concepto: idx("Concepto"), banco: idx("Banco"), clabe: idx("CLABE"), refPago: idx("Ref Pago"),
+      importe: idx("Importe"), moneda: idx("Moneda"), procesado: idx("Procesado"),
+    };
+    if (col.procesado === -1) throw new Error('No se encontró la columna "Procesado" en la hoja — sin ella no se puede saber qué filas ya se importaron.');
+    if (col.importe === -1 || col.fechaPago === -1) throw new Error('Faltan columnas esenciales en la hoja ("Importe" y/o "Fecha Pago").');
+
+    const dato = (row, i) => (i >= 0 && row[i] != null) ? String(row[i]).trim() : "";
+
+    const importables = [];
+    const noImportables = [];
+    filas.slice(1).forEach((row, i) => {
+      const numeroFila = i + 2; // la fila 1 es encabezado
+      if (SHEETS_PROCESADO_VALORES.test(dato(row, col.procesado))) return; // ya importada antes
+
+      const companiaHoja = dato(row, col.compania);
+      const idSae = dato(row, col.idProvSae);
+      const clabeHoja = dato(row, col.clabe);
+      const bancoHoja = dato(row, col.banco);
+      const fechaPago = fechaSheetAIso(dato(row, col.fechaPago));
+      const importe = limpiarImporteSheet(dato(row, col.importe));
+
+      if (!fechaPago || !importe) {
+        noImportables.push({ numeroFila, hoja: hoja.etiqueta, motivo: !fechaPago ? "Sin Fecha Pago" : "Importe vacío o en cero" });
+        return;
+      }
+
+      const proveedorMatch = idSae
+        ? proveedoresApi.rows.find((p) => p.unidad === unidad && String(p.id_sae || "").trim() === idSae)
+        : null;
+      const cuentaMatch = (proveedorMatch && clabeHoja)
+        ? cuentasApi.rows.find((c) => c.proveedor_id === proveedorMatch.id && (c.clabe || "").trim() === clabeHoja)
+        : null;
+      const formaPago = cruzarCatalogoPago(dato(row, col.formaPago), FORMAS_PAGO);
+      const metodoPago = cruzarCatalogoPago(dato(row, col.metodoPago), METODOS_PAGO);
+
+      const avisos = [];
+      if (companiaHoja && companiaHoja.toUpperCase() !== unidad) avisos.push(`La hoja dice "${companiaHoja}" — se está importando como ${unidad}`);
+      if (idSae && !proveedorMatch) avisos.push(`Proveedor SAE ${idSae} no está dado de alta en ${unidad}`);
+      if (clabeHoja && !cuentaMatch) avisos.push("La CLABE no coincide con ninguna cuenta del proveedor en el catálogo");
+      if (!formaPago.reconocido) avisos.push(`Forma de Pago "${dato(row, col.formaPago)}" no reconocida`);
+      if (!metodoPago.reconocido) avisos.push(`Método de Pago "${dato(row, col.metodoPago)}" no reconocida`);
+
+      importables.push({
+        numeroFila, avisos,
+        hoja: hoja.etiqueta, sheetId: hoja.google_sheet_id, colProcesadoIdx: col.procesado,
+        registro: {
+          id: uid(), unidad_detectada: unidad, dia: fechaPago,
+          folio_transaccion: dato(row, col.cnt) || null,
+          zona: dato(row, col.zona), solicitante: dato(row, col.solicitante),
+          proyecto: dato(row, col.proyecto), area: dato(row, col.area), smi: dato(row, col.smi),
+          folio_compra_sae: dato(row, col.folioCompraSae) || null, folio_factura: dato(row, col.folioFactura) || null,
+          forma_pago: formaPago.valor, metodo_pago: metodoPago.valor,
+          proveedor: proveedorMatch?.nombre || dato(row, col.proveedor),
+          proveedor_id: proveedorMatch?.id || null,
+          concepto_detallado: dato(row, col.concepto),
+          banco_importado: bancoHoja || null, clabe_importada: clabeHoja || null,
+          cuenta_id: cuentaMatch?.id || null,
+          referencia_pago: dato(row, col.refPago),
+          importe, moneda: (dato(row, col.moneda) || "MXP").toUpperCase(),
+          // Sin partida: vincularla a mano es la parte que sí necesita
+          // criterio humano, igual que con cualquier import masivo en esta
+          // app. Queda en "Sin vincular" hasta que alguien la resuelva.
+          partida_id: null, categoria: "", status: "No Pagado", fecha_pago: null,
+        },
+      });
+    });
+
+    return { importables, noImportables };
+  };
+
   const buscarFilasNuevas = async () => {
     setBuscando(true);
     setPreview(null);
     setResultado(null);
+    setErroresHojas([]);
     try {
-      const resp = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A:Z`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (resp.status === 401) { setToken(null); throw new Error("La sesión con Google expiró — conéctate de nuevo."); }
-      if (!resp.ok) {
-        // Google manda el detalle real en el cuerpo — mostrar solo el
-        // número de estado no dice nada de POR QUÉ falló.
-        let detalle = "";
-        try { detalle = (await resp.json())?.error?.message || ""; } catch { /* el cuerpo no era JSON */ }
-        console.error("Sheets API — ID usado:", sheetId, "— respuesta:", resp.status, detalle);
-        throw new Error(`Google respondió con error ${resp.status}${detalle ? `: ${detalle}` : ""}`);
-      }
-      const data = await resp.json();
-      const filas = data.values || [];
-      if (!filas.length) { setPreview({ importables: [], noImportables: [], colProcesadoIdx: -1 }); return; }
-
-      const encabezados = filas[0].map((h) => (h || "").trim());
-      const idx = (nombre) => encabezados.findIndex((h) => h.toLowerCase() === nombre.toLowerCase());
-      const col = {
-        fechaPago: idx("Fecha Pago"), compania: idx("Compañía"), cnt: idx("Cnt"), zona: idx("Zona"),
-        solicitante: idx("Solicitante"), proyecto: idx("Proyecto"), area: idx("Área"), smi: idx("SMI"),
-        idProvSae: idx("Id Prov SAE"), folioCompraSae: idx("Folio Compra SAE"), folioFactura: idx("Folio Factura"),
-        formaPago: idx("Forma de Pago"), metodoPago: idx("Método de Pago"), proveedor: idx("Proveedor"),
-        concepto: idx("Concepto"), banco: idx("Banco"), clabe: idx("CLABE"), refPago: idx("Ref Pago"),
-        importe: idx("Importe"), moneda: idx("Moneda"), procesado: idx("Procesado"),
-      };
-      if (col.procesado === -1) throw new Error('No se encontró la columna "Procesado" en la hoja — sin ella no se puede saber qué filas ya se importaron.');
-      if (col.importe === -1 || col.fechaPago === -1) throw new Error('Faltan columnas esenciales en la hoja ("Importe" y/o "Fecha Pago").');
-
-      const dato = (row, i) => (i >= 0 && row[i] != null) ? String(row[i]).trim() : "";
-
-      const importables = [];
-      const noImportables = [];
-      filas.slice(1).forEach((row, i) => {
-        const numeroFila = i + 2; // la fila 1 es encabezado
-        if (SHEETS_PROCESADO_VALORES.test(dato(row, col.procesado))) return; // ya importada antes
-
-        const companiaHoja = dato(row, col.compania);
-        const idSae = dato(row, col.idProvSae);
-        const clabeHoja = dato(row, col.clabe);
-        const bancoHoja = dato(row, col.banco);
-        const fechaPago = fechaSheetAIso(dato(row, col.fechaPago));
-        const importe = limpiarImporteSheet(dato(row, col.importe));
-
-        if (!fechaPago || !importe) {
-          noImportables.push({ numeroFila, motivo: !fechaPago ? "Sin Fecha Pago" : "Importe vacío o en cero" });
-          return;
+      /* Cada hoja se lee por separado: si una falla (una URL mal puesta, un
+         permiso pendiente), las demás no se bloquean por eso — se avisa cuál
+         falló y se sigue con las que sí respondieron. */
+      const resultadosPorHoja = [];
+      const errores = [];
+      for (const hoja of hojas) {
+        try {
+          resultadosPorHoja.push(await leerHoja(hoja));
+        } catch (err) {
+          errores.push({ etiqueta: hoja.etiqueta, mensaje: err.message || String(err) });
         }
+      }
+      setErroresHojas(errores);
+      if (!resultadosPorHoja.length) {
+        if (!errores.length) setPreview({ nuevas: [], yaExistian: [], duplicadasEnHoja: [], noImportables: [] });
+        return;
+      }
 
-        const proveedorMatch = idSae
-          ? proveedoresApi.rows.find((p) => p.unidad === unidad && String(p.id_sae || "").trim() === idSae)
-          : null;
-        const cuentaMatch = (proveedorMatch && clabeHoja)
-          ? cuentasApi.rows.find((c) => c.proveedor_id === proveedorMatch.id && (c.clabe || "").trim() === clabeHoja)
-          : null;
-        const formaPago = cruzarCatalogoPago(dato(row, col.formaPago), FORMAS_PAGO);
-        const metodoPago = cruzarCatalogoPago(dato(row, col.metodoPago), METODOS_PAGO);
-
-        const avisos = [];
-        if (companiaHoja && companiaHoja.toUpperCase() !== unidad) avisos.push(`La hoja dice "${companiaHoja}" — se está importando como ${unidad}`);
-        if (idSae && !proveedorMatch) avisos.push(`Proveedor SAE ${idSae} no está dado de alta en ${unidad}`);
-        if (clabeHoja && !cuentaMatch) avisos.push("La CLABE no coincide con ninguna cuenta del proveedor en el catálogo");
-        if (!formaPago.reconocido) avisos.push(`Forma de Pago "${dato(row, col.formaPago)}" no reconocida`);
-        if (!metodoPago.reconocido) avisos.push(`Método de Pago "${dato(row, col.metodoPago)}" no reconocida`);
-
-        importables.push({
-          numeroFila, avisos,
-          registro: {
-            id: uid(), unidad_detectada: unidad, dia: fechaPago,
-            folio_transaccion: dato(row, col.cnt) || null,
-            zona: dato(row, col.zona), solicitante: dato(row, col.solicitante),
-            proyecto: dato(row, col.proyecto), area: dato(row, col.area), smi: dato(row, col.smi),
-            folio_compra_sae: dato(row, col.folioCompraSae) || null, folio_factura: dato(row, col.folioFactura) || null,
-            forma_pago: formaPago.valor, metodo_pago: metodoPago.valor,
-            proveedor: proveedorMatch?.nombre || dato(row, col.proveedor),
-            proveedor_id: proveedorMatch?.id || null,
-            concepto_detallado: dato(row, col.concepto),
-            banco_importado: bancoHoja || null, clabe_importada: clabeHoja || null,
-            cuenta_id: cuentaMatch?.id || null,
-            referencia_pago: dato(row, col.refPago),
-            importe, moneda: (dato(row, col.moneda) || "MXP").toUpperCase(),
-            // Sin partida: vincularla a mano es la parte que sí necesita
-            // criterio humano, igual que con cualquier import masivo en esta
-            // app. Queda en "Sin vincular" hasta que alguien la resuelva.
-            partida_id: null, categoria: "", status: "No Pagado", fecha_pago: null,
-          },
-        });
-      });
+      const importables = resultadosPorHoja.flatMap((r) => r.importables);
+      const noImportables = resultadosPorHoja.flatMap((r) => r.noImportables);
 
       /* Antes de armar el resultado final: si un intento anterior se cayó a
-         medio camino (por ejemplo, el bug de fechas de la v2.10.2), algunas
-         de estas filas pueden YA estar guardadas —nunca se marcó Procesado
-         porque el proceso completo no terminó con éxito—. Insertarlas de
-         nuevo chocaría contra folio_transaccion, que es único. Se revisan
-         contra la base ANTES de insertar, no se descubre por el error. */
+         medio camino, algunas de estas filas pueden YA estar guardadas —nunca
+         se marcó Procesado porque el proceso completo no terminó con éxito—.
+         Se revisan contra la base ANTES de insertar, no se descubre por el
+         error de folio_transaccion duplicado. */
       const foliosDelLote = [...new Set(importables.map((f) => f.registro.folio_transaccion).filter(Boolean))];
       let foliosYaEnBase = new Set();
       if (foliosDelLote.length) {
@@ -6745,9 +6778,9 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
         foliosYaEnBase = new Set((existentes || []).map((r) => r.folio_transaccion));
       }
 
-      // Dos filas de la MISMA hoja con el mismo folio: no es un choque contra
-      // la base, es un dato repetido en el origen. Se separan para que la
-      // persona lo revise en vez de importar una y perder la otra en silencio.
+      // El conteo es sobre el conjunto COMBINADO de todas las hojas: un folio
+      // repetido entre dos hojas de la misma compañía es tan problemático
+      // como uno repetido dentro de la misma hoja.
       const conteoFolios = {};
       importables.forEach((f) => {
         const fo = f.registro.folio_transaccion;
@@ -6762,9 +6795,9 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
         nuevas.push(f);
       });
 
-      setPreview({ nuevas, yaExistian, duplicadasEnHoja, noImportables, colProcesadoIdx: col.procesado });
+      setPreview({ nuevas, yaExistian, duplicadasEnHoja, noImportables });
     } catch (err) {
-      alert("No se pudo leer la hoja: " + (err.message || err));
+      alert("No se pudo completar la búsqueda: " + (err.message || err));
     } finally {
       setBuscando(false);
     }
@@ -6779,26 +6812,39 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
     setImportando(true);
     try {
       if (preview.nuevas.length) await transaccionesApi.bulkInsert(preview.nuevas.map((f) => f.registro));
-      /* "Procesado" se marca DESPUÉS de guardar con éxito, para las nuevas
-         Y para las que ya existían —ambas quedan resueltas—, pero NO para
-         las duplicadas dentro de la propia hoja: esas necesitan que alguien
-         las revise, y marcarlas las escondería para siempre. */
+
+      /* "Procesado" se marca DESPUÉS de guardar con éxito, para las nuevas Y
+         para las que ya existían —ambas quedan resueltas—, pero NO para las
+         duplicadas dentro de la propia hoja. Se agrupan por hoja de origen:
+         cada spreadsheet necesita su propia llamada, no se puede mezclar en
+         un solo batchUpdate. */
       const resueltas = [...preview.nuevas, ...preview.yaExistian];
-      const letra = columnaLetra(preview.colProcesadoIdx);
-      const dataUpdate = resueltas.map((f) => ({ range: `${letra}${f.numeroFila}`, values: [["TRUE"]] }));
-      const resp = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
-        {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ valueInputOption: "RAW", data: dataUpdate }),
-        }
-      );
+      const porHoja = new Map();
+      resueltas.forEach((f) => {
+        if (!porHoja.has(f.sheetId)) porHoja.set(f.sheetId, []);
+        porHoja.get(f.sheetId).push(f);
+      });
+
+      const fallosMarcado = [];
+      for (const [sheetId, filasDeEstaHoja] of porHoja) {
+        const letra = columnaLetra(filasDeEstaHoja[0].colProcesadoIdx);
+        const dataUpdate = filasDeEstaHoja.map((f) => ({ range: `${letra}${f.numeroFila}`, values: [["TRUE"]] }));
+        const resp = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ valueInputOption: "RAW", data: dataUpdate }),
+          }
+        );
+        if (!resp.ok) fallosMarcado.push(filasDeEstaHoja[0].hoja);
+      }
+
       const pendienteDuplicadas = preview.duplicadasEnHoja.length
-        ? ` ${preview.duplicadasEnHoja.length} fila(s) con folio repetido en la propia hoja se dejaron sin marcar — corrígelas ahí y vuelve a buscar.`
+        ? ` ${preview.duplicadasEnHoja.length} fila(s) con folio repetido se dejaron sin marcar — corrígelas en la hoja y vuelve a buscar.`
         : "";
-      if (!resp.ok) {
-        setResultado({ tono: "amber", texto: `Se resolvieron ${resueltas.length} transacción(es), pero no se pudo marcar "Procesado" en la hoja (error ${resp.status}). Márcalas a mano ahí para no volver a importarlas.${pendienteDuplicadas}` });
+      if (fallosMarcado.length) {
+        setResultado({ tono: "amber", texto: `Se resolvieron ${resueltas.length} transacción(es), pero no se pudo marcar "Procesado" en: ${fallosMarcado.join(", ")}. Márcalas a mano ahí para no volver a importarlas.${pendienteDuplicadas}` });
       } else {
         setResultado({ tono: "teal", texto: `${preview.nuevas.length} transacción(es) nuevas importadas${preview.yaExistian.length ? `, ${preview.yaExistian.length} que ya existían marcadas como Procesado` : ""}.${pendienteDuplicadas}` });
       }
@@ -6820,20 +6866,34 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
 
       {abierto && (
         <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 14, marginTop: 10 }}>
-          {!sheetId ? (
+          {!hojas.length ? (
             <div style={{ fontSize: 12.5, color: T.textDim }}>
-              {unidad} todavía no tiene una hoja configurada. Ve a Catálogo → Solicitudes de Pago y captura el ID
-              de la hoja de Google Sheets al final del panel.
+              {unidad} todavía no tiene ninguna hoja configurada. Ve a Catálogo → Solicitudes de Pago y captura
+              al menos una al final del panel — puede haber varias, por ejemplo una por zona.
             </div>
           ) : !token ? (
-            <Button onClick={conectar} disabled={conectando || !gsiListo}>
-              {conectando ? "Conectando…" : "Conectar con Google"}
-            </Button>
+            <>
+              <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 8 }}>
+                Hojas configuradas para {unidad}: {hojas.map((h) => h.etiqueta).join(", ")}
+              </div>
+              <Button onClick={conectar} disabled={conectando || !gsiListo}>
+                {conectando ? "Conectando…" : "Conectar con Google"}
+              </Button>
+            </>
           ) : (
             <>
               <Button onClick={buscarFilasNuevas} disabled={buscando}>
-                {buscando ? "Buscando…" : "Buscar filas nuevas"}
+                {buscando ? "Buscando…" : `Buscar filas nuevas (${hojas.length} hoja${hojas.length > 1 ? "s" : ""})`}
               </Button>
+
+              {erroresHojas.length > 0 && (
+                <div style={{ marginTop: 10, fontSize: 12, color: T.red }}>
+                  {erroresHojas.map((e) => (
+                    <div key={e.etiqueta}>"{e.etiqueta}": {e.mensaje}</div>
+                  ))}
+                  {preview && " Las demás hojas sí se buscaron con normalidad."}
+                </div>
+              )}
 
               {resultado && (
                 <div style={{ marginTop: 10, fontSize: 12, color: resultado.tono === "teal" ? T.teal : T.amber }}>
@@ -6844,28 +6904,28 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
               {preview && (
                 <div style={{ marginTop: 14 }}>
                   {!preview.nuevas.length && !preview.yaExistian.length && !preview.duplicadasEnHoja.length && !preview.noImportables.length && (
-                    <div style={{ fontSize: 12.5, color: T.textFaint }}>No hay filas nuevas — todo lo de la hoja ya está marcado como Procesado.</div>
+                    <div style={{ fontSize: 12.5, color: T.textFaint }}>No hay filas nuevas — todo lo de las hojas ya está marcado como Procesado.</div>
                   )}
 
                   {preview.noImportables.length > 0 && (
                     <div style={{ fontSize: 11.5, color: T.amber, marginBottom: 10 }}>
-                      {preview.noImportables.length} fila(s) sin Fecha Pago o Importe se omiten — corrígelas en la hoja
-                      y vuelve a buscar (fila{preview.noImportables.length > 1 ? "s" : ""} {preview.noImportables.map((n) => n.numeroFila).join(", ")}).
+                      {preview.noImportables.length} fila(s) sin Fecha Pago o Importe se omiten — corrígelas en su hoja
+                      y vuelve a buscar ({preview.noImportables.map((n) => `${n.hoja} fila ${n.numeroFila}`).join(", ")}).
                     </div>
                   )}
 
                   {preview.duplicadasEnHoja.length > 0 && (
                     <div style={{ fontSize: 11.5, color: T.red, marginBottom: 10 }}>
-                      {preview.duplicadasEnHoja.length} fila(s) repiten un folio dentro de la misma hoja —no se importan
-                      ni se marcan como Procesado, para no perder ninguna en silencio. Corrige el folio duplicado en la hoja
-                      y vuelve a buscar (fila{preview.duplicadasEnHoja.length > 1 ? "s" : ""} {preview.duplicadasEnHoja.map((n) => n.numeroFila).join(", ")}).
+                      {preview.duplicadasEnHoja.length} fila(s) repiten un folio —dentro de la misma hoja, o entre dos
+                      hojas distintas— no se importan ni se marcan como Procesado, para no perder ninguna en silencio.
+                      Corrige el folio duplicado y vuelve a buscar ({preview.duplicadasEnHoja.map((n) => `${n.hoja} fila ${n.numeroFila}`).join(", ")}).
                     </div>
                   )}
 
                   {preview.yaExistian.length > 0 && (
                     <div style={{ fontSize: 11.5, color: T.textDim, marginBottom: 10 }}>
                       {preview.yaExistian.length} fila(s) ya estaban guardadas —probablemente de un intento anterior que no
-                      terminó de marcar Procesado— no se van a duplicar, solo se marcan como Procesado en la hoja.
+                      terminó de marcar Procesado— no se van a duplicar, solo se marcan como Procesado en su hoja.
                     </div>
                   )}
 
@@ -6879,6 +6939,7 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
                         <thead>
                           <tr style={{ background: T.panel, position: "sticky", top: 0 }}>
+                            <th style={{ ...tdStyle, textAlign: "left" }}>Hoja</th>
                             <th style={{ ...tdStyle, textAlign: "left" }}>Día</th>
                             <th style={{ ...tdStyle, textAlign: "left" }}>Proveedor</th>
                             <th style={{ ...tdStyle, textAlign: "left" }}>Concepto</th>
@@ -6888,7 +6949,8 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
                         </thead>
                         <tbody>
                           {preview.nuevas.map((f) => (
-                            <tr key={f.numeroFila} style={{ borderTop: `1px solid ${T.borderSoft}` }}>
+                            <tr key={`${f.sheetId}-${f.numeroFila}`} style={{ borderTop: `1px solid ${T.borderSoft}` }}>
+                              <td style={{ ...tdStyle, color: T.textFaint }}>{f.hoja}</td>
                               <td style={tdStyle}>{f.registro.dia}</td>
                               <td style={tdStyle}>{f.registro.proveedor || "—"}</td>
                               <td style={tdStyle}>{f.registro.concepto_detallado || "—"}</td>
@@ -9637,7 +9699,7 @@ function ConfigCompaniaPanel({ unidad }) {
       const { data: max } = await supabase.from("solicitudes_pago").select("folio")
         .eq("compania", unidad).order("folio", { ascending: false }).limit(1);
       if (!vivo) return;
-      setCfg(data || { compania: unidad, spp_ultimo: 0, spp_responsable: "", spp_lugar_adquisicion: "", google_sheet_id: "" });
+      setCfg(data || { compania: unidad, spp_ultimo: 0, spp_responsable: "", spp_lugar_adquisicion: "" });
       setUltimoEmitido((max && max[0]?.folio) || 0);
     })();
     return () => { vivo = false; };
@@ -9654,7 +9716,6 @@ function ConfigCompaniaPanel({ unidad }) {
         spp_ultimo: Number(cfg.spp_ultimo) || 0,
         spp_responsable: cfg.spp_responsable || "",
         spp_lugar_adquisicion: cfg.spp_lugar_adquisicion || "",
-        google_sheet_id: (cfg.google_sheet_id || "").trim(),
         updated_at: new Date().toISOString(),
       });
       if (error) throw error;
@@ -9700,21 +9761,85 @@ function ConfigCompaniaPanel({ unidad }) {
         {guardando ? "Guardando…" : "Guardar"}
       </Button>
 
-      <div style={{ borderTop: `1px solid ${T.borderSoft}`, marginTop: 20, paddingTop: 16 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Importador de Transacciones (Google Sheets)</div>
-        <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 10 }}>
-          La hoja de origen de {unidad} — puedes pegar el ID o la URL completa, se extrae solo.
-        </div>
-        <Field label="ID de la hoja">
-          <TextInput
-            value={cfg.google_sheet_id || ""}
-            onChange={(e) => setCfg({ ...cfg, google_sheet_id: extraerSheetId(e.target.value) })}
-            placeholder="1xQCT022JBX1KpO5MzzLbQmvhj8dEovuZ"
-            style={{ width: 420, fontFamily: T.fontMono }}
-          />
-        </Field>
-      </div>
+      <ConfigHojasImportacion unidad={unidad} />
     </Panel>
+  );
+}
+
+/**
+ * Lista editable de hojas de Google Sheets configuradas como origen del
+ * importador de Transacciones. Una compañía puede tener varias —ISE, por
+ * ejemplo, una por zona— cada una con su propia etiqueta libre para
+ * distinguirlas; el importador las lee todas juntas en una sola búsqueda.
+ */
+function ConfigHojasImportacion({ unidad }) {
+  const [hojas, setHojas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+
+  const cargar = async () => {
+    setCargando(true);
+    const { data } = await supabase.from("sheets_importacion_transacciones")
+      .select("*").eq("compania", unidad).order("created_at");
+    setHojas(data || []);
+    setCargando(false);
+  };
+  useEffect(() => { cargar(); }, [unidad]);
+
+  const agregar = async () => {
+    const { error } = await supabase.from("sheets_importacion_transacciones")
+      .insert({ compania: unidad, etiqueta: "Nueva hoja", google_sheet_id: "" });
+    if (error) { alert("No se pudo agregar: " + error.message); return; }
+    cargar();
+  };
+  const actualizar = async (id, cambios) => {
+    setHojas((prev) => prev.map((h) => (h.id === id ? { ...h, ...cambios } : h))); // respuesta inmediata al escribir
+    const { error } = await supabase.from("sheets_importacion_transacciones").update(cambios).eq("id", id);
+    if (error) alert("No se pudo guardar: " + error.message);
+  };
+  const eliminar = async (h) => {
+    if (!confirm(`¿Quitar "${h.etiqueta}" de las hojas de ${unidad}? Esto no borra nada de la hoja de Google, solo deja de leerla.`)) return;
+    const { error } = await supabase.from("sheets_importacion_transacciones").delete().eq("id", h.id);
+    if (error) { alert("No se pudo quitar: " + error.message); return; }
+    cargar();
+  };
+
+  return (
+    <div style={{ borderTop: `1px solid ${T.borderSoft}`, marginTop: 20, paddingTop: 16 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Importador de Transacciones (Google Sheets)</div>
+      <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 10 }}>
+        Las hojas de origen de {unidad} — puede haber más de una (por ejemplo, una por zona).
+        El importador las busca todas juntas. Puedes pegar el ID o la URL completa, se extrae solo.
+      </div>
+
+      {cargando ? (
+        <div style={{ fontSize: 12, color: T.textFaint }}>Cargando…</div>
+      ) : (
+        <>
+          {hojas.map((h) => (
+            <div key={h.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+              <TextInput
+                value={h.etiqueta}
+                onChange={(e) => actualizar(h.id, { etiqueta: e.target.value })}
+                placeholder="Etiqueta (ej. Poza Rica)"
+                style={{ width: 160 }}
+              />
+              <TextInput
+                value={h.google_sheet_id}
+                onChange={(e) => actualizar(h.id, { google_sheet_id: extraerSheetId(e.target.value) })}
+                placeholder="1xQCT022JBX1KpO5MzzLbQmvhj8dEovuZ"
+                style={{ width: 320, fontFamily: T.fontMono }}
+              />
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, color: T.textDim }}>
+                <input type="checkbox" checked={h.activo} onChange={(e) => actualizar(h.id, { activo: e.target.checked })} />
+                Activa
+              </label>
+              <IconButton icon="✕" label="Quitar esta hoja" tone={T.red} onClick={() => eliminar(h)} />
+            </div>
+          ))}
+          <Button variant="ghost" onClick={agregar}>+ Agregar hoja</Button>
+        </>
+      )}
+    </div>
   );
 }
 

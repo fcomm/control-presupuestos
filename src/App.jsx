@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.13.1";
+const APP_VERSION = "2.13.2";
 const CHANGELOG = [
+  { v: "2.13.2", desc: "Fix: el upsert con onConflict de la v2.13.1 tronaba con there is no unique or exclusion constraint matching -- el indice unico de folio_transaccion es PARCIAL (excluye nulos), y Supabase no puede apuntar su upsert a un indice parcial, solo a uno completo. Se cambia de estrategia por completo: en vez de un insert masivo o un upsert, las transacciones se insertan una por una. Si una choca (una carrera de tiempos real, no una falla del codigo), esa fila puntual se reporta con su folio exacto y las demas se guardan con normalidad -- ya no se pierde el lote completo por una sola coincidencia" },
   { v: "2.13.1", desc: "Fix: el importador de Google Sheets volvia a tronar con duplicate key value en folio_transaccion. La revision contra la base ANTES de mostrar la vista previa reduce el riesgo pero no lo elimina -- si pasa un rato entre Buscar y Resolver, o si el importador se corre casi al mismo tiempo dos veces, algo puede insertarse justo en medio. Ahora el guardado usa upsert con ignoreDuplicates en vez de un insert plano: si una fila puntual choca al momento de guardar, se omite sola sin tronar el lote completo. De paso, el error de Postgres ahora muestra el detalle exacto (que folio choco), no solo el mensaje generico" },
   { v: "2.13.0", desc: "El importador de Google Sheets soporta ahora varias hojas por compania -- ISE necesitaba dos, una por zona. Catalogo gana una lista editable de hojas (etiqueta libre + ID), en vez de un solo campo. El boton Buscar filas nuevas las lee TODAS juntas en una sola pasada: si una hoja falla (permiso, URL mal puesta), las demas no se bloquean por eso, se avisa cual fallo y se sigue con el resto. Un folio repetido ahora se detecta tambien si aparece en DOS hojas distintas, no solo dentro de la misma. Procesado se marca por hoja de origen, respetando que la columna puede estar en una posicion distinta en cada una. Requiere 28-multiples-hojas-por-compania.sql, que migra el ID que ya tenias configurado para que no se pierda" },
   { v: "2.12.2", desc: "El folio de la Solicitud de Pago lleva ahora la revision: ISE-4-1 en el encabezado del PDF, 4-1 en la fila Folio del Excel, y ambos nombres de archivo (SPP ISE-4-1 - Proveedor.pdf). Antes dos revisiones del mismo folio se veian identicas en pantalla y en la carpeta de descargas, sin forma de distinguir a simple vista cual era la vigente" },
@@ -6812,17 +6813,20 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
     if (!confirm(`Se van a resolver ${partes.join(" y ")}, en ${unidad}. Las nuevas quedan sin partida vinculada — "Sin vincular" para resolverlas a mano.`)) return;
     setImportando(true);
     try {
-      if (preview.nuevas.length) {
-        /* upsert con ignoreDuplicates en vez de un insert plano: revisar
-           contra la base ANTES de mostrar la vista previa reduce el choque,
-           pero no lo elimina —si pasa un rato entre "Buscar" y "Resolver", o
-           si alguien más corre el importador casi al mismo tiempo, algo pudo
-           insertarse justo en medio. Con esto, esa fila puntual se omite en
-           vez de tronar el lote completo por un choque que ya no depende de
-           lo que se revisó minutos antes. */
-        const { error: errInsert } = await supabase.from("transacciones")
-          .upsert(preview.nuevas.map((f) => f.registro), { onConflict: "folio_transaccion", ignoreDuplicates: true });
-        if (errInsert) throw errInsert;
+      /* Una fila a la vez, no un solo insert masivo: el índice único de
+         folio_transaccion es PARCIAL (excluye nulos), y Supabase no puede
+         apuntar su upsert/onConflict a un índice parcial —lo intenté y
+         truena con "no unique or exclusion constraint matching"—. Insertando
+         una por una, si UNA choca (una carrera de tiempos, alguien más
+         corriendo el importador casi al mismo tiempo), esa fila puntual se
+         reporta y las demás se guardan con normalidad; no se pierde el lote
+         completo por una sola coincidencia. */
+      const insertadasOk = [];
+      const fallidasPorColision = [];
+      for (const f of preview.nuevas) {
+        const { error: errFila } = await supabase.from("transacciones").insert(f.registro);
+        if (errFila) fallidasPorColision.push({ ...f, motivo: errFila.message });
+        else insertadasOk.push(f);
       }
 
       /* "Procesado" se marca DESPUÉS de guardar con éxito, para las nuevas Y
@@ -6830,7 +6834,7 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
          duplicadas dentro de la propia hoja. Se agrupan por hoja de origen:
          cada spreadsheet necesita su propia llamada, no se puede mezclar en
          un solo batchUpdate. */
-      const resueltas = [...preview.nuevas, ...preview.yaExistian];
+      const resueltas = [...insertadasOk, ...preview.yaExistian];
       const porHoja = new Map();
       resueltas.forEach((f) => {
         if (!porHoja.has(f.sheetId)) porHoja.set(f.sheetId, []);
@@ -6855,10 +6859,13 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
       const pendienteDuplicadas = preview.duplicadasEnHoja.length
         ? ` ${preview.duplicadasEnHoja.length} fila(s) con folio repetido se dejaron sin marcar — corrígelas en la hoja y vuelve a buscar.`
         : "";
+      const pendienteColision = fallidasPorColision.length
+        ? ` ${fallidasPorColision.length} fila(s) chocaron al guardar (${fallidasPorColision.map((f) => f.registro.folio_transaccion).join(", ")}) — probablemente alguien más las importó justo antes; no se marcan y van a volver a aparecer en la próxima búsqueda.`
+        : "";
       if (fallosMarcado.length) {
-        setResultado({ tono: "amber", texto: `Se resolvieron ${resueltas.length} transacción(es), pero no se pudo marcar "Procesado" en: ${fallosMarcado.join(", ")}. Márcalas a mano ahí para no volver a importarlas.${pendienteDuplicadas}` });
+        setResultado({ tono: "amber", texto: `Se resolvieron ${resueltas.length} transacción(es), pero no se pudo marcar "Procesado" en: ${fallosMarcado.join(", ")}. Márcalas a mano ahí para no volver a importarlas.${pendienteDuplicadas}${pendienteColision}` });
       } else {
-        setResultado({ tono: "teal", texto: `${preview.nuevas.length} transacción(es) nuevas importadas${preview.yaExistian.length ? `, ${preview.yaExistian.length} que ya existían marcadas como Procesado` : ""}.${pendienteDuplicadas}` });
+        setResultado({ tono: fallidasPorColision.length ? "amber" : "teal", texto: `${insertadasOk.length} transacción(es) nuevas importadas${preview.yaExistian.length ? `, ${preview.yaExistian.length} que ya existían marcadas como Procesado` : ""}.${pendienteDuplicadas}${pendienteColision}` });
       }
       setPreview(null);
     } catch (err) {

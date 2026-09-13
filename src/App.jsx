@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.13.3";
+const APP_VERSION = "2.13.4";
 const CHANGELOG = [
+  { v: "2.13.4", desc: "Fix real del reporte de Procesado: no era un bug al marcar la hoja, era que el guardado mismo fallaba con HTTP 409 y por diseno correcto una fila que no se guarda no se marca. La causa: el indice unico de folio_transaccion en la base es GLOBAL -- el mismo folio no puede existir en OSB, CTM o ISE a la vez -- pero la revision de ya existe? del importador solo comparaba contra transacciones de la MISMA compania. Si el folio ya existia en otra compania, se clasificaba como nueva y el insert chocaba contra el indice real. La revision ahora es global, igual que el indice" },
   { v: "2.13.3", desc: "Se agrega registro detallado (consola del navegador) al momento de marcar Procesado en la hoja: que columna y rangos exactos se mandan, y la respuesta completa de Google. La logica de esta parte se reviso a fondo y se ve correcta, pero el reporte de que Procesado no se actualiza necesita ver el payload real para diagnosticarlo con certeza en vez de seguir adivinando" },
   { v: "2.13.2", desc: "Fix: el upsert con onConflict de la v2.13.1 tronaba con there is no unique or exclusion constraint matching -- el indice unico de folio_transaccion es PARCIAL (excluye nulos), y Supabase no puede apuntar su upsert a un indice parcial, solo a uno completo. Se cambia de estrategia por completo: en vez de un insert masivo o un upsert, las transacciones se insertan una por una. Si una choca (una carrera de tiempos real, no una falla del codigo), esa fila puntual se reporta con su folio exacto y las demas se guardan con normalidad -- ya no se pierde el lote completo por una sola coincidencia" },
   { v: "2.13.1", desc: "Fix: el importador de Google Sheets volvia a tronar con duplicate key value en folio_transaccion. La revision contra la base ANTES de mostrar la vista previa reduce el riesgo pero no lo elimina -- si pasa un rato entre Buscar y Resolver, o si el importador se corre casi al mismo tiempo dos veces, algo puede insertarse justo en medio. Ahora el guardado usa upsert con ignoreDuplicates en vez de un insert plano: si una fila puntual choca al momento de guardar, se omite sola sin tronar el lote completo. De paso, el error de Postgres ahora muestra el detalle exacto (que folio choco), no solo el mensaje generico" },
@@ -6770,13 +6771,20 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
          medio camino, algunas de estas filas pueden YA estar guardadas —nunca
          se marcó Procesado porque el proceso completo no terminó con éxito—.
          Se revisan contra la base ANTES de insertar, no se descubre por el
-         error de folio_transaccion duplicado. */
+         error de folio_transaccion duplicado.
+
+         La revisión es GLOBAL, sin filtrar por unidad_detectada: el índice
+         único de folio_transaccion en la base no distingue compañía —el
+         mismo folio no puede existir en OSB, CTM o ISE a la vez—, así que
+         filtrar aquí por unidad habría dejado pasar como "nueva" una fila
+         cuyo folio ya existe en OTRA compañía, y habría chocado igual al
+         insertar. */
       const foliosDelLote = [...new Set(importables.map((f) => f.registro.folio_transaccion).filter(Boolean))];
       let foliosYaEnBase = new Set();
       if (foliosDelLote.length) {
         const { data: existentes, error: errFolios } = await supabase
           .from("transacciones").select("folio_transaccion")
-          .eq("unidad_detectada", unidad).in("folio_transaccion", foliosDelLote);
+          .in("folio_transaccion", foliosDelLote);
         if (errFolios) throw errFolios;
         foliosYaEnBase = new Set((existentes || []).map((r) => r.folio_transaccion));
       }
@@ -6948,8 +6956,9 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
 
                   {preview.yaExistian.length > 0 && (
                     <div style={{ fontSize: 11.5, color: T.textDim, marginBottom: 10 }}>
-                      {preview.yaExistian.length} fila(s) ya estaban guardadas —probablemente de un intento anterior que no
-                      terminó de marcar Procesado— no se van a duplicar, solo se marcan como Procesado en su hoja.
+                      {preview.yaExistian.length} fila(s) ya tienen ese folio guardado en la base —de un intento anterior
+                      que no llegó a marcar Procesado, o porque otra compañía ya usó ese mismo número— no se van a
+                      duplicar, solo se marcan como Procesado en su hoja.
                     </div>
                   )}
 

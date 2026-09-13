@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.13.2";
+const APP_VERSION = "2.13.3";
 const CHANGELOG = [
+  { v: "2.13.3", desc: "Se agrega registro detallado (consola del navegador) al momento de marcar Procesado en la hoja: que columna y rangos exactos se mandan, y la respuesta completa de Google. La logica de esta parte se reviso a fondo y se ve correcta, pero el reporte de que Procesado no se actualiza necesita ver el payload real para diagnosticarlo con certeza en vez de seguir adivinando" },
   { v: "2.13.2", desc: "Fix: el upsert con onConflict de la v2.13.1 tronaba con there is no unique or exclusion constraint matching -- el indice unico de folio_transaccion es PARCIAL (excluye nulos), y Supabase no puede apuntar su upsert a un indice parcial, solo a uno completo. Se cambia de estrategia por completo: en vez de un insert masivo o un upsert, las transacciones se insertan una por una. Si una choca (una carrera de tiempos real, no una falla del codigo), esa fila puntual se reporta con su folio exacto y las demas se guardan con normalidad -- ya no se pierde el lote completo por una sola coincidencia" },
   { v: "2.13.1", desc: "Fix: el importador de Google Sheets volvia a tronar con duplicate key value en folio_transaccion. La revision contra la base ANTES de mostrar la vista previa reduce el riesgo pero no lo elimina -- si pasa un rato entre Buscar y Resolver, o si el importador se corre casi al mismo tiempo dos veces, algo puede insertarse justo en medio. Ahora el guardado usa upsert con ignoreDuplicates en vez de un insert plano: si una fila puntual choca al momento de guardar, se omite sola sin tronar el lote completo. De paso, el error de Postgres ahora muestra el detalle exacto (que folio choco), no solo el mensaje generico" },
   { v: "2.13.0", desc: "El importador de Google Sheets soporta ahora varias hojas por compania -- ISE necesitaba dos, una por zona. Catalogo gana una lista editable de hojas (etiqueta libre + ID), en vez de un solo campo. El boton Buscar filas nuevas las lee TODAS juntas en una sola pasada: si una hoja falla (permiso, URL mal puesta), las demas no se bloquean por eso, se avisa cual fallo y se sigue con el resto. Un folio repetido ahora se detecta tambien si aparece en DOS hojas distintas, no solo dentro de la misma. Procesado se marca por hoja de origen, respetando que la columna puede estar en una posicion distinta en cada una. Requiere 28-multiples-hojas-por-compania.sql, que migra el ID que ya tenias configurado para que no se pierda" },
@@ -6845,6 +6846,7 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
       for (const [sheetId, filasDeEstaHoja] of porHoja) {
         const letra = columnaLetra(filasDeEstaHoja[0].colProcesadoIdx);
         const dataUpdate = filasDeEstaHoja.map((f) => ({ range: `${letra}${f.numeroFila}`, values: [["TRUE"]] }));
+        console.log("Marcando Procesado — hoja:", filasDeEstaHoja[0].hoja, sheetId, "— columna:", letra, "(índice", filasDeEstaHoja[0].colProcesadoIdx, ") — rangos:", dataUpdate.map((d) => d.range));
         const resp = await fetch(
           `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
           {
@@ -6853,6 +6855,8 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
             body: JSON.stringify({ valueInputOption: "RAW", data: dataUpdate }),
           }
         );
+        const cuerpoResp = await resp.clone().json().catch(() => null);
+        console.log("Respuesta de Google al marcar Procesado:", resp.status, cuerpoResp);
         if (!resp.ok) fallosMarcado.push(filasDeEstaHoja[0].hoja);
       }
 

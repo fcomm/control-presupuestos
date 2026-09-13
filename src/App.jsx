@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.12.1";
+const APP_VERSION = "2.12.2";
 const CHANGELOG = [
+  { v: "2.12.2", desc: "El folio de la Solicitud de Pago lleva ahora la revision: ISE-4-1 en el encabezado del PDF, 4-1 en la fila Folio del Excel, y ambos nombres de archivo (SPP ISE-4-1 - Proveedor.pdf). Antes dos revisiones del mismo folio se veian identicas en pantalla y en la carpeta de descargas, sin forma de distinguir a simple vista cual era la vigente" },
   { v: "2.12.1", desc: "Se quita Referencia Bancaria del PDF y Excel de la Solicitud de Pago -- casi siempre salia vacia y no se estaba usando. El campo sigue existiendo en Proveedores y en el registro guardado, por si algun dia hace falta; solo se dejo de imprimir en los dos documentos. En el PDF, Sucursal bancaria pasa a su propio renglon en vez de compartirlo con Referencia bancaria" },
   { v: "2.12.0", desc: "Nuevo panel Solicitudes de Pago generadas en Transacciones: historial de cada SPP emitida, con Editar para corregir cualquier campo -- incluidos banco, cuenta, CLABE y proveedor, que antes ni siquiera eran editables porque se derivaban en vivo del catalogo. Editar NO sobrescribe: guarda una fila NUEVA con el MISMO folio y una revision mayor, igual que los reportes oficiales -- el folio se conserva porque Pagos y el proveedor ya lo conocen, y el registro anterior queda como historial consultable, con quien y cuando via created_by/created_at. El desglose fiscal en la edicion son numeros sueltos editables, no se recalculan solos: es una herramienta para corregir un error puntual, no para rehacer el calculo. Requiere 26-revisiones-solicitudes-pago.sql" },
   { v: "2.11.1", desc: "Fix: la Solicitud de Pago a Proveedor no jalaba la Referencia de Pago de la transaccion. El campo nunca se sembraba en el estado inicial del formulario, no existia como campo editable dentro del modal, y ademas ni el PDF ni el Excel de la SPP la mostraban en ningun lado -- se corrigen las tres partes. Es distinta de la Referencia Bancaria (la del proveedor en el catalogo), que ya existia" },
@@ -4219,7 +4220,7 @@ async function generarExcelSPP(r) {
     row.getCell(2).font = { name: "Calibri", size: 11 };
     return row;
   };
-  dato("Folio", r.folio);
+  dato("Folio", `${r.folio}-${r.revision || 1}`);
   dato("Fecha Elaboracion", r.fecha_elaboracion);
   dato("Fecha de Pago", r.fecha_pago || "");
   dato("Zona", r.zona);
@@ -4296,7 +4297,7 @@ async function generarExcelSPP(r) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `SPP ${r.compania}-${r.folio} - ${String(r.proveedor || "").slice(0, 30)}.xlsx`;
+  a.download = `SPP ${r.compania}-${r.folio}-${r.revision || 1} - ${String(r.proveedor || "").slice(0, 30)}.xlsx`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -4326,7 +4327,7 @@ function generarPdfSPP(r) {
   doc.setFontSize(9).setFont(undefined, "normal");
   doc.text("FOLIO", M + A - 14, y + 17, { align: "right" });
   doc.setFontSize(19).setFont(undefined, "bold");
-  doc.text(`${r.compania}-${r.folio}`, M + A - 14, y + 36, { align: "right" });
+  doc.text(`${r.compania}-${r.folio}-${r.revision || 1}`, M + A - 14, y + 36, { align: "right" });
   y += 62;
 
   /* Los datos generales en dos columnas: en una sola, el documento se
@@ -4434,7 +4435,7 @@ function generarPdfSPP(r) {
   filaDoble("Cuenta bancaria", r.cuenta, "Cuenta CLABE", r.clabe);
   filaDoble("Referencia de pago", r.referencia_pago, "", "");
 
-  doc.save(`SPP ${r.compania}-${r.folio} - ${String(r.proveedor || "").slice(0, 30)}.pdf`);
+  doc.save(`SPP ${r.compania}-${r.folio}-${r.revision || 1} - ${String(r.proveedor || "").slice(0, 30)}.pdf`);
 }
 
 /**

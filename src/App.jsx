@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.12.0";
+const APP_VERSION = "2.12.1";
 const CHANGELOG = [
+  { v: "2.12.1", desc: "Se quita Referencia Bancaria del PDF y Excel de la Solicitud de Pago -- casi siempre salia vacia y no se estaba usando. El campo sigue existiendo en Proveedores y en el registro guardado, por si algun dia hace falta; solo se dejo de imprimir en los dos documentos. En el PDF, Sucursal bancaria pasa a su propio renglon en vez de compartirlo con Referencia bancaria" },
   { v: "2.12.0", desc: "Nuevo panel Solicitudes de Pago generadas en Transacciones: historial de cada SPP emitida, con Editar para corregir cualquier campo -- incluidos banco, cuenta, CLABE y proveedor, que antes ni siquiera eran editables porque se derivaban en vivo del catalogo. Editar NO sobrescribe: guarda una fila NUEVA con el MISMO folio y una revision mayor, igual que los reportes oficiales -- el folio se conserva porque Pagos y el proveedor ya lo conocen, y el registro anterior queda como historial consultable, con quien y cuando via created_by/created_at. El desglose fiscal en la edicion son numeros sueltos editables, no se recalculan solos: es una herramienta para corregir un error puntual, no para rehacer el calculo. Requiere 26-revisiones-solicitudes-pago.sql" },
   { v: "2.11.1", desc: "Fix: la Solicitud de Pago a Proveedor no jalaba la Referencia de Pago de la transaccion. El campo nunca se sembraba en el estado inicial del formulario, no existia como campo editable dentro del modal, y ademas ni el PDF ni el Excel de la SPP la mostraban en ningun lado -- se corrigen las tres partes. Es distinta de la Referencia Bancaria (la del proveedor en el catalogo), que ya existia" },
   { v: "2.11.0", desc: "En Transacciones importadas sin partida vinculada, el crear una partida a partir de la transaccion funcionaba pero estaba escondido: habia que abrir Elegir partida y recien ahi descubrir el boton + Nueva partida dentro del modal. Ahora hay un boton directo en la fila, junto al selector, que abre el formulario YA en modo crear y YA precargado -- mismo mecanismo de disparador que seedTransaccion, consumido y limpiado por si solo. Nada del flujo de revision antes de guardar cambia, solo se ahorra el paso intermedio de abrir el buscador generico primero" },
@@ -4284,9 +4285,8 @@ async function generarExcelSPP(r) {
   // científica y el número llegaría corrupto al área de Pagos.
   const fc = dato("Cuenta Bancaria", String(r.cuenta || ""));
   fc.getCell(2).numFmt = "@";
-  dato("Referencia Bancaria", r.referencia_bancaria || "");
-  // Distinta de la Referencia Bancaria: esta es la de la transacción misma
-  // (folio SPEI, cheque, etc.), no la del proveedor en el catálogo.
+  // Distinta de la Referencia Bancaria (que se quitó, no se usaba): esta es
+  // la de la transacción misma (folio SPEI, cheque, etc.).
   dato("Referencia de Pago", r.referencia_pago || "");
   const fcl = dato("Cuenta CLABE", String(r.clabe || ""));
   fcl.getCell(2).numFmt = "@";
@@ -4430,7 +4430,7 @@ function generarPdfSPP(r) {
   doc.setFont(undefined, "normal");
   y += 34;
   filaDoble("Nombre o razón social", r.proveedor, "Banco", r.banco);
-  filaDoble("Sucursal bancaria", r.sucursal, "Referencia bancaria", r.referencia_bancaria);
+  filaDoble("Sucursal bancaria", r.sucursal, "", "");
   filaDoble("Cuenta bancaria", r.cuenta, "Cuenta CLABE", r.clabe);
   filaDoble("Referencia de pago", r.referencia_pago, "", "");
 

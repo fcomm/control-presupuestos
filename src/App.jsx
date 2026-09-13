@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.13.0";
+const APP_VERSION = "2.13.1";
 const CHANGELOG = [
+  { v: "2.13.1", desc: "Fix: el importador de Google Sheets volvia a tronar con duplicate key value en folio_transaccion. La revision contra la base ANTES de mostrar la vista previa reduce el riesgo pero no lo elimina -- si pasa un rato entre Buscar y Resolver, o si el importador se corre casi al mismo tiempo dos veces, algo puede insertarse justo en medio. Ahora el guardado usa upsert con ignoreDuplicates en vez de un insert plano: si una fila puntual choca al momento de guardar, se omite sola sin tronar el lote completo. De paso, el error de Postgres ahora muestra el detalle exacto (que folio choco), no solo el mensaje generico" },
   { v: "2.13.0", desc: "El importador de Google Sheets soporta ahora varias hojas por compania -- ISE necesitaba dos, una por zona. Catalogo gana una lista editable de hojas (etiqueta libre + ID), en vez de un solo campo. El boton Buscar filas nuevas las lee TODAS juntas en una sola pasada: si una hoja falla (permiso, URL mal puesta), las demas no se bloquean por eso, se avisa cual fallo y se sigue con el resto. Un folio repetido ahora se detecta tambien si aparece en DOS hojas distintas, no solo dentro de la misma. Procesado se marca por hoja de origen, respetando que la columna puede estar en una posicion distinta en cada una. Requiere 28-multiples-hojas-por-compania.sql, que migra el ID que ya tenias configurado para que no se pierda" },
   { v: "2.12.2", desc: "El folio de la Solicitud de Pago lleva ahora la revision: ISE-4-1 en el encabezado del PDF, 4-1 en la fila Folio del Excel, y ambos nombres de archivo (SPP ISE-4-1 - Proveedor.pdf). Antes dos revisiones del mismo folio se veian identicas en pantalla y en la carpeta de descargas, sin forma de distinguir a simple vista cual era la vigente" },
   { v: "2.12.1", desc: "Se quita Referencia Bancaria del PDF y Excel de la Solicitud de Pago -- casi siempre salia vacia y no se estaba usando. El campo sigue existiendo en Proveedores y en el registro guardado, por si algun dia hace falta; solo se dejo de imprimir en los dos documentos. En el PDF, Sucursal bancaria pasa a su propio renglon en vez de compartirlo con Referencia bancaria" },
@@ -6586,7 +6587,7 @@ function cruzarCatalogoPago(valor, catalogo) {
  * cuenta que no coincide exactamente se deja sin vincular, con aviso, en
  * vez de forzar la coincidencia más parecida.
  */
-function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccionesApi }) {
+function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
   const [abierto, setAbierto] = useState(false);
   const [hojas, setHojas] = useState([]);
   const [cargandoConfig, setCargandoConfig] = useState(true);
@@ -6811,7 +6812,18 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
     if (!confirm(`Se van a resolver ${partes.join(" y ")}, en ${unidad}. Las nuevas quedan sin partida vinculada — "Sin vincular" para resolverlas a mano.`)) return;
     setImportando(true);
     try {
-      if (preview.nuevas.length) await transaccionesApi.bulkInsert(preview.nuevas.map((f) => f.registro));
+      if (preview.nuevas.length) {
+        /* upsert con ignoreDuplicates en vez de un insert plano: revisar
+           contra la base ANTES de mostrar la vista previa reduce el choque,
+           pero no lo elimina —si pasa un rato entre "Buscar" y "Resolver", o
+           si alguien más corre el importador casi al mismo tiempo, algo pudo
+           insertarse justo en medio. Con esto, esa fila puntual se omite en
+           vez de tronar el lote completo por un choque que ya no depende de
+           lo que se revisó minutos antes. */
+        const { error: errInsert } = await supabase.from("transacciones")
+          .upsert(preview.nuevas.map((f) => f.registro), { onConflict: "folio_transaccion", ignoreDuplicates: true });
+        if (errInsert) throw errInsert;
+      }
 
       /* "Procesado" se marca DESPUÉS de guardar con éxito, para las nuevas Y
          para las que ya existían —ambas quedan resueltas—, pero NO para las
@@ -6850,7 +6862,8 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
       }
       setPreview(null);
     } catch (err) {
-      alert("No se pudo completar la importación: " + (err.message || err));
+      alert("No se pudo completar la importación: " + (err.message || err) + (err.details ? `\n\nDetalle: ${err.details}` : ""));
+      console.error("Importación — folios que se intentaron insertar:", preview?.nuevas.map((f) => f.registro.folio_transaccion));
     } finally {
       setImportando(false);
     }
@@ -7653,7 +7666,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           </div>
         }
       >
-        <ImportadorSheetsPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} transaccionesApi={transaccionesApi} />
+        <ImportadorSheetsPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
         <SolicitudesPagoListaPanel unidad={unidad} session={session} />
         <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
           {/* Fila 1 — qué transacciones se ven. Fila 2 — cómo se ven las que

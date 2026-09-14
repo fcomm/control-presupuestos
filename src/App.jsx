@@ -34,6 +34,9 @@ const T = {
   fontMono: "ui-monospace, SFMono-Regular, 'SF Mono', Consolas, 'Liberation Mono', monospace",
 };
 
+
+
+
 // NO hay categoría "Diversos", y es deliberado.
 //
 // En la v1.73 se agregó a los 15 rubros porque 81 partidas ya la usaban:

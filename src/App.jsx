@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.14.0";
+const APP_VERSION = "2.14.1";
 const CHANGELOG = [
+  { v: "2.14.1", desc: "Seguridad: el panel Sin partida vinculada causo un borrado real de transacciones porque el titulo y el boton (Eliminar las N sin vincular) se prestaban a pensar que eran copias/duplicados de las de la lista normal -- son las mismas filas, solo filtradas. Titulo y texto del boton ahora lo dicen explicitamente. Ademas, el confirm() de navegador (demasiado facil de aceptar sin leer) se reemplaza por un modal que obliga a escribir ELIMINAR antes de habilitar el boton de borrar -- mismo criterio para cualquier borrado masivo irreversible que se agregue despues" },
   { v: "2.14.0", desc: "Cambio de fondo en el importador de Sheets: Cnt no es un folio unico -- se confirmo que son codigos como P8, P7, C9 que se repiten a proposito entre transacciones distintas. Se quita por completo la validacion de folio duplicado y la revision de ya existe en la base: el UNICO indicador de que hacer con una fila es la columna Procesado de la hoja, como se pidio. De paso, Cnt deja de guardarse en folio_transaccion -- esa columna tiene una restriccion real de unicidad en la base de datos, y seguir mandando ahi un valor que se repite habria hecho fallar el guardado de todos modos, solo que sin aviso previo en vez de bloqueado de antemano. Cnt no se esta guardando en ningun otro lado por ahora" },
   { v: "2.13.5", desc: "Se agrega el folio exacto al mensaje de filas duplicadas en el importador de Sheets, y un registro completo en consola con el folio leido de CADA fila y el conteo por folio. Se reporto que casi todas las filas de una hoja se estan marcando como duplicadas cuando el Excel muestra varias sin Procesado -- antes de corregir nada hace falta ver los valores reales que se estan leyendo, para saber si es un dato repetido de verdad en la hoja o si se esta leyendo mal la columna Cnt" },
   { v: "2.13.4", desc: "Fix real del reporte de Procesado: no era un bug al marcar la hoja, era que el guardado mismo fallaba con HTTP 409 y por diseno correcto una fila que no se guarda no se marca. La causa: el indice unico de folio_transaccion en la base es GLOBAL -- el mismo folio no puede existir en OSB, CTM o ISE a la vez -- pero la revision de ya existe? del importador solo comparaba contra transacciones de la MISMA compania. Si el folio ya existia en otra compania, se clasificaba como nueva y el insert chocaba contra el indice real. La revision ahora es global, igual que el indice" },
@@ -6954,6 +6955,29 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
   );
 }
 
+/**
+ * Confirmación reforzada para un borrado masivo irreversible — un confirm()
+ * de navegador es demasiado fácil de aceptar sin leer con calma, y ya causó
+ * una pérdida real de datos por eso. Aquí hay que escribir la palabra antes
+ * de que el botón de borrar se habilite.
+ */
+function ConfirmarBorradoTextoModal({ titulo, mensaje, frase = "ELIMINAR", onConfirmar, onCancelar }) {
+  const [texto, setTexto] = useState("");
+  return (
+    <Modal title={titulo} onClose={onCancelar} width={480} cerrarAlHacerClicFuera={false}>
+      <div style={{ fontSize: 13, marginBottom: 16, lineHeight: 1.5 }}>{mensaje}</div>
+      <div style={{ fontSize: 12, color: T.textDim, marginBottom: 8 }}>
+        Escribe <b>{frase}</b> para confirmar:
+      </div>
+      <TextInput value={texto} onChange={(e) => setTexto(e.target.value)} style={{ width: "100%", marginBottom: 18 }} autoFocus />
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
+        <Button variant="ghost" onClick={onCancelar}>Cancelar</Button>
+        <Button variant="danger" disabled={texto !== frase} onClick={onConfirmar}>Eliminar definitivamente</Button>
+      </div>
+    </Modal>
+  );
+}
+
 function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO, gruposZona = {}, seedTransaccion, onSeedConsumido }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
@@ -7089,6 +7113,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   // Qué fila pidió abrir directo en "+ Nueva partida" — una a la vez, se
   // limpia sola en cuanto PartidaPickerButton la consume.
   const [filaCreandoPartida, setFilaCreandoPartida] = useState(null);
+  const [confirmandoEliminarSV, setConfirmandoEliminarSV] = useState(null); // { borrables, pagadas } o null
   const groupKeysSV = groupBysSV.map((g) => g.field);
   const groupedSV = groupKeysSV.length ? agruparRows(sinVincularFiltrado, groupBysSV, "importe") : null;
   const colVisibilitySV = useColumnVisibility("colv-sinvinc", COLUMNAS_SINVINC);
@@ -7820,26 +7845,22 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 
       {sinVincular.length > 0 && (
         <Panel
-          title="Transacciones importadas sin partida vinculada"
-          subtitle={`${sinVincularFiltrado.length} de ${sinVincular.length} en ${unidad} — su folio no coincidió con ninguna partida`}
+          title="Sin partida vinculada (mismas transacciones de arriba, filtradas)"
+          subtitle={`${sinVincularFiltrado.length} de ${sinVincular.length} en ${unidad} — no son copias: son las mismas filas de la tabla de Transacciones, mostradas aquí porque todavía no tienen partida`}
           right={
             <Button
               variant="danger"
-              onClick={async () => {
+              onClick={() => {
                 const pagadas = sinVincular.filter((t) => t.status === "Pagado");
                 const borrables = sinVincular.filter((t) => t.status !== "Pagado");
                 if (!borrables.length) {
                   alert(`Las ${pagadas.length} transacciones sin vincular están marcadas como Pagadas y no se pueden borrar.`);
                   return;
                 }
-                const aviso = pagadas.length ? `\n\nSe van a CONSERVAR ${pagadas.length} marcadas como Pagadas.` : "";
-                if (!confirm(`¿Eliminar ${borrables.length} transacciones sin vincular de ${unidad}? Esto no se puede deshacer.${aviso}`)) return;
-                for (const t of borrables) {
-                  await transaccionesApi.remove(t.id).catch(() => {});
-                }
+                setConfirmandoEliminarSV({ borrables, pagadas });
               }}
             >
-              Eliminar las {sinVincular.length} sin vincular
+              Borrar estas {sinVincular.length} transacciones (no son copias)
             </Button>
           }
         >
@@ -7919,6 +7940,29 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           cuentasApi={cuentasApi}
           transaccionesApi={transaccionesApi}
           session={session}
+        />
+      )}
+      {confirmandoEliminarSV && (
+        <ConfirmarBorradoTextoModal
+          titulo="Esto es permanente — no son copias"
+          mensaje={
+            <>
+              Vas a borrar <b>{confirmandoEliminarSV.borrables.length} transacciones reales</b> de {unidad} —
+              son las mismas filas que ves en la tabla de Transacciones de arriba, no duplicados ni copias que se
+              puedan limpiar sin consecuencia. Una vez borradas, no hay forma de deshacerlo desde la app.
+              {confirmandoEliminarSV.pagadas.length > 0 && (
+                <> Se van a conservar {confirmandoEliminarSV.pagadas.length} marcadas como Pagadas.</>
+              )}
+            </>
+          }
+          onCancelar={() => setConfirmandoEliminarSV(null)}
+          onConfirmar={async () => {
+            const { borrables } = confirmandoEliminarSV;
+            setConfirmandoEliminarSV(null);
+            for (const t of borrables) {
+              await transaccionesApi.remove(t.id).catch(() => {});
+            }
+          }}
         />
       )}
       {modalOpen && (

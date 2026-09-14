@@ -318,8 +318,18 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.11.0";
+const APP_VERSION = "2.13.5";
 const CHANGELOG = [
+  { v: "2.13.5", desc: "Se agrega el folio exacto al mensaje de filas duplicadas en el importador de Sheets, y un registro completo en consola con el folio leido de CADA fila y el conteo por folio. Se reporto que casi todas las filas de una hoja se estan marcando como duplicadas cuando el Excel muestra varias sin Procesado -- antes de corregir nada hace falta ver los valores reales que se estan leyendo, para saber si es un dato repetido de verdad en la hoja o si se esta leyendo mal la columna Cnt" },
+  { v: "2.13.4", desc: "Fix real del reporte de Procesado: no era un bug al marcar la hoja, era que el guardado mismo fallaba con HTTP 409 y por diseno correcto una fila que no se guarda no se marca. La causa: el indice unico de folio_transaccion en la base es GLOBAL -- el mismo folio no puede existir en OSB, CTM o ISE a la vez -- pero la revision de ya existe? del importador solo comparaba contra transacciones de la MISMA compania. Si el folio ya existia en otra compania, se clasificaba como nueva y el insert chocaba contra el indice real. La revision ahora es global, igual que el indice" },
+  { v: "2.13.3", desc: "Se agrega registro detallado (consola del navegador) al momento de marcar Procesado en la hoja: que columna y rangos exactos se mandan, y la respuesta completa de Google. La logica de esta parte se reviso a fondo y se ve correcta, pero el reporte de que Procesado no se actualiza necesita ver el payload real para diagnosticarlo con certeza en vez de seguir adivinando" },
+  { v: "2.13.2", desc: "Fix: el upsert con onConflict de la v2.13.1 tronaba con there is no unique or exclusion constraint matching -- el indice unico de folio_transaccion es PARCIAL (excluye nulos), y Supabase no puede apuntar su upsert a un indice parcial, solo a uno completo. Se cambia de estrategia por completo: en vez de un insert masivo o un upsert, las transacciones se insertan una por una. Si una choca (una carrera de tiempos real, no una falla del codigo), esa fila puntual se reporta con su folio exacto y las demas se guardan con normalidad -- ya no se pierde el lote completo por una sola coincidencia" },
+  { v: "2.13.1", desc: "Fix: el importador de Google Sheets volvia a tronar con duplicate key value en folio_transaccion. La revision contra la base ANTES de mostrar la vista previa reduce el riesgo pero no lo elimina -- si pasa un rato entre Buscar y Resolver, o si el importador se corre casi al mismo tiempo dos veces, algo puede insertarse justo en medio. Ahora el guardado usa upsert con ignoreDuplicates en vez de un insert plano: si una fila puntual choca al momento de guardar, se omite sola sin tronar el lote completo. De paso, el error de Postgres ahora muestra el detalle exacto (que folio choco), no solo el mensaje generico" },
+  { v: "2.13.0", desc: "El importador de Google Sheets soporta ahora varias hojas por compania -- ISE necesitaba dos, una por zona. Catalogo gana una lista editable de hojas (etiqueta libre + ID), en vez de un solo campo. El boton Buscar filas nuevas las lee TODAS juntas en una sola pasada: si una hoja falla (permiso, URL mal puesta), las demas no se bloquean por eso, se avisa cual fallo y se sigue con el resto. Un folio repetido ahora se detecta tambien si aparece en DOS hojas distintas, no solo dentro de la misma. Procesado se marca por hoja de origen, respetando que la columna puede estar en una posicion distinta en cada una. Requiere 28-multiples-hojas-por-compania.sql, que migra el ID que ya tenias configurado para que no se pierda" },
+  { v: "2.12.2", desc: "El folio de la Solicitud de Pago lleva ahora la revision: ISE-4-1 en el encabezado del PDF, 4-1 en la fila Folio del Excel, y ambos nombres de archivo (SPP ISE-4-1 - Proveedor.pdf). Antes dos revisiones del mismo folio se veian identicas en pantalla y en la carpeta de descargas, sin forma de distinguir a simple vista cual era la vigente" },
+  { v: "2.12.1", desc: "Se quita Referencia Bancaria del PDF y Excel de la Solicitud de Pago -- casi siempre salia vacia y no se estaba usando. El campo sigue existiendo en Proveedores y en el registro guardado, por si algun dia hace falta; solo se dejo de imprimir en los dos documentos. En el PDF, Sucursal bancaria pasa a su propio renglon en vez de compartirlo con Referencia bancaria" },
+  { v: "2.12.0", desc: "Nuevo panel Solicitudes de Pago generadas en Transacciones: historial de cada SPP emitida, con Editar para corregir cualquier campo -- incluidos banco, cuenta, CLABE y proveedor, que antes ni siquiera eran editables porque se derivaban en vivo del catalogo. Editar NO sobrescribe: guarda una fila NUEVA con el MISMO folio y una revision mayor, igual que los reportes oficiales -- el folio se conserva porque Pagos y el proveedor ya lo conocen, y el registro anterior queda como historial consultable, con quien y cuando via created_by/created_at. El desglose fiscal en la edicion son numeros sueltos editables, no se recalculan solos: es una herramienta para corregir un error puntual, no para rehacer el calculo. Requiere 26-revisiones-solicitudes-pago.sql" },
+  { v: "2.11.1", desc: "Fix: la Solicitud de Pago a Proveedor no jalaba la Referencia de Pago de la transaccion. El campo nunca se sembraba en el estado inicial del formulario, no existia como campo editable dentro del modal, y ademas ni el PDF ni el Excel de la SPP la mostraban en ningun lado -- se corrigen las tres partes. Es distinta de la Referencia Bancaria (la del proveedor en el catalogo), que ya existia" },
   { v: "2.11.0", desc: "En Transacciones importadas sin partida vinculada, el crear una partida a partir de la transaccion funcionaba pero estaba escondido: habia que abrir Elegir partida y recien ahi descubrir el boton + Nueva partida dentro del modal. Ahora hay un boton directo en la fila, junto al selector, que abre el formulario YA en modo crear y YA precargado -- mismo mecanismo de disparador que seedTransaccion, consumido y limpiado por si solo. Nada del flujo de revision antes de guardar cambia, solo se ahorra el paso intermedio de abrir el buscador generico primero" },
   { v: "2.10.3", desc: "Fix: reintentar una importacion de Google Sheets despues de un fallo a medio camino (como el bug de fechas de la v2.10.2) tronaba con duplicate key value violates unique constraint idx_transacciones_folio_transaccion -- algunas filas del intento anterior si se habian guardado, pero nunca se marcaron Procesado porque el proceso completo no habia terminado con exito, asi que volvian a intentar insertarse. Ahora el importador consulta contra la base ANTES de insertar: lo que ya existe se marca Procesado sin reinsertarse, lo genuinamente nuevo se importa, y si dos filas de la MISMA hoja comparten folio, ninguna de las dos se toca -- quedan senaladas para revision manual en vez de perderse en silencio" },
   { v: "2.10.2", desc: "Fix: la importacion de Google Sheets fallaba con date/time field value out of range al guardar. Google devuelve las fechas en formato de despliegue local (18/9/2026, dia/mes/ano), y ese texto se mandaba tal cual a Postgres, que lo intenta leer como mes/dia/ano -- 18 no es un mes valido y truena. Ahora la fecha se convierte a ISO antes de guardar. El resto de la importacion (proveedor, cuenta, catalogos de pago) no se toco" },
@@ -4216,7 +4226,7 @@ async function generarExcelSPP(r) {
     row.getCell(2).font = { name: "Calibri", size: 11 };
     return row;
   };
-  dato("Folio", r.folio);
+  dato("Folio", `${r.folio}-${r.revision || 1}`);
   dato("Fecha Elaboracion", r.fecha_elaboracion);
   dato("Fecha de Pago", r.fecha_pago || "");
   dato("Zona", r.zona);
@@ -4282,7 +4292,9 @@ async function generarExcelSPP(r) {
   // científica y el número llegaría corrupto al área de Pagos.
   const fc = dato("Cuenta Bancaria", String(r.cuenta || ""));
   fc.getCell(2).numFmt = "@";
-  dato("Referencia Bancaria", r.referencia_bancaria || "");
+  // Distinta de la Referencia Bancaria (que se quitó, no se usaba): esta es
+  // la de la transacción misma (folio SPEI, cheque, etc.).
+  dato("Referencia de Pago", r.referencia_pago || "");
   const fcl = dato("Cuenta CLABE", String(r.clabe || ""));
   fcl.getCell(2).numFmt = "@";
 
@@ -4291,7 +4303,7 @@ async function generarExcelSPP(r) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `SPP ${r.compania}-${r.folio} - ${String(r.proveedor || "").slice(0, 30)}.xlsx`;
+  a.download = `SPP ${r.compania}-${r.folio}-${r.revision || 1} - ${String(r.proveedor || "").slice(0, 30)}.xlsx`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -4321,7 +4333,7 @@ function generarPdfSPP(r) {
   doc.setFontSize(9).setFont(undefined, "normal");
   doc.text("FOLIO", M + A - 14, y + 17, { align: "right" });
   doc.setFontSize(19).setFont(undefined, "bold");
-  doc.text(`${r.compania}-${r.folio}`, M + A - 14, y + 36, { align: "right" });
+  doc.text(`${r.compania}-${r.folio}-${r.revision || 1}`, M + A - 14, y + 36, { align: "right" });
   y += 62;
 
   /* Los datos generales en dos columnas: en una sola, el documento se
@@ -4425,10 +4437,11 @@ function generarPdfSPP(r) {
   doc.setFont(undefined, "normal");
   y += 34;
   filaDoble("Nombre o razón social", r.proveedor, "Banco", r.banco);
-  filaDoble("Sucursal bancaria", r.sucursal, "Referencia bancaria", r.referencia_bancaria);
+  filaDoble("Sucursal bancaria", r.sucursal, "", "");
   filaDoble("Cuenta bancaria", r.cuenta, "Cuenta CLABE", r.clabe);
+  filaDoble("Referencia de pago", r.referencia_pago, "", "");
 
-  doc.save(`SPP ${r.compania}-${r.folio} - ${String(r.proveedor || "").slice(0, 30)}.pdf`);
+  doc.save(`SPP ${r.compania}-${r.folio}-${r.revision || 1} - ${String(r.proveedor || "").slice(0, 30)}.pdf`);
 }
 
 /**
@@ -4511,6 +4524,9 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
     descripcion: t.concepto_detallado || "",
     cantidad: 1,
     observaciones: "",
+    // Faltaba aquí: el campo ya existía en el formulario (editable), pero
+    // nunca se llenaba con el dato real de la transacción al abrir.
+    referencia_pago: t.referencia_pago || "",
     moneda: t.moneda === "USD" ? "Dólares" : "Pesos",
   });
 
@@ -4540,7 +4556,8 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
       const folio = Math.max(Number(cfg?.spp_ultimo) || 0, (ultimos && ultimos[0]?.folio) || 0) + 1;
 
       const reg = {
-        id: uid(), compania: unidad, folio, transaccion_id: t.id,
+        id: uid(), compania: unidad, folio, revision: 1, transaccion_id: t.id,
+        created_by: session?.user?.id || null, updated_by: session?.user?.id || null,
         fecha_elaboracion: f.fecha_elaboracion, fecha_pago: f.fecha_pago || null,
         zona: f.zona, proyecto: proyNombre, centro_costo: ccTexto,
         responsable: f.responsable, solicitante: f.solicitante,
@@ -4550,6 +4567,9 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
         banco: cuenta?.banco || "", sucursal: cuenta?.sucursal || "",
         cuenta: cuenta?.numero_cuenta || "", clabe: cuenta?.clabe || "",
         referencia_bancaria: proveedor?.referencia || "",
+        // Distinta de la Referencia Bancaria de arriba: esta es la de ESTA
+        // transacción (folio SPEI, cheque, etc.), no la del proveedor en el catálogo.
+        referencia_pago: f.referencia_pago || "",
         moneda: f.moneda, tipo_pago: f.tipo_pago, condicion_pago: f.condicion_pago,
         concepto: f.concepto, descripcion: f.descripcion,
         cantidad: Number(f.cantidad) || 1,
@@ -4614,6 +4634,7 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
         {campo("Fecha de elaboración", f.fecha_elaboracion, (v) => setF({ ...f, fecha_elaboracion: v }))}
         {campo("Fecha de pago", f.fecha_pago, (v) => setF({ ...f, fecha_pago: v }))}
         {campo("Zona", f.zona, (v) => setF({ ...f, zona: v }))}
+        {campo("Referencia de pago", f.referencia_pago, (v) => setF({ ...f, referencia_pago: v }))}
         <Field label={esProrrateo ? "Proyecto / Centros de costo (prorrateo)" : "Proyecto / Centro de costo"}>
           <TextInput value={`${proyNombre}${ccTexto ? ` · ${ccTexto}` : " · sin CC"}`} disabled />
           {esProrrateo && (
@@ -4726,6 +4747,257 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
         <Button variant="ghost" onClick={onClose}>Cancelar</Button>
       </div>
     </Modal>
+  );
+}
+
+/**
+ * Edita una Solicitud de Pago YA generada. A diferencia del modal de
+ * creación, aquí no hay transacción viva de la que derivar nada — se
+ * corrige el registro CONGELADO tal como quedó, campo por campo, en texto
+ * plano. No se recalcula el desglose fiscal automáticamente: es una
+ * herramienta para corregir un error puntual (una CLABE mal capturada, un
+ * concepto con una errata), no para rehacer el cálculo desde cero.
+ *
+ * Al guardar NO se sobrescribe el registro original: se inserta una fila
+ * nueva con el MISMO folio y revision = la anterior + 1. El folio se
+ * conserva —es lo que Pagos y el proveedor ya conocen— pero cada corrección
+ * queda como su propio registro completo, con quién y cuándo (via
+ * created_by/created_at, igual que en partidas y transacciones).
+ */
+function EditarSolicitudPagoModal({ solicitud, onClose, unidad, session, onGuardado }) {
+  const [f, setF] = useState({ ...solicitud });
+  const [formato, setFormato] = useState("pdf");
+  const [guardando, setGuardando] = useState(false);
+
+  const num = (key) => (
+    <TextInput type="number" value={f[key] ?? ""} onChange={(e) => setF({ ...f, [key]: e.target.value === "" ? "" : Number(e.target.value) })} />
+  );
+  const txt = (key, placeholder) => (
+    <TextInput value={f[key] || ""} onChange={(e) => setF({ ...f, [key]: e.target.value })} placeholder={placeholder} />
+  );
+
+  const guardar = async () => {
+    if (!confirm(`Se va a registrar una nueva revisión del folio ${solicitud.folio} (revisión ${(solicitud.revision || 1) + 1}), conservando el folio. El registro anterior no se borra, queda como historial.`)) return;
+    setGuardando(true);
+    try {
+      const nuevaRevision = (solicitud.revision || 1) + 1;
+      const reg = {
+        ...f,
+        id: uid(), // fila NUEVA, no se reutiliza el id del registro anterior
+        revision: nuevaRevision,
+        created_by: session?.user?.id || null,
+        updated_by: session?.user?.id || null,
+        updated_at: new Date().toISOString(),
+        cantidad: Number(f.cantidad) || 1,
+        precio_unitario: Number(f.precio_unitario) || 0,
+        subtotal: Number(f.subtotal) || 0, iva: Number(f.iva) || 0,
+        ret_isr: Number(f.ret_isr) || 0, ret_iva: Number(f.ret_iva) || 0,
+        descuento: Number(f.descuento) || 0, total: Number(f.total) || 0,
+        pct_pago: Number(f.pct_pago) || 0, total_a_pagar: Number(f.total_a_pagar) || 0,
+      };
+      const { error } = await supabase.from("solicitudes_pago").insert(reg);
+      if (error) throw error;
+      if (formato === "pdf") generarPdfSPP(reg); else await generarExcelSPP(reg);
+      onGuardado?.();
+      onClose();
+    } catch (err) {
+      alert("No se pudo guardar la revisión: " + (err.message || err));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  return (
+    <Modal
+      title={`Editar Solicitud de Pago — folio ${solicitud.folio}`}
+      subtitle={`Revisión actual: ${solicitud.revision || 1} → se guardará como revisión ${(solicitud.revision || 1) + 1}. El folio no cambia.`}
+      onClose={onClose}
+      width={880}
+      cerrarAlHacerClicFuera={false}
+    >
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8, marginTop: 4 }}>Datos generales</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 16 }}>
+        <Field label="Fecha de elaboración">{txt("fecha_elaboracion")}</Field>
+        <Field label="Fecha de pago">{txt("fecha_pago")}</Field>
+        <Field label="Zona">{txt("zona")}</Field>
+        <Field label="Proyecto">{txt("proyecto")}</Field>
+        <Field label="Centro de costo">{txt("centro_costo")}</Field>
+        <Field label="Responsable">{txt("responsable")}</Field>
+        <Field label="Solicitante">{txt("solicitante")}</Field>
+        <Field label="Lugar de adquisición">{txt("lugar_adquisicion")}</Field>
+        <Field label="Tipo de pago">{txt("tipo_pago")}</Field>
+        <Field label="Condición de pago">{txt("condicion_pago")}</Field>
+        <Field label="Moneda">{txt("moneda")}</Field>
+        <Field label="Cantidad">{num("cantidad")}</Field>
+      </div>
+      <Field label="Concepto"><TextInput value={f.concepto || ""} onChange={(e) => setF({ ...f, concepto: e.target.value })} style={{ marginBottom: 10, width: "100%" }} /></Field>
+      <Field label="Descripción"><TextInput value={f.descripcion || ""} onChange={(e) => setF({ ...f, descripcion: e.target.value })} style={{ marginBottom: 16, width: "100%" }} /></Field>
+
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>Datos bancarios del proveedor</div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10, marginBottom: 16 }}>
+        <Field label="Proveedor">{txt("proveedor")}</Field>
+        <Field label="Proveedor ASPEL-SAE">{txt("proveedor_sae")}</Field>
+        <Field label="Banco">{txt("banco")}</Field>
+        <Field label="Sucursal">{txt("sucursal")}</Field>
+        <Field label="Cuenta bancaria">{txt("cuenta")}</Field>
+        <Field label="Cuenta CLABE">{txt("clabe")}</Field>
+        <Field label="Referencia bancaria">{txt("referencia_bancaria")}</Field>
+        <Field label="Referencia de pago">{txt("referencia_pago")}</Field>
+      </div>
+
+      <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 8 }}>
+        Desglose fiscal — números sueltos, no se recalculan solos
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 16 }}>
+        <Field label="Precio unitario">{num("precio_unitario")}</Field>
+        <Field label="Subtotal">{num("subtotal")}</Field>
+        <Field label="IVA">{num("iva")}</Field>
+        <Field label="Retención ISR">{num("ret_isr")}</Field>
+        <Field label="Retención IVA">{num("ret_iva")}</Field>
+        <Field label="Descuento">{num("descuento")}</Field>
+        <Field label="Total">{num("total")}</Field>
+        <Field label="% de pago">{num("pct_pago")}</Field>
+        <Field label="Total a pagar">{num("total_a_pagar")}</Field>
+      </div>
+      <Field label="Observaciones"><TextInput value={f.observaciones || ""} onChange={(e) => setF({ ...f, observaciones: e.target.value })} style={{ marginBottom: 16, width: "100%" }} /></Field>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button type="button" onClick={() => setFormato("pdf")}
+            style={{ padding: "6px 12px", borderRadius: 6, border: `1px solid ${T.border}`, cursor: "pointer",
+                     background: formato === "pdf" ? T.accent : "transparent", color: formato === "pdf" ? "#FFF" : T.textDim }}>
+            PDF
+          </button>
+          <button type="button" onClick={() => setFormato("excel")}
+            style={{ padding: "6px 12px", borderRadius: 6, border: `1px solid ${T.border}`, cursor: "pointer",
+                     background: formato === "excel" ? T.accent : "transparent", color: formato === "excel" ? "#FFF" : T.textDim }}>
+            Excel
+          </button>
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <Button variant="ghost" onClick={onClose}>Cancelar</Button>
+          <Button onClick={guardar} disabled={guardando}>
+            {guardando ? "Guardando…" : `Guardar como revisión ${(solicitud.revision || 1) + 1}`}
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/**
+ * Historial de Solicitudes de Pago generadas. Muestra la revisión VIGENTE
+ * de cada folio (la de mayor número); las anteriores quedan disponibles al
+ * expandir, nunca se borran — es evidencia de lo que se le envió a Pagos en
+ * cada momento, igual que los reportes oficiales.
+ */
+function SolicitudesPagoListaPanel({ unidad, session }) {
+  const [abierto, setAbierto] = useState(false);
+  const [filas, setFilas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [expandido, setExpandido] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const [recarga, setRecarga] = useState(0);
+
+  useEffect(() => {
+    if (!abierto) return;
+    let vivo = true;
+    (async () => {
+      setCargando(true);
+      const { data } = await supabase.from("solicitudes_pago").select("*")
+        .eq("compania", unidad).order("folio", { ascending: false }).order("revision", { ascending: false });
+      if (!vivo) return;
+      setFilas(data || []);
+      setCargando(false);
+    })();
+    return () => { vivo = false; };
+  }, [unidad, abierto, recarga]);
+
+  // Solo la revisión de mayor número por folio, para la lista principal.
+  const porFolio = {};
+  filas.forEach((s) => { if (!porFolio[s.folio] || s.revision > porFolio[s.folio].revision) porFolio[s.folio] = s; });
+  const vigentes = Object.values(porFolio).sort((a, b) => b.folio - a.folio);
+  const historialDe = (folio) => filas.filter((s) => s.folio === folio).sort((a, b) => b.revision - a.revision);
+
+  return (
+    <div style={{ marginBottom: 16 }}>
+      <Button variant={abierto ? "primary" : "ghost"} onClick={() => setAbierto(!abierto)}>
+        Solicitudes de Pago generadas {abierto ? "▲" : "▼"}
+      </Button>
+
+      {abierto && (
+        <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 14, marginTop: 10 }}>
+          {cargando ? (
+            <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
+          ) : !vigentes.length ? (
+            <div style={{ fontSize: 12.5, color: T.textFaint }}>Todavía no se ha generado ninguna Solicitud de Pago en {unidad}.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
+              <thead>
+                <tr style={{ borderBottom: `1px solid ${T.borderSoft}` }}>
+                  <th style={{ ...tdStyle, textAlign: "left" }}>Folio</th>
+                  <th style={{ ...tdStyle, textAlign: "left" }}>Fecha</th>
+                  <th style={{ ...tdStyle, textAlign: "left" }}>Proveedor</th>
+                  <th style={{ ...tdStyle, textAlign: "left" }}>Proyecto</th>
+                  <th style={{ ...tdStyle, textAlign: "right" }}>A pagar</th>
+                  <th style={{ ...tdStyle, textAlign: "center" }}>Revisión</th>
+                  <th style={{ ...tdStyle, textAlign: "right" }}>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {vigentes.map((s) => (
+                  <React.Fragment key={s.folio}>
+                    <tr style={{ borderTop: `1px solid ${T.borderSoft}` }}>
+                      <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{s.folio}</td>
+                      <td style={tdStyle}>{s.fecha_elaboracion}</td>
+                      <td style={tdStyle}>{s.proveedor || "—"}</td>
+                      <td style={tdStyle}>{s.proyecto || "—"}</td>
+                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(s.total_a_pagar, s.moneda === "Dólares" ? "USD" : "MXP")}</td>
+                      <td style={{ ...tdStyle, textAlign: "center" }}>
+                        {historialDe(s.folio).length > 1 ? (
+                          <button type="button" onClick={() => setExpandido(expandido === s.folio ? null : s.folio)}
+                            style={{ background: "transparent", border: "none", color: T.accent, cursor: "pointer", fontSize: 11.5 }}>
+                            {s.revision} ({historialDe(s.folio).length}) {expandido === s.folio ? "▲" : "▼"}
+                          </button>
+                        ) : s.revision}
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: "right" }}>
+                        <Button variant="ghost" onClick={() => setEditando(s)}>Editar</Button>
+                        <Button variant="ghost" onClick={() => generarPdfSPP(s)}>PDF</Button>
+                        <Button variant="ghost" onClick={() => generarExcelSPP(s)}>Excel</Button>
+                      </td>
+                    </tr>
+                    {expandido === s.folio && historialDe(s.folio).slice(1).map((rev) => (
+                      <tr key={rev.id} style={{ background: T.panel }}>
+                        <td style={tdStyle}></td>
+                        <td style={{ ...tdStyle, color: T.textFaint }} colSpan={4}>
+                          Revisión {rev.revision} — {formatFechaHora(rev.created_at)}
+                        </td>
+                        <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, color: T.textFaint }}>{money(rev.total_a_pagar, rev.moneda === "Dólares" ? "USD" : "MXP")}</td>
+                        <td style={{ ...tdStyle, textAlign: "right" }}>
+                          <Button variant="ghost" onClick={() => generarPdfSPP(rev)}>PDF</Button>
+                          <Button variant="ghost" onClick={() => generarExcelSPP(rev)}>Excel</Button>
+                        </td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {editando && (
+        <EditarSolicitudPagoModal
+          solicitud={editando}
+          unidad={unidad}
+          session={session}
+          onClose={() => setEditando(null)}
+          onGuardado={() => setRecarga((x) => x + 1)}
+        />
+      )}
+    </div>
   );
 }
 
@@ -6319,15 +6591,16 @@ function cruzarCatalogoPago(valor, catalogo) {
  * cuenta que no coincide exactamente se deja sin vincular, con aviso, en
  * vez de forzar la coincidencia más parecida.
  */
-function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccionesApi }) {
+function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
   const [abierto, setAbierto] = useState(false);
-  const [sheetId, setSheetId] = useState(null);
+  const [hojas, setHojas] = useState([]);
   const [cargandoConfig, setCargandoConfig] = useState(true);
   const [gsiListo, setGsiListo] = useState(!!window.google?.accounts?.oauth2);
   const [token, setToken] = useState(null);
   const [conectando, setConectando] = useState(false);
   const [buscando, setBuscando] = useState(false);
-  const [preview, setPreview] = useState(null); // { importables: [], noImportables: [], colProcesadoIdx }
+  const [preview, setPreview] = useState(null); // { nuevas, yaExistian, duplicadasEnHoja, noImportables }
+  const [erroresHojas, setErroresHojas] = useState([]); // hojas que fallaron al leer, sin bloquear las demás
   const [importando, setImportando] = useState(false);
   const [resultado, setResultado] = useState(null);
 
@@ -6335,11 +6608,12 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
     let vivo = true;
     (async () => {
       setCargandoConfig(true);
-      const { data } = await supabase.from("config_companias").select("google_sheet_id").eq("compania", unidad).maybeSingle();
+      const { data } = await supabase.from("sheets_importacion_transacciones")
+        .select("*").eq("compania", unidad).eq("activo", true).order("etiqueta");
       if (!vivo) return;
-      setSheetId(data?.google_sheet_id || null);
+      setHojas(data || []);
       setCargandoConfig(false);
-      setToken(null); setPreview(null); setResultado(null); // cambiar de compañía obliga a reconectar y rebuscar
+      setToken(null); setPreview(null); setResultado(null); setErroresHojas([]); // cambiar de compañía obliga a reconectar y rebuscar
     })();
     return () => { vivo = false; };
   }, [unidad]);
@@ -6368,125 +6642,164 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
     client.requestAccessToken();
   };
 
+  /**
+   * Lee UNA hoja y devuelve sus filas ya clasificadas. Cada fila importable
+   * lleva consigo la etiqueta, el id de la hoja y el índice de su columna
+   * "Procesado" —puede estar en una posición distinta en cada hoja— para
+   * poder marcarla de vuelta en el lugar correcto después.
+   */
+  const leerHoja = async (hoja) => {
+    const resp = await fetch(
+      `https://sheets.googleapis.com/v4/spreadsheets/${hoja.google_sheet_id}/values/A:Z`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (resp.status === 401) { setToken(null); throw new Error("La sesión con Google expiró — conéctate de nuevo."); }
+    if (!resp.ok) {
+      let detalle = "";
+      try { detalle = (await resp.json())?.error?.message || ""; } catch { /* el cuerpo no era JSON */ }
+      console.error("Sheets API —", hoja.etiqueta, hoja.google_sheet_id, "— respuesta:", resp.status, detalle);
+      throw new Error(`Google respondió con error ${resp.status}${detalle ? `: ${detalle}` : ""}`);
+    }
+    const data = await resp.json();
+    const filas = data.values || [];
+    if (!filas.length) return { importables: [], noImportables: [] };
+
+    const encabezados = filas[0].map((h) => (h || "").trim());
+    const idx = (nombre) => encabezados.findIndex((h) => h.toLowerCase() === nombre.toLowerCase());
+    const col = {
+      fechaPago: idx("Fecha Pago"), compania: idx("Compañía"), cnt: idx("Cnt"), zona: idx("Zona"),
+      solicitante: idx("Solicitante"), proyecto: idx("Proyecto"), area: idx("Área"), smi: idx("SMI"),
+      idProvSae: idx("Id Prov SAE"), folioCompraSae: idx("Folio Compra SAE"), folioFactura: idx("Folio Factura"),
+      formaPago: idx("Forma de Pago"), metodoPago: idx("Método de Pago"), proveedor: idx("Proveedor"),
+      concepto: idx("Concepto"), banco: idx("Banco"), clabe: idx("CLABE"), refPago: idx("Ref Pago"),
+      importe: idx("Importe"), moneda: idx("Moneda"), procesado: idx("Procesado"),
+    };
+    if (col.procesado === -1) throw new Error('No se encontró la columna "Procesado" en la hoja — sin ella no se puede saber qué filas ya se importaron.');
+    if (col.importe === -1 || col.fechaPago === -1) throw new Error('Faltan columnas esenciales en la hoja ("Importe" y/o "Fecha Pago").');
+
+    const dato = (row, i) => (i >= 0 && row[i] != null) ? String(row[i]).trim() : "";
+
+    const importables = [];
+    const noImportables = [];
+    filas.slice(1).forEach((row, i) => {
+      const numeroFila = i + 2; // la fila 1 es encabezado
+      if (SHEETS_PROCESADO_VALORES.test(dato(row, col.procesado))) return; // ya importada antes
+
+      const companiaHoja = dato(row, col.compania);
+      const idSae = dato(row, col.idProvSae);
+      const clabeHoja = dato(row, col.clabe);
+      const bancoHoja = dato(row, col.banco);
+      const fechaPago = fechaSheetAIso(dato(row, col.fechaPago));
+      const importe = limpiarImporteSheet(dato(row, col.importe));
+
+      if (!fechaPago || !importe) {
+        noImportables.push({ numeroFila, hoja: hoja.etiqueta, motivo: !fechaPago ? "Sin Fecha Pago" : "Importe vacío o en cero" });
+        return;
+      }
+
+      const proveedorMatch = idSae
+        ? proveedoresApi.rows.find((p) => p.unidad === unidad && String(p.id_sae || "").trim() === idSae)
+        : null;
+      const cuentaMatch = (proveedorMatch && clabeHoja)
+        ? cuentasApi.rows.find((c) => c.proveedor_id === proveedorMatch.id && (c.clabe || "").trim() === clabeHoja)
+        : null;
+      const formaPago = cruzarCatalogoPago(dato(row, col.formaPago), FORMAS_PAGO);
+      const metodoPago = cruzarCatalogoPago(dato(row, col.metodoPago), METODOS_PAGO);
+
+      const avisos = [];
+      if (companiaHoja && companiaHoja.toUpperCase() !== unidad) avisos.push(`La hoja dice "${companiaHoja}" — se está importando como ${unidad}`);
+      if (idSae && !proveedorMatch) avisos.push(`Proveedor SAE ${idSae} no está dado de alta en ${unidad}`);
+      if (clabeHoja && !cuentaMatch) avisos.push("La CLABE no coincide con ninguna cuenta del proveedor en el catálogo");
+      if (!formaPago.reconocido) avisos.push(`Forma de Pago "${dato(row, col.formaPago)}" no reconocida`);
+      if (!metodoPago.reconocido) avisos.push(`Método de Pago "${dato(row, col.metodoPago)}" no reconocida`);
+
+      importables.push({
+        numeroFila, avisos,
+        hoja: hoja.etiqueta, sheetId: hoja.google_sheet_id, colProcesadoIdx: col.procesado,
+        registro: {
+          id: uid(), unidad_detectada: unidad, dia: fechaPago,
+          folio_transaccion: dato(row, col.cnt) || null,
+          zona: dato(row, col.zona), solicitante: dato(row, col.solicitante),
+          proyecto: dato(row, col.proyecto), area: dato(row, col.area), smi: dato(row, col.smi),
+          folio_compra_sae: dato(row, col.folioCompraSae) || null, folio_factura: dato(row, col.folioFactura) || null,
+          forma_pago: formaPago.valor, metodo_pago: metodoPago.valor,
+          proveedor: proveedorMatch?.nombre || dato(row, col.proveedor),
+          proveedor_id: proveedorMatch?.id || null,
+          concepto_detallado: dato(row, col.concepto),
+          banco_importado: bancoHoja || null, clabe_importada: clabeHoja || null,
+          cuenta_id: cuentaMatch?.id || null,
+          referencia_pago: dato(row, col.refPago),
+          importe, moneda: (dato(row, col.moneda) || "MXP").toUpperCase(),
+          // Sin partida: vincularla a mano es la parte que sí necesita
+          // criterio humano, igual que con cualquier import masivo en esta
+          // app. Queda en "Sin vincular" hasta que alguien la resuelva.
+          partida_id: null, categoria: "", status: "No Pagado", fecha_pago: null,
+        },
+      });
+    });
+
+    return { importables, noImportables };
+  };
+
   const buscarFilasNuevas = async () => {
     setBuscando(true);
     setPreview(null);
     setResultado(null);
+    setErroresHojas([]);
     try {
-      const resp = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values/A:Z`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
-      if (resp.status === 401) { setToken(null); throw new Error("La sesión con Google expiró — conéctate de nuevo."); }
-      if (!resp.ok) {
-        // Google manda el detalle real en el cuerpo — mostrar solo el
-        // número de estado no dice nada de POR QUÉ falló.
-        let detalle = "";
-        try { detalle = (await resp.json())?.error?.message || ""; } catch { /* el cuerpo no era JSON */ }
-        console.error("Sheets API — ID usado:", sheetId, "— respuesta:", resp.status, detalle);
-        throw new Error(`Google respondió con error ${resp.status}${detalle ? `: ${detalle}` : ""}`);
-      }
-      const data = await resp.json();
-      const filas = data.values || [];
-      if (!filas.length) { setPreview({ importables: [], noImportables: [], colProcesadoIdx: -1 }); return; }
-
-      const encabezados = filas[0].map((h) => (h || "").trim());
-      const idx = (nombre) => encabezados.findIndex((h) => h.toLowerCase() === nombre.toLowerCase());
-      const col = {
-        fechaPago: idx("Fecha Pago"), compania: idx("Compañía"), cnt: idx("Cnt"), zona: idx("Zona"),
-        solicitante: idx("Solicitante"), proyecto: idx("Proyecto"), area: idx("Área"), smi: idx("SMI"),
-        idProvSae: idx("Id Prov SAE"), folioCompraSae: idx("Folio Compra SAE"), folioFactura: idx("Folio Factura"),
-        formaPago: idx("Forma de Pago"), metodoPago: idx("Método de Pago"), proveedor: idx("Proveedor"),
-        concepto: idx("Concepto"), banco: idx("Banco"), clabe: idx("CLABE"), refPago: idx("Ref Pago"),
-        importe: idx("Importe"), moneda: idx("Moneda"), procesado: idx("Procesado"),
-      };
-      if (col.procesado === -1) throw new Error('No se encontró la columna "Procesado" en la hoja — sin ella no se puede saber qué filas ya se importaron.');
-      if (col.importe === -1 || col.fechaPago === -1) throw new Error('Faltan columnas esenciales en la hoja ("Importe" y/o "Fecha Pago").');
-
-      const dato = (row, i) => (i >= 0 && row[i] != null) ? String(row[i]).trim() : "";
-
-      const importables = [];
-      const noImportables = [];
-      filas.slice(1).forEach((row, i) => {
-        const numeroFila = i + 2; // la fila 1 es encabezado
-        if (SHEETS_PROCESADO_VALORES.test(dato(row, col.procesado))) return; // ya importada antes
-
-        const companiaHoja = dato(row, col.compania);
-        const idSae = dato(row, col.idProvSae);
-        const clabeHoja = dato(row, col.clabe);
-        const bancoHoja = dato(row, col.banco);
-        const fechaPago = fechaSheetAIso(dato(row, col.fechaPago));
-        const importe = limpiarImporteSheet(dato(row, col.importe));
-
-        if (!fechaPago || !importe) {
-          noImportables.push({ numeroFila, motivo: !fechaPago ? "Sin Fecha Pago" : "Importe vacío o en cero" });
-          return;
+      /* Cada hoja se lee por separado: si una falla (una URL mal puesta, un
+         permiso pendiente), las demás no se bloquean por eso — se avisa cuál
+         falló y se sigue con las que sí respondieron. */
+      const resultadosPorHoja = [];
+      const errores = [];
+      for (const hoja of hojas) {
+        try {
+          resultadosPorHoja.push(await leerHoja(hoja));
+        } catch (err) {
+          errores.push({ etiqueta: hoja.etiqueta, mensaje: err.message || String(err) });
         }
+      }
+      setErroresHojas(errores);
+      if (!resultadosPorHoja.length) {
+        if (!errores.length) setPreview({ nuevas: [], yaExistian: [], duplicadasEnHoja: [], noImportables: [] });
+        return;
+      }
 
-        const proveedorMatch = idSae
-          ? proveedoresApi.rows.find((p) => p.unidad === unidad && String(p.id_sae || "").trim() === idSae)
-          : null;
-        const cuentaMatch = (proveedorMatch && clabeHoja)
-          ? cuentasApi.rows.find((c) => c.proveedor_id === proveedorMatch.id && (c.clabe || "").trim() === clabeHoja)
-          : null;
-        const formaPago = cruzarCatalogoPago(dato(row, col.formaPago), FORMAS_PAGO);
-        const metodoPago = cruzarCatalogoPago(dato(row, col.metodoPago), METODOS_PAGO);
-
-        const avisos = [];
-        if (companiaHoja && companiaHoja.toUpperCase() !== unidad) avisos.push(`La hoja dice "${companiaHoja}" — se está importando como ${unidad}`);
-        if (idSae && !proveedorMatch) avisos.push(`Proveedor SAE ${idSae} no está dado de alta en ${unidad}`);
-        if (clabeHoja && !cuentaMatch) avisos.push("La CLABE no coincide con ninguna cuenta del proveedor en el catálogo");
-        if (!formaPago.reconocido) avisos.push(`Forma de Pago "${dato(row, col.formaPago)}" no reconocida`);
-        if (!metodoPago.reconocido) avisos.push(`Método de Pago "${dato(row, col.metodoPago)}" no reconocida`);
-
-        importables.push({
-          numeroFila, avisos,
-          registro: {
-            id: uid(), unidad_detectada: unidad, dia: fechaPago,
-            folio_transaccion: dato(row, col.cnt) || null,
-            zona: dato(row, col.zona), solicitante: dato(row, col.solicitante),
-            proyecto: dato(row, col.proyecto), area: dato(row, col.area), smi: dato(row, col.smi),
-            folio_compra_sae: dato(row, col.folioCompraSae) || null, folio_factura: dato(row, col.folioFactura) || null,
-            forma_pago: formaPago.valor, metodo_pago: metodoPago.valor,
-            proveedor: proveedorMatch?.nombre || dato(row, col.proveedor),
-            proveedor_id: proveedorMatch?.id || null,
-            concepto_detallado: dato(row, col.concepto),
-            banco_importado: bancoHoja || null, clabe_importada: clabeHoja || null,
-            cuenta_id: cuentaMatch?.id || null,
-            referencia_pago: dato(row, col.refPago),
-            importe, moneda: (dato(row, col.moneda) || "MXP").toUpperCase(),
-            // Sin partida: vincularla a mano es la parte que sí necesita
-            // criterio humano, igual que con cualquier import masivo en esta
-            // app. Queda en "Sin vincular" hasta que alguien la resuelva.
-            partida_id: null, categoria: "", status: "No Pagado", fecha_pago: null,
-          },
-        });
-      });
+      const importables = resultadosPorHoja.flatMap((r) => r.importables);
+      const noImportables = resultadosPorHoja.flatMap((r) => r.noImportables);
 
       /* Antes de armar el resultado final: si un intento anterior se cayó a
-         medio camino (por ejemplo, el bug de fechas de la v2.10.2), algunas
-         de estas filas pueden YA estar guardadas —nunca se marcó Procesado
-         porque el proceso completo no terminó con éxito—. Insertarlas de
-         nuevo chocaría contra folio_transaccion, que es único. Se revisan
-         contra la base ANTES de insertar, no se descubre por el error. */
+         medio camino, algunas de estas filas pueden YA estar guardadas —nunca
+         se marcó Procesado porque el proceso completo no terminó con éxito—.
+         Se revisan contra la base ANTES de insertar, no se descubre por el
+         error de folio_transaccion duplicado.
+
+         La revisión es GLOBAL, sin filtrar por unidad_detectada: el índice
+         único de folio_transaccion en la base no distingue compañía —el
+         mismo folio no puede existir en OSB, CTM o ISE a la vez—, así que
+         filtrar aquí por unidad habría dejado pasar como "nueva" una fila
+         cuyo folio ya existe en OTRA compañía, y habría chocado igual al
+         insertar. */
       const foliosDelLote = [...new Set(importables.map((f) => f.registro.folio_transaccion).filter(Boolean))];
       let foliosYaEnBase = new Set();
       if (foliosDelLote.length) {
         const { data: existentes, error: errFolios } = await supabase
           .from("transacciones").select("folio_transaccion")
-          .eq("unidad_detectada", unidad).in("folio_transaccion", foliosDelLote);
+          .in("folio_transaccion", foliosDelLote);
         if (errFolios) throw errFolios;
         foliosYaEnBase = new Set((existentes || []).map((r) => r.folio_transaccion));
       }
 
-      // Dos filas de la MISMA hoja con el mismo folio: no es un choque contra
-      // la base, es un dato repetido en el origen. Se separan para que la
-      // persona lo revise en vez de importar una y perder la otra en silencio.
+      // El conteo es sobre el conjunto COMBINADO de todas las hojas: un folio
+      // repetido entre dos hojas de la misma compañía es tan problemático
+      // como uno repetido dentro de la misma hoja.
       const conteoFolios = {};
       importables.forEach((f) => {
         const fo = f.registro.folio_transaccion;
         if (fo) conteoFolios[fo] = (conteoFolios[fo] || 0) + 1;
       });
+      console.log("Folios leídos de cada fila:", importables.map((f) => `${f.hoja} fila ${f.numeroFila}: "${f.registro.folio_transaccion}"`));
+      console.log("Conteo por folio (>1 = se marca como duplicada):", conteoFolios);
 
       const nuevas = [], yaExistian = [], duplicadasEnHoja = [];
       importables.forEach((f) => {
@@ -6496,9 +6809,9 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
         nuevas.push(f);
       });
 
-      setPreview({ nuevas, yaExistian, duplicadasEnHoja, noImportables, colProcesadoIdx: col.procesado });
+      setPreview({ nuevas, yaExistian, duplicadasEnHoja, noImportables });
     } catch (err) {
-      alert("No se pudo leer la hoja: " + (err.message || err));
+      alert("No se pudo completar la búsqueda: " + (err.message || err));
     } finally {
       setBuscando(false);
     }
@@ -6512,33 +6825,67 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
     if (!confirm(`Se van a resolver ${partes.join(" y ")}, en ${unidad}. Las nuevas quedan sin partida vinculada — "Sin vincular" para resolverlas a mano.`)) return;
     setImportando(true);
     try {
-      if (preview.nuevas.length) await transaccionesApi.bulkInsert(preview.nuevas.map((f) => f.registro));
-      /* "Procesado" se marca DESPUÉS de guardar con éxito, para las nuevas
-         Y para las que ya existían —ambas quedan resueltas—, pero NO para
-         las duplicadas dentro de la propia hoja: esas necesitan que alguien
-         las revise, y marcarlas las escondería para siempre. */
-      const resueltas = [...preview.nuevas, ...preview.yaExistian];
-      const letra = columnaLetra(preview.colProcesadoIdx);
-      const dataUpdate = resueltas.map((f) => ({ range: `${letra}${f.numeroFila}`, values: [["TRUE"]] }));
-      const resp = await fetch(
-        `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
-        {
-          method: "POST",
-          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-          body: JSON.stringify({ valueInputOption: "RAW", data: dataUpdate }),
-        }
-      );
+      /* Una fila a la vez, no un solo insert masivo: el índice único de
+         folio_transaccion es PARCIAL (excluye nulos), y Supabase no puede
+         apuntar su upsert/onConflict a un índice parcial —lo intenté y
+         truena con "no unique or exclusion constraint matching"—. Insertando
+         una por una, si UNA choca (una carrera de tiempos, alguien más
+         corriendo el importador casi al mismo tiempo), esa fila puntual se
+         reporta y las demás se guardan con normalidad; no se pierde el lote
+         completo por una sola coincidencia. */
+      const insertadasOk = [];
+      const fallidasPorColision = [];
+      for (const f of preview.nuevas) {
+        const { error: errFila } = await supabase.from("transacciones").insert(f.registro);
+        if (errFila) fallidasPorColision.push({ ...f, motivo: errFila.message });
+        else insertadasOk.push(f);
+      }
+
+      /* "Procesado" se marca DESPUÉS de guardar con éxito, para las nuevas Y
+         para las que ya existían —ambas quedan resueltas—, pero NO para las
+         duplicadas dentro de la propia hoja. Se agrupan por hoja de origen:
+         cada spreadsheet necesita su propia llamada, no se puede mezclar en
+         un solo batchUpdate. */
+      const resueltas = [...insertadasOk, ...preview.yaExistian];
+      const porHoja = new Map();
+      resueltas.forEach((f) => {
+        if (!porHoja.has(f.sheetId)) porHoja.set(f.sheetId, []);
+        porHoja.get(f.sheetId).push(f);
+      });
+
+      const fallosMarcado = [];
+      for (const [sheetId, filasDeEstaHoja] of porHoja) {
+        const letra = columnaLetra(filasDeEstaHoja[0].colProcesadoIdx);
+        const dataUpdate = filasDeEstaHoja.map((f) => ({ range: `${letra}${f.numeroFila}`, values: [["TRUE"]] }));
+        console.log("Marcando Procesado — hoja:", filasDeEstaHoja[0].hoja, sheetId, "— columna:", letra, "(índice", filasDeEstaHoja[0].colProcesadoIdx, ") — rangos:", dataUpdate.map((d) => d.range));
+        const resp = await fetch(
+          `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
+          {
+            method: "POST",
+            headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+            body: JSON.stringify({ valueInputOption: "RAW", data: dataUpdate }),
+          }
+        );
+        const cuerpoResp = await resp.clone().json().catch(() => null);
+        console.log("Respuesta de Google al marcar Procesado:", resp.status, cuerpoResp);
+        if (!resp.ok) fallosMarcado.push(filasDeEstaHoja[0].hoja);
+      }
+
       const pendienteDuplicadas = preview.duplicadasEnHoja.length
-        ? ` ${preview.duplicadasEnHoja.length} fila(s) con folio repetido en la propia hoja se dejaron sin marcar — corrígelas ahí y vuelve a buscar.`
+        ? ` ${preview.duplicadasEnHoja.length} fila(s) con folio repetido se dejaron sin marcar — corrígelas en la hoja y vuelve a buscar.`
         : "";
-      if (!resp.ok) {
-        setResultado({ tono: "amber", texto: `Se resolvieron ${resueltas.length} transacción(es), pero no se pudo marcar "Procesado" en la hoja (error ${resp.status}). Márcalas a mano ahí para no volver a importarlas.${pendienteDuplicadas}` });
+      const pendienteColision = fallidasPorColision.length
+        ? ` ${fallidasPorColision.length} fila(s) chocaron al guardar (${fallidasPorColision.map((f) => f.registro.folio_transaccion).join(", ")}) — probablemente alguien más las importó justo antes; no se marcan y van a volver a aparecer en la próxima búsqueda.`
+        : "";
+      if (fallosMarcado.length) {
+        setResultado({ tono: "amber", texto: `Se resolvieron ${resueltas.length} transacción(es), pero no se pudo marcar "Procesado" en: ${fallosMarcado.join(", ")}. Márcalas a mano ahí para no volver a importarlas.${pendienteDuplicadas}${pendienteColision}` });
       } else {
-        setResultado({ tono: "teal", texto: `${preview.nuevas.length} transacción(es) nuevas importadas${preview.yaExistian.length ? `, ${preview.yaExistian.length} que ya existían marcadas como Procesado` : ""}.${pendienteDuplicadas}` });
+        setResultado({ tono: fallidasPorColision.length ? "amber" : "teal", texto: `${insertadasOk.length} transacción(es) nuevas importadas${preview.yaExistian.length ? `, ${preview.yaExistian.length} que ya existían marcadas como Procesado` : ""}.${pendienteDuplicadas}${pendienteColision}` });
       }
       setPreview(null);
     } catch (err) {
-      alert("No se pudo completar la importación: " + (err.message || err));
+      alert("No se pudo completar la importación: " + (err.message || err) + (err.details ? `\n\nDetalle: ${err.details}` : ""));
+      console.error("Importación — folios que se intentaron insertar:", preview?.nuevas.map((f) => f.registro.folio_transaccion));
     } finally {
       setImportando(false);
     }
@@ -6554,20 +6901,34 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
 
       {abierto && (
         <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 14, marginTop: 10 }}>
-          {!sheetId ? (
+          {!hojas.length ? (
             <div style={{ fontSize: 12.5, color: T.textDim }}>
-              {unidad} todavía no tiene una hoja configurada. Ve a Catálogo → Solicitudes de Pago y captura el ID
-              de la hoja de Google Sheets al final del panel.
+              {unidad} todavía no tiene ninguna hoja configurada. Ve a Catálogo → Solicitudes de Pago y captura
+              al menos una al final del panel — puede haber varias, por ejemplo una por zona.
             </div>
           ) : !token ? (
-            <Button onClick={conectar} disabled={conectando || !gsiListo}>
-              {conectando ? "Conectando…" : "Conectar con Google"}
-            </Button>
+            <>
+              <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 8 }}>
+                Hojas configuradas para {unidad}: {hojas.map((h) => h.etiqueta).join(", ")}
+              </div>
+              <Button onClick={conectar} disabled={conectando || !gsiListo}>
+                {conectando ? "Conectando…" : "Conectar con Google"}
+              </Button>
+            </>
           ) : (
             <>
               <Button onClick={buscarFilasNuevas} disabled={buscando}>
-                {buscando ? "Buscando…" : "Buscar filas nuevas"}
+                {buscando ? "Buscando…" : `Buscar filas nuevas (${hojas.length} hoja${hojas.length > 1 ? "s" : ""})`}
               </Button>
+
+              {erroresHojas.length > 0 && (
+                <div style={{ marginTop: 10, fontSize: 12, color: T.red }}>
+                  {erroresHojas.map((e) => (
+                    <div key={e.etiqueta}>"{e.etiqueta}": {e.mensaje}</div>
+                  ))}
+                  {preview && " Las demás hojas sí se buscaron con normalidad."}
+                </div>
+              )}
 
               {resultado && (
                 <div style={{ marginTop: 10, fontSize: 12, color: resultado.tono === "teal" ? T.teal : T.amber }}>
@@ -6578,28 +6939,29 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
               {preview && (
                 <div style={{ marginTop: 14 }}>
                   {!preview.nuevas.length && !preview.yaExistian.length && !preview.duplicadasEnHoja.length && !preview.noImportables.length && (
-                    <div style={{ fontSize: 12.5, color: T.textFaint }}>No hay filas nuevas — todo lo de la hoja ya está marcado como Procesado.</div>
+                    <div style={{ fontSize: 12.5, color: T.textFaint }}>No hay filas nuevas — todo lo de las hojas ya está marcado como Procesado.</div>
                   )}
 
                   {preview.noImportables.length > 0 && (
                     <div style={{ fontSize: 11.5, color: T.amber, marginBottom: 10 }}>
-                      {preview.noImportables.length} fila(s) sin Fecha Pago o Importe se omiten — corrígelas en la hoja
-                      y vuelve a buscar (fila{preview.noImportables.length > 1 ? "s" : ""} {preview.noImportables.map((n) => n.numeroFila).join(", ")}).
+                      {preview.noImportables.length} fila(s) sin Fecha Pago o Importe se omiten — corrígelas en su hoja
+                      y vuelve a buscar ({preview.noImportables.map((n) => `${n.hoja} fila ${n.numeroFila}`).join(", ")}).
                     </div>
                   )}
 
                   {preview.duplicadasEnHoja.length > 0 && (
                     <div style={{ fontSize: 11.5, color: T.red, marginBottom: 10 }}>
-                      {preview.duplicadasEnHoja.length} fila(s) repiten un folio dentro de la misma hoja —no se importan
-                      ni se marcan como Procesado, para no perder ninguna en silencio. Corrige el folio duplicado en la hoja
-                      y vuelve a buscar (fila{preview.duplicadasEnHoja.length > 1 ? "s" : ""} {preview.duplicadasEnHoja.map((n) => n.numeroFila).join(", ")}).
+                      {preview.duplicadasEnHoja.length} fila(s) repiten un folio —dentro de la misma hoja, o entre dos
+                      hojas distintas— no se importan ni se marcan como Procesado, para no perder ninguna en silencio.
+                      Corrige el folio duplicado y vuelve a buscar ({preview.duplicadasEnHoja.map((n) => `${n.hoja} fila ${n.numeroFila} (folio "${n.registro.folio_transaccion}")`).join(", ")}).
                     </div>
                   )}
 
                   {preview.yaExistian.length > 0 && (
                     <div style={{ fontSize: 11.5, color: T.textDim, marginBottom: 10 }}>
-                      {preview.yaExistian.length} fila(s) ya estaban guardadas —probablemente de un intento anterior que no
-                      terminó de marcar Procesado— no se van a duplicar, solo se marcan como Procesado en la hoja.
+                      {preview.yaExistian.length} fila(s) ya tienen ese folio guardado en la base —de un intento anterior
+                      que no llegó a marcar Procesado, o porque otra compañía ya usó ese mismo número— no se van a
+                      duplicar, solo se marcan como Procesado en su hoja.
                     </div>
                   )}
 
@@ -6613,6 +6975,7 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11.5 }}>
                         <thead>
                           <tr style={{ background: T.panel, position: "sticky", top: 0 }}>
+                            <th style={{ ...tdStyle, textAlign: "left" }}>Hoja</th>
                             <th style={{ ...tdStyle, textAlign: "left" }}>Día</th>
                             <th style={{ ...tdStyle, textAlign: "left" }}>Proveedor</th>
                             <th style={{ ...tdStyle, textAlign: "left" }}>Concepto</th>
@@ -6622,7 +6985,8 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, transaccion
                         </thead>
                         <tbody>
                           {preview.nuevas.map((f) => (
-                            <tr key={f.numeroFila} style={{ borderTop: `1px solid ${T.borderSoft}` }}>
+                            <tr key={`${f.sheetId}-${f.numeroFila}`} style={{ borderTop: `1px solid ${T.borderSoft}` }}>
+                              <td style={{ ...tdStyle, color: T.textFaint }}>{f.hoja}</td>
                               <td style={tdStyle}>{f.registro.dia}</td>
                               <td style={tdStyle}>{f.registro.proveedor || "—"}</td>
                               <td style={tdStyle}>{f.registro.concepto_detallado || "—"}</td>
@@ -7325,7 +7689,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           </div>
         }
       >
-        <ImportadorSheetsPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} transaccionesApi={transaccionesApi} />
+        <ImportadorSheetsPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
+        <SolicitudesPagoListaPanel unidad={unidad} session={session} />
         <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
           {/* Fila 1 — qué transacciones se ven. Fila 2 — cómo se ven las que
               ya quedaron. Antes vivían once controles en una sola fila que
@@ -9370,7 +9735,7 @@ function ConfigCompaniaPanel({ unidad }) {
       const { data: max } = await supabase.from("solicitudes_pago").select("folio")
         .eq("compania", unidad).order("folio", { ascending: false }).limit(1);
       if (!vivo) return;
-      setCfg(data || { compania: unidad, spp_ultimo: 0, spp_responsable: "", spp_lugar_adquisicion: "", google_sheet_id: "" });
+      setCfg(data || { compania: unidad, spp_ultimo: 0, spp_responsable: "", spp_lugar_adquisicion: "" });
       setUltimoEmitido((max && max[0]?.folio) || 0);
     })();
     return () => { vivo = false; };
@@ -9387,7 +9752,6 @@ function ConfigCompaniaPanel({ unidad }) {
         spp_ultimo: Number(cfg.spp_ultimo) || 0,
         spp_responsable: cfg.spp_responsable || "",
         spp_lugar_adquisicion: cfg.spp_lugar_adquisicion || "",
-        google_sheet_id: (cfg.google_sheet_id || "").trim(),
         updated_at: new Date().toISOString(),
       });
       if (error) throw error;
@@ -9433,21 +9797,85 @@ function ConfigCompaniaPanel({ unidad }) {
         {guardando ? "Guardando…" : "Guardar"}
       </Button>
 
-      <div style={{ borderTop: `1px solid ${T.borderSoft}`, marginTop: 20, paddingTop: 16 }}>
-        <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Importador de Transacciones (Google Sheets)</div>
-        <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 10 }}>
-          La hoja de origen de {unidad} — puedes pegar el ID o la URL completa, se extrae solo.
-        </div>
-        <Field label="ID de la hoja">
-          <TextInput
-            value={cfg.google_sheet_id || ""}
-            onChange={(e) => setCfg({ ...cfg, google_sheet_id: extraerSheetId(e.target.value) })}
-            placeholder="1xQCT022JBX1KpO5MzzLbQmvhj8dEovuZ"
-            style={{ width: 420, fontFamily: T.fontMono }}
-          />
-        </Field>
-      </div>
+      <ConfigHojasImportacion unidad={unidad} />
     </Panel>
+  );
+}
+
+/**
+ * Lista editable de hojas de Google Sheets configuradas como origen del
+ * importador de Transacciones. Una compañía puede tener varias —ISE, por
+ * ejemplo, una por zona— cada una con su propia etiqueta libre para
+ * distinguirlas; el importador las lee todas juntas en una sola búsqueda.
+ */
+function ConfigHojasImportacion({ unidad }) {
+  const [hojas, setHojas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+
+  const cargar = async () => {
+    setCargando(true);
+    const { data } = await supabase.from("sheets_importacion_transacciones")
+      .select("*").eq("compania", unidad).order("created_at");
+    setHojas(data || []);
+    setCargando(false);
+  };
+  useEffect(() => { cargar(); }, [unidad]);
+
+  const agregar = async () => {
+    const { error } = await supabase.from("sheets_importacion_transacciones")
+      .insert({ compania: unidad, etiqueta: "Nueva hoja", google_sheet_id: "" });
+    if (error) { alert("No se pudo agregar: " + error.message); return; }
+    cargar();
+  };
+  const actualizar = async (id, cambios) => {
+    setHojas((prev) => prev.map((h) => (h.id === id ? { ...h, ...cambios } : h))); // respuesta inmediata al escribir
+    const { error } = await supabase.from("sheets_importacion_transacciones").update(cambios).eq("id", id);
+    if (error) alert("No se pudo guardar: " + error.message);
+  };
+  const eliminar = async (h) => {
+    if (!confirm(`¿Quitar "${h.etiqueta}" de las hojas de ${unidad}? Esto no borra nada de la hoja de Google, solo deja de leerla.`)) return;
+    const { error } = await supabase.from("sheets_importacion_transacciones").delete().eq("id", h.id);
+    if (error) { alert("No se pudo quitar: " + error.message); return; }
+    cargar();
+  };
+
+  return (
+    <div style={{ borderTop: `1px solid ${T.borderSoft}`, marginTop: 20, paddingTop: 16 }}>
+      <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 4 }}>Importador de Transacciones (Google Sheets)</div>
+      <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 10 }}>
+        Las hojas de origen de {unidad} — puede haber más de una (por ejemplo, una por zona).
+        El importador las busca todas juntas. Puedes pegar el ID o la URL completa, se extrae solo.
+      </div>
+
+      {cargando ? (
+        <div style={{ fontSize: 12, color: T.textFaint }}>Cargando…</div>
+      ) : (
+        <>
+          {hojas.map((h) => (
+            <div key={h.id} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+              <TextInput
+                value={h.etiqueta}
+                onChange={(e) => actualizar(h.id, { etiqueta: e.target.value })}
+                placeholder="Etiqueta (ej. Poza Rica)"
+                style={{ width: 160 }}
+              />
+              <TextInput
+                value={h.google_sheet_id}
+                onChange={(e) => actualizar(h.id, { google_sheet_id: extraerSheetId(e.target.value) })}
+                placeholder="1xQCT022JBX1KpO5MzzLbQmvhj8dEovuZ"
+                style={{ width: 320, fontFamily: T.fontMono }}
+              />
+              <label style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, color: T.textDim }}>
+                <input type="checkbox" checked={h.activo} onChange={(e) => actualizar(h.id, { activo: e.target.checked })} />
+                Activa
+              </label>
+              <IconButton icon="✕" label="Quitar esta hoja" tone={T.red} onClick={() => eliminar(h)} />
+            </div>
+          ))}
+          <Button variant="ghost" onClick={agregar}>+ Agregar hoja</Button>
+        </>
+      )}
+    </div>
   );
 }
 

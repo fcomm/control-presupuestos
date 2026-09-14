@@ -34,9 +34,6 @@ const T = {
   fontMono: "ui-monospace, SFMono-Regular, 'SF Mono', Consolas, 'Liberation Mono', monospace",
 };
 
-
-
-
 // NO hay categoría "Diversos", y es deliberado.
 //
 // En la v1.73 se agregó a los 15 rubros porque 81 partidas ya la usaban:
@@ -321,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.13.5";
+const APP_VERSION = "2.14.0";
 const CHANGELOG = [
+  { v: "2.14.0", desc: "Cambio de fondo en el importador de Sheets: Cnt no es un folio unico -- se confirmo que son codigos como P8, P7, C9 que se repiten a proposito entre transacciones distintas. Se quita por completo la validacion de folio duplicado y la revision de ya existe en la base: el UNICO indicador de que hacer con una fila es la columna Procesado de la hoja, como se pidio. De paso, Cnt deja de guardarse en folio_transaccion -- esa columna tiene una restriccion real de unicidad en la base de datos, y seguir mandando ahi un valor que se repite habria hecho fallar el guardado de todos modos, solo que sin aviso previo en vez de bloqueado de antemano. Cnt no se esta guardando en ningun otro lado por ahora" },
   { v: "2.13.5", desc: "Se agrega el folio exacto al mensaje de filas duplicadas en el importador de Sheets, y un registro completo en consola con el folio leido de CADA fila y el conteo por folio. Se reporto que casi todas las filas de una hoja se estan marcando como duplicadas cuando el Excel muestra varias sin Procesado -- antes de corregir nada hace falta ver los valores reales que se estan leyendo, para saber si es un dato repetido de verdad en la hoja o si se esta leyendo mal la columna Cnt" },
   { v: "2.13.4", desc: "Fix real del reporte de Procesado: no era un bug al marcar la hoja, era que el guardado mismo fallaba con HTTP 409 y por diseno correcto una fila que no se guarda no se marca. La causa: el indice unico de folio_transaccion en la base es GLOBAL -- el mismo folio no puede existir en OSB, CTM o ISE a la vez -- pero la revision de ya existe? del importador solo comparaba contra transacciones de la MISMA compania. Si el folio ya existia en otra compania, se clasificaba como nueva y el insert chocaba contra el indice real. La revision ahora es global, igual que el indice" },
   { v: "2.13.3", desc: "Se agrega registro detallado (consola del navegador) al momento de marcar Procesado en la hoja: que columna y rangos exactos se mandan, y la respuesta completa de Google. La logica de esta parte se reviso a fondo y se ve correcta, pero el reporte de que Procesado no se actualiza necesita ver el payload real para diagnosticarlo con certeza en vez de seguir adivinando" },
@@ -6602,7 +6600,7 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
   const [token, setToken] = useState(null);
   const [conectando, setConectando] = useState(false);
   const [buscando, setBuscando] = useState(false);
-  const [preview, setPreview] = useState(null); // { nuevas, yaExistian, duplicadasEnHoja, noImportables }
+  const [preview, setPreview] = useState(null); // { nuevas, noImportables }
   const [erroresHojas, setErroresHojas] = useState([]); // hojas que fallaron al leer, sin bloquear las demás
   const [importando, setImportando] = useState(false);
   const [resultado, setResultado] = useState(null);
@@ -6721,7 +6719,12 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
         hoja: hoja.etiqueta, sheetId: hoja.google_sheet_id, colProcesadoIdx: col.procesado,
         registro: {
           id: uid(), unidad_detectada: unidad, dia: fechaPago,
-          folio_transaccion: dato(row, col.cnt) || null,
+          // "Cnt" NO se guarda en folio_transaccion: esa columna tiene una
+          // restricción de unicidad real en la base, y "Cnt" se repite a
+          // propósito (es una clasificación, no un consecutivo). Por ahora
+          // no se guarda en ningún lado — hay que decidir dónde, si hace
+          // falta conservarlo.
+          folio_transaccion: null,
           zona: dato(row, col.zona), solicitante: dato(row, col.solicitante),
           proyecto: dato(row, col.proyecto), area: dato(row, col.area), smi: dato(row, col.smi),
           folio_compra_sae: dato(row, col.folioCompraSae) || null, folio_factura: dato(row, col.folioFactura) || null,
@@ -6764,55 +6767,23 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
       }
       setErroresHojas(errores);
       if (!resultadosPorHoja.length) {
-        if (!errores.length) setPreview({ nuevas: [], yaExistian: [], duplicadasEnHoja: [], noImportables: [] });
+        if (!errores.length) setPreview({ nuevas: [], noImportables: [] });
         return;
       }
 
       const importables = resultadosPorHoja.flatMap((r) => r.importables);
       const noImportables = resultadosPorHoja.flatMap((r) => r.noImportables);
 
-      /* Antes de armar el resultado final: si un intento anterior se cayó a
-         medio camino, algunas de estas filas pueden YA estar guardadas —nunca
-         se marcó Procesado porque el proceso completo no terminó con éxito—.
-         Se revisan contra la base ANTES de insertar, no se descubre por el
-         error de folio_transaccion duplicado.
+      /* "Procesado" es el ÚNICO indicador de si una fila ya se importó — no
+         "Cnt"/folio, que se repite a propósito entre transacciones distintas
+         (códigos como "P8", "P7" son una clasificación, no un consecutivo
+         único). Las filas con Procesado=TRUE ya se excluyeron en leerHoja;
+         todo lo que llega aquí está, por definición, pendiente de importar.
+         No hay "ya existía" ni "folio duplicado" que revisar — esa validación
+         se quitó porque partía de un supuesto equivocado sobre qué es Cnt. */
+      const nuevas = importables;
 
-         La revisión es GLOBAL, sin filtrar por unidad_detectada: el índice
-         único de folio_transaccion en la base no distingue compañía —el
-         mismo folio no puede existir en OSB, CTM o ISE a la vez—, así que
-         filtrar aquí por unidad habría dejado pasar como "nueva" una fila
-         cuyo folio ya existe en OTRA compañía, y habría chocado igual al
-         insertar. */
-      const foliosDelLote = [...new Set(importables.map((f) => f.registro.folio_transaccion).filter(Boolean))];
-      let foliosYaEnBase = new Set();
-      if (foliosDelLote.length) {
-        const { data: existentes, error: errFolios } = await supabase
-          .from("transacciones").select("folio_transaccion")
-          .in("folio_transaccion", foliosDelLote);
-        if (errFolios) throw errFolios;
-        foliosYaEnBase = new Set((existentes || []).map((r) => r.folio_transaccion));
-      }
-
-      // El conteo es sobre el conjunto COMBINADO de todas las hojas: un folio
-      // repetido entre dos hojas de la misma compañía es tan problemático
-      // como uno repetido dentro de la misma hoja.
-      const conteoFolios = {};
-      importables.forEach((f) => {
-        const fo = f.registro.folio_transaccion;
-        if (fo) conteoFolios[fo] = (conteoFolios[fo] || 0) + 1;
-      });
-      console.log("Folios leídos de cada fila:", importables.map((f) => `${f.hoja} fila ${f.numeroFila}: "${f.registro.folio_transaccion}"`));
-      console.log("Conteo por folio (>1 = se marca como duplicada):", conteoFolios);
-
-      const nuevas = [], yaExistian = [], duplicadasEnHoja = [];
-      importables.forEach((f) => {
-        const fo = f.registro.folio_transaccion;
-        if (fo && conteoFolios[fo] > 1) { duplicadasEnHoja.push(f); return; }
-        if (fo && foliosYaEnBase.has(fo)) { yaExistian.push(f); return; }
-        nuevas.push(f);
-      });
-
-      setPreview({ nuevas, yaExistian, duplicadasEnHoja, noImportables });
+      setPreview({ nuevas, noImportables });
     } catch (err) {
       alert("No se pudo completar la búsqueda: " + (err.message || err));
     } finally {
@@ -6821,37 +6792,27 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
   };
 
   const confirmarImportacion = async () => {
-    const totalAResolver = (preview?.nuevas.length || 0) + (preview?.yaExistian.length || 0);
-    if (!totalAResolver) return;
-    const partes = [`${preview.nuevas.length} nueva(s)`];
-    if (preview.yaExistian.length) partes.push(`${preview.yaExistian.length} que ya estaban en la base (solo se marcan como Procesado)`);
-    if (!confirm(`Se van a resolver ${partes.join(" y ")}, en ${unidad}. Las nuevas quedan sin partida vinculada — "Sin vincular" para resolverlas a mano.`)) return;
+    if (!preview?.nuevas.length) return;
+    if (!confirm(`Se van a importar ${preview.nuevas.length} transacción(es) a ${unidad}, sin partida vinculada — "Sin vincular" para resolverlas a mano.`)) return;
     setImportando(true);
     try {
-      /* Una fila a la vez, no un solo insert masivo: el índice único de
-         folio_transaccion es PARCIAL (excluye nulos), y Supabase no puede
-         apuntar su upsert/onConflict a un índice parcial —lo intenté y
-         truena con "no unique or exclusion constraint matching"—. Insertando
-         una por una, si UNA choca (una carrera de tiempos, alguien más
-         corriendo el importador casi al mismo tiempo), esa fila puntual se
-         reporta y las demás se guardan con normalidad; no se pierde el lote
-         completo por una sola coincidencia. */
+      /* Una fila a la vez, no un solo insert masivo: así, si UNA fila falla
+         por cualquier motivo inesperado, esa fila puntual se reporta y las
+         demás se guardan con normalidad — no se pierde el lote completo por
+         un solo error. */
       const insertadasOk = [];
-      const fallidasPorColision = [];
+      const fallidas = [];
       for (const f of preview.nuevas) {
         const { error: errFila } = await supabase.from("transacciones").insert(f.registro);
-        if (errFila) fallidasPorColision.push({ ...f, motivo: errFila.message });
+        if (errFila) fallidas.push({ ...f, motivo: errFila.message });
         else insertadasOk.push(f);
       }
 
-      /* "Procesado" se marca DESPUÉS de guardar con éxito, para las nuevas Y
-         para las que ya existían —ambas quedan resueltas—, pero NO para las
-         duplicadas dentro de la propia hoja. Se agrupan por hoja de origen:
-         cada spreadsheet necesita su propia llamada, no se puede mezclar en
-         un solo batchUpdate. */
-      const resueltas = [...insertadasOk, ...preview.yaExistian];
+      /* "Procesado" se marca DESPUÉS de guardar con éxito. Se agrupan por
+         hoja de origen: cada spreadsheet necesita su propia llamada, no se
+         puede mezclar en un solo batchUpdate. */
       const porHoja = new Map();
-      resueltas.forEach((f) => {
+      insertadasOk.forEach((f) => {
         if (!porHoja.has(f.sheetId)) porHoja.set(f.sheetId, []);
         porHoja.get(f.sheetId).push(f);
       });
@@ -6860,7 +6821,6 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
       for (const [sheetId, filasDeEstaHoja] of porHoja) {
         const letra = columnaLetra(filasDeEstaHoja[0].colProcesadoIdx);
         const dataUpdate = filasDeEstaHoja.map((f) => ({ range: `${letra}${f.numeroFila}`, values: [["TRUE"]] }));
-        console.log("Marcando Procesado — hoja:", filasDeEstaHoja[0].hoja, sheetId, "— columna:", letra, "(índice", filasDeEstaHoja[0].colProcesadoIdx, ") — rangos:", dataUpdate.map((d) => d.range));
         const resp = await fetch(
           `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
           {
@@ -6869,26 +6829,20 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
             body: JSON.stringify({ valueInputOption: "RAW", data: dataUpdate }),
           }
         );
-        const cuerpoResp = await resp.clone().json().catch(() => null);
-        console.log("Respuesta de Google al marcar Procesado:", resp.status, cuerpoResp);
         if (!resp.ok) fallosMarcado.push(filasDeEstaHoja[0].hoja);
       }
 
-      const pendienteDuplicadas = preview.duplicadasEnHoja.length
-        ? ` ${preview.duplicadasEnHoja.length} fila(s) con folio repetido se dejaron sin marcar — corrígelas en la hoja y vuelve a buscar.`
-        : "";
-      const pendienteColision = fallidasPorColision.length
-        ? ` ${fallidasPorColision.length} fila(s) chocaron al guardar (${fallidasPorColision.map((f) => f.registro.folio_transaccion).join(", ")}) — probablemente alguien más las importó justo antes; no se marcan y van a volver a aparecer en la próxima búsqueda.`
+      const pendienteFallidas = fallidas.length
+        ? ` ${fallidas.length} fila(s) no se pudieron guardar — no se marcan y van a volver a aparecer en la próxima búsqueda.`
         : "";
       if (fallosMarcado.length) {
-        setResultado({ tono: "amber", texto: `Se resolvieron ${resueltas.length} transacción(es), pero no se pudo marcar "Procesado" en: ${fallosMarcado.join(", ")}. Márcalas a mano ahí para no volver a importarlas.${pendienteDuplicadas}${pendienteColision}` });
+        setResultado({ tono: "amber", texto: `Se importaron ${insertadasOk.length} transacción(es), pero no se pudo marcar "Procesado" en: ${fallosMarcado.join(", ")}. Márcalas a mano ahí para no volver a importarlas.${pendienteFallidas}` });
       } else {
-        setResultado({ tono: fallidasPorColision.length ? "amber" : "teal", texto: `${insertadasOk.length} transacción(es) nuevas importadas${preview.yaExistian.length ? `, ${preview.yaExistian.length} que ya existían marcadas como Procesado` : ""}.${pendienteDuplicadas}${pendienteColision}` });
+        setResultado({ tono: fallidas.length ? "amber" : "teal", texto: `${insertadasOk.length} transacción(es) importadas y marcadas como Procesado.${pendienteFallidas}` });
       }
       setPreview(null);
     } catch (err) {
       alert("No se pudo completar la importación: " + (err.message || err) + (err.details ? `\n\nDetalle: ${err.details}` : ""));
-      console.error("Importación — folios que se intentaron insertar:", preview?.nuevas.map((f) => f.registro.folio_transaccion));
     } finally {
       setImportando(false);
     }
@@ -6941,7 +6895,7 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
 
               {preview && (
                 <div style={{ marginTop: 14 }}>
-                  {!preview.nuevas.length && !preview.yaExistian.length && !preview.duplicadasEnHoja.length && !preview.noImportables.length && (
+                  {!preview.nuevas.length && !preview.noImportables.length && (
                     <div style={{ fontSize: 12.5, color: T.textFaint }}>No hay filas nuevas — todo lo de las hojas ya está marcado como Procesado.</div>
                   )}
 
@@ -6949,22 +6903,6 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
                     <div style={{ fontSize: 11.5, color: T.amber, marginBottom: 10 }}>
                       {preview.noImportables.length} fila(s) sin Fecha Pago o Importe se omiten — corrígelas en su hoja
                       y vuelve a buscar ({preview.noImportables.map((n) => `${n.hoja} fila ${n.numeroFila}`).join(", ")}).
-                    </div>
-                  )}
-
-                  {preview.duplicadasEnHoja.length > 0 && (
-                    <div style={{ fontSize: 11.5, color: T.red, marginBottom: 10 }}>
-                      {preview.duplicadasEnHoja.length} fila(s) repiten un folio —dentro de la misma hoja, o entre dos
-                      hojas distintas— no se importan ni se marcan como Procesado, para no perder ninguna en silencio.
-                      Corrige el folio duplicado y vuelve a buscar ({preview.duplicadasEnHoja.map((n) => `${n.hoja} fila ${n.numeroFila} (folio "${n.registro.folio_transaccion}")`).join(", ")}).
-                    </div>
-                  )}
-
-                  {preview.yaExistian.length > 0 && (
-                    <div style={{ fontSize: 11.5, color: T.textDim, marginBottom: 10 }}>
-                      {preview.yaExistian.length} fila(s) ya tienen ese folio guardado en la base —de un intento anterior
-                      que no llegó a marcar Procesado, o porque otra compañía ya usó ese mismo número— no se van a
-                      duplicar, solo se marcan como Procesado en su hoja.
                     </div>
                   )}
 
@@ -7001,9 +6939,9 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
                       </table>
                     </div>
                   )}
-                  {(preview.nuevas.length > 0 || preview.yaExistian.length > 0) && (
+                  {preview.nuevas.length > 0 && (
                     <Button onClick={confirmarImportacion} disabled={importando} style={{ marginTop: 10 }}>
-                      {importando ? "Resolviendo…" : `Resolver ${preview.nuevas.length + preview.yaExistian.length} fila(s)`}
+                      {importando ? "Importando…" : `Importar ${preview.nuevas.length} fila(s)`}
                     </Button>
                   )}
                 </div>

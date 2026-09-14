@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.14.1";
+const APP_VERSION = "2.14.2";
 const CHANGELOG = [
+  { v: "2.14.2", desc: "El Reporte de Pagos (PDF y Excel) pasa a agruparse por GRUPO de zona -Zona Norte, Zona Sur, QRO- en vez de por la zona suelta, que es como Direccion conoce el reporte. Usa el mismo helper bloquesZonaMoneda que ya usaba el semanal oficial, asi que los dos documentos parten igual y deja de haber dos criterios conviviendo. Una zona sin grupo asignado en el catalogo conserva su propio nombre. De paso se corrige un descuadre: las transacciones SIN zona quedaban fuera del detalle -el recorrido solo pasaba por zonas no vacias- pero si contaban en el total general, asi que la suma de los bloques no daba el total del documento; ahora caen en un bloque Sin zona" },
   { v: "2.14.1", desc: "Seguridad: el panel Sin partida vinculada causo un borrado real de transacciones porque el titulo y el boton (Eliminar las N sin vincular) se prestaban a pensar que eran copias/duplicados de las de la lista normal -- son las mismas filas, solo filtradas. Titulo y texto del boton ahora lo dicen explicitamente. Ademas, el confirm() de navegador (demasiado facil de aceptar sin leer) se reemplaza por un modal que obliga a escribir ELIMINAR antes de habilitar el boton de borrar -- mismo criterio para cualquier borrado masivo irreversible que se agregue despues" },
   { v: "2.14.0", desc: "Cambio de fondo en el importador de Sheets: Cnt no es un folio unico -- se confirmo que son codigos como P8, P7, C9 que se repiten a proposito entre transacciones distintas. Se quita por completo la validacion de folio duplicado y la revision de ya existe en la base: el UNICO indicador de que hacer con una fila es la columna Procesado de la hoja, como se pidio. De paso, Cnt deja de guardarse en folio_transaccion -- esa columna tiene una restriccion real de unicidad en la base de datos, y seguir mandando ahi un valor que se repite habria hecho fallar el guardado de todos modos, solo que sin aviso previo en vez de bloqueado de antemano. Cnt no se esta guardando en ningun otro lado por ahora" },
   { v: "2.13.5", desc: "Se agrega el folio exacto al mensaje de filas duplicadas en el importador de Sheets, y un registro completo en consola con el folio leido de CADA fila y el conteo por folio. Se reporto que casi todas las filas de una hoja se estan marcando como duplicadas cuando el Excel muestra varias sin Procesado -- antes de corregir nada hace falta ver los valores reales que se estan leyendo, para saber si es un dato repetido de verdad en la hoja o si se esta leyendo mal la columna Cnt" },
@@ -8317,7 +8318,7 @@ function anchosProporcionalesPDF(columnas, filas, disponible) {
   return natural.map((w) => Math.round(w * factor));
 }
 
-function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi, cuentasApi }) {
+function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi, cuentasApi, gruposZona = {} }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const transUnidad = transacciones.filter(
@@ -8377,21 +8378,14 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   /* Compartido entre el PDF y el Excel: antes cada uno lo calculaba por su
      cuenta (y el PDF ni siquiera tenía el resumen). Con una sola versión,
      el resumen del PDF y el del Excel están obligados a decir lo mismo. */
-  const zonas = [...new Set(filasOrdenadas.map((f) => f.zona).filter(Boolean))].sort();
-  const ordenMoneda = (m) => (m === "MXP" ? 0 : m === "USD" ? 1 : 2);
-  const bloquesResumen = [];
-  zonas.forEach((zona) => {
-    const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
-      .sort((a, b) => ordenMoneda(a) - ordenMoneda(b));
-    monedasEnZona.forEach((moneda) => {
-      const filasGrupo = filasOrdenadas.filter((f) => f.zona === zona && f.moneda === moneda);
-      if (!filasGrupo.length) return;
-      bloquesResumen.push({
-        zona, moneda, n: filasGrupo.length,
-        total: filasGrupo.reduce((s, f) => s + (Number(f.importe) || 0), 0),
-      });
-    });
-  });
+  /* Se agrupa por GRUPO de zona, no por la zona suelta: es como Dirección
+     conoce el reporte. Mismo helper que ya usa el semanal oficial, para que
+     los dos documentos partan igual y no haya dos criterios conviviendo.
+     Una zona sin grupo asignado conserva su propio nombre, y las filas sin
+     zona caen en "Sin zona" — antes se quedaban FUERA del detalle, porque el
+     recorrido solo pasaba por zonas no vacías, y el total general sí las
+     contaba: el documento no cuadraba consigo mismo. */
+  const bloques = bloquesZonaMoneda(filasOrdenadas, gruposZona);
   const totGeneralRP = {};
   filasOrdenadas.forEach((f) => {
     const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP";
@@ -8454,9 +8448,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       ws.getRow(fila).height = 20;
       fila += 1;
 
-      bloquesResumen.forEach((b) => {
+      bloques.forEach((b) => {
         const rCell = ws.getCell(`A${fila}`);
-        rCell.value = `${b.zona}   ·   ${b.moneda}   ·   ${b.n} pago(s)   ·   $${numMx(b.total)}`;
+        rCell.value = `${b.grupo}   ·   ${b.moneda}   ·   ${b.filas.length} pago(s)   ·   $${numMx(b.total)}`;
         rCell.font = { name: "Calibri", size: 10.5 };
         ws.getRow(fila).height = 20;
         fila += 1;
@@ -8480,13 +8474,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       fila += 2; // dos renglones en blanco antes del primer bloque de detalle
     }
 
-    zonas.forEach((zona) => {
-      const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
-        .sort((a, b) => ordenMoneda(a) - ordenMoneda(b));
-
-      monedasEnZona.forEach((moneda) => {
-        const filasGrupo = filasOrdenadas.filter((f) => f.zona === zona && f.moneda === moneda);
-        if (!filasGrupo.length) return;
+    bloques.forEach((bq) => {
+      {
+        const { grupo, moneda, filas: filasGrupo } = bq;
 
         const tituloCell = ws.getCell(`B${fila}`);
         tituloCell.value = `Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad} - ${moneda}`;
@@ -8494,7 +8484,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         fila += 1;
 
         const zonaCell = ws.getCell(`D${fila}`);
-        zonaCell.value = `Zona: ${zona}`;
+        zonaCell.value = grupo;
         zonaCell.font = { bold: true, size: 12, name: "Calibri" };
         fila += 2; // una fila en blanco, como en la plantilla
 
@@ -8533,7 +8523,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         if (idxImporte !== -1) {
           const totRow = ws.getRow(fila);
           const etq = totRow.getCell(Math.max(idxImporte, 1));
-          etq.value = `Total ${zona} ${moneda}`;
+          etq.value = `Total ${grupo} ${moneda}`;
           etq.font = { name: "Calibri", size: 11, bold: true };
           etq.alignment = { horizontal: "right" };
           const val = totRow.getCell(idxImporte + 1);
@@ -8548,7 +8538,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         }
 
         fila += 2; // espacio antes de la siguiente sección
-      });
+      }
     });
 
     const buffer = await wbx.xlsx.writeBuffer();
@@ -8593,19 +8583,19 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
       /* Resumen ejecutivo, igual que el Excel y que el reporte semanal a
          Dirección: cuánto se va a pagar por zona y moneda, antes de entrar
-         al detalle bloque por bloque. Usa los MISMOS bloquesResumen que ya
+         al detalle bloque por bloque. Usa los MISMOS bloques que ya
          calcula el Excel — un solo cálculo, no dos que puedan desalinearse. */
-      if (bloquesResumen.length) {
-        const altoResumen = 24 + bloquesResumen.length * 13 + 6;
+      if (bloques.length) {
+        const altoResumen = 24 + bloques.length * 13 + 6;
         doc.setFillColor(236, 238, 241);
         doc.rect(30, cursorY, 732, altoResumen, "F");
         doc.setFontSize(9).setTextColor(107, 119, 133);
         doc.text("RESUMEN — LO QUE SE VA A PAGAR", 40, cursorY + 14);
         doc.setFontSize(9).setTextColor(35, 42, 49);
         let yb = cursorY + 28;
-        bloquesResumen.forEach((b) => {
-          doc.text(`${b.zona}   ${b.moneda}`, 44, yb);
-          doc.text(`${b.n} pago(s)`, 300, yb);
+        bloques.forEach((b) => {
+          doc.text(`${b.grupo}   ${b.moneda}`, 44, yb);
+          doc.text(`${b.filas.length} pago(s)`, 300, yb);
           doc.setFont(undefined, "bold");
           doc.text(`$${numMx(b.total)}`, 420, yb, { align: "right" });
           doc.setFont(undefined, "normal");
@@ -8625,13 +8615,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       // ancho de columna en vez de verse distintas entre sí.
       const anchosCols = anchosProporcionalesPDF(columnasPDF, filasOrdenadas, 712);
 
-      zonas.forEach((zona) => {
-        const monedasEnZona = [...new Set(filasOrdenadas.filter((f) => f.zona === zona).map((f) => f.moneda))]
-          .sort((a, b) => ordenMoneda(a) - ordenMoneda(b));
-
-        monedasEnZona.forEach((moneda) => {
-          const filasGrupo = filasOrdenadas.filter((f) => f.zona === zona && f.moneda === moneda);
-          if (!filasGrupo.length) return;
+      bloques.forEach((bq) => {
+        {
+          const { grupo, moneda, filas: filasGrupo } = bq;
 
           // Espacio mínimo para el título + al menos una fila de la tabla —
           // si no cabe en lo que resta de la página, ahí sí se salta.
@@ -8648,7 +8634,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           doc.text(`Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad} - ${moneda}`, 30, cursorY);
           doc.setFontSize(10);
           doc.setTextColor(120);
-          doc.text(`Zona: ${zona}`, 30, cursorY + 16);
+          doc.text(grupo, 30, cursorY + 16);
 
           autoTable(doc, {
             startY: cursorY + 28,
@@ -8671,7 +8657,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           });
 
           cursorY = doc.lastAutoTable.finalY;
-        });
+        }
       });
 
       return doc;
@@ -12103,7 +12089,7 @@ export default function App() {
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
           {tab === "partidas" && <PartidasTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} onCrearTransaccion={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} />}
           {tab === "transacciones" && <TransaccionesTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} seedTransaccion={seedTransaccion} onSeedConsumido={() => setSeedTransaccion(null)} />}
-          {tab === "reporte" && <ReportePagosTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "reporte" && <ReportePagosTab gruposZona={gruposZona} unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
           {tab === "reportes-direccion" && <ReportesDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} session={session} gruposZona={gruposZona} />}
           {tab === "vehiculos" && (

@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.15.0";
+const APP_VERSION = "2.15.1";
 const CHANGELOG = [
+  { v: "2.15.1", desc: "Las plantillas contractuales dejan de decir OSB cuando el contrato es de CTM o ISE. El clausulado traia 78 menciones de OSB escritas como texto, no como marcador -- la razon social salia bien por su marcador, pero cada clausula seguia refiriendose a OSB por su nombre corto, y el documento se veia correcto. Ahora esas 78 menciones son {{CONTRATANTE}}, que se llena con la unidad activa, y los siete marcadores con sufijo _OSB pasan a _CONTRATANTE. Las etiquetas del panel Datos recurrentes se actualizan en consecuencia. Cambio en las plantillas Word, no en la base: hay que volver a subirlas a Storage" },
   { v: "2.15.0", desc: "Modulo de Contratos, primera parte: pestana nueva con la seccion Datos recurrentes. Tres paneles. Datos legales de la empresa contratante, una fila por unidad, con cada campo etiquetado con el marcador de plantilla que alimenta -- un campo vacio no se vacia en el Word, sale impreso como {{MARCADOR}}, asi que conviene ver de antemano cual es cual. Parametros versionados: guardar NUNCA sobrescribe, inserta una version con fecha nueva, y antes de confirmar se listan los valores que cambian con su valor anterior al lado; la version previa se conserva porque los instrumentos ya emitidos guardan con cual se generaron. Y datos legales de proveedores -- representante, escritura, personalidad, REPSE, opinion 32-D -- capturados UNA vez por RFC y no una por compania, porque son datos del proveedor y no cambian segun a quien le facture; lo que si es criterio nuestro, el nivel de debida diligencia, se guarda por compania aparte. El generador y el expediente quedan pendientes. Requiere 29-modulo-contratos.sql" },
   { v: "2.14.2", desc: "El Reporte de Pagos (PDF y Excel) pasa a agruparse por GRUPO de zona -Zona Norte, Zona Sur, QRO- en vez de por la zona suelta, que es como Direccion conoce el reporte. Usa el mismo helper bloquesZonaMoneda que ya usaba el semanal oficial, asi que los dos documentos parten igual y deja de haber dos criterios conviviendo. Una zona sin grupo asignado en el catalogo conserva su propio nombre. De paso se corrige un descuadre: las transacciones SIN zona quedaban fuera del detalle -el recorrido solo pasaba por zonas no vacias- pero si contaban en el total general, asi que la suma de los bloques no daba el total del documento; ahora caen en un bloque Sin zona" },
   { v: "2.14.1", desc: "Seguridad: el panel Sin partida vinculada causo un borrado real de transacciones porque el titulo y el boton (Eliminar las N sin vincular) se prestaban a pensar que eran copias/duplicados de las de la lista normal -- son las mismas filas, solo filtradas. Titulo y texto del boton ahora lo dicen explicitamente. Ademas, el confirm() de navegador (demasiado facil de aceptar sin leer) se reemplaza por un modal que obliga a escribir ELIMINAR antes de habilitar el boton de borrar -- mismo criterio para cualquier borrado masivo irreversible que se agregue despues" },
@@ -10136,21 +10137,21 @@ const SUBS_CONTRATOS = [
 
 const CAMPOS_DATOS_UNIDAD = [
 
-  { key: "razon_social",          label: "Razón social",               req: true, marcador: "RAZON_SOCIAL_OSB" },
+  { key: "razon_social",          label: "Razón social",               req: true, marcador: "RAZON_SOCIAL_CONTRATANTE" },
 
-  { key: "rfc",                   label: "RFC",                        req: true, upper: true, marcador: "RFC_OSB" },
+  { key: "rfc",                   label: "RFC",                        req: true, upper: true, marcador: "RFC_CONTRATANTE" },
 
-  { key: "domicilio",             label: "Domicilio fiscal",           req: true, ancho: 2, marcador: "DOMICILIO_OSB" },
+  { key: "domicilio",             label: "Domicilio fiscal",           req: true, ancho: 2, marcador: "DOMICILIO_CONTRATANTE" },
 
-  { key: "representante",         label: "Representante legal",        req: true, marcador: "REPRESENTANTE_OSB" },
+  { key: "representante",         label: "Representante legal",        req: true, marcador: "REPRESENTANTE_CONTRATANTE" },
 
   { key: "cargo_representante",   label: "Cargo del representante" },
 
-  { key: "escritura",             label: "Escritura pública",          marcador: "ESCRITURA_OSB" },
+  { key: "escritura",             label: "Escritura pública",          marcador: "ESCRITURA_CONTRATANTE" },
 
-  { key: "notario",               label: "Notario",                    marcador: "NOTARIO_OSB" },
+  { key: "notario",               label: "Notario",                    marcador: "NOTARIO_CONTRATANTE" },
 
-  { key: "correo_notificaciones", label: "Correo de notificaciones",   marcador: "CORREO_OSB" },
+  { key: "correo_notificaciones", label: "Correo de notificaciones",   marcador: "CORREO_CONTRATANTE" },
 
   { key: "correo_facturacion",    label: "Correo de facturación",      marcador: "CORREO_FACTURACION" },
 

@@ -7,6 +7,7 @@ import * as XLSX from "xlsx";
 import ExcelJS from "exceljs";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
+import JSZip from "jszip";
 import { useCollection } from "./useCollection";
 import { supabase } from "./supabaseClient";
 
@@ -318,8 +319,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.15.1";
+const APP_VERSION = "2.16.0";
 const CHANGELOG = [
+  { v: "2.16.0", desc: "Generador de instrumentos contractuales. Las once casillas del arbol se evaluan en cascada y el resultado se ve en vivo, con la ruta en texto legible que queda guardada para auditoria; la primera compuerta afirmativa decide y las siguientes ya no se evaluan, por eso la ruta nombra UNA. El formulario cambia segun el instrumento que resulto: los campos salen de los marcadores reales de cada plantilla, no de una lista fija. Genera el .docx bajando la plantilla activa de Storage y reemplazando marcadores con JSZip; si el gatillo 2 aplica, baja tambien los anexos flow-down. Un marcador sin valor NO se vacia, se deja impreso, y al terminar la app dice cuales quedaron asi. El instrumento se registra ANTES de generar el Word para que el folio quede reservado por el indice unico: si la descarga falla se puede repetir, pero nunca salen dos papeles con el mismo numero. Numero a letra en espanol con apocope correcto (un peso, veintiun pesos) y preposicion en cifras exactas de millon. REQUIERE npm install jszip. Requiere 30-storage-plantillas.sql" },
   { v: "2.15.1", desc: "Las plantillas contractuales dejan de decir OSB cuando el contrato es de CTM o ISE. El clausulado traia 78 menciones de OSB escritas como texto, no como marcador -- la razon social salia bien por su marcador, pero cada clausula seguia refiriendose a OSB por su nombre corto, y el documento se veia correcto. Ahora esas 78 menciones son {{CONTRATANTE}}, que se llena con la unidad activa, y los siete marcadores con sufijo _OSB pasan a _CONTRATANTE. Las etiquetas del panel Datos recurrentes se actualizan en consecuencia. Cambio en las plantillas Word, no en la base: hay que volver a subirlas a Storage" },
   { v: "2.15.0", desc: "Modulo de Contratos, primera parte: pestana nueva con la seccion Datos recurrentes. Tres paneles. Datos legales de la empresa contratante, una fila por unidad, con cada campo etiquetado con el marcador de plantilla que alimenta -- un campo vacio no se vacia en el Word, sale impreso como {{MARCADOR}}, asi que conviene ver de antemano cual es cual. Parametros versionados: guardar NUNCA sobrescribe, inserta una version con fecha nueva, y antes de confirmar se listan los valores que cambian con su valor anterior al lado; la version previa se conserva porque los instrumentos ya emitidos guardan con cual se generaron. Y datos legales de proveedores -- representante, escritura, personalidad, REPSE, opinion 32-D -- capturados UNA vez por RFC y no una por compania, porque son datos del proveedor y no cambian segun a quien le facture; lo que si es criterio nuestro, el nivel de debida diligencia, se guarda por compania aparte. El generador y el expediente quedan pendientes. Requiere 29-modulo-contratos.sql" },
   { v: "2.14.2", desc: "El Reporte de Pagos (PDF y Excel) pasa a agruparse por GRUPO de zona -Zona Norte, Zona Sur, QRO- en vez de por la zona suelta, que es como Direccion conoce el reporte. Usa el mismo helper bloquesZonaMoneda que ya usaba el semanal oficial, asi que los dos documentos parten igual y deja de haber dos criterios conviviendo. Una zona sin grupo asignado en el catalogo conserva su propio nombre. De paso se corrige un descuadre: las transacciones SIN zona quedaban fuera del detalle -el recorrido solo pasaba por zonas no vacias- pero si contaban en el total general, asi que la suma de los bloques no daba el total del documento; ahora caen en un bloque Sin zona" },
@@ -10116,1445 +10118,1330 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session, grupos
 }
 
 const SUBS_CONTRATOS = [
-
   { id: "datos", label: "Datos recurrentes" },
-
   { id: "generador", label: "Generador" },
-
   { id: "expediente", label: "Expediente" },
-
 ];
-
-
 
 /* Los datos legales de la empresa contratante. Cada campo declara a qué
-
    marcador de las plantillas alimenta: sin esa pista, quien captura no tiene
-
    forma de saber por qué un campo aparentemente menor importa, y los campos
-
    vacíos salen impresos en el Word como {{MARCADOR}}. */
-
 const CAMPOS_DATOS_UNIDAD = [
-
   { key: "razon_social",          label: "Razón social",               req: true, marcador: "RAZON_SOCIAL_CONTRATANTE" },
-
   { key: "rfc",                   label: "RFC",                        req: true, upper: true, marcador: "RFC_CONTRATANTE" },
-
   { key: "domicilio",             label: "Domicilio fiscal",           req: true, ancho: 2, marcador: "DOMICILIO_CONTRATANTE" },
-
   { key: "representante",         label: "Representante legal",        req: true, marcador: "REPRESENTANTE_CONTRATANTE" },
-
   { key: "cargo_representante",   label: "Cargo del representante" },
-
   { key: "escritura",             label: "Escritura pública",          marcador: "ESCRITURA_CONTRATANTE" },
-
   { key: "notario",               label: "Notario",                    marcador: "NOTARIO_CONTRATANTE" },
-
   { key: "correo_notificaciones", label: "Correo de notificaciones",   marcador: "CORREO_CONTRATANTE" },
-
   { key: "correo_facturacion",    label: "Correo de facturación",      marcador: "CORREO_FACTURACION" },
-
   { key: "jurisdiccion",          label: "Jurisdicción",               req: true, marcador: "JURISDICCION" },
-
   { key: "lugar_suscripcion",     label: "Lugar de suscripción",       marcador: "LUGAR_SUSCRIPCION" },
-
 ];
-
-
 
 const CAMPOS_PROVEEDOR_LEGAL = [
-
   { key: "rfc",           label: "RFC",                 req: true, upper: true, marcador: "RFC_PROVEEDOR" },
-
   { key: "razon_social",  label: "Razón social",        req: true, marcador: "RAZON_SOCIAL_PROVEEDOR" },
-
   { key: "personalidad",  label: "Personalidad",        marcador: "PERSONALIDAD_PROVEEDOR",
-
     opciones: ["Persona moral", "Persona física con actividad empresarial", "Persona física"] },
-
   { key: "domicilio",     label: "Domicilio fiscal",    ancho: 2, marcador: "DOMICILIO_PROVEEDOR" },
-
   { key: "representante", label: "Representante legal", marcador: "REPRESENTANTE_PROVEEDOR" },
-
   { key: "escritura",     label: "Escritura pública",   marcador: "ESCRITURA_PROVEEDOR" },
-
   { key: "contacto",      label: "Contacto",            marcador: "CONTACTO_PROVEEDOR" },
-
   { key: "correo",        label: "Correo",              marcador: "CORREO_PROVEEDOR" },
-
 ];
-
-
 
 /* Los parámetros, agrupados por para qué sirven. Los umbrales van aparte
-
    porque no son cláusula de ningún contrato: son las cifras que el generador
-
    muestra al preguntar, y el instrumento guarda con cuáles se decidió. */
-
 const GRUPOS_PARAMETROS = [
-
   { grupo: "Umbrales de decisión", nota: "Cifras de referencia que el generador muestra al preguntar. No alimentan ninguna plantilla.", campos: [
-
     { key: "umbral_operacion", label: "Umbral por operación", tipo: "money", def: 50000 },
-
     { key: "umbral_acumulado", label: "Umbral acumulado",     tipo: "money", def: 200000 },
-
   ]},
-
   { grupo: "Penas y garantías", campos: [
-
     { key: "pena_diaria_pct",       label: "Pena convencional diaria",   tipo: "pct",   def: 1,  marcador: "PENA_PORCENTAJE" },
-
     { key: "pena_tope_pct",         label: "Tope de la pena",            tipo: "pct",   def: 10, marcador: "PENA_TOPE" },
-
     { key: "garantia_pct",          label: "Garantía de cumplimiento",   tipo: "pct",   def: 10, marcador: "GARANTIA_PORCENTAJE" },
-
     { key: "garantia_plazo_dias",   label: "Plazo para entregarla",      tipo: "dias",  def: 10, marcador: "PLAZO_GARANTIA_DIAS" },
-
     { key: "garantia_vicios_meses", label: "Garantía por vicios ocultos",tipo: "meses", def: 12, marcador: "GARANTIA_VICIOS_MESES" },
-
   ]},
-
   { grupo: "Plazos", campos: [
-
     { key: "plazo_pago_dias",        label: "Plazo de pago",            tipo: "dias", def: 30, marcador: "PLAZO_PAGO_DIAS" },
-
     { key: "plazo_aceptacion_dias",  label: "Plazo de aceptación",      tipo: "dias", def: 3,  marcador: "PLAZO_ACEPTACION_DIAS" },
-
     { key: "dias_rechazo",           label: "Días para rechazar",       tipo: "dias", def: 5,  marcador: "DIAS_RECHAZO" },
-
     { key: "aviso_terminacion_dias", label: "Aviso de terminación",     tipo: "dias", def: 15, marcador: "AVISO_TERMINACION_DIAS" },
-
     { key: "aviso_ajuste_dias",      label: "Aviso de ajuste de precios",tipo: "dias", def: 30, marcador: "AVISO_AJUSTE_DIAS" },
-
   ]},
-
   { grupo: "Vigencias de obligaciones", campos: [
-
     { key: "confidencialidad_anos", label: "Confidencialidad", tipo: "anos", def: 5, marcador: "CONFIDENCIALIDAD_ANOS" },
-
     { key: "auditoria_anos",        label: "Auditoría",        tipo: "anos", def: 5, marcador: "AUDITORIA_ANOS" },
-
   ]},
-
 ];
-
 const CAMPOS_PARAMETROS = GRUPOS_PARAMETROS.flatMap((g) => g.campos);
 
-
-
 const SENTIDOS_32D = [
-
   { value: "", label: "— sin registrar —" },
-
   { value: "positiva", label: "Positiva" },
-
   { value: "negativa", label: "Negativa" },
-
   { value: "sin_obligaciones", label: "Sin obligaciones" },
-
   { value: "suspendido", label: "Suspendido" },
-
 ];
-
 const NIVELES_DD = [
-
   { value: "simplificada", label: "Simplificada" },
-
   { value: "estandar", label: "Estándar" },
-
   { value: "reforzada", label: "Reforzada" },
-
 ];
-
-
 
 const hoyISO = () => new Date().toISOString().slice(0, 10);
-
 const normRfc = (v) => String(v || "").trim().toUpperCase();
 
-
-
 function sufijoParametro(tipo) {
-
   return tipo === "pct" ? "%" : tipo === "dias" ? "días" : tipo === "meses" ? "meses" : tipo === "anos" ? "años" : "";
-
 }
-
 function formatParametro(valor, tipo) {
-
   const n = Number(valor);
-
   if (!Number.isFinite(n)) return "—";
-
   if (tipo === "money") return `$${numMx(n)}`;
-
   const suf = sufijoParametro(tipo);
-
   return suf ? `${n} ${suf}` : String(n);
-
 }
-
-
 
 /* Etiqueta del marcador que alimenta un campo. Se muestra bajo el input en
-
    monoespaciado para que se lea como lo que es: el texto literal que va a
-
    quedar en el Word si el campo se deja vacío. */
-
 function MarcadorHint({ marcador }) {
-
   if (!marcador) return null;
-
   return (
-
     <span style={{ fontSize: 10, color: T.textFaint, fontFamily: T.fontMono, marginTop: 3 }}>
-
       {"{{" + marcador + "}}"}
-
     </span>
-
   );
-
 }
 
-
-
 /**
-
  * Datos legales de la empresa contratante — una fila por unidad.
-
  *
-
  * No usa useCollection: esa tabla tiene a `unidad` como llave primaria y no
-
  * tiene columna `id`, que es de lo que dependen update() y remove(). Y de
-
  * todos modos no es una colección, es un formulario de un solo registro.
-
  */
-
 function DatosUnidadPanel({ unidad, session }) {
-
   const vacio = Object.fromEntries(CAMPOS_DATOS_UNIDAD.map((c) => [c.key, ""]));
-
   const [form, setForm] = useState({ ...vacio, jurisdiccion: "Zapopan, Jalisco" });
-
   const [cargando, setCargando] = useState(true);
-
   const [guardando, setGuardando] = useState(false);
-
   const [existia, setExistia] = useState(false);
-
   const [guardadoEn, setGuardadoEn] = useState(null);
-
   const [error, setError] = useState("");
 
-
-
   useEffect(() => {
-
     let vivo = true;
-
     (async () => {
-
       setCargando(true);
-
       setError("");
-
       try {
-
         const { data, error: e } = await supabase
-
           .from("contratos_datos_unidad").select("*").eq("unidad", unidad).maybeSingle();
-
         if (e) throw e;
-
         if (!vivo) return;
-
         if (data) {
-
           setForm({ ...vacio, ...Object.fromEntries(CAMPOS_DATOS_UNIDAD.map((c) => [c.key, data[c.key] || ""])) });
-
           setExistia(true);
-
           setGuardadoEn(data.actualizado_en || null);
-
         } else {
-
           setForm({ ...vacio, jurisdiccion: "Zapopan, Jalisco" });
-
           setExistia(false);
-
           setGuardadoEn(null);
-
         }
-
       } catch (err) {
-
         if (vivo) setError(err.message || String(err));
-
       } finally {
-
         if (vivo) setCargando(false);
-
       }
-
     })();
-
     return () => { vivo = false; };
-
   }, [unidad]);
-
-
 
   const faltantes = CAMPOS_DATOS_UNIDAD.filter((c) => c.req && !String(form[c.key] || "").trim());
 
-
-
   const guardar = async () => {
-
     if (faltantes.length) {
-
       alert("Faltan campos obligatorios: " + faltantes.map((c) => c.label).join(", "));
-
       return;
-
     }
-
     setGuardando(true);
-
     setError("");
-
     try {
-
       const fila = { unidad, actualizado_en: new Date().toISOString() };
-
       CAMPOS_DATOS_UNIDAD.forEach((c) => {
-
         const v = String(form[c.key] || "").trim();
-
         fila[c.key] = c.upper ? v.toUpperCase() : v;
-
       });
-
       if (session?.user?.id) fila.actualizado_por = session.user.id;
-
       const { error: e } = await supabase
-
         .from("contratos_datos_unidad").upsert(fila, { onConflict: "unidad" });
-
       if (e) throw e;
-
       setExistia(true);
-
       setGuardadoEn(fila.actualizado_en);
-
     } catch (err) {
-
       setError(err.message || String(err));
-
     } finally {
-
       setGuardando(false);
-
     }
-
   };
 
-
-
   return (
-
     <Panel
-
       title={`Datos legales — ${unidad}`}
-
       subtitle="Quién contrata. Alimenta la mitad de los marcadores de las cinco plantillas."
-
       right={
-
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-
           {guardadoEn && <span style={{ fontSize: 11, color: T.textFaint }}>Guardado {formatFechaHora(guardadoEn)}</span>}
-
           <Button onClick={guardar} disabled={guardando || cargando}>
-
             {guardando ? "Guardando…" : existia ? "Guardar cambios" : "Crear registro"}
-
           </Button>
-
         </div>
-
       }
-
     >
-
       {cargando ? (
-
         <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
-
       ) : (
-
         <>
-
           {!existia && (
-
             <div style={{ fontSize: 12, color: T.textDim, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "10px 12px", marginBottom: 14 }}>
-
               {unidad} todavía no tiene datos legales capturados. Sin esta fila no se pueden crear parámetros,
-
               porque las dos tablas dependen de ella.
-
             </div>
-
           )}
-
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14 }}>
-
             {CAMPOS_DATOS_UNIDAD.map((c) => (
-
               <Field
-
                 key={c.key}
-
                 label={c.req ? `${c.label} *` : c.label}
-
                 style={c.ancho === 2 ? { gridColumn: "span 2" } : undefined}
-
               >
-
                 <TextInput
-
                   value={form[c.key] || ""}
-
                   onChange={(e) => setForm({ ...form, [c.key]: c.upper ? e.target.value.toUpperCase() : e.target.value })}
-
                 />
-
                 <MarcadorHint marcador={c.marcador} />
-
               </Field>
-
             ))}
-
           </div>
-
           {error && <div style={{ marginTop: 12, fontSize: 12, color: T.red }}>No se pudo guardar: {error}</div>}
-
         </>
-
       )}
-
     </Panel>
-
   );
-
 }
 
-
-
 /**
-
  * Parámetros versionados.
-
  *
-
  * Guardar NUNCA sobrescribe: inserta una fila con una fecha de vigencia
-
  * nueva. Los instrumentos ya emitidos guardan el id de la versión con la que
-
  * se generaron, así que cambiar un umbral hoy no reescribe lo que se firmó
-
  * el año pasado. La UI tenía que dejar eso evidente, no darlo por entendido.
-
  */
-
 function ParametrosPanel({ unidad, parametrosApi, session, hayDatosUnidad }) {
-
   const versiones = parametrosApi.rows
-
     .filter((p) => p.unidad === unidad)
-
     .sort((a, b) => String(b.vigente_desde).localeCompare(String(a.vigente_desde)));
-
   const hoy = hoyISO();
-
   const vigente = versiones.find((v) => String(v.vigente_desde) <= hoy) || null;
-
   const futuras = versiones.filter((v) => String(v.vigente_desde) > hoy);
 
-
-
   const [abierto, setAbierto] = useState(false);
-
   const [guardando, setGuardando] = useState(false);
-
   const [desde, setDesde] = useState(hoy);
-
   const [form, setForm] = useState(() =>
-
     Object.fromEntries(CAMPOS_PARAMETROS.map((c) => [c.key, c.def])));
 
-
-
   const abrirEditor = () => {
-
     const base = vigente
-
       ? Object.fromEntries(CAMPOS_PARAMETROS.map((c) => [c.key, vigente[c.key] ?? c.def]))
-
       : Object.fromEntries(CAMPOS_PARAMETROS.map((c) => [c.key, c.def]));
-
     setForm(base);
-
     setDesde(hoy);
-
     setAbierto(true);
-
   };
-
-
 
   const cambiados = vigente
-
     ? CAMPOS_PARAMETROS.filter((c) => Number(form[c.key]) !== Number(vigente[c.key] ?? c.def))
-
     : [];
 
-
-
   const guardar = async () => {
-
     if (!desde) { alert("Indica desde cuándo rige esta versión."); return; }
-
     if (versiones.some((v) => String(v.vigente_desde) === desde)) {
-
       alert(`Ya existe una versión que rige desde el ${desde}. Elige otra fecha.`);
-
       return;
-
     }
-
     if (vigente && !cambiados.length) {
-
       alert("No hay ningún valor distinto al de la versión vigente. No tiene caso crear una versión igual.");
-
       return;
-
     }
-
     const resumen = vigente
-
       ? `Se va a crear una versión nueva vigente desde ${desde}, con ${cambiados.length} valor(es) distinto(s):\n\n` +
-
         cambiados.map((c) => `  ${c.label}: ${formatParametro(vigente[c.key] ?? c.def, c.tipo)} → ${formatParametro(form[c.key], c.tipo)}`).join("\n") +
-
         `\n\nLa versión anterior NO se borra: los instrumentos ya emitidos la conservan.\n\n¿Continuar?`
-
       : `Se va a crear la primera versión de parámetros de ${unidad}, vigente desde ${desde}.\n\n¿Continuar?`;
-
     if (!confirm(resumen)) return;
 
-
-
     setGuardando(true);
-
     try {
-
       const fila = { id: uid(), unidad, vigente_desde: desde };
-
       CAMPOS_PARAMETROS.forEach((c) => { fila[c.key] = Number(form[c.key]) || 0; });
-
       if (session?.user?.id) fila.creado_por = session.user.id;
-
       await parametrosApi.insert(fila);
-
       setAbierto(false);
-
     } catch (err) {
-
       alert("No se pudo guardar: " + (err.message || err));
-
     } finally {
-
       setGuardando(false);
-
     }
-
   };
 
-
-
   return (
-
     <Panel
-
       title="Parámetros"
-
       subtitle="Umbrales, penas y plazos. Versionados por fecha: guardar crea una versión, no sobrescribe la anterior."
-
       right={
-
         <Button onClick={abierto ? () => setAbierto(false) : abrirEditor} variant={abierto ? "ghost" : "primary"} disabled={!hayDatosUnidad}>
-
           {abierto ? "Cancelar" : vigente ? "Nueva versión" : "Crear primera versión"}
-
         </Button>
-
       }
-
     >
-
       {!hayDatosUnidad && (
-
         <div style={{ fontSize: 12, color: T.textDim, marginBottom: 12 }}>
-
           Captura primero los datos legales de {unidad}: los parámetros dependen de esa fila.
-
         </div>
-
       )}
-
-
 
       {hayDatosUnidad && !vigente && !abierto && (
-
         <EmptyState
-
           title={`${unidad} no tiene parámetros`}
-
           body="Sin una versión vigente, el generador no sabe qué umbrales mostrar ni con qué llenar las cláusulas de penas y plazos."
-
         />
-
       )}
-
-
 
       {vigente && !abierto && (
-
         <>
-
           <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
-
             Rige desde {vigente.vigente_desde}
-
             {versiones.length > 1 ? ` · ${versiones.length} versiones en total` : ""}
-
           </div>
-
           {GRUPOS_PARAMETROS.map((g) => (
-
             <div key={g.grupo} style={{ marginBottom: 16 }}>
-
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 8 }}>{g.grupo}</div>
-
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
-
                 {g.campos.map((c) => (
-
                   <div key={c.key} style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "9px 11px" }}>
-
                     <div style={{ fontSize: 11, color: T.textDim }}>{c.label}</div>
-
                     <div style={{ fontSize: 14, fontWeight: 700, color: T.text, marginTop: 3 }}>
-
                       {formatParametro(vigente[c.key], c.tipo)}
-
                     </div>
-
                     <MarcadorHint marcador={c.marcador} />
-
                   </div>
-
                 ))}
-
               </div>
-
             </div>
-
           ))}
-
           {futuras.length > 0 && (
-
             <div style={{ fontSize: 12, color: T.textDim, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "9px 11px" }}>
-
               Hay {futuras.length} versión(es) programada(s) a futuro: {futuras.map((v) => v.vigente_desde).join(", ")}.
-
             </div>
-
           )}
-
         </>
-
       )}
-
-
 
       {abierto && (
-
         <>
-
           <div style={{ display: "flex", alignItems: "flex-end", gap: 14, marginBottom: 16, flexWrap: "wrap" }}>
-
             <Field label="Rige desde *" style={{ maxWidth: 190 }}>
-
               <TextInput type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
-
             </Field>
-
             <div style={{ fontSize: 12, color: T.textDim, paddingBottom: 9 }}>
-
               {vigente
-
                 ? `La versión del ${vigente.vigente_desde} se conserva intacta.`
-
                 : "Primera versión de esta unidad."}
-
             </div>
-
           </div>
-
           {GRUPOS_PARAMETROS.map((g) => (
-
             <div key={g.grupo} style={{ marginBottom: 18 }}>
-
               <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim }}>{g.grupo}</div>
-
               {g.nota && <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2, marginBottom: 8 }}>{g.nota}</div>}
-
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginTop: g.nota ? 0 : 8 }}>
-
                 {g.campos.map((c) => {
-
                   const distinto = vigente && Number(form[c.key]) !== Number(vigente[c.key] ?? c.def);
-
                   return (
-
                     <Field key={c.key} label={`${c.label}${sufijoParametro(c.tipo) ? ` (${sufijoParametro(c.tipo)})` : ""}`}>
-
                       <TextInput
-
                         type="number" step={c.tipo === "money" || c.tipo === "pct" ? "0.01" : "1"}
-
                         value={form[c.key] ?? ""}
-
                         onChange={(e) => setForm({ ...form, [c.key]: e.target.value })}
-
                         style={distinto ? { borderColor: T.accent } : undefined}
-
                       />
-
                       {distinto
-
                         ? <span style={{ fontSize: 10.5, color: T.accent, marginTop: 3 }}>antes {formatParametro(vigente[c.key] ?? c.def, c.tipo)}</span>
-
                         : <MarcadorHint marcador={c.marcador} />}
-
                     </Field>
-
                   );
-
                 })}
-
               </div>
-
             </div>
-
           ))}
-
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-
             <Button onClick={guardar} disabled={guardando}>
-
               {guardando ? "Guardando…" : "Crear versión"}
-
             </Button>
-
             <Button variant="ghost" onClick={() => setAbierto(false)}>Cancelar</Button>
-
             {vigente && (
-
               <span style={{ fontSize: 12, color: cambiados.length ? T.accent : T.textFaint }}>
-
                 {cambiados.length ? `${cambiados.length} valor(es) distinto(s)` : "Sin cambios respecto a la versión vigente"}
-
               </span>
-
             )}
-
           </div>
-
         </>
-
       )}
-
-
 
       {versiones.length > 1 && !abierto && (
-
         <div style={{ marginTop: 16, borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
-
           <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 8 }}>Historial</div>
-
           {versiones.map((v) => (
-
             <div key={v.id} style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 12, color: T.textDim, padding: "5px 0" }}>
-
               <span style={{ fontFamily: T.fontMono }}>{v.vigente_desde}</span>
-
               {v.id === vigente?.id && <Pill>vigente</Pill>}
-
               {String(v.vigente_desde) > hoy && <Pill>programada</Pill>}
-
               <span style={{ color: T.textFaint }}>
-
                 operación {formatParametro(v.umbral_operacion, "money")} · acumulado {formatParametro(v.umbral_acumulado, "money")}
-
               </span>
-
             </div>
-
           ))}
-
         </div>
-
       )}
-
     </Panel>
-
   );
-
 }
-
-
 
 /**
-
  * Datos legales del proveedor.
-
  *
-
  * La identidad del proveedor —razón social, domicilio, representante— es
-
  * suya, no nuestra: no cambia según a cuál de las tres compañías le facture,
-
  * y por eso vive una sola vez, indexada por RFC. Lo que sí es criterio
-
  * nuestro (nivel de debida diligencia) va por unidad, en otra tabla.
-
  */
-
 function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hayDatosUnidad }) {
-
   const [buscar, setBuscar] = useSessionState("ss-contratos-prov-buscar", "");
-
   const [editando, setEditando] = useState(null);
-
   const [guardando, setGuardando] = useState(false);
 
-
-
   const filas = provLegalApi.rows
-
     .slice()
-
     .sort((a, b) => String(a.razon_social || "").localeCompare(String(b.razon_social || "")));
-
   const q = buscar.trim().toLowerCase();
-
   const visibles = q
-
     ? filas.filter((p) => [p.razon_social, p.rfc, p.grupo_economico].some((v) => String(v || "").toLowerCase().includes(q)))
-
     : filas;
 
-
-
   const porUnidad = (rfc) =>
-
     provUnidadApi.rows.find((r) => r.unidad === unidad && normRfc(r.rfc) === normRfc(rfc)) || null;
 
-
-
   const vacio = {
-
     ...Object.fromEntries(CAMPOS_PROVEEDOR_LEGAL.map((c) => [c.key, ""])),
-
     repse_registro: "", repse_vigencia: "", opinion_32d_fecha: "", opinion_32d_sentido: "",
-
     grupo_economico: "", notas: "", nivel_dd: "estandar", beneficiario_ctrl: false,
-
   };
-
-
 
   const abrirNuevo = () => setEditando({ ...vacio, _id: null });
-
   const abrirEditar = (p) => {
-
     const pu = porUnidad(p.rfc);
-
     setEditando({
-
       ...vacio,
-
       ...Object.fromEntries(Object.keys(vacio).map((k) => [k, p[k] ?? vacio[k]])),
-
       nivel_dd: pu?.nivel_dd || "estandar",
-
       beneficiario_ctrl: !!pu?.beneficiario_ctrl,
-
       _id: p.id,
-
       _puId: pu?.id || null,
-
     });
-
   };
-
-
 
   const guardar = async () => {
-
     const rfc = normRfc(editando.rfc);
-
     if (!rfc || !String(editando.razon_social || "").trim()) {
-
       alert("RFC y razón social son obligatorios.");
-
       return;
-
     }
-
     const choque = provLegalApi.rows.find((p) => normRfc(p.rfc) === rfc && p.id !== editando._id);
-
     if (choque) {
-
       alert(`El RFC ${rfc} ya está capturado como "${choque.razon_social}". Los datos legales se guardan una sola vez por RFC, no una por compañía.`);
-
       return;
-
     }
-
     setGuardando(true);
-
     try {
-
       const fila = { rfc, actualizado_en: new Date().toISOString() };
-
       CAMPOS_PROVEEDOR_LEGAL.forEach((c) => {
-
         if (c.key === "rfc") return;
-
         fila[c.key] = String(editando[c.key] || "").trim();
-
       });
-
       fila.repse_registro = String(editando.repse_registro || "").trim();
-
       fila.repse_vigencia = editando.repse_vigencia || null;
-
       fila.opinion_32d_fecha = editando.opinion_32d_fecha || null;
-
       fila.opinion_32d_sentido = editando.opinion_32d_sentido || null;
-
       fila.grupo_economico = String(editando.grupo_economico || "").trim();
-
       fila.notas = String(editando.notas || "").trim();
-
       if (session?.user?.id) fila.actualizado_por = session.user.id;
 
-
-
       if (editando._id) await provLegalApi.update(editando._id, fila);
-
       else await provLegalApi.insert({ id: uid(), ...fila });
 
-
-
       const patchUnidad = {
-
         unidad, rfc,
-
         nivel_dd: editando.nivel_dd || "estandar",
-
         beneficiario_ctrl: !!editando.beneficiario_ctrl,
-
         actualizado_en: new Date().toISOString(),
-
         ...(session?.user?.id ? { actualizado_por: session.user.id } : {}),
-
       };
-
       if (editando._puId) await provUnidadApi.update(editando._puId, patchUnidad);
-
       else await provUnidadApi.insert({ id: uid(), ...patchUnidad });
 
-
-
       setEditando(null);
-
     } catch (err) {
-
       alert("No se pudo guardar: " + (err.message || err));
-
     } finally {
-
       setGuardando(false);
-
     }
-
   };
-
-
 
   const eliminar = async (p) => {
-
     if (!confirm(`¿Eliminar los datos legales de "${p.razon_social}"? Esto no se puede deshacer.`)) return;
-
     try {
-
       const pu = porUnidad(p.rfc);
-
       if (pu) await provUnidadApi.remove(pu.id);
-
       await provLegalApi.remove(p.id);
-
     } catch (err) {
-
       alert("No se pudo eliminar: " + (err.message || err));
-
     }
-
   };
 
-
-
   return (
-
     <Panel
-
       title="Proveedores — datos legales"
-
       subtitle="Lo que ASPEL no trae: representante, escritura, REPSE, opinión 32-D. Se capturan una vez por RFC, no una por compañía."
-
       right={<Button onClick={abrirNuevo} disabled={!hayDatosUnidad}>+ Nuevo</Button>}
-
     >
-
       {!hayDatosUnidad && (
-
         <div style={{ fontSize: 12, color: T.textDim, marginBottom: 12 }}>
-
           Captura primero los datos legales de {unidad}: el nivel de debida diligencia se guarda por compañía y depende de esa fila.
-
         </div>
-
       )}
-
-
 
       {editando && (
-
         <div style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 16, marginBottom: 16 }}>
-
           <div style={{ fontSize: 12.5, fontWeight: 700, color: T.text, marginBottom: 12 }}>
-
             {editando._id ? "Editar proveedor" : "Nuevo proveedor"}
-
           </div>
-
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 13 }}>
-
             {CAMPOS_PROVEEDOR_LEGAL.map((c) => (
-
               <Field
-
                 key={c.key}
-
                 label={c.req ? `${c.label} *` : c.label}
-
                 style={c.ancho === 2 ? { gridColumn: "span 2" } : undefined}
-
               >
-
                 {c.opciones ? (
-
                   <Select value={editando[c.key] || ""} onChange={(e) => setEditando({ ...editando, [c.key]: e.target.value })}>
-
                     <option value="">— elegir —</option>
-
                     {c.opciones.map((o) => <option key={o} value={o}>{o}</option>)}
-
                   </Select>
-
                 ) : (
-
                   <TextInput
-
                     value={editando[c.key] || ""}
-
                     onChange={(e) => setEditando({ ...editando, [c.key]: c.upper ? e.target.value.toUpperCase() : e.target.value })}
-
                   />
-
                 )}
-
                 <MarcadorHint marcador={c.marcador} />
-
               </Field>
-
             ))}
-
             <Field label="Registro REPSE">
-
               <TextInput value={editando.repse_registro || ""} onChange={(e) => setEditando({ ...editando, repse_registro: e.target.value })} />
-
             </Field>
-
             <Field label="Vigencia REPSE">
-
               <TextInput type="date" value={editando.repse_vigencia || ""} onChange={(e) => setEditando({ ...editando, repse_vigencia: e.target.value })} />
-
             </Field>
-
             <Field label="Fecha opinión 32-D">
-
               <TextInput type="date" value={editando.opinion_32d_fecha || ""} onChange={(e) => setEditando({ ...editando, opinion_32d_fecha: e.target.value })} />
-
             </Field>
-
             <Field label="Sentido 32-D">
-
               <Select value={editando.opinion_32d_sentido || ""} onChange={(e) => setEditando({ ...editando, opinion_32d_sentido: e.target.value })}>
-
                 {SENTIDOS_32D.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-
               </Select>
-
             </Field>
-
             <Field label="Grupo económico">
-
               <TextInput value={editando.grupo_economico || ""} onChange={(e) => setEditando({ ...editando, grupo_economico: e.target.value })} />
-
             </Field>
-
             <Field label="Notas" style={{ gridColumn: "span 2" }}>
-
               <TextInput value={editando.notas || ""} onChange={(e) => setEditando({ ...editando, notas: e.target.value })} />
-
             </Field>
-
           </div>
-
-
 
           <div style={{ marginTop: 16, paddingTop: 13, borderTop: `1px solid ${T.border}` }}>
-
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 3 }}>
-
               Solo para {unidad}
-
             </div>
-
             <div style={{ fontSize: 11, color: T.textFaint, marginBottom: 10 }}>
-
               Lo de arriba es del proveedor y lo comparten las tres compañías. Esto es criterio nuestro y se guarda por separado.
-
             </div>
-
             <div style={{ display: "flex", gap: 16, alignItems: "flex-end", flexWrap: "wrap" }}>
-
               <Field label="Nivel de debida diligencia" style={{ maxWidth: 230 }}>
-
                 <Select value={editando.nivel_dd} onChange={(e) => setEditando({ ...editando, nivel_dd: e.target.value })}>
-
                   {NIVELES_DD.map((n) => <option key={n.value} value={n.value}>{n.label}</option>)}
-
                 </Select>
-
               </Field>
-
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: T.textDim, paddingBottom: 9, cursor: "pointer" }}>
-
                 <input
-
                   type="checkbox"
-
                   checked={!!editando.beneficiario_ctrl}
-
                   onChange={(e) => setEditando({ ...editando, beneficiario_ctrl: e.target.checked })}
-
                 />
-
                 Beneficiario controlador identificado
-
               </label>
-
             </div>
-
           </div>
-
-
 
           <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-
             <Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Button>
-
             <Button variant="ghost" onClick={() => setEditando(null)}>Cancelar</Button>
-
           </div>
-
         </div>
-
       )}
-
-
 
       <div style={{ marginBottom: 12 }}>
-
         <TextInput
-
           placeholder="Buscar por razón social, RFC o grupo económico…"
-
           value={buscar}
-
           onChange={(e) => setBuscar(e.target.value)}
-
           style={{ maxWidth: 380 }}
-
         />
-
       </div>
-
-
 
       {!visibles.length ? (
-
         <EmptyState
-
           title={filas.length ? "Ningún proveedor coincide" : "Sin proveedores capturados"}
-
           body={filas.length
-
             ? "Prueba con otro término de búsqueda."
-
             : "Los datos legales que las plantillas necesitan no están en ASPEL: representante, escritura, personalidad jurídica."}
-
         />
-
       ) : (
-
         <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
-
           {visibles.map((p) => {
-
             const pu = porUnidad(p.rfc);
-
             const repseVencido = p.repse_vigencia && String(p.repse_vigencia) < hoyISO();
-
             return (
-
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, background: T.panel, padding: "10px 12px" }}>
-
                 <div style={{ flex: 1, minWidth: 0 }}>
-
                   <div style={{ fontSize: 12.5, color: T.text, fontWeight: 600 }}>{p.razon_social}</div>
-
                   <div style={{ fontSize: 11, color: T.textFaint, fontFamily: T.fontMono, marginTop: 2 }}>
-
                     {p.rfc}{p.grupo_economico ? ` · ${p.grupo_economico}` : ""}
-
                   </div>
-
                 </div>
-
                 <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-
                   {p.repse_registro && <Pill>{repseVencido ? "REPSE vencido" : "REPSE"}</Pill>}
-
                   {p.opinion_32d_sentido && <Pill>32-D {p.opinion_32d_sentido}</Pill>}
-
                   <Pill>{(NIVELES_DD.find((n) => n.value === (pu?.nivel_dd || "estandar")) || {}).label}</Pill>
-
                 </div>
-
                 <Button variant="ghost" onClick={() => abrirEditar(p)} style={{ padding: "5px 11px" }}>Editar</Button>
-
                 <Button variant="danger" onClick={() => eliminar(p)} style={{ padding: "5px 11px" }}>Eliminar</Button>
-
               </div>
-
             );
-
           })}
-
         </div>
-
       )}
-
     </Panel>
-
   );
-
 }
 
+/* ----------------------------------------------------------------------
+   GENERADOR DE INSTRUMENTOS CONTRACTUALES
+---------------------------------------------------------------------- */
 
+/* Compuerta 1. Cualquier sí manda a contrato específico. El gatillo 2 además
+   arrastra los anexos flow-down, porque son obligaciones que venimos
+   obligados a trasladar por el contrato con el cliente final. */
+const GATILLOS = [
+  { id: "g1", texto: "El proveedor pone personal a disposición o presta servicios especializados (REPSE)." },
+  { id: "g2", texto: "El proveedor ejecuta parte del alcance de un contrato con cliente final, o ingresa a sus instalaciones." },
+  { id: "g3", texto: "El servicio es intangible: asesoría, consultoría, supervisión, servicios administrativos, publicidad." },
+  { id: "g4", texto: "El proveedor tratará datos personales por cuenta nuestra." },
+  { id: "g5", texto: "El entregable genera propiedad intelectual: software, ingeniería, diseño, documentación técnica." },
+  { id: "g6", texto: "Es parte relacionada." },
+  { id: "g7", texto: "Hay anticipo, garantía, comodato, consignación, exclusividad o arrendamiento." },
+];
 
-function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, session }) {
+const RIESGOS = [
+  { id: "r1", texto: "Está en ruta crítica de un contrato con cliente." },
+  { id: "r2", texto: "Hay contacto con servidores públicos o gestoría ante autoridades." },
+  { id: "r3", texto: "Es operación transfronteriza." },
+  { id: "r4", texto: "El proveedor es de reciente creación o sin infraestructura demostrable." },
+];
 
-  const [sub, setSub] = useSessionState("ss-contratos-sub", "datos");
+const TIPOS_INSTRUMENTO = {
+  orden_compra:        { label: "Orden de compra",  plantilla: "orden_compra",        prefijo: "OC", marcadorFolio: "NUM_ORDEN_COMPRA" },
+  contrato_especifico: { label: "Contrato específico", plantilla: "contrato_especifico", prefijo: "CE", marcadorFolio: "NUM_CONTRATO" },
+  contrato_marco:      { label: "Contrato marco",   plantilla: "contrato_marco",      prefijo: "CM", marcadorFolio: "NUM_CONTRATO_MARCO" },
+};
 
-  const [hayDatosUnidad, setHayDatosUnidad] = useState(false);
+/* Qué le toca capturar al usuario según el instrumento que resultó. Sale de
+   leer los marcadores reales de cada plantilla: pedir de más es ruido, y
+   pedir de menos deja {{MARCADOR}} impreso en el Word. */
+const CAMPOS_FORM = [
+  { key: "OBJETO",                 label: "Objeto del contrato",       tipo: "texto",  ancho: 2, en: ["contrato_especifico", "contrato_marco"] },
+  { key: "TIPO_CONTRATO",          label: "Tipo",                      tipo: "texto",  en: ["contrato_especifico", "contrato_marco"], ayuda: "Va en el título: «Contrato marco de ___»" },
+  { key: "DESCRIPCION_ORDEN",      label: "Descripción de lo solicitado", tipo: "texto", ancho: 2, en: ["orden_compra"] },
+  { key: "IMPORTE_SIN_IVA",        label: "Importe sin IVA",           tipo: "monto",  en: ["orden_compra"] },
+  { key: "MONTO_NUMERO",           label: "Monto sin IVA",             tipo: "monto",  en: ["contrato_especifico"] },
+  { key: "MONTO_MAXIMO",           label: "Monto máximo sin IVA",      tipo: "monto",  en: ["contrato_marco"] },
+  { key: "MONEDA",                 label: "Moneda",                    tipo: "moneda", en: ["orden_compra", "contrato_especifico"] },
+  { key: "LUGAR_ENTREGA",          label: "Lugar de entrega o ejecución", tipo: "texto", en: ["orden_compra", "contrato_especifico"] },
+  { key: "FECHA_ENTREGA",          label: "Fecha límite de entrega",   tipo: "fecha",  en: ["orden_compra"] },
+  { key: "VIGENCIA_INICIO",        label: "Vigencia — inicio",         tipo: "fecha",  en: ["contrato_especifico", "contrato_marco"] },
+  { key: "VIGENCIA_FIN",           label: "Vigencia — fin",            tipo: "fecha",  en: ["contrato_especifico", "contrato_marco"] },
+  { key: "VIGENCIA_PRECIOS",       label: "Vigencia de precios",       tipo: "texto",  en: ["contrato_marco"], ayuda: "Ej. «los primeros 12 meses»" },
+  { key: "TIPO_GARANTIA",          label: "Tipo de garantía",          tipo: "texto",  en: ["contrato_especifico"], ayuda: "Fianza, cheque, retención…" },
+  { key: "ADMINISTRADOR_CONTRATO", label: "Administrador del contrato", tipo: "texto", en: ["orden_compra", "contrato_especifico"] },
+  { key: "CENTRO_COSTO",           label: "Centro de costo o proyecto", tipo: "texto", en: ["orden_compra"] },
+  { key: "CLIENTE_FINAL",          label: "Cliente final",             tipo: "texto",  soloFlowdown: true, en: ["contrato_especifico"] },
+  { key: "NUM_CONTRATO_PRINCIPAL", label: "No. del contrato principal", tipo: "texto", soloFlowdown: true, en: ["contrato_especifico"] },
+];
 
+const TASAS_IVA = [
+  { value: 16, label: "16%" },
+  { value: 8,  label: "8% (frontera)" },
+  { value: 0,  label: "0% / exento" },
+];
 
+/* ---------- Número a letra, en español ---------- */
+const NL_UNI = ["", "UNO", "DOS", "TRES", "CUATRO", "CINCO", "SEIS", "SIETE", "OCHO", "NUEVE", "DIEZ",
+  "ONCE", "DOCE", "TRECE", "CATORCE", "QUINCE", "DIECISÉIS", "DIECISIETE", "DIECIOCHO", "DIECINUEVE",
+  "VEINTE", "VEINTIUNO", "VEINTIDÓS", "VEINTITRÉS", "VEINTICUATRO", "VEINTICINCO", "VEINTISÉIS",
+  "VEINTISIETE", "VEINTIOCHO", "VEINTINUEVE"];
+const NL_DEC = ["", "", "", "TREINTA", "CUARENTA", "CINCUENTA", "SESENTA", "SETENTA", "OCHENTA", "NOVENTA"];
+const NL_CEN = ["", "CIENTO", "DOSCIENTOS", "TRESCIENTOS", "CUATROCIENTOS", "QUINIENTOS", "SEISCIENTOS",
+  "SETECIENTOS", "OCHOCIENTOS", "NOVECIENTOS"];
 
-  /* El resto del panel depende de que exista la fila de la unidad: parámetros
+function letrasHasta999(n) {
+  if (n === 0) return "";
+  if (n === 100) return "CIEN";
+  const c = Math.floor(n / 100), r = n % 100;
+  let s = c ? NL_CEN[c] : "";
+  if (r) {
+    if (s) s += " ";
+    if (r < 30) s += NL_UNI[r];
+    else {
+      const d = Math.floor(r / 10), u = r % 10;
+      s += NL_DEC[d] + (u ? " Y " + NL_UNI[u] : "");
+    }
+  }
+  return s;
+}
 
-     y nivel de debida diligencia la referencian por llave foránea. Se
+/* "UNO" apocopa cuando le sigue un sustantivo: VEINTIÚN MIL PESOS, no
+   VEINTIUNO MIL PESOS. La tilde SOLO va en "veintiún", que es aguda; el resto
+   es "un" sin acento — un peso, ciento un pesos, mil un pesos. */
+const apocopar = (s) => /VEINTIUNO$/.test(s) ? s.replace(/VEINTIUNO$/, "VEINTIÚN") : s.replace(/UNO$/, "UN");
 
-     consulta aquí, una vez, en lugar de que cada panel lo averigüe. */
+function numeroALetras(n) {
+  n = Math.floor(Math.abs(Number(n) || 0));
+  if (n === 0) return "CERO";
+  if (n >= 1e12) return String(n);
+  const millones = Math.floor(n / 1e6);
+  const resto = n % 1e6;
+  const miles = Math.floor(resto / 1000);
+  const unidades = resto % 1000;
+  let s = "";
+  if (millones) s += millones === 1 ? "UN MILLÓN" : numeroALetras(millones) + " MILLONES";
+  if (miles) s += (s ? " " : "") + (miles === 1 ? "MIL" : apocopar(letrasHasta999(miles)) + " MIL");
+  if (unidades) s += (s ? " " : "") + letrasHasta999(unidades);
+  return s;
+}
+
+function importeALetra(monto, moneda) {
+  const n = Math.abs(Number(monto) || 0);
+  const entero = Math.floor(n);
+  const centavos = Math.round((n - entero) * 100);
+  const letras = apocopar(numeroALetras(entero));
+  const usd = moneda === "USD";
+  const unidad = usd ? (entero === 1 ? "DÓLAR AMERICANO" : "DÓLARES AMERICANOS")
+                     : (entero === 1 ? "PESO" : "PESOS");
+  /* Cifra exacta en millones: "un millón DE pesos". Con algo después no lleva
+     preposición — "dos millones quinientos mil pesos". */
+  const de = entero >= 1e6 && entero % 1e6 === 0 ? "DE " : "";
+  return `${letras} ${de}${unidad} ${String(centavos).padStart(2, "0")}/100 ${usd ? "USD" : "M.N."}`;
+}
+
+/* ---------- Formato para el documento ---------- */
+const MESES_LARGO = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
+  "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
+
+function fechaLarga(iso) {
+  if (!iso) return "";
+  const [a, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  if (!a || !m || !d) return String(iso);
+  return `${d} de ${MESES_LARGO[m - 1]} de ${a}`;
+}
+const dinero = (n) => `$${numMx(Number(n) || 0)}`;
+/* MXP es el código interno de la app; en un contrato lo correcto es MXN. */
+const monedaContrato = (m) => (m === "USD" ? "USD" : "MXN");
+const escaparXml = (v) => String(v ?? "")
+  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+/* ---------- El árbol ---------- */
+/**
+ * Cuatro compuertas en cascada. La primera afirmativa decide, y las
+ * siguientes ni se evalúan: por eso la ruta que se guarda nombra UNA
+ * compuerta, no todas las que hubieran aplicado.
+ */
+function decidirInstrumento(resp) {
+  const gatillos = GATILLOS.filter((g) => resp[g.id]);
+  if (gatillos.length) {
+    const flowdown = !!resp.g2;
+    const n = GATILLOS.findIndex((g) => g.id === gatillos[0].id) + 1;
+    return {
+      tipo: "contrato_especifico",
+      flowdown,
+      compuerta: 1,
+      ruta: `Contrato específico. Compuerta 1, gatillo obligatorio ${n}: ${gatillos[0].texto}` +
+        (gatillos.length > 1 ? ` (aplican ${gatillos.length} gatillos en total).` : "") +
+        (flowdown ? " Se adjuntan los anexos flow-down por el gatillo 2." : ""),
+    };
+  }
+  if (resp.superaOperacion) {
+    return {
+      tipo: "contrato_especifico", flowdown: false, compuerta: 2,
+      ruta: "Contrato específico. Compuerta 2: el monto de la operación supera el umbral individual.",
+    };
+  }
+  if (resp.superaAcumulado) {
+    return {
+      tipo: "contrato_marco", flowdown: false, compuerta: 3,
+      ruta: "Contrato marco más órdenes al amparo. Compuerta 3: el acumulado con el proveedor supera el umbral anual.",
+    };
+  }
+  const riesgos = RIESGOS.filter((r) => resp[r.id]);
+  if (riesgos.length) {
+    const n = RIESGOS.findIndex((r) => r.id === riesgos[0].id) + 1;
+    return {
+      tipo: "contrato_especifico", flowdown: false, compuerta: 4,
+      ruta: `Contrato específico. Compuerta 4, riesgo agravante ${n}: ${riesgos[0].texto}`,
+    };
+  }
+  return {
+    tipo: "orden_compra", flowdown: false, compuerta: 0,
+    ruta: "Orden de compra con condiciones generales. Ninguna compuerta resultó afirmativa.",
+  };
+}
+
+/* ---------- Folio ---------- */
+/**
+ * El siguiente folio se confirma contra la base, no contra el estado local:
+ * dos pestañas abiertas calcularían el mismo número. Si aun así chocan, el
+ * índice único (unidad, folio) rebota el insert y se reintenta.
+ */
+async function maxFolioInstrumentoReal(prefijo) {
+  const { data, error } = await supabase
+    .from("contratos_instrumentos")
+    .select("folio")
+    .like("folio", `${prefijo}%`)
+    .order("folio", { ascending: false })
+    .limit(1);
+  if (error || !data?.length) return 0;
+  const n = parseInt(String(data[0].folio).slice(prefijo.length), 10);
+  return isNaN(n) ? 0 : n;
+}
+
+async function insertarInstrumentoConReintento(instrumentosApi, fila, unidad, tipo) {
+  const anio = new Date().getFullYear();
+  const prefijo = `${unidad}-${TIPOS_INSTRUMENTO[tipo].prefijo}-${anio}-`;
+  const siguiente = (await maxFolioInstrumentoReal(prefijo)) + 1;
+  const maxIntentos = 8;
+  for (let intento = 0; intento < maxIntentos; intento++) {
+    const folio = `${prefijo}${String(siguiente + intento).padStart(3, "0")}`;
+    try {
+      return await instrumentosApi.insert({ ...fila, id: uid(), folio });
+    } catch (err) {
+      const chocoPorFolio = /folio|contratos_instrumentos_folio_idx/i.test(err?.message || "");
+      if (!chocoPorFolio || intento === maxIntentos - 1) throw err;
+    }
+  }
+}
+
+/* ---------- Llenado del .docx ---------- */
+/**
+ * Las plantillas se generaron con runs contiguos: cada {{MARCADOR}} existe
+ * como cadena completa dentro del XML, así que basta un reemplazo de texto.
+ * Verificado sobre los cinco archivos — cero marcadores partidos.
+ *
+ * Un marcador sin valor NO se vacía: se deja tal cual, para que el hueco se
+ * vea en el Word en lugar de pasar inadvertido. La función devuelve cuáles
+ * quedaron sin resolver para poder avisarlo antes de la descarga.
+ */
+async function llenarPlantilla(storagePath, valores) {
+  const { data, error } = await supabase.storage.from("contratos-plantillas").download(storagePath);
+  if (error) throw new Error(`No se pudo descargar la plantilla (${storagePath}): ${error.message}`);
+
+  const zip = await JSZip.loadAsync(data);
+  const partes = Object.keys(zip.files).filter((n) =>
+    /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/.test(n));
+  const sinResolver = new Set();
+
+  for (const parte of partes) {
+    const xml = await zip.file(parte).async("string");
+    const nuevo = xml.replace(/\{\{([A-Z_0-9]+)\}\}/g, (todo, clave) => {
+      const v = valores[clave];
+      if (v === undefined || v === null || v === "") { sinResolver.add(clave); return todo; }
+      return escaparXml(v);
+    });
+    zip.file(parte, nuevo);
+  }
+
+  const blob = await zip.generateAsync({
+    type: "blob",
+    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  });
+  return { blob, sinResolver: [...sinResolver].sort() };
+}
+
+function descargarBlob(blob, nombre) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = nombre;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1500);
+}
+
+function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, session }) {
+  const [datosUnidad, setDatosUnidad] = useState(null);
+  const [cargando, setCargando] = useState(true);
+  const [rfc, setRfc] = useState("");
+  const [resp, setResp] = useState({});
+  const [form, setForm] = useState({ MONEDA: "MXP", ivaTasa: 16 });
+  const [trabajando, setTrabajando] = useState(false);
+  const [resultado, setResultado] = useState(null);
 
   useEffect(() => {
-
     let vivo = true;
-
     (async () => {
-
+      setCargando(true);
       try {
-
         const { data } = await supabase
+          .from("contratos_datos_unidad").select("*").eq("unidad", unidad).maybeSingle();
+        if (vivo) setDatosUnidad(data || null);
+      } finally {
+        if (vivo) setCargando(false);
+      }
+    })();
+    return () => { vivo = false; };
+  }, [unidad]);
 
-          .from("contratos_datos_unidad").select("unidad").eq("unidad", unidad).maybeSingle();
+  useEffect(() => { setRfc(""); setResp({}); setResultado(null); }, [unidad]);
 
-        if (vivo) setHayDatosUnidad(!!data);
+  const hoy = hoyISO();
+  const parametros = parametrosApi.rows
+    .filter((p) => p.unidad === unidad && String(p.vigente_desde) <= hoy)
+    .sort((a, b) => String(b.vigente_desde).localeCompare(String(a.vigente_desde)))[0] || null;
 
-      } catch {
+  const proveedor = provLegalApi.rows.find((p) => normRfc(p.rfc) === normRfc(rfc)) || null;
+  const decision = decidirInstrumento(resp);
+  const meta = TIPOS_INSTRUMENTO[decision.tipo];
 
-        if (vivo) setHayDatosUnidad(false);
+  const campos = CAMPOS_FORM.filter(
+    (c) => c.en.includes(decision.tipo) && (!c.soloFlowdown || decision.flowdown));
 
+  const montoBase = Number(
+    form[decision.tipo === "orden_compra" ? "IMPORTE_SIN_IVA"
+      : decision.tipo === "contrato_marco" ? "MONTO_MAXIMO" : "MONTO_NUMERO"]) || 0;
+  const iva = montoBase * (Number(form.ivaTasa) || 0) / 100;
+
+  const listo = !!datosUnidad && !!parametros && !!proveedor;
+
+  const construirValores = (folio) => {
+    const v = {
+      CONTRATANTE: unidad,
+      RAZON_SOCIAL_CONTRATANTE: datosUnidad.razon_social,
+      RFC_CONTRATANTE: datosUnidad.rfc,
+      DOMICILIO_CONTRATANTE: datosUnidad.domicilio,
+      REPRESENTANTE_CONTRATANTE: datosUnidad.representante,
+      ESCRITURA_CONTRATANTE: datosUnidad.escritura,
+      NOTARIO_CONTRATANTE: datosUnidad.notario,
+      CORREO_CONTRATANTE: datosUnidad.correo_notificaciones,
+      CORREO_FACTURACION: datosUnidad.correo_facturacion,
+      JURISDICCION: datosUnidad.jurisdiccion,
+      LUGAR_SUSCRIPCION: datosUnidad.lugar_suscripcion || datosUnidad.jurisdiccion,
+
+      RAZON_SOCIAL_PROVEEDOR: proveedor.razon_social,
+      RFC_PROVEEDOR: proveedor.rfc,
+      DOMICILIO_PROVEEDOR: proveedor.domicilio,
+      REPRESENTANTE_PROVEEDOR: proveedor.representante,
+      ESCRITURA_PROVEEDOR: proveedor.escritura,
+      PERSONALIDAD_PROVEEDOR: proveedor.personalidad,
+      CORREO_PROVEEDOR: proveedor.correo,
+      CONTACTO_PROVEEDOR: proveedor.contacto,
+
+      /* Los porcentajes llevan el signo aquí: la plantilla dice "una pena de
+         {{PENA_PORCENTAJE}} por cada día", sin % después del marcador. Los
+         plazos NO lo llevan, porque la plantilla ya escribe "días naturales". */
+      PENA_PORCENTAJE: `${parametros.pena_diaria_pct}%`,
+      PENA_TOPE: `${parametros.pena_tope_pct}%`,
+      GARANTIA_PORCENTAJE: `${parametros.garantia_pct}%`,
+      PLAZO_PAGO_DIAS: parametros.plazo_pago_dias,
+      PLAZO_ACEPTACION_DIAS: parametros.plazo_aceptacion_dias,
+      DIAS_RECHAZO: parametros.dias_rechazo,
+      PLAZO_GARANTIA_DIAS: parametros.garantia_plazo_dias,
+      GARANTIA_VICIOS_MESES: parametros.garantia_vicios_meses,
+      CONFIDENCIALIDAD_ANOS: parametros.confidencialidad_anos,
+      AUDITORIA_ANOS: parametros.auditoria_anos,
+      AVISO_TERMINACION_DIAS: parametros.aviso_terminacion_dias,
+      AVISO_AJUSTE_DIAS: parametros.aviso_ajuste_dias,
+
+      FECHA_SUSCRIPCION: fechaLarga(hoy),
+      FECHA_ORDEN: fechaLarga(hoy),
+      [meta.marcadorFolio]: folio,
+    };
+
+    campos.forEach((c) => {
+      const crudo = form[c.key];
+      if (crudo === undefined || crudo === "") return;
+      v[c.key] = c.tipo === "fecha" ? fechaLarga(crudo)
+        : c.tipo === "monto" ? dinero(crudo)
+        : c.tipo === "moneda" ? monedaContrato(crudo)
+        : crudo;
+    });
+
+    if (decision.tipo === "orden_compra") {
+      v.IVA_ORDEN = dinero(iva);
+      v.IMPORTE_TOTAL = dinero(montoBase + iva);
+    }
+    if (decision.tipo === "contrato_especifico" && montoBase) {
+      v.MONTO_LETRA = importeALetra(montoBase, form.MONEDA);
+    }
+    if (decision.tipo === "contrato_marco" && montoBase) {
+      v.MONTO_MAXIMO_LETRA = importeALetra(montoBase, "MXP");
+    }
+    return v;
+  };
+
+  const generar = async () => {
+    const faltan = campos.filter((c) => !String(form[c.key] ?? "").trim());
+    if (faltan.length) {
+      const seguir = confirm(
+        `Faltan ${faltan.length} campo(s): ${faltan.map((c) => c.label).join(", ")}.\n\n` +
+        `Sus marcadores van a quedar impresos en el Word como {{MARCADOR}}, para que el hueco se vea.\n\n¿Generar de todas formas?`);
+      if (!seguir) return;
+    }
+
+    setTrabajando(true);
+    setResultado(null);
+    try {
+      const { data: plantillas, error: ePlant } = await supabase
+        .from("contratos_plantillas").select("*").eq("activa", true);
+      if (ePlant) throw ePlant;
+
+      const principal = plantillas.find((p) => p.tipo === meta.plantilla);
+      if (!principal) throw new Error(`No hay plantilla activa de tipo "${meta.plantilla}". Súbela y regístrala en contratos_plantillas.`);
+      const anexo = decision.flowdown ? plantillas.find((p) => p.tipo === "anexo_flowdown") : null;
+      if (decision.flowdown && !anexo) throw new Error('El gatillo 2 exige los anexos flow-down y no hay plantilla activa de tipo "anexo_flowdown".');
+
+      const fila = {
+        unidad,
+        rfc_proveedor: normRfc(rfc),
+        tipo: decision.tipo,
+        flowdown: decision.flowdown,
+        objeto: String(form.OBJETO || form.DESCRIPCION_ORDEN || "").slice(0, 500) || "(sin objeto)",
+        monto: montoBase || null,
+        moneda: form.MONEDA === "USD" ? "USD" : "MXP",
+        vigencia_inicio: form.VIGENCIA_INICIO || null,
+        vigencia_fin: form.VIGENCIA_FIN || null,
+        monto_maximo: decision.tipo === "contrato_marco" ? (montoBase || null) : null,
+        respuestas: { ...resp, _compuerta: decision.compuerta },
+        ruta_decision: decision.ruta,
+        parametros_id: parametros.id,
+        estado: "generado",
+        administrador: form.ADMINISTRADOR_CONTRATO || null,
+        centro_costo: form.CENTRO_COSTO || null,
+        archivo_path: principal.storage_path,
+        ...(session?.user?.id ? { creado_por: session.user.id } : {}),
+      };
+
+      /* Se registra primero para que el folio quede reservado por el índice
+         único. Si la descarga falla después, el instrumento existe y se puede
+         volver a generar; al revés se emitirían dos papeles con el mismo
+         número, que es el error caro. */
+      const guardado = await insertarInstrumentoConReintento(instrumentosApi, fila, unidad, decision.tipo);
+      const valores = construirValores(guardado.folio);
+
+      const docs = [];
+      const r1 = await llenarPlantilla(principal.storage_path, valores);
+      descargarBlob(r1.blob, `${guardado.folio}.docx`);
+      docs.push({ nombre: `${guardado.folio}.docx`, sinResolver: r1.sinResolver });
+
+      if (anexo) {
+        const vAnexo = { ...valores, NUM_CONTRATO: guardado.folio };
+        const r2 = await llenarPlantilla(anexo.storage_path, vAnexo);
+        descargarBlob(r2.blob, `${guardado.folio}-anexos-flow-down.docx`);
+        docs.push({ nombre: `${guardado.folio}-anexos-flow-down.docx`, sinResolver: r2.sinResolver });
       }
 
-    })();
+      setResultado({ folio: guardado.folio, docs });
+    } catch (err) {
+      alert("No se pudo generar: " + (err.message || err));
+    } finally {
+      setTrabajando(false);
+    }
+  };
 
-    return () => { vivo = false; };
+  if (cargando) {
+    return <Panel title="Generador"><div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div></Panel>;
+  }
 
-  }, [unidad, sub]);
-
-
+  const faltantesPrevios = [];
+  if (!datosUnidad) faltantesPrevios.push(`los datos legales de ${unidad}`);
+  if (!parametros) faltantesPrevios.push(`una versión de parámetros vigente para ${unidad}`);
 
   return (
+    <>
+      {faltantesPrevios.length > 0 && (
+        <Panel title="Generador">
+          <EmptyState
+            title="Falta capturar datos recurrentes"
+            body={`Sin ${faltantesPrevios.join(" y ")}, la mitad de los marcadores de cualquier plantilla se quedarían sin valor. Captúralos en Datos recurrentes.`}
+          />
+        </Panel>
+      )}
 
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-
-      <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start", flexWrap: "wrap" }}>
-
-        {SUBS_CONTRATOS.map((sc) => (
-
-          <button
-
-            key={sc.id}
-
-            onClick={() => setSub(sc.id)}
-
-            style={{
-
-              padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
-
-              background: sub === sc.id ? T.accent : "transparent",
-
-              color: sub === sc.id ? "#FFFFFF" : T.textDim,
-
-              fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
-
-            }}
-
-          >
-
-            {sc.label}
-
-          </button>
-
-        ))}
-
-      </div>
-
-
-
-      {sub === "datos" && (
-
+      {!faltantesPrevios.length && (
         <>
+          <Panel title="Proveedor" subtitle="Solo aparecen los que ya tienen datos legales capturados: son los que pueden llenar una plantilla.">
+            <Field label="Proveedor *" style={{ maxWidth: 480 }}>
+              <Select value={rfc} onChange={(e) => setRfc(e.target.value)}>
+                <option value="">— elegir —</option>
+                {provLegalApi.rows
+                  .slice()
+                  .sort((a, b) => String(a.razon_social || "").localeCompare(String(b.razon_social || "")))
+                  .map((p) => <option key={p.id} value={p.rfc}>{p.razon_social} — {p.rfc}</option>)}
+              </Select>
+            </Field>
+            {proveedor && (
+              <div style={{ marginTop: 10, fontSize: 11.5, color: T.textFaint }}>
+                {[proveedor.personalidad, proveedor.representante, proveedor.domicilio].filter(Boolean).join(" · ") || "Sin datos adicionales capturados."}
+              </div>
+            )}
+            {!provLegalApi.rows.length && (
+              <div style={{ marginTop: 10, fontSize: 12, color: T.textDim }}>
+                No hay proveedores con datos legales. Captúralos en Datos recurrentes.
+              </div>
+            )}
+          </Panel>
 
-          <DatosUnidadPanel unidad={unidad} session={session} />
+          <Panel title="Árbol de decisión" subtitle="Cuatro compuertas en cascada. La primera afirmativa decide y las siguientes ya no se evalúan.">
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 8 }}>
+              Compuerta 1 · Gatillos obligatorios
+            </div>
+            {GATILLOS.map((g, i) => (
+              <label key={g.id} style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "6px 0", fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
+                <input type="checkbox" checked={!!resp[g.id]} onChange={(e) => setResp({ ...resp, [g.id]: e.target.checked })} style={{ marginTop: 2 }} />
+                <span><b style={{ color: T.textFaint }}>{i + 1}.</b> {g.texto}</span>
+              </label>
+            ))}
 
-          <ParametrosPanel unidad={unidad} parametrosApi={parametrosApi} session={session} hayDatosUnidad={hayDatosUnidad} />
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, margin: "16px 0 8px" }}>
+              Compuertas 2 y 3 · Umbrales
+            </div>
+            <label style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "6px 0", fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!resp.superaOperacion} onChange={(e) => setResp({ ...resp, superaOperacion: e.target.checked })} style={{ marginTop: 2 }} />
+              <span>Alguna operación con este proveedor supera <b>{dinero(parametros.umbral_operacion)}</b> sin IVA.</span>
+            </label>
+            <label style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "6px 0", fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
+              <input type="checkbox" checked={!!resp.superaAcumulado} onChange={(e) => setResp({ ...resp, superaAcumulado: e.target.checked })} style={{ marginTop: 2 }} />
+              <span>El acumulado anual con este proveedor supera <b>{dinero(parametros.umbral_acumulado)}</b> sin IVA.</span>
+            </label>
 
-          <ProveedorLegalPanel
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, margin: "16px 0 8px" }}>
+              Compuerta 4 · Riesgos agravantes
+            </div>
+            {RIESGOS.map((r, i) => (
+              <label key={r.id} style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "6px 0", fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
+                <input type="checkbox" checked={!!resp[r.id]} onChange={(e) => setResp({ ...resp, [r.id]: e.target.checked })} style={{ marginTop: 2 }} />
+                <span><b style={{ color: T.textFaint }}>{i + 1}.</b> {r.texto}</span>
+              </label>
+            ))}
 
-            unidad={unidad}
+            <div style={{ marginTop: 18, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: "13px 15px" }}>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim }}>Resultado</div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: T.text, marginTop: 4 }}>
+                {meta.label}{decision.flowdown ? " + anexos flow-down" : ""}
+              </div>
+              <div style={{ fontSize: 12, color: T.textDim, marginTop: 6, lineHeight: 1.5 }}>{decision.ruta}</div>
+              <div style={{ fontSize: 11, color: T.textFaint, marginTop: 8 }}>
+                Parámetros vigentes desde {parametros.vigente_desde}. Queda guardado con el instrumento.
+              </div>
+            </div>
+          </Panel>
 
-            provLegalApi={provLegalApi}
+          <Panel
+            title="Datos del instrumento"
+            subtitle={`Solo lo que ${meta.label.toLowerCase()} necesita. Los campos cambian si cambia el resultado del árbol.`}
+          >
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 14 }}>
+              {campos.map((c) => (
+                <Field key={c.key} label={c.label} style={c.ancho === 2 ? { gridColumn: "span 2" } : undefined}>
+                  {c.tipo === "moneda" ? (
+                    <Select value={form.MONEDA || "MXP"} onChange={(e) => setForm({ ...form, MONEDA: e.target.value })}>
+                      <option value="MXP">MXN — peso mexicano</option>
+                      <option value="USD">USD — dólar americano</option>
+                    </Select>
+                  ) : (
+                    <TextInput
+                      type={c.tipo === "fecha" ? "date" : c.tipo === "monto" ? "number" : "text"}
+                      step={c.tipo === "monto" ? "0.01" : undefined}
+                      value={form[c.key] ?? ""}
+                      onChange={(e) => setForm({ ...form, [c.key]: e.target.value })}
+                    />
+                  )}
+                  {c.ayuda
+                    ? <span style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>{c.ayuda}</span>
+                    : <MarcadorHint marcador={c.key} />}
+                </Field>
+              ))}
+              {decision.tipo === "orden_compra" && (
+                <Field label="Tasa de IVA">
+                  <Select value={form.ivaTasa} onChange={(e) => setForm({ ...form, ivaTasa: Number(e.target.value) })}>
+                    {TASAS_IVA.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                  </Select>
+                  <span style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>
+                    IVA {dinero(iva)} · total {dinero(montoBase + iva)}
+                  </span>
+                </Field>
+              )}
+            </div>
 
-            provUnidadApi={provUnidadApi}
+            {montoBase > 0 && decision.tipo !== "orden_compra" && (
+              <div style={{ marginTop: 14, fontSize: 11.5, color: T.textFaint, fontFamily: T.fontMono }}>
+                En letra: {importeALetra(montoBase, decision.tipo === "contrato_marco" ? "MXP" : form.MONEDA)}
+              </div>
+            )}
 
-            session={session}
+            <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 18 }}>
+              <Button onClick={generar} disabled={!listo || trabajando}>
+                {trabajando ? "Generando…" : "Generar y registrar"}
+              </Button>
+              {!proveedor && <span style={{ fontSize: 12, color: T.textDim }}>Elige un proveedor primero.</span>}
+            </div>
 
-            hayDatosUnidad={hayDatosUnidad}
-
-          />
-
+            {resultado && (
+              <div style={{ marginTop: 16, borderTop: `1px solid ${T.border}`, paddingTop: 13 }}>
+                <div style={{ fontSize: 12.5, color: T.text, fontWeight: 600 }}>
+                  Registrado como {resultado.folio}
+                </div>
+                {resultado.docs.map((d) => (
+                  <div key={d.nombre} style={{ fontSize: 12, color: T.textDim, marginTop: 6 }}>
+                    {d.nombre}
+                    {d.sinResolver.length > 0 && (
+                      <div style={{ fontSize: 11, color: T.red, marginTop: 3, fontFamily: T.fontMono }}>
+                        {d.sinResolver.length} marcador(es) sin resolver, impresos en el documento:{" "}
+                        {d.sinResolver.join(", ")}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Panel>
         </>
-
       )}
-
-
-
-      {sub === "generador" && (
-
-        <Panel title="Generador" subtitle="Pendiente.">
-
-          <EmptyState
-
-            title="Falta cargar las plantillas"
-
-            body="El generador descarga el .docx activo de Storage y reemplaza los marcadores. Sin los cinco archivos no hay nada que llenar."
-
-          />
-
-        </Panel>
-
-      )}
-
-
-
-      {sub === "expediente" && (
-
-        <Panel title="Expediente" subtitle="Pendiente.">
-
-          <EmptyState
-
-            title="Sin instrumentos todavía"
-
-            body="El listado se construye sobre lo que emita el generador."
-
-          />
-
-        </Panel>
-
-      )}
-
-    </div>
-
+    </>
   );
-
 }
 
+function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, instrumentosApi, session }) {
+  const [sub, setSub] = useSessionState("ss-contratos-sub", "datos");
+  const [hayDatosUnidad, setHayDatosUnidad] = useState(false);
+
+  /* El resto del panel depende de que exista la fila de la unidad: parámetros
+     y nivel de debida diligencia la referencian por llave foránea. Se
+     consulta aquí, una vez, en lugar de que cada panel lo averigüe. */
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      try {
+        const { data } = await supabase
+          .from("contratos_datos_unidad").select("unidad").eq("unidad", unidad).maybeSingle();
+        if (vivo) setHayDatosUnidad(!!data);
+      } catch {
+        if (vivo) setHayDatosUnidad(false);
+      }
+    })();
+    return () => { vivo = false; };
+  }, [unidad, sub]);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start", flexWrap: "wrap" }}>
+        {SUBS_CONTRATOS.map((sc) => (
+          <button
+            key={sc.id}
+            onClick={() => setSub(sc.id)}
+            style={{
+              padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
+              background: sub === sc.id ? T.accent : "transparent",
+              color: sub === sc.id ? "#FFFFFF" : T.textDim,
+              fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
+            }}
+          >
+            {sc.label}
+          </button>
+        ))}
+      </div>
+
+      {sub === "datos" && (
+        <>
+          <DatosUnidadPanel unidad={unidad} session={session} />
+          <ParametrosPanel unidad={unidad} parametrosApi={parametrosApi} session={session} hayDatosUnidad={hayDatosUnidad} />
+          <ProveedorLegalPanel
+            unidad={unidad}
+            provLegalApi={provLegalApi}
+            provUnidadApi={provUnidadApi}
+            session={session}
+            hayDatosUnidad={hayDatosUnidad}
+          />
+        </>
+      )}
+
+      {sub === "generador" && (
+        <GeneradorPanel
+          unidad={unidad}
+          parametrosApi={parametrosApi}
+          provLegalApi={provLegalApi}
+          instrumentosApi={instrumentosApi}
+          session={session}
+        />
+      )}
+
+      {sub === "expediente" && (
+        <Panel title="Expediente" subtitle="Pendiente.">
+          <EmptyState
+            title="Sin instrumentos todavía"
+            body="El listado se construye sobre lo que emita el generador."
+          />
+        </Panel>
+      )}
+    </div>
+  );
+}
 
 function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
@@ -13364,6 +13251,7 @@ export default function App() {
   const contratosParametrosApi = useCollection("contratos_parametros", "vigente_desde");
   const contratosProvLegalApi = useCollection("contratos_proveedor_legal", "razon_social");
   const contratosProvUnidadApi = useCollection("contratos_proveedor_unidad", "rfc");
+  const contratosInstrumentosApi = useCollection("contratos_instrumentos", "folio");
   const [unidad, setUnidad] = useState("CTM");
   const [tab, setTab] = useState("dashboard");
   // Puente entre pestañas: al crear una transacción a partir de una
@@ -13550,7 +13438,7 @@ export default function App() {
               unidadesPermitidas={miPerfil?.unidades_permitidas || []}
             />
           )}
-          {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} session={session} />}
+          {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} session={session} />}
           {tab === "catalogo" && <CatalogoTab key={catalogoVersion} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>
       )}

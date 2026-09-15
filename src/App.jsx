@@ -318,8 +318,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.14.2";
+const APP_VERSION = "2.15.0";
 const CHANGELOG = [
+  { v: "2.15.0", desc: "Modulo de Contratos, primera parte: pestana nueva con la seccion Datos recurrentes. Tres paneles. Datos legales de la empresa contratante, una fila por unidad, con cada campo etiquetado con el marcador de plantilla que alimenta -- un campo vacio no se vacia en el Word, sale impreso como {{MARCADOR}}, asi que conviene ver de antemano cual es cual. Parametros versionados: guardar NUNCA sobrescribe, inserta una version con fecha nueva, y antes de confirmar se listan los valores que cambian con su valor anterior al lado; la version previa se conserva porque los instrumentos ya emitidos guardan con cual se generaron. Y datos legales de proveedores -- representante, escritura, personalidad, REPSE, opinion 32-D -- capturados UNA vez por RFC y no una por compania, porque son datos del proveedor y no cambian segun a quien le facture; lo que si es criterio nuestro, el nivel de debida diligencia, se guarda por compania aparte. El generador y el expediente quedan pendientes. Requiere 29-modulo-contratos.sql" },
   { v: "2.14.2", desc: "El Reporte de Pagos (PDF y Excel) pasa a agruparse por GRUPO de zona -Zona Norte, Zona Sur, QRO- en vez de por la zona suelta, que es como Direccion conoce el reporte. Usa el mismo helper bloquesZonaMoneda que ya usaba el semanal oficial, asi que los dos documentos parten igual y deja de haber dos criterios conviviendo. Una zona sin grupo asignado en el catalogo conserva su propio nombre. De paso se corrige un descuadre: las transacciones SIN zona quedaban fuera del detalle -el recorrido solo pasaba por zonas no vacias- pero si contaban en el total general, asi que la suma de los bloques no daba el total del documento; ahora caen en un bloque Sin zona" },
   { v: "2.14.1", desc: "Seguridad: el panel Sin partida vinculada causo un borrado real de transacciones porque el titulo y el boton (Eliminar las N sin vincular) se prestaban a pensar que eran copias/duplicados de las de la lista normal -- son las mismas filas, solo filtradas. Titulo y texto del boton ahora lo dicen explicitamente. Ademas, el confirm() de navegador (demasiado facil de aceptar sin leer) se reemplaza por un modal que obliga a escribir ELIMINAR antes de habilitar el boton de borrar -- mismo criterio para cualquier borrado masivo irreversible que se agregue despues" },
   { v: "2.14.0", desc: "Cambio de fondo en el importador de Sheets: Cnt no es un folio unico -- se confirmo que son codigos como P8, P7, C9 que se repiten a proposito entre transacciones distintas. Se quita por completo la validacion de folio duplicado y la revision de ya existe en la base: el UNICO indicador de que hacer con una fila es la columna Procesado de la hoja, como se pidio. De paso, Cnt deja de guardarse en folio_transaccion -- esa columna tiene una restriccion real de unicidad en la base de datos, y seguir mandando ahi un valor que se repite habria hecho fallar el guardado de todos modos, solo que sin aviso previo en vez de bloqueado de antemano. Cnt no se esta guardando en ningun otro lado por ahora" },
@@ -10113,6 +10114,1447 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session, grupos
   );
 }
 
+const SUBS_CONTRATOS = [
+
+  { id: "datos", label: "Datos recurrentes" },
+
+  { id: "generador", label: "Generador" },
+
+  { id: "expediente", label: "Expediente" },
+
+];
+
+
+
+/* Los datos legales de la empresa contratante. Cada campo declara a qué
+
+   marcador de las plantillas alimenta: sin esa pista, quien captura no tiene
+
+   forma de saber por qué un campo aparentemente menor importa, y los campos
+
+   vacíos salen impresos en el Word como {{MARCADOR}}. */
+
+const CAMPOS_DATOS_UNIDAD = [
+
+  { key: "razon_social",          label: "Razón social",               req: true, marcador: "RAZON_SOCIAL_OSB" },
+
+  { key: "rfc",                   label: "RFC",                        req: true, upper: true, marcador: "RFC_OSB" },
+
+  { key: "domicilio",             label: "Domicilio fiscal",           req: true, ancho: 2, marcador: "DOMICILIO_OSB" },
+
+  { key: "representante",         label: "Representante legal",        req: true, marcador: "REPRESENTANTE_OSB" },
+
+  { key: "cargo_representante",   label: "Cargo del representante" },
+
+  { key: "escritura",             label: "Escritura pública",          marcador: "ESCRITURA_OSB" },
+
+  { key: "notario",               label: "Notario",                    marcador: "NOTARIO_OSB" },
+
+  { key: "correo_notificaciones", label: "Correo de notificaciones",   marcador: "CORREO_OSB" },
+
+  { key: "correo_facturacion",    label: "Correo de facturación",      marcador: "CORREO_FACTURACION" },
+
+  { key: "jurisdiccion",          label: "Jurisdicción",               req: true, marcador: "JURISDICCION" },
+
+  { key: "lugar_suscripcion",     label: "Lugar de suscripción",       marcador: "LUGAR_SUSCRIPCION" },
+
+];
+
+
+
+const CAMPOS_PROVEEDOR_LEGAL = [
+
+  { key: "rfc",           label: "RFC",                 req: true, upper: true, marcador: "RFC_PROVEEDOR" },
+
+  { key: "razon_social",  label: "Razón social",        req: true, marcador: "RAZON_SOCIAL_PROVEEDOR" },
+
+  { key: "personalidad",  label: "Personalidad",        marcador: "PERSONALIDAD_PROVEEDOR",
+
+    opciones: ["Persona moral", "Persona física con actividad empresarial", "Persona física"] },
+
+  { key: "domicilio",     label: "Domicilio fiscal",    ancho: 2, marcador: "DOMICILIO_PROVEEDOR" },
+
+  { key: "representante", label: "Representante legal", marcador: "REPRESENTANTE_PROVEEDOR" },
+
+  { key: "escritura",     label: "Escritura pública",   marcador: "ESCRITURA_PROVEEDOR" },
+
+  { key: "contacto",      label: "Contacto",            marcador: "CONTACTO_PROVEEDOR" },
+
+  { key: "correo",        label: "Correo",              marcador: "CORREO_PROVEEDOR" },
+
+];
+
+
+
+/* Los parámetros, agrupados por para qué sirven. Los umbrales van aparte
+
+   porque no son cláusula de ningún contrato: son las cifras que el generador
+
+   muestra al preguntar, y el instrumento guarda con cuáles se decidió. */
+
+const GRUPOS_PARAMETROS = [
+
+  { grupo: "Umbrales de decisión", nota: "Cifras de referencia que el generador muestra al preguntar. No alimentan ninguna plantilla.", campos: [
+
+    { key: "umbral_operacion", label: "Umbral por operación", tipo: "money", def: 50000 },
+
+    { key: "umbral_acumulado", label: "Umbral acumulado",     tipo: "money", def: 200000 },
+
+  ]},
+
+  { grupo: "Penas y garantías", campos: [
+
+    { key: "pena_diaria_pct",       label: "Pena convencional diaria",   tipo: "pct",   def: 1,  marcador: "PENA_PORCENTAJE" },
+
+    { key: "pena_tope_pct",         label: "Tope de la pena",            tipo: "pct",   def: 10, marcador: "PENA_TOPE" },
+
+    { key: "garantia_pct",          label: "Garantía de cumplimiento",   tipo: "pct",   def: 10, marcador: "GARANTIA_PORCENTAJE" },
+
+    { key: "garantia_plazo_dias",   label: "Plazo para entregarla",      tipo: "dias",  def: 10, marcador: "PLAZO_GARANTIA_DIAS" },
+
+    { key: "garantia_vicios_meses", label: "Garantía por vicios ocultos",tipo: "meses", def: 12, marcador: "GARANTIA_VICIOS_MESES" },
+
+  ]},
+
+  { grupo: "Plazos", campos: [
+
+    { key: "plazo_pago_dias",        label: "Plazo de pago",            tipo: "dias", def: 30, marcador: "PLAZO_PAGO_DIAS" },
+
+    { key: "plazo_aceptacion_dias",  label: "Plazo de aceptación",      tipo: "dias", def: 3,  marcador: "PLAZO_ACEPTACION_DIAS" },
+
+    { key: "dias_rechazo",           label: "Días para rechazar",       tipo: "dias", def: 5,  marcador: "DIAS_RECHAZO" },
+
+    { key: "aviso_terminacion_dias", label: "Aviso de terminación",     tipo: "dias", def: 15, marcador: "AVISO_TERMINACION_DIAS" },
+
+    { key: "aviso_ajuste_dias",      label: "Aviso de ajuste de precios",tipo: "dias", def: 30, marcador: "AVISO_AJUSTE_DIAS" },
+
+  ]},
+
+  { grupo: "Vigencias de obligaciones", campos: [
+
+    { key: "confidencialidad_anos", label: "Confidencialidad", tipo: "anos", def: 5, marcador: "CONFIDENCIALIDAD_ANOS" },
+
+    { key: "auditoria_anos",        label: "Auditoría",        tipo: "anos", def: 5, marcador: "AUDITORIA_ANOS" },
+
+  ]},
+
+];
+
+const CAMPOS_PARAMETROS = GRUPOS_PARAMETROS.flatMap((g) => g.campos);
+
+
+
+const SENTIDOS_32D = [
+
+  { value: "", label: "— sin registrar —" },
+
+  { value: "positiva", label: "Positiva" },
+
+  { value: "negativa", label: "Negativa" },
+
+  { value: "sin_obligaciones", label: "Sin obligaciones" },
+
+  { value: "suspendido", label: "Suspendido" },
+
+];
+
+const NIVELES_DD = [
+
+  { value: "simplificada", label: "Simplificada" },
+
+  { value: "estandar", label: "Estándar" },
+
+  { value: "reforzada", label: "Reforzada" },
+
+];
+
+
+
+const hoyISO = () => new Date().toISOString().slice(0, 10);
+
+const normRfc = (v) => String(v || "").trim().toUpperCase();
+
+
+
+function sufijoParametro(tipo) {
+
+  return tipo === "pct" ? "%" : tipo === "dias" ? "días" : tipo === "meses" ? "meses" : tipo === "anos" ? "años" : "";
+
+}
+
+function formatParametro(valor, tipo) {
+
+  const n = Number(valor);
+
+  if (!Number.isFinite(n)) return "—";
+
+  if (tipo === "money") return `$${numMx(n)}`;
+
+  const suf = sufijoParametro(tipo);
+
+  return suf ? `${n} ${suf}` : String(n);
+
+}
+
+
+
+/* Etiqueta del marcador que alimenta un campo. Se muestra bajo el input en
+
+   monoespaciado para que se lea como lo que es: el texto literal que va a
+
+   quedar en el Word si el campo se deja vacío. */
+
+function MarcadorHint({ marcador }) {
+
+  if (!marcador) return null;
+
+  return (
+
+    <span style={{ fontSize: 10, color: T.textFaint, fontFamily: T.fontMono, marginTop: 3 }}>
+
+      {"{{" + marcador + "}}"}
+
+    </span>
+
+  );
+
+}
+
+
+
+/**
+
+ * Datos legales de la empresa contratante — una fila por unidad.
+
+ *
+
+ * No usa useCollection: esa tabla tiene a `unidad` como llave primaria y no
+
+ * tiene columna `id`, que es de lo que dependen update() y remove(). Y de
+
+ * todos modos no es una colección, es un formulario de un solo registro.
+
+ */
+
+function DatosUnidadPanel({ unidad, session }) {
+
+  const vacio = Object.fromEntries(CAMPOS_DATOS_UNIDAD.map((c) => [c.key, ""]));
+
+  const [form, setForm] = useState({ ...vacio, jurisdiccion: "Zapopan, Jalisco" });
+
+  const [cargando, setCargando] = useState(true);
+
+  const [guardando, setGuardando] = useState(false);
+
+  const [existia, setExistia] = useState(false);
+
+  const [guardadoEn, setGuardadoEn] = useState(null);
+
+  const [error, setError] = useState("");
+
+
+
+  useEffect(() => {
+
+    let vivo = true;
+
+    (async () => {
+
+      setCargando(true);
+
+      setError("");
+
+      try {
+
+        const { data, error: e } = await supabase
+
+          .from("contratos_datos_unidad").select("*").eq("unidad", unidad).maybeSingle();
+
+        if (e) throw e;
+
+        if (!vivo) return;
+
+        if (data) {
+
+          setForm({ ...vacio, ...Object.fromEntries(CAMPOS_DATOS_UNIDAD.map((c) => [c.key, data[c.key] || ""])) });
+
+          setExistia(true);
+
+          setGuardadoEn(data.actualizado_en || null);
+
+        } else {
+
+          setForm({ ...vacio, jurisdiccion: "Zapopan, Jalisco" });
+
+          setExistia(false);
+
+          setGuardadoEn(null);
+
+        }
+
+      } catch (err) {
+
+        if (vivo) setError(err.message || String(err));
+
+      } finally {
+
+        if (vivo) setCargando(false);
+
+      }
+
+    })();
+
+    return () => { vivo = false; };
+
+  }, [unidad]);
+
+
+
+  const faltantes = CAMPOS_DATOS_UNIDAD.filter((c) => c.req && !String(form[c.key] || "").trim());
+
+
+
+  const guardar = async () => {
+
+    if (faltantes.length) {
+
+      alert("Faltan campos obligatorios: " + faltantes.map((c) => c.label).join(", "));
+
+      return;
+
+    }
+
+    setGuardando(true);
+
+    setError("");
+
+    try {
+
+      const fila = { unidad, actualizado_en: new Date().toISOString() };
+
+      CAMPOS_DATOS_UNIDAD.forEach((c) => {
+
+        const v = String(form[c.key] || "").trim();
+
+        fila[c.key] = c.upper ? v.toUpperCase() : v;
+
+      });
+
+      if (session?.user?.id) fila.actualizado_por = session.user.id;
+
+      const { error: e } = await supabase
+
+        .from("contratos_datos_unidad").upsert(fila, { onConflict: "unidad" });
+
+      if (e) throw e;
+
+      setExistia(true);
+
+      setGuardadoEn(fila.actualizado_en);
+
+    } catch (err) {
+
+      setError(err.message || String(err));
+
+    } finally {
+
+      setGuardando(false);
+
+    }
+
+  };
+
+
+
+  return (
+
+    <Panel
+
+      title={`Datos legales — ${unidad}`}
+
+      subtitle="Quién contrata. Alimenta la mitad de los marcadores de las cinco plantillas."
+
+      right={
+
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+
+          {guardadoEn && <span style={{ fontSize: 11, color: T.textFaint }}>Guardado {formatFechaHora(guardadoEn)}</span>}
+
+          <Button onClick={guardar} disabled={guardando || cargando}>
+
+            {guardando ? "Guardando…" : existia ? "Guardar cambios" : "Crear registro"}
+
+          </Button>
+
+        </div>
+
+      }
+
+    >
+
+      {cargando ? (
+
+        <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
+
+      ) : (
+
+        <>
+
+          {!existia && (
+
+            <div style={{ fontSize: 12, color: T.textDim, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "10px 12px", marginBottom: 14 }}>
+
+              {unidad} todavía no tiene datos legales capturados. Sin esta fila no se pueden crear parámetros,
+
+              porque las dos tablas dependen de ella.
+
+            </div>
+
+          )}
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14 }}>
+
+            {CAMPOS_DATOS_UNIDAD.map((c) => (
+
+              <Field
+
+                key={c.key}
+
+                label={c.req ? `${c.label} *` : c.label}
+
+                style={c.ancho === 2 ? { gridColumn: "span 2" } : undefined}
+
+              >
+
+                <TextInput
+
+                  value={form[c.key] || ""}
+
+                  onChange={(e) => setForm({ ...form, [c.key]: c.upper ? e.target.value.toUpperCase() : e.target.value })}
+
+                />
+
+                <MarcadorHint marcador={c.marcador} />
+
+              </Field>
+
+            ))}
+
+          </div>
+
+          {error && <div style={{ marginTop: 12, fontSize: 12, color: T.red }}>No se pudo guardar: {error}</div>}
+
+        </>
+
+      )}
+
+    </Panel>
+
+  );
+
+}
+
+
+
+/**
+
+ * Parámetros versionados.
+
+ *
+
+ * Guardar NUNCA sobrescribe: inserta una fila con una fecha de vigencia
+
+ * nueva. Los instrumentos ya emitidos guardan el id de la versión con la que
+
+ * se generaron, así que cambiar un umbral hoy no reescribe lo que se firmó
+
+ * el año pasado. La UI tenía que dejar eso evidente, no darlo por entendido.
+
+ */
+
+function ParametrosPanel({ unidad, parametrosApi, session, hayDatosUnidad }) {
+
+  const versiones = parametrosApi.rows
+
+    .filter((p) => p.unidad === unidad)
+
+    .sort((a, b) => String(b.vigente_desde).localeCompare(String(a.vigente_desde)));
+
+  const hoy = hoyISO();
+
+  const vigente = versiones.find((v) => String(v.vigente_desde) <= hoy) || null;
+
+  const futuras = versiones.filter((v) => String(v.vigente_desde) > hoy);
+
+
+
+  const [abierto, setAbierto] = useState(false);
+
+  const [guardando, setGuardando] = useState(false);
+
+  const [desde, setDesde] = useState(hoy);
+
+  const [form, setForm] = useState(() =>
+
+    Object.fromEntries(CAMPOS_PARAMETROS.map((c) => [c.key, c.def])));
+
+
+
+  const abrirEditor = () => {
+
+    const base = vigente
+
+      ? Object.fromEntries(CAMPOS_PARAMETROS.map((c) => [c.key, vigente[c.key] ?? c.def]))
+
+      : Object.fromEntries(CAMPOS_PARAMETROS.map((c) => [c.key, c.def]));
+
+    setForm(base);
+
+    setDesde(hoy);
+
+    setAbierto(true);
+
+  };
+
+
+
+  const cambiados = vigente
+
+    ? CAMPOS_PARAMETROS.filter((c) => Number(form[c.key]) !== Number(vigente[c.key] ?? c.def))
+
+    : [];
+
+
+
+  const guardar = async () => {
+
+    if (!desde) { alert("Indica desde cuándo rige esta versión."); return; }
+
+    if (versiones.some((v) => String(v.vigente_desde) === desde)) {
+
+      alert(`Ya existe una versión que rige desde el ${desde}. Elige otra fecha.`);
+
+      return;
+
+    }
+
+    if (vigente && !cambiados.length) {
+
+      alert("No hay ningún valor distinto al de la versión vigente. No tiene caso crear una versión igual.");
+
+      return;
+
+    }
+
+    const resumen = vigente
+
+      ? `Se va a crear una versión nueva vigente desde ${desde}, con ${cambiados.length} valor(es) distinto(s):\n\n` +
+
+        cambiados.map((c) => `  ${c.label}: ${formatParametro(vigente[c.key] ?? c.def, c.tipo)} → ${formatParametro(form[c.key], c.tipo)}`).join("\n") +
+
+        `\n\nLa versión anterior NO se borra: los instrumentos ya emitidos la conservan.\n\n¿Continuar?`
+
+      : `Se va a crear la primera versión de parámetros de ${unidad}, vigente desde ${desde}.\n\n¿Continuar?`;
+
+    if (!confirm(resumen)) return;
+
+
+
+    setGuardando(true);
+
+    try {
+
+      const fila = { id: uid(), unidad, vigente_desde: desde };
+
+      CAMPOS_PARAMETROS.forEach((c) => { fila[c.key] = Number(form[c.key]) || 0; });
+
+      if (session?.user?.id) fila.creado_por = session.user.id;
+
+      await parametrosApi.insert(fila);
+
+      setAbierto(false);
+
+    } catch (err) {
+
+      alert("No se pudo guardar: " + (err.message || err));
+
+    } finally {
+
+      setGuardando(false);
+
+    }
+
+  };
+
+
+
+  return (
+
+    <Panel
+
+      title="Parámetros"
+
+      subtitle="Umbrales, penas y plazos. Versionados por fecha: guardar crea una versión, no sobrescribe la anterior."
+
+      right={
+
+        <Button onClick={abierto ? () => setAbierto(false) : abrirEditor} variant={abierto ? "ghost" : "primary"} disabled={!hayDatosUnidad}>
+
+          {abierto ? "Cancelar" : vigente ? "Nueva versión" : "Crear primera versión"}
+
+        </Button>
+
+      }
+
+    >
+
+      {!hayDatosUnidad && (
+
+        <div style={{ fontSize: 12, color: T.textDim, marginBottom: 12 }}>
+
+          Captura primero los datos legales de {unidad}: los parámetros dependen de esa fila.
+
+        </div>
+
+      )}
+
+
+
+      {hayDatosUnidad && !vigente && !abierto && (
+
+        <EmptyState
+
+          title={`${unidad} no tiene parámetros`}
+
+          body="Sin una versión vigente, el generador no sabe qué umbrales mostrar ni con qué llenar las cláusulas de penas y plazos."
+
+        />
+
+      )}
+
+
+
+      {vigente && !abierto && (
+
+        <>
+
+          <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
+
+            Rige desde {vigente.vigente_desde}
+
+            {versiones.length > 1 ? ` · ${versiones.length} versiones en total` : ""}
+
+          </div>
+
+          {GRUPOS_PARAMETROS.map((g) => (
+
+            <div key={g.grupo} style={{ marginBottom: 16 }}>
+
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 8 }}>{g.grupo}</div>
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
+
+                {g.campos.map((c) => (
+
+                  <div key={c.key} style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "9px 11px" }}>
+
+                    <div style={{ fontSize: 11, color: T.textDim }}>{c.label}</div>
+
+                    <div style={{ fontSize: 14, fontWeight: 700, color: T.text, marginTop: 3 }}>
+
+                      {formatParametro(vigente[c.key], c.tipo)}
+
+                    </div>
+
+                    <MarcadorHint marcador={c.marcador} />
+
+                  </div>
+
+                ))}
+
+              </div>
+
+            </div>
+
+          ))}
+
+          {futuras.length > 0 && (
+
+            <div style={{ fontSize: 12, color: T.textDim, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "9px 11px" }}>
+
+              Hay {futuras.length} versión(es) programada(s) a futuro: {futuras.map((v) => v.vigente_desde).join(", ")}.
+
+            </div>
+
+          )}
+
+        </>
+
+      )}
+
+
+
+      {abierto && (
+
+        <>
+
+          <div style={{ display: "flex", alignItems: "flex-end", gap: 14, marginBottom: 16, flexWrap: "wrap" }}>
+
+            <Field label="Rige desde *" style={{ maxWidth: 190 }}>
+
+              <TextInput type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
+
+            </Field>
+
+            <div style={{ fontSize: 12, color: T.textDim, paddingBottom: 9 }}>
+
+              {vigente
+
+                ? `La versión del ${vigente.vigente_desde} se conserva intacta.`
+
+                : "Primera versión de esta unidad."}
+
+            </div>
+
+          </div>
+
+          {GRUPOS_PARAMETROS.map((g) => (
+
+            <div key={g.grupo} style={{ marginBottom: 18 }}>
+
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim }}>{g.grupo}</div>
+
+              {g.nota && <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2, marginBottom: 8 }}>{g.nota}</div>}
+
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginTop: g.nota ? 0 : 8 }}>
+
+                {g.campos.map((c) => {
+
+                  const distinto = vigente && Number(form[c.key]) !== Number(vigente[c.key] ?? c.def);
+
+                  return (
+
+                    <Field key={c.key} label={`${c.label}${sufijoParametro(c.tipo) ? ` (${sufijoParametro(c.tipo)})` : ""}`}>
+
+                      <TextInput
+
+                        type="number" step={c.tipo === "money" || c.tipo === "pct" ? "0.01" : "1"}
+
+                        value={form[c.key] ?? ""}
+
+                        onChange={(e) => setForm({ ...form, [c.key]: e.target.value })}
+
+                        style={distinto ? { borderColor: T.accent } : undefined}
+
+                      />
+
+                      {distinto
+
+                        ? <span style={{ fontSize: 10.5, color: T.accent, marginTop: 3 }}>antes {formatParametro(vigente[c.key] ?? c.def, c.tipo)}</span>
+
+                        : <MarcadorHint marcador={c.marcador} />}
+
+                    </Field>
+
+                  );
+
+                })}
+
+              </div>
+
+            </div>
+
+          ))}
+
+          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+
+            <Button onClick={guardar} disabled={guardando}>
+
+              {guardando ? "Guardando…" : "Crear versión"}
+
+            </Button>
+
+            <Button variant="ghost" onClick={() => setAbierto(false)}>Cancelar</Button>
+
+            {vigente && (
+
+              <span style={{ fontSize: 12, color: cambiados.length ? T.accent : T.textFaint }}>
+
+                {cambiados.length ? `${cambiados.length} valor(es) distinto(s)` : "Sin cambios respecto a la versión vigente"}
+
+              </span>
+
+            )}
+
+          </div>
+
+        </>
+
+      )}
+
+
+
+      {versiones.length > 1 && !abierto && (
+
+        <div style={{ marginTop: 16, borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
+
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 8 }}>Historial</div>
+
+          {versiones.map((v) => (
+
+            <div key={v.id} style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 12, color: T.textDim, padding: "5px 0" }}>
+
+              <span style={{ fontFamily: T.fontMono }}>{v.vigente_desde}</span>
+
+              {v.id === vigente?.id && <Pill>vigente</Pill>}
+
+              {String(v.vigente_desde) > hoy && <Pill>programada</Pill>}
+
+              <span style={{ color: T.textFaint }}>
+
+                operación {formatParametro(v.umbral_operacion, "money")} · acumulado {formatParametro(v.umbral_acumulado, "money")}
+
+              </span>
+
+            </div>
+
+          ))}
+
+        </div>
+
+      )}
+
+    </Panel>
+
+  );
+
+}
+
+
+
+/**
+
+ * Datos legales del proveedor.
+
+ *
+
+ * La identidad del proveedor —razón social, domicilio, representante— es
+
+ * suya, no nuestra: no cambia según a cuál de las tres compañías le facture,
+
+ * y por eso vive una sola vez, indexada por RFC. Lo que sí es criterio
+
+ * nuestro (nivel de debida diligencia) va por unidad, en otra tabla.
+
+ */
+
+function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hayDatosUnidad }) {
+
+  const [buscar, setBuscar] = useSessionState("ss-contratos-prov-buscar", "");
+
+  const [editando, setEditando] = useState(null);
+
+  const [guardando, setGuardando] = useState(false);
+
+
+
+  const filas = provLegalApi.rows
+
+    .slice()
+
+    .sort((a, b) => String(a.razon_social || "").localeCompare(String(b.razon_social || "")));
+
+  const q = buscar.trim().toLowerCase();
+
+  const visibles = q
+
+    ? filas.filter((p) => [p.razon_social, p.rfc, p.grupo_economico].some((v) => String(v || "").toLowerCase().includes(q)))
+
+    : filas;
+
+
+
+  const porUnidad = (rfc) =>
+
+    provUnidadApi.rows.find((r) => r.unidad === unidad && normRfc(r.rfc) === normRfc(rfc)) || null;
+
+
+
+  const vacio = {
+
+    ...Object.fromEntries(CAMPOS_PROVEEDOR_LEGAL.map((c) => [c.key, ""])),
+
+    repse_registro: "", repse_vigencia: "", opinion_32d_fecha: "", opinion_32d_sentido: "",
+
+    grupo_economico: "", notas: "", nivel_dd: "estandar", beneficiario_ctrl: false,
+
+  };
+
+
+
+  const abrirNuevo = () => setEditando({ ...vacio, _id: null });
+
+  const abrirEditar = (p) => {
+
+    const pu = porUnidad(p.rfc);
+
+    setEditando({
+
+      ...vacio,
+
+      ...Object.fromEntries(Object.keys(vacio).map((k) => [k, p[k] ?? vacio[k]])),
+
+      nivel_dd: pu?.nivel_dd || "estandar",
+
+      beneficiario_ctrl: !!pu?.beneficiario_ctrl,
+
+      _id: p.id,
+
+      _puId: pu?.id || null,
+
+    });
+
+  };
+
+
+
+  const guardar = async () => {
+
+    const rfc = normRfc(editando.rfc);
+
+    if (!rfc || !String(editando.razon_social || "").trim()) {
+
+      alert("RFC y razón social son obligatorios.");
+
+      return;
+
+    }
+
+    const choque = provLegalApi.rows.find((p) => normRfc(p.rfc) === rfc && p.id !== editando._id);
+
+    if (choque) {
+
+      alert(`El RFC ${rfc} ya está capturado como "${choque.razon_social}". Los datos legales se guardan una sola vez por RFC, no una por compañía.`);
+
+      return;
+
+    }
+
+    setGuardando(true);
+
+    try {
+
+      const fila = { rfc, actualizado_en: new Date().toISOString() };
+
+      CAMPOS_PROVEEDOR_LEGAL.forEach((c) => {
+
+        if (c.key === "rfc") return;
+
+        fila[c.key] = String(editando[c.key] || "").trim();
+
+      });
+
+      fila.repse_registro = String(editando.repse_registro || "").trim();
+
+      fila.repse_vigencia = editando.repse_vigencia || null;
+
+      fila.opinion_32d_fecha = editando.opinion_32d_fecha || null;
+
+      fila.opinion_32d_sentido = editando.opinion_32d_sentido || null;
+
+      fila.grupo_economico = String(editando.grupo_economico || "").trim();
+
+      fila.notas = String(editando.notas || "").trim();
+
+      if (session?.user?.id) fila.actualizado_por = session.user.id;
+
+
+
+      if (editando._id) await provLegalApi.update(editando._id, fila);
+
+      else await provLegalApi.insert({ id: uid(), ...fila });
+
+
+
+      const patchUnidad = {
+
+        unidad, rfc,
+
+        nivel_dd: editando.nivel_dd || "estandar",
+
+        beneficiario_ctrl: !!editando.beneficiario_ctrl,
+
+        actualizado_en: new Date().toISOString(),
+
+        ...(session?.user?.id ? { actualizado_por: session.user.id } : {}),
+
+      };
+
+      if (editando._puId) await provUnidadApi.update(editando._puId, patchUnidad);
+
+      else await provUnidadApi.insert({ id: uid(), ...patchUnidad });
+
+
+
+      setEditando(null);
+
+    } catch (err) {
+
+      alert("No se pudo guardar: " + (err.message || err));
+
+    } finally {
+
+      setGuardando(false);
+
+    }
+
+  };
+
+
+
+  const eliminar = async (p) => {
+
+    if (!confirm(`¿Eliminar los datos legales de "${p.razon_social}"? Esto no se puede deshacer.`)) return;
+
+    try {
+
+      const pu = porUnidad(p.rfc);
+
+      if (pu) await provUnidadApi.remove(pu.id);
+
+      await provLegalApi.remove(p.id);
+
+    } catch (err) {
+
+      alert("No se pudo eliminar: " + (err.message || err));
+
+    }
+
+  };
+
+
+
+  return (
+
+    <Panel
+
+      title="Proveedores — datos legales"
+
+      subtitle="Lo que ASPEL no trae: representante, escritura, REPSE, opinión 32-D. Se capturan una vez por RFC, no una por compañía."
+
+      right={<Button onClick={abrirNuevo} disabled={!hayDatosUnidad}>+ Nuevo</Button>}
+
+    >
+
+      {!hayDatosUnidad && (
+
+        <div style={{ fontSize: 12, color: T.textDim, marginBottom: 12 }}>
+
+          Captura primero los datos legales de {unidad}: el nivel de debida diligencia se guarda por compañía y depende de esa fila.
+
+        </div>
+
+      )}
+
+
+
+      {editando && (
+
+        <div style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 16, marginBottom: 16 }}>
+
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: T.text, marginBottom: 12 }}>
+
+            {editando._id ? "Editar proveedor" : "Nuevo proveedor"}
+
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 13 }}>
+
+            {CAMPOS_PROVEEDOR_LEGAL.map((c) => (
+
+              <Field
+
+                key={c.key}
+
+                label={c.req ? `${c.label} *` : c.label}
+
+                style={c.ancho === 2 ? { gridColumn: "span 2" } : undefined}
+
+              >
+
+                {c.opciones ? (
+
+                  <Select value={editando[c.key] || ""} onChange={(e) => setEditando({ ...editando, [c.key]: e.target.value })}>
+
+                    <option value="">— elegir —</option>
+
+                    {c.opciones.map((o) => <option key={o} value={o}>{o}</option>)}
+
+                  </Select>
+
+                ) : (
+
+                  <TextInput
+
+                    value={editando[c.key] || ""}
+
+                    onChange={(e) => setEditando({ ...editando, [c.key]: c.upper ? e.target.value.toUpperCase() : e.target.value })}
+
+                  />
+
+                )}
+
+                <MarcadorHint marcador={c.marcador} />
+
+              </Field>
+
+            ))}
+
+            <Field label="Registro REPSE">
+
+              <TextInput value={editando.repse_registro || ""} onChange={(e) => setEditando({ ...editando, repse_registro: e.target.value })} />
+
+            </Field>
+
+            <Field label="Vigencia REPSE">
+
+              <TextInput type="date" value={editando.repse_vigencia || ""} onChange={(e) => setEditando({ ...editando, repse_vigencia: e.target.value })} />
+
+            </Field>
+
+            <Field label="Fecha opinión 32-D">
+
+              <TextInput type="date" value={editando.opinion_32d_fecha || ""} onChange={(e) => setEditando({ ...editando, opinion_32d_fecha: e.target.value })} />
+
+            </Field>
+
+            <Field label="Sentido 32-D">
+
+              <Select value={editando.opinion_32d_sentido || ""} onChange={(e) => setEditando({ ...editando, opinion_32d_sentido: e.target.value })}>
+
+                {SENTIDOS_32D.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+
+              </Select>
+
+            </Field>
+
+            <Field label="Grupo económico">
+
+              <TextInput value={editando.grupo_economico || ""} onChange={(e) => setEditando({ ...editando, grupo_economico: e.target.value })} />
+
+            </Field>
+
+            <Field label="Notas" style={{ gridColumn: "span 2" }}>
+
+              <TextInput value={editando.notas || ""} onChange={(e) => setEditando({ ...editando, notas: e.target.value })} />
+
+            </Field>
+
+          </div>
+
+
+
+          <div style={{ marginTop: 16, paddingTop: 13, borderTop: `1px solid ${T.border}` }}>
+
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 3 }}>
+
+              Solo para {unidad}
+
+            </div>
+
+            <div style={{ fontSize: 11, color: T.textFaint, marginBottom: 10 }}>
+
+              Lo de arriba es del proveedor y lo comparten las tres compañías. Esto es criterio nuestro y se guarda por separado.
+
+            </div>
+
+            <div style={{ display: "flex", gap: 16, alignItems: "flex-end", flexWrap: "wrap" }}>
+
+              <Field label="Nivel de debida diligencia" style={{ maxWidth: 230 }}>
+
+                <Select value={editando.nivel_dd} onChange={(e) => setEditando({ ...editando, nivel_dd: e.target.value })}>
+
+                  {NIVELES_DD.map((n) => <option key={n.value} value={n.value}>{n.label}</option>)}
+
+                </Select>
+
+              </Field>
+
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: T.textDim, paddingBottom: 9, cursor: "pointer" }}>
+
+                <input
+
+                  type="checkbox"
+
+                  checked={!!editando.beneficiario_ctrl}
+
+                  onChange={(e) => setEditando({ ...editando, beneficiario_ctrl: e.target.checked })}
+
+                />
+
+                Beneficiario controlador identificado
+
+              </label>
+
+            </div>
+
+          </div>
+
+
+
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+
+            <Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Button>
+
+            <Button variant="ghost" onClick={() => setEditando(null)}>Cancelar</Button>
+
+          </div>
+
+        </div>
+
+      )}
+
+
+
+      <div style={{ marginBottom: 12 }}>
+
+        <TextInput
+
+          placeholder="Buscar por razón social, RFC o grupo económico…"
+
+          value={buscar}
+
+          onChange={(e) => setBuscar(e.target.value)}
+
+          style={{ maxWidth: 380 }}
+
+        />
+
+      </div>
+
+
+
+      {!visibles.length ? (
+
+        <EmptyState
+
+          title={filas.length ? "Ningún proveedor coincide" : "Sin proveedores capturados"}
+
+          body={filas.length
+
+            ? "Prueba con otro término de búsqueda."
+
+            : "Los datos legales que las plantillas necesitan no están en ASPEL: representante, escritura, personalidad jurídica."}
+
+        />
+
+      ) : (
+
+        <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
+
+          {visibles.map((p) => {
+
+            const pu = porUnidad(p.rfc);
+
+            const repseVencido = p.repse_vigencia && String(p.repse_vigencia) < hoyISO();
+
+            return (
+
+              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, background: T.panel, padding: "10px 12px" }}>
+
+                <div style={{ flex: 1, minWidth: 0 }}>
+
+                  <div style={{ fontSize: 12.5, color: T.text, fontWeight: 600 }}>{p.razon_social}</div>
+
+                  <div style={{ fontSize: 11, color: T.textFaint, fontFamily: T.fontMono, marginTop: 2 }}>
+
+                    {p.rfc}{p.grupo_economico ? ` · ${p.grupo_economico}` : ""}
+
+                  </div>
+
+                </div>
+
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+
+                  {p.repse_registro && <Pill>{repseVencido ? "REPSE vencido" : "REPSE"}</Pill>}
+
+                  {p.opinion_32d_sentido && <Pill>32-D {p.opinion_32d_sentido}</Pill>}
+
+                  <Pill>{(NIVELES_DD.find((n) => n.value === (pu?.nivel_dd || "estandar")) || {}).label}</Pill>
+
+                </div>
+
+                <Button variant="ghost" onClick={() => abrirEditar(p)} style={{ padding: "5px 11px" }}>Editar</Button>
+
+                <Button variant="danger" onClick={() => eliminar(p)} style={{ padding: "5px 11px" }}>Eliminar</Button>
+
+              </div>
+
+            );
+
+          })}
+
+        </div>
+
+      )}
+
+    </Panel>
+
+  );
+
+}
+
+
+
+function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, session }) {
+
+  const [sub, setSub] = useSessionState("ss-contratos-sub", "datos");
+
+  const [hayDatosUnidad, setHayDatosUnidad] = useState(false);
+
+
+
+  /* El resto del panel depende de que exista la fila de la unidad: parámetros
+
+     y nivel de debida diligencia la referencian por llave foránea. Se
+
+     consulta aquí, una vez, en lugar de que cada panel lo averigüe. */
+
+  useEffect(() => {
+
+    let vivo = true;
+
+    (async () => {
+
+      try {
+
+        const { data } = await supabase
+
+          .from("contratos_datos_unidad").select("unidad").eq("unidad", unidad).maybeSingle();
+
+        if (vivo) setHayDatosUnidad(!!data);
+
+      } catch {
+
+        if (vivo) setHayDatosUnidad(false);
+
+      }
+
+    })();
+
+    return () => { vivo = false; };
+
+  }, [unidad, sub]);
+
+
+
+  return (
+
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+
+      <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start", flexWrap: "wrap" }}>
+
+        {SUBS_CONTRATOS.map((sc) => (
+
+          <button
+
+            key={sc.id}
+
+            onClick={() => setSub(sc.id)}
+
+            style={{
+
+              padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
+
+              background: sub === sc.id ? T.accent : "transparent",
+
+              color: sub === sc.id ? "#FFFFFF" : T.textDim,
+
+              fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
+
+            }}
+
+          >
+
+            {sc.label}
+
+          </button>
+
+        ))}
+
+      </div>
+
+
+
+      {sub === "datos" && (
+
+        <>
+
+          <DatosUnidadPanel unidad={unidad} session={session} />
+
+          <ParametrosPanel unidad={unidad} parametrosApi={parametrosApi} session={session} hayDatosUnidad={hayDatosUnidad} />
+
+          <ProveedorLegalPanel
+
+            unidad={unidad}
+
+            provLegalApi={provLegalApi}
+
+            provUnidadApi={provUnidadApi}
+
+            session={session}
+
+            hayDatosUnidad={hayDatosUnidad}
+
+          />
+
+        </>
+
+      )}
+
+
+
+      {sub === "generador" && (
+
+        <Panel title="Generador" subtitle="Pendiente.">
+
+          <EmptyState
+
+            title="Falta cargar las plantillas"
+
+            body="El generador descarga el .docx activo de Storage y reemplaza los marcadores. Sin los cinco archivos no hay nada que llenar."
+
+          />
+
+        </Panel>
+
+      )}
+
+
+
+      {sub === "expediente" && (
+
+        <Panel title="Expediente" subtitle="Pendiente.">
+
+          <EmptyState
+
+            title="Sin instrumentos todavía"
+
+            body="El listado se construye sobre lo que emita el generador."
+
+          />
+
+        </Panel>
+
+      )}
+
+    </div>
+
+  );
+
+}
+
+
 function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [sub, setSub] = useSessionState("ss-catalogo-sub", "proyectos");
@@ -11918,6 +13360,9 @@ export default function App() {
   const vehiculosApi = useCollection("vehiculos", "no_economico", { withAudit: true });
   const vehMantenimientosApi = useCollection("vehiculo_mantenimientos", "folio", { withAudit: true });
   const vehUbicacionesApi = useCollection("vehiculo_ubicaciones", "nombre");
+  const contratosParametrosApi = useCollection("contratos_parametros", "vigente_desde");
+  const contratosProvLegalApi = useCollection("contratos_proveedor_legal", "razon_social");
+  const contratosProvUnidadApi = useCollection("contratos_proveedor_unidad", "rfc");
   const [unidad, setUnidad] = useState("CTM");
   const [tab, setTab] = useState("dashboard");
   // Puente entre pestañas: al crear una transacción a partir de una
@@ -11979,6 +13424,7 @@ export default function App() {
     { id: "reporte-direccion", label: "Reporte Pagos Dirección" },
     { id: "reportes-direccion", label: "Reportes a Dirección" },
     { id: "vehiculos", label: "Vehículos" },
+    { id: "contratos", label: "Contratos" },
     { id: "catalogo", label: "Catálogo" },
   ];
 
@@ -12103,6 +13549,7 @@ export default function App() {
               unidadesPermitidas={miPerfil?.unidades_permitidas || []}
             />
           )}
+          {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} session={session} />}
           {tab === "catalogo" && <CatalogoTab key={catalogoVersion} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>
       )}

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.22.0";
+const APP_VERSION = "2.23.0";
 const CHANGELOG = [
+  { v: "2.23.0", desc: "Las fechas se pueden teclear cortas. 150926 se convierte en 15/09/2026 al salir del campo. Tambien 15092026, 1509 (ano en curso), 15 (mes y ano en curso) y con separadores 15/9/26, 15-09-2026, 15.09.26 -- respetando el mes sin cero a la izquierda, que al quitar separadores dejaria cinco digitos sin patron. Aplica a los 18 campos de fecha de la app: se intercepto dentro de TextInput, que es por donde pasan todos, sin tocar un solo punto de uso, y conservando el mismo contrato de value en ISO. Lo tecleado se valida contra el calendario real: 310926 no pasa porque septiembre no tiene 31 dias, y sin esa comprobacion Date lo habria convertido en 1 de octubre en silencio. Una fecha invalida marca el borde en rojo y conserva lo escrito para corregir, en vez de borrarlo. El ano de dos digitos resuelve 00-79 como 2000-2079 y 80-99 como 1980-1999, porque una escritura puede ser de los noventa pero ninguna fecha va a ser de 2085. Queda un boton de calendario para quien prefiera elegir" },
   { v: "2.22.0", desc: "El alta de proveedores distingue persona fisica de moral. Una moral se constituye ante notario y comparece por representante; una fisica comparece por su propio derecho y lo que la identifica es la CURP. El formulario muestra solo lo que aplica -- pedirle escritura y representante a una fisica no solo sobra, invita a inventarlos -- y al cambiar de personalidad limpia lo que dejo de aplicar, para que un representante heredado no acabe impreso en el contrato de una fisica. Si el RFC tiene 12 caracteres y la personalidad dice fisica, o al reves, lo advierte antes de guardar. El lector de CSF saca la CURP y distingue por el regimen a quien factura como actividad empresarial. Y se corrige un error que salia impreso: la plantilla dice Que es una persona PERSONALIDAD_PROVEEDOR y el campo guarda Persona moral, asi que el contrato decia QUE ES UNA PERSONA PERSONA MORAL; ahora el marcador va sin el prefijo. En persona fisica, REPRESENTANTE_PROVEEDOR se llena con su propio nombre. Requiere 32-curp-proveedor.sql" },
   { v: "2.21.1", desc: "Arreglo: la pestana Contratos se quedaba en blanco. En ContratosTab la lista de clausulas del documento leia `incluidas` siete lineas antes de su useState; al ser const, cae en la zona muerta temporal y lanzaba ReferenceError en CADA render, tumbando el subarbol completo. Se movieron las declaraciones de estado arriba de los valores calculados. El verificador no lo atrapo porque solo comprobaba que el identificador existiera en alguna parte, no el orden, asi que se le agrego un chequeo de zona muerta temporal. Lo fino fue distinguir el callback de un onClick, que corre mucho despues y puede referenciar lo que sea, del de un .filter o .map, que corre en el acto y si esta sujeto a la zona muerta; y respetar los parametros de esos callbacks, para que un .map((p) => p.x) no se confunda con un const p declarado mas abajo" },
   { v: "2.21.0", desc: "Los contratos salen integramente en MAYUSCULA. Se aplica sobre los nodos de texto del XML ya armado, no en cada punto donde se escribe: asi cubre por igual los valores sustituidos, el clausulado de la biblioteca y el texto fijo de la plantilla -- hacerlo solo en la parte generada habria dejado el documento mitad y mitad. Las entidades XML se saltan, para que &amp; no se vuelva &AMP;. Se puede revertir con la constante CONTRATOS_EN_MAYUSCULAS. Y la orden de compra sale del alcance: la emite Contabilidad desde el SAE. Sigue siendo salida del arbol cuando ninguna compuerta resulta afirmativa -- hay que decirle a quien pregunta que corresponde -- pero ya no aparece en el selector de clausulas y, cuando el arbol cae ahi, el panel de emision se sustituye por el aviso de que se emite en el SAE. Con ella se fueron sus campos exclusivos y el calculo de IVA, que solo existia para ese documento" },
@@ -2502,7 +2503,156 @@ const inputStyle = {
   minWidth: 0,
 };
 
+/* ----------------------------------------------------------------------
+   CAMPO DE FECHA
+---------------------------------------------------------------------- */
+
+/**
+ * Acepta la fecha tecleada corta y la normaliza.
+ *
+ *   150926    -> 2026-09-15      (dd mm aa)
+ *   15092026  -> 2026-09-15      (dd mm aaaa)
+ *   1509      -> 15 de sept. del año en curso
+ *   15        -> día 15 del mes y año en curso
+ *   15/09/26, 15-09-2026, 15.09.26 -> lo mismo; los separadores se ignoran
+ *
+ * Devuelve el ISO que espera la base, "" si el campo se vació, o null si lo
+ * tecleado no es una fecha real — 310926 no pasa, porque septiembre no tiene
+ * 31 días, y eso hay que distinguirlo de un campo vacío.
+ *
+ * El año de dos dígitos se resuelve 00-79 como 2000-2079 y 80-99 como
+ * 1980-1999: un contrato puede referirse a una escritura de los noventa,
+ * pero no a una fecha del 2085.
+ */
+function parsearFechaCorta(txt) {
+  const s = String(txt ?? "").trim();
+  if (!s) return "";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;          // ya viene en ISO
+
+  const hoy = new Date();
+  let dia, mes, anio;
+
+  /* Con separadores se respetan las partes tal cual: quien escribe "15/9/26"
+     omite el cero a propósito, y al quitar los separadores quedarían cinco
+     dígitos que no encajan en ningún patrón. */
+  const conSep = /^(\d{1,2})[\/\-. ](\d{1,2})(?:[\/\-. ](\d{2,4}))?$/.exec(s);
+  const d = s.replace(/\D/g, "");
+
+  if (conSep) {
+    dia = conSep[1]; mes = conSep[2]; anio = conSep[3] || String(hoy.getFullYear());
+  }
+  else if (d.length === 8)      { dia = d.slice(0, 2); mes = d.slice(2, 4); anio = d.slice(4, 8); }
+  else if (d.length === 6) { dia = d.slice(0, 2); mes = d.slice(2, 4); anio = d.slice(4, 6); }
+  else if (d.length === 4) { dia = d.slice(0, 2); mes = d.slice(2, 4); anio = String(hoy.getFullYear()); }
+  else if (d.length === 2) { dia = d; mes = String(hoy.getMonth() + 1); anio = String(hoy.getFullYear()); }
+  else if (d.length === 1) { dia = d; mes = String(hoy.getMonth() + 1); anio = String(hoy.getFullYear()); }
+  else return null;
+
+  if (anio.length === 2) anio = (Number(anio) <= 79 ? "20" : "19") + anio;
+
+  const nd = Number(dia), nm = Number(mes), na = Number(anio);
+  if (!nd || !nm || nm > 12) return null;
+  // Se construye la fecha y se comprueba que no haya rodado de mes: el 31 de
+  // septiembre se convertiría en 1 de octubre sin que nadie se entere.
+  const f = new Date(na, nm - 1, nd);
+  if (f.getFullYear() !== na || f.getMonth() !== nm - 1 || f.getDate() !== nd) return null;
+
+  return `${anio}-${String(nm).padStart(2, "0")}-${String(nd).padStart(2, "0")}`;
+}
+
+const isoAMostrar = (iso) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso || ""));
+  return m ? `${m[3]}/${m[2]}/${m[1]}` : "";
+};
+
+/**
+ * El campo nativo `type="date"` obliga a teclear día, mes y año por
+ * separado. Este acepta la cadena corta y deja el calendario a un clic, para
+ * quien prefiera elegir.
+ *
+ * Mantiene el mismo contrato que el input nativo —`value` en ISO y un
+ * onChange con `e.target.value` en ISO— para que los puntos de uso no
+ * cambien.
+ */
+function FechaInput({ value, onChange, style, disabled, ...rest }) {
+  const [texto, setTexto] = useState(() => isoAMostrar(value));
+  const [editando, setEditando] = useState(false);
+  const [malo, setMalo] = useState(false);
+  const refPicker = useRef(null);
+
+  // Mientras se teclea no se pisa lo escrito; fuera de foco manda el valor.
+  useEffect(() => { if (!editando) { setTexto(isoAMostrar(value)); setMalo(false); } }, [value, editando]);
+
+  const confirmar = () => {
+    setEditando(false);
+    const iso = parsearFechaCorta(texto);
+    if (iso === null) { setMalo(true); return; }     // se deja lo tecleado para corregir
+    setMalo(false);
+    setTexto(isoAMostrar(iso));
+    if (iso !== (value || "")) onChange?.({ target: { value: iso } });
+  };
+
+  const hayPicker = typeof HTMLInputElement !== "undefined" &&
+    typeof HTMLInputElement.prototype.showPicker === "function";
+
+  return (
+    <div style={{ position: "relative", display: "flex", alignItems: "center" }}>
+      <input
+        {...rest}
+        type="text"
+        inputMode="numeric"
+        autoComplete="off"
+        placeholder="dd/mm/aaaa"
+        disabled={disabled}
+        value={texto}
+        onChange={(e) => { setTexto(e.target.value); setEditando(true); setMalo(false); }}
+        onFocus={() => setEditando(true)}
+        onBlur={confirmar}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") { e.preventDefault(); confirmar(); }
+          if (e.key === "Escape") { setEditando(false); setTexto(isoAMostrar(value)); setMalo(false); }
+        }}
+        style={{
+          ...inputStyle,
+          ...(style || {}),
+          paddingRight: hayPicker ? 30 : undefined,
+          borderColor: malo ? T.red : (style || {}).borderColor,
+          width: "100%",
+        }}
+      />
+      {hayPicker && !disabled && (
+        <>
+          <button
+            type="button"
+            title="Abrir calendario"
+            onClick={() => refPicker.current?.showPicker?.()}
+            style={{
+              position: "absolute", right: 6, background: "transparent", border: "none",
+              cursor: "pointer", padding: 2, lineHeight: 1, fontSize: 13, color: T.textFaint,
+            }}
+          >▦</button>
+          <input
+            ref={refPicker}
+            type="date"
+            value={value || ""}
+            onChange={(e) => { setMalo(false); onChange?.(e); }}
+            tabIndex={-1}
+            aria-hidden="true"
+            style={{ position: "absolute", right: 6, width: 1, height: 1, opacity: 0, pointerEvents: "none" }}
+          />
+        </>
+      )}
+    </div>
+  );
+}
+
+/* Todo type="date" de la app pasa por aquí, así que la captura corta queda
+   disponible en los 18 campos sin tocar un solo punto de uso. */
 function TextInput(props) {
+  if (props.type === "date") {
+    const { type, ...resto } = props;
+    return <FechaInput {...resto} />;
+  }
   return <input {...props} style={{ ...inputStyle, ...(props.style || {}) }} />;
 }
 function Select(props) {

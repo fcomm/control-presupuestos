@@ -8,6 +8,9 @@ import ExcelJS from "exceljs";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
 import JSZip from "jszip";
+import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
+import pdfjsWorker from "pdfjs-dist/legacy/build/pdf.worker.entry";
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
 import { useCollection } from "./useCollection";
 import { supabase } from "./supabaseClient";
 
@@ -319,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.18.0";
+const APP_VERSION = "2.19.0";
 const CHANGELOG = [
+  { v: "2.19.0", desc: "Datos recurrentes - Proveedores: cargar RFC, razon social, personalidad y domicilio desde la Constancia de Situacion Fiscal en PDF. El PDF se lee en el navegador y no sale del equipo. Nunca escribe solo: muestra campo por campo lo leido junto a lo capturado y marcas que aplicas, porque un domicilio mal leido que se escribe en silencio termina impreso en un contrato firmado. Dos cosas del CSF obligaron a un parser especial: mete dos pares etiqueta-valor por renglon, y el extractor de PDF se come espacios de forma impredecible -- Estatusen elpadron, Nombre de laColonia, Nombre delMunicipioo Demarcacion Territorial -- asi que buscar las etiquetas como texto literal falla en la mitad. La busqueda corre sobre una copia sin espacios ni acentos con mapa de vuelta al original, y el valor se recorta del texto original entre etiqueta y etiqueta. La razon social se arma con el regimen capital abreviado como lo pide un contrato: SOCIEDAD ANONIMA DE CAPITAL VARIABLE sale S.A. DE C.V. Si el estatus en el padron no dice ACTIVO, se advierte. Un PDF que no sea CSF se rechaza al no hallar RFC con forma valida. REQUIERE npm install pdfjs-dist@2.16.105" },
   { v: "2.18.0", desc: "El arbol de decision se rehizo visualmente. Cada compuerta es ahora su propio bloque numerado que dice que determina si algo sale afirmativo, en vez de cuatro listas de aspecto identico. Y la cascada se ve: la compuerta que decidio se resalta con el borde en acento, y las posteriores se atenuan con la leyenda ya no se evalua -- porque en una cascada literalmente dejan de correr; siguen contestables por si conviene dejar constancia, pero no cambian el resultado. Las preguntas se acotan a 760px: sin tope, el par Si/No se iba contra el borde derecho y quedaba a media pantalla de la pregunta que contesta. Una respuesta afirmativa tine su renglon y marca la barra lateral en acento, la negativa la deja gris, y sin responder no pinta nada. Barra de avance con el conteo respondidas sobre trece, ambar mientras falten y verde al completar. El resultado pasa a ser el elemento dominante del panel" },
   { v: "2.17.1", desc: "Las trece preguntas del arbol pasan de casilla a Si/No explicito. Una casilla sin marcar no distinguia entre no y todavia no contesto, y el panel anunciaba un instrumento aunque nadie hubiera respondido nada. Ahora hay tres estados: las preguntas sin responder se marcan en ambar, y mientras falte alguna el resultado se titula preliminar y dice cuantas faltan y que una sin responder se toma como no. Al cambiar el tipo de dato habia que revisar cada lectura, porque la cadena no es truthy en JavaScript: se corrigieron las del arbol, las de clausulas sugeridas y una que activaba los anexos flow-down cuando se respondia NO al gatillo 2" },
   { v: "2.17.0", desc: "Pestana Objeto y clausulas. El clausulado deja de estar escrito dentro del Word y pasa a ser biblioteca editable: 58 items sembrados desde las cuatro plantillas reales, con su texto y sus marcadores intactos. Se elige el instrumento y aparece la estructura del documento con sus clausulas; las obligatorias van siempre y no se pueden desmarcar, las demas se marcan solas cuando las respuestas del arbol las sugieren -- proteccion de datos con el gatillo 4, propiedad intelectual con el 5, integridad con el riesgo 2 -- y el resto se marca a mano. La numeracion se calcula sobre lo seleccionado y se ve en vivo, asi que una clausula que no se pacta simplemente no se activa: se acabo el problema de borrar un parrafo y dejar el documento saltando de OCTAVA a DECIMA. Las respuestas del arbol ahora viven en la pestana Contratos y no dentro de un panel, para que cambiar de subpestana no las pierda; el Generador pasa a llamarse Diagnostico. Quitar una clausula la desactiva, no la borra: los contratos ya generados no cambian. Requiere 31-clausulas.sql" },
@@ -10538,10 +10542,235 @@ function ParametrosPanel({ unidad, parametrosApi, session, hayDatosUnidad }) {
  * y por eso vive una sola vez, indexada por RFC. Lo que sí es criterio
  * nuestro (nivel de debida diligencia) va por unidad, en otra tabla.
  */
+/* ----------------------------------------------------------------------
+   CONSTANCIA DE SITUACIÓN FISCAL
+---------------------------------------------------------------------- */
+
+const CSF_ETIQUETAS = [
+  "RFC:", "CURP:", "Denominación/Razón Social:", "Régimen Capital:", "Nombre Comercial:",
+  "Nombre (s):", "Primer Apellido:", "Segundo Apellido:",
+  "Fecha inicio de operaciones:", "Estatus en el padrón:", "Fecha de último cambio de estado:",
+  "Código Postal:", "Tipo de Vialidad:", "Nombre de Vialidad:", "Número Exterior:",
+  "Número Interior:", "Nombre de la Colonia:", "Nombre de la Localidad:",
+  "Nombre del Municipio o Demarcación Territorial:", "Nombre de la Entidad Federativa:",
+  "Entre Calle:", "Y Calle:",
+];
+
+/* Encabezados de sección. No son campos, pero marcan dónde termina el valor
+   del campo anterior: sin ellos, el último campo de cada bloque se traga todo
+   hasta la siguiente etiqueta — "Y Calle" se llevaba las tres páginas, con
+   obligaciones fiscales y sello digital incluidos. */
+const CSF_CORTES = [
+  "Datos de Identificación del Contribuyente:", "Datos del domicilio registrado",
+  "Actividades Económicas:", "Regímenes:", "Obligaciones:", "Página",
+  "Sus datos personales", "Cadena Original Sello:",
+];
+
+const sinAcentosMay = (s) =>
+  String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
+
+/**
+ * El texto que devuelve el extractor de PDF no respeta el acomodo visual: el
+ * CSF mete dos pares etiqueta:valor por renglón, y los espacios se pierden de
+ * forma impredecible — "Estatusen elpadrón", "Nombre de laColonia",
+ * "Nombre delMunicipioo Demarcación Territorial". Buscar las etiquetas como
+ * texto literal falla en la mitad de los casos.
+ *
+ * Por eso la búsqueda corre sobre una copia sin espacios ni acentos, con un
+ * mapa de vuelta a la posición original de cada carácter. El valor se recorta
+ * del texto ORIGINAL, con sus espacios intactos, entre el fin de una etiqueta
+ * y el inicio de la siguiente.
+ */
+function parsearCSF(texto) {
+  const mapa = [];
+  let compacto = "";
+  for (let i = 0; i < texto.length; i++) {
+    if (/\s/.test(texto[i])) continue;
+    compacto += sinAcentosMay(texto[i]);
+    mapa.push(i);
+  }
+
+  const hallazgos = [];
+  const buscarTodas = (aguja, etiqueta) => {
+    const a = sinAcentosMay(aguja).replace(/\s/g, "");
+    let desde = 0, p;
+    while ((p = compacto.indexOf(a, desde)) !== -1) {
+      hallazgos.push({ etiqueta, ini: p, fin: p + a.length });
+      desde = p + a.length;
+    }
+  };
+  CSF_CORTES.forEach((c) => buscarTodas(c, null));
+  CSF_ETIQUETAS.forEach((e) => buscarTodas(e, e));
+  hallazgos.sort((a, b) => a.ini - b.ini);
+
+  const campos = {};
+  hallazgos.forEach((h, i) => {
+    if (h.etiqueta === null) return;
+    if (campos[h.etiqueta] !== undefined) return;   // se queda la primera aparición
+    const sig = hallazgos[i + 1];
+    const desde = mapa[h.fin];
+    if (desde === undefined) return;
+    const hasta = sig ? mapa[sig.ini] : texto.length;
+    campos[h.etiqueta] = texto.slice(desde, hasta).replace(/\s+/g, " ").trim().slice(0, 200);
+  });
+  return campos;
+}
+
+/* El CSF escribe el régimen completo; un contrato lleva la abreviatura. */
+const CSF_REGIMENES = [
+  [/SOCIEDAD ANONIMA PROMOTORA DE INVERSION DE CAPITAL VARIABLE/, "S.A.P.I. DE C.V."],
+  [/SOCIEDAD ANONIMA BURSATIL DE CAPITAL VARIABLE/, "S.A.B. DE C.V."],
+  [/SOCIEDAD DE RESPONSABILIDAD LIMITADA DE CAPITAL VARIABLE/, "S. DE R.L. DE C.V."],
+  [/SOCIEDAD ANONIMA DE CAPITAL VARIABLE/, "S.A. DE C.V."],
+  [/SOCIEDAD DE RESPONSABILIDAD LIMITADA/, "S. DE R.L."],
+  [/SOCIEDAD EN NOMBRE COLECTIVO/, "S. EN N.C."],
+  [/SOCIEDAD ANONIMA/, "S.A."],
+  [/SOCIEDAD CIVIL/, "S.C."],
+  [/ASOCIACION CIVIL/, "A.C."],
+];
+function abreviarRegimen(r) {
+  const t = sinAcentosMay(r);
+  for (const [rx, ab] of CSF_REGIMENES) if (rx.test(t)) return ab;
+  return "";
+}
+
+function datosDesdeCSF(texto) {
+  const c = parsearCSF(texto);
+  const rfc = String(c["RFC:"] || "").toUpperCase().replace(/[^A-Z0-9&Ñ]/g, "");
+  if (!/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(rfc)) {
+    throw new Error("No se encontró un RFC con forma válida. ¿El PDF es una Constancia de Situación Fiscal?");
+  }
+  const moral = rfc.length === 12;
+
+  const nombreFisica = [c["Nombre (s):"], c["Primer Apellido:"], c["Segundo Apellido:"]]
+    .filter(Boolean).join(" ").trim();
+  const base = c["Denominación/Razón Social:"] || nombreFisica || "";
+  const abrev = moral ? abreviarRegimen(c["Régimen Capital:"]) : "";
+
+  const domicilio = [
+    [c["Tipo de Vialidad:"], c["Nombre de Vialidad:"]].filter(Boolean).join(" "),
+    c["Número Exterior:"] ? `NO. ${c["Número Exterior:"]}` : "",
+    c["Número Interior:"] ? `INT. ${c["Número Interior:"]}` : "",
+    c["Nombre de la Colonia:"] ? `COL. ${c["Nombre de la Colonia:"]}` : "",
+    c["Nombre de la Localidad:"],
+    c["Nombre del Municipio o Demarcación Territorial:"],
+    c["Nombre de la Entidad Federativa:"],
+    c["Código Postal:"] ? `C.P. ${c["Código Postal:"]}` : "",
+  ].filter(Boolean).join(", ");
+
+  return {
+    rfc,
+    razon_social: abrev ? `${base}, ${abrev}` : base,
+    personalidad: moral ? "Persona moral" : "Persona física",
+    domicilio,
+    _estatus: c["Estatus en el padrón:"] || "",
+  };
+}
+
+async function leerTextoPDF(archivo) {
+  const buffer = await archivo.arrayBuffer();
+  const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
+  let texto = "";
+  for (let p = 1; p <= doc.numPages; p++) {
+    const pagina = await doc.getPage(p);
+    const contenido = await pagina.getTextContent();
+    texto += contenido.items.map((i) => i.str).join(" ") + "\n";
+  }
+  return texto;
+}
+
+const CAMPOS_CSF = [
+  { key: "rfc", label: "RFC" },
+  { key: "razon_social", label: "Razón social" },
+  { key: "personalidad", label: "Personalidad" },
+  { key: "domicilio", label: "Domicilio fiscal" },
+];
+
+/**
+ * Nunca escribe solo. Muestra campo por campo lo que trae el CSF junto a lo
+ * que hay capturado, y el usuario decide qué aplica: un domicilio mal leído
+ * que se escribe en silencio termina impreso en un contrato firmado, y a esas
+ * alturas ya nadie lo revisa.
+ */
+function RevisionCSF({ datos, archivo, actual, onAplicar, onCerrar }) {
+  const cambios = CAMPOS_CSF.map((c) => ({
+    ...c,
+    nuevo: datos[c.key] || "",
+    viejo: String(actual[c.key] || ""),
+  })).filter((c) => c.nuevo);
+
+  const [marcados, setMarcados] = useState(
+    () => new Set(cambios.filter((c) => c.nuevo !== c.viejo).map((c) => c.key)));
+
+  const alternar = (k) => {
+    const s = new Set(marcados);
+    if (s.has(k)) s.delete(k); else s.add(k);
+    setMarcados(s);
+  };
+
+  const inactivo = datos._estatus && !/ACTIVO/i.test(datos._estatus);
+
+  return (
+    <div style={{ background: T.panel, border: `1px solid ${T.accent}`, borderRadius: 8, padding: 15, marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 4 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 700, color: T.text }}>Datos leídos del CSF</span>
+        <span style={{ fontSize: 11, color: T.textFaint }}>{archivo}</span>
+      </div>
+      <div style={{ fontSize: 11.5, color: T.textDim, marginBottom: 12 }}>
+        Revisa antes de aplicar. Lo que no marques se queda como está.
+      </div>
+
+      {inactivo && (
+        <div style={{ fontSize: 12, color: T.amberDim, background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 6, padding: "8px 11px", marginBottom: 12 }}>
+          El estatus en el padrón dice «{datos._estatus}», no ACTIVO. Vale la pena confirmarlo antes de contratar.
+        </div>
+      )}
+
+      {cambios.map((c) => {
+        const igual = c.nuevo === c.viejo;
+        return (
+          <div key={c.key} style={{
+            display: "grid", gridTemplateColumns: "auto 1fr", gap: 11,
+            padding: "8px 0", borderTop: `1px solid ${T.borderSoft}`, alignItems: "flex-start",
+          }}>
+            <input type="checkbox" checked={marcados.has(c.key)} disabled={igual}
+              onChange={() => alternar(c.key)} style={{ marginTop: 3 }} />
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 11, color: T.textDim }}>{c.label}</div>
+              <div style={{ fontSize: 12.5, color: T.text, marginTop: 2, wordBreak: "break-word" }}>{c.nuevo}</div>
+              {igual ? (
+                <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>Ya coincide con lo capturado</div>
+              ) : c.viejo ? (
+                <div style={{ fontSize: 11, color: T.amberDim, marginTop: 2, wordBreak: "break-word" }}>
+                  Reemplaza: {c.viejo}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        );
+      })}
+
+      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
+        <Button
+          onClick={() => onAplicar(Object.fromEntries(
+            cambios.filter((c) => marcados.has(c.key)).map((c) => [c.key, c.nuevo])))}
+          disabled={!marcados.size}
+        >
+          Aplicar {marcados.size} campo(s)
+        </Button>
+        <Button variant="ghost" onClick={onCerrar}>Descartar</Button>
+      </div>
+    </div>
+  );
+}
+
 function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hayDatosUnidad }) {
   const [buscar, setBuscar] = useSessionState("ss-contratos-prov-buscar", "");
   const [editando, setEditando] = useState(null);
   const [guardando, setGuardando] = useState(false);
+  const [csf, setCsf] = useState(null);
+  const [leyendoCsf, setLeyendoCsf] = useState(false);
+  const archivoCsfRef = useRef(null);
 
   const filas = provLegalApi.rows
     .slice()
@@ -10560,8 +10789,9 @@ function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hay
     grupo_economico: "", notas: "", nivel_dd: "estandar", beneficiario_ctrl: false,
   };
 
-  const abrirNuevo = () => setEditando({ ...vacio, _id: null });
+  const abrirNuevo = () => { setCsf(null); setEditando({ ...vacio, _id: null }); };
   const abrirEditar = (p) => {
+    setCsf(null);
     const pu = porUnidad(p.rfc);
     setEditando({
       ...vacio,
@@ -10571,6 +10801,21 @@ function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hay
       _id: p.id,
       _puId: pu?.id || null,
     });
+  };
+
+  const cargarCsf = async (e) => {
+    const archivo = e.target.files?.[0];
+    e.target.value = "";               // permite volver a elegir el mismo archivo
+    if (!archivo) return;
+    setLeyendoCsf(true);
+    try {
+      const texto = await leerTextoPDF(archivo);
+      setCsf({ datos: datosDesdeCSF(texto), archivo: archivo.name });
+    } catch (err) {
+      alert("No se pudo leer el CSF: " + (err.message || err));
+    } finally {
+      setLeyendoCsf(false);
+    }
   };
 
   const guardar = async () => {
@@ -10645,9 +10890,30 @@ function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hay
 
       {editando && (
         <div style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 16, marginBottom: 16 }}>
-          <div style={{ fontSize: 12.5, fontWeight: 700, color: T.text, marginBottom: 12 }}>
-            {editando._id ? "Editar proveedor" : "Nuevo proveedor"}
+          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+            <span style={{ fontSize: 12.5, fontWeight: 700, color: T.text }}>
+              {editando._id ? "Editar proveedor" : "Nuevo proveedor"}
+            </span>
+            <Button variant="ghost" onClick={() => archivoCsfRef.current?.click()} disabled={leyendoCsf}
+              style={{ padding: "5px 12px" }}>
+              {leyendoCsf ? "Leyendo…" : "Cargar desde CSF"}
+            </Button>
+            <input ref={archivoCsfRef} type="file" accept="application/pdf,.pdf"
+              onChange={cargarCsf} style={{ display: "none" }} />
+            <span style={{ fontSize: 11, color: T.textFaint }}>
+              RFC, razón social, personalidad y domicilio. El PDF no sale de tu equipo.
+            </span>
           </div>
+
+          {csf && (
+            <RevisionCSF
+              datos={csf.datos}
+              archivo={csf.archivo}
+              actual={editando}
+              onCerrar={() => setCsf(null)}
+              onAplicar={(campos) => { setEditando({ ...editando, ...campos }); setCsf(null); }}
+            />
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 13 }}>
             {CAMPOS_PROVEEDOR_LEGAL.map((c) => (
               <Field

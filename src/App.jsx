@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.21.1";
+const APP_VERSION = "2.22.0";
 const CHANGELOG = [
+  { v: "2.22.0", desc: "El alta de proveedores distingue persona fisica de moral. Una moral se constituye ante notario y comparece por representante; una fisica comparece por su propio derecho y lo que la identifica es la CURP. El formulario muestra solo lo que aplica -- pedirle escritura y representante a una fisica no solo sobra, invita a inventarlos -- y al cambiar de personalidad limpia lo que dejo de aplicar, para que un representante heredado no acabe impreso en el contrato de una fisica. Si el RFC tiene 12 caracteres y la personalidad dice fisica, o al reves, lo advierte antes de guardar. El lector de CSF saca la CURP y distingue por el regimen a quien factura como actividad empresarial. Y se corrige un error que salia impreso: la plantilla dice Que es una persona PERSONALIDAD_PROVEEDOR y el campo guarda Persona moral, asi que el contrato decia QUE ES UNA PERSONA PERSONA MORAL; ahora el marcador va sin el prefijo. En persona fisica, REPRESENTANTE_PROVEEDOR se llena con su propio nombre. Requiere 32-curp-proveedor.sql" },
   { v: "2.21.1", desc: "Arreglo: la pestana Contratos se quedaba en blanco. En ContratosTab la lista de clausulas del documento leia `incluidas` siete lineas antes de su useState; al ser const, cae en la zona muerta temporal y lanzaba ReferenceError en CADA render, tumbando el subarbol completo. Se movieron las declaraciones de estado arriba de los valores calculados. El verificador no lo atrapo porque solo comprobaba que el identificador existiera en alguna parte, no el orden, asi que se le agrego un chequeo de zona muerta temporal. Lo fino fue distinguir el callback de un onClick, que corre mucho despues y puede referenciar lo que sea, del de un .filter o .map, que corre en el acto y si esta sujeto a la zona muerta; y respetar los parametros de esos callbacks, para que un .map((p) => p.x) no se confunda con un const p declarado mas abajo" },
   { v: "2.21.0", desc: "Los contratos salen integramente en MAYUSCULA. Se aplica sobre los nodos de texto del XML ya armado, no en cada punto donde se escribe: asi cubre por igual los valores sustituidos, el clausulado de la biblioteca y el texto fijo de la plantilla -- hacerlo solo en la parte generada habria dejado el documento mitad y mitad. Las entidades XML se saltan, para que &amp; no se vuelva &AMP;. Se puede revertir con la constante CONTRATOS_EN_MAYUSCULAS. Y la orden de compra sale del alcance: la emite Contabilidad desde el SAE. Sigue siendo salida del arbol cuando ninguna compuerta resulta afirmativa -- hay que decirle a quien pregunta que corresponde -- pero ya no aparece en el selector de clausulas y, cuando el arbol cae ahi, el panel de emision se sustituye por el aviso de que se emite en el SAE. Con ella se fueron sus campos exclusivos y el calculo de IVA, que solo existia para ese documento" },
   { v: "2.20.0", desc: "Migracion terminada: el documento que sale ya es el que marcaste. Las plantillas se adelgazaron -- se les quito el clausulado escrito y en su lugar llevan un solo marcador CLAUSULADO -- y el generador arma ahi los parrafos de Word de las clausulas seleccionadas, numeradas segun el instrumento: ordinal en contratos, numero en orden de compra, letra en anexos. Conservan carátula, declaraciones, firmas y todo el formato, que es lo que sigue justificando que existan. El clausulado se inyecta ANTES de resolver marcadores, asi que los que traen las clausulas se sustituyen en la misma pasada que los de la plantilla. Se sustituye el PARRAFO completo, no la cadena: cambiando solo el texto, las veinte clausulas caerian dentro de un mismo parrafo. Si una plantilla no trae el marcador -- version vieja en Storage -- el documento sale con su texto y la app lo dice en rojo en vez de dejarlo pasar. El boton exige clausulas marcadas. Requiere volver a subir las plantillas adelgazadas a Storage" },
@@ -10153,14 +10154,30 @@ const CAMPOS_DATOS_UNIDAD = [
   { key: "lugar_suscripcion",     label: "Lugar de suscripción",       marcador: "LUGAR_SUSCRIPCION" },
 ];
 
+const PERSONALIDADES = [
+  { value: "Persona moral",                              moral: true  },
+  { value: "Persona física con actividad empresarial",   moral: false },
+  { value: "Persona física",                             moral: false },
+];
+const esMoral = (personalidad) =>
+  (PERSONALIDADES.find((p) => p.value === personalidad) || PERSONALIDADES[0]).moral;
+/* El RFC lo dice sin ambigüedad: 12 caracteres para moral, 13 para física. */
+const moralPorRfc = (rfc) => normRfc(rfc).length === 12;
+
+/* Los campos no son los mismos para una y otra. Una moral se constituye ante
+   notario y comparece por representante; una física comparece por su propio
+   derecho y lo que la identifica es la CURP. Pedir escritura y representante
+   a una física no solo sobra: invita a inventarlos. */
 const CAMPOS_PROVEEDOR_LEGAL = [
   { key: "rfc",           label: "RFC",                 req: true, upper: true, marcador: "RFC_PROVEEDOR" },
-  { key: "razon_social",  label: "Razón social",        req: true, marcador: "RAZON_SOCIAL_PROVEEDOR" },
+  { key: "razon_social",  label: "Razón social",        labelFisica: "Nombre completo",
+    req: true, marcador: "RAZON_SOCIAL_PROVEEDOR" },
   { key: "personalidad",  label: "Personalidad",        marcador: "PERSONALIDAD_PROVEEDOR",
-    opciones: ["Persona moral", "Persona física con actividad empresarial", "Persona física"] },
+    opciones: PERSONALIDADES.map((p) => p.value) },
+  { key: "curp",          label: "CURP",                upper: true, soloFisica: true },
   { key: "domicilio",     label: "Domicilio fiscal",    ancho: 2, marcador: "DOMICILIO_PROVEEDOR" },
-  { key: "representante", label: "Representante legal", marcador: "REPRESENTANTE_PROVEEDOR" },
-  { key: "escritura",     label: "Escritura pública",   marcador: "ESCRITURA_PROVEEDOR" },
+  { key: "representante", label: "Representante legal", soloMoral: true, marcador: "REPRESENTANTE_PROVEEDOR" },
+  { key: "escritura",     label: "Escritura constitutiva", soloMoral: true, marcador: "ESCRITURA_PROVEEDOR" },
   { key: "contacto",      label: "Contacto",            marcador: "CONTACTO_PROVEEDOR" },
   { key: "correo",        label: "Correo",              marcador: "CORREO_PROVEEDOR" },
 ];
@@ -10662,10 +10679,17 @@ function datosDesdeCSF(texto) {
     c["Código Postal:"] ? `C.P. ${c["Código Postal:"]}` : "",
   ].filter(Boolean).join(", ");
 
+  /* El régimen aparece en la tabla de la página 2. Distingue a quien factura
+     como actividad empresarial de quien no, que es lo que decide si el
+     contrato puede pactar suministro o solo servicios. */
+  const empresarial = /ACTIVIDADES?\s*EMPRESARIALES/.test(sinAcentosMay(texto));
+
   return {
     rfc,
     razon_social: abrev ? `${base}, ${abrev}` : base,
-    personalidad: moral ? "Persona moral" : "Persona física",
+    personalidad: moral ? "Persona moral"
+      : empresarial ? "Persona física con actividad empresarial" : "Persona física",
+    curp: moral ? "" : String(c["CURP:"] || "").toUpperCase().replace(/[^A-Z0-9]/g, ""),
     domicilio,
     _estatus: c["Estatus en el padrón:"] || "",
   };
@@ -10685,8 +10709,9 @@ async function leerTextoPDF(archivo) {
 
 const CAMPOS_CSF = [
   { key: "rfc", label: "RFC" },
-  { key: "razon_social", label: "Razón social" },
+  { key: "razon_social", label: "Razón social / nombre" },
   { key: "personalidad", label: "Personalidad" },
+  { key: "curp", label: "CURP" },
   { key: "domicilio", label: "Domicilio fiscal" },
 ];
 
@@ -10789,6 +10814,7 @@ function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hay
 
   const vacio = {
     ...Object.fromEntries(CAMPOS_PROVEEDOR_LEGAL.map((c) => [c.key, ""])),
+    personalidad: "Persona moral",
     repse_registro: "", repse_vigencia: "", opinion_32d_fecha: "", opinion_32d_sentido: "",
     grupo_economico: "", notas: "", nivel_dd: "estandar", beneficiario_ctrl: false,
   };
@@ -10836,9 +10862,14 @@ function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hay
     setGuardando(true);
     try {
       const fila = { rfc, actualizado_en: new Date().toISOString() };
+      const moral = esMoral(editando.personalidad);
       CAMPOS_PROVEEDOR_LEGAL.forEach((c) => {
         if (c.key === "rfc") return;
-        fila[c.key] = String(editando[c.key] || "").trim();
+        /* Si cambia la personalidad, lo que dejó de aplicar se limpia: un
+           representante legal heredado de cuando estaba marcada como moral
+           acabaría impreso en el contrato de una persona física. */
+        const aplica = !(c.soloMoral && !moral) && !(c.soloFisica && moral);
+        fila[c.key] = aplica ? String(editando[c.key] || "").trim() : "";
       });
       fila.repse_registro = String(editando.repse_registro || "").trim();
       fila.repse_vigencia = editando.repse_vigencia || null;
@@ -10918,11 +10949,32 @@ function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hay
               onAplicar={(campos) => { setEditando({ ...editando, ...campos }); setCsf(null); }}
             />
           )}
+          {(() => {
+            const moral = esMoral(editando.personalidad);
+            const rfcLargo = normRfc(editando.rfc).length;
+            const discrepa = (rfcLargo === 12 || rfcLargo === 13) && moralPorRfc(editando.rfc) !== moral;
+            return discrepa ? (
+              <div style={{ fontSize: 12, color: T.amberDim, background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 6, padding: "8px 11px", marginBottom: 12 }}>
+                El RFC tiene {rfcLargo} caracteres, que corresponde a una persona{" "}
+                {rfcLargo === 12 ? "moral" : "física"}, pero la personalidad dice {moral ? "moral" : "física"}.
+                Revisa cuál de los dos está mal antes de guardar.
+              </div>
+            ) : null;
+          })()}
+
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 13 }}>
-            {CAMPOS_PROVEEDOR_LEGAL.map((c) => (
+            {CAMPOS_PROVEEDOR_LEGAL
+              .filter((c) => {
+                const moral = esMoral(editando.personalidad);
+                return !(c.soloMoral && !moral) && !(c.soloFisica && moral);
+              })
+              .map((c) => (
               <Field
                 key={c.key}
-                label={c.req ? `${c.label} *` : c.label}
+                label={(() => {
+                  const l = !esMoral(editando.personalidad) && c.labelFisica ? c.labelFisica : c.label;
+                  return c.req ? `${l} *` : l;
+                })()}
                 style={c.ancho === 2 ? { gridColumn: "span 2" } : undefined}
               >
                 {c.opciones ? (
@@ -11022,6 +11074,7 @@ function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hay
                   </div>
                 </div>
                 <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+                  <Pill>{esMoral(p.personalidad) ? "Moral" : "Física"}</Pill>
                   {p.repse_registro && <Pill>{repseVencido ? "REPSE vencido" : "REPSE"}</Pill>}
                   {p.opinion_32d_sentido && <Pill>32-D {p.opinion_32d_sentido}</Pill>}
                   <Pill>{(NIVELES_DD.find((n) => n.value === (pu?.nivel_dd || "estandar")) || {}).label}</Pill>
@@ -11487,9 +11540,16 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
       RAZON_SOCIAL_PROVEEDOR: proveedor.razon_social,
       RFC_PROVEEDOR: proveedor.rfc,
       DOMICILIO_PROVEEDOR: proveedor.domicilio,
-      REPRESENTANTE_PROVEEDOR: proveedor.representante,
+      /* Una persona física comparece por su propio derecho: el marcador se
+         llena con su nombre, no queda hueco esperando un apoderado. */
+      REPRESENTANTE_PROVEEDOR: esMoral(proveedor.personalidad)
+        ? proveedor.representante
+        : (proveedor.representante || proveedor.razon_social),
       ESCRITURA_PROVEEDOR: proveedor.escritura,
-      PERSONALIDAD_PROVEEDOR: proveedor.personalidad,
+      /* La plantilla dice "Que es una persona {{PERSONALIDAD_PROVEEDOR}}", así
+         que el valor va sin el prefijo: con "Persona moral" salía impreso
+         "QUE ES UNA PERSONA PERSONA MORAL". */
+      PERSONALIDAD_PROVEEDOR: String(proveedor.personalidad || "").replace(/^Persona\s+/i, ""),
       CORREO_PROVEEDOR: proveedor.correo,
       CONTACTO_PROVEEDOR: proveedor.contacto,
 

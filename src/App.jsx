@@ -319,8 +319,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.17.1";
+const APP_VERSION = "2.18.0";
 const CHANGELOG = [
+  { v: "2.18.0", desc: "El arbol de decision se rehizo visualmente. Cada compuerta es ahora su propio bloque numerado que dice que determina si algo sale afirmativo, en vez de cuatro listas de aspecto identico. Y la cascada se ve: la compuerta que decidio se resalta con el borde en acento, y las posteriores se atenuan con la leyenda ya no se evalua -- porque en una cascada literalmente dejan de correr; siguen contestables por si conviene dejar constancia, pero no cambian el resultado. Las preguntas se acotan a 760px: sin tope, el par Si/No se iba contra el borde derecho y quedaba a media pantalla de la pregunta que contesta. Una respuesta afirmativa tine su renglon y marca la barra lateral en acento, la negativa la deja gris, y sin responder no pinta nada. Barra de avance con el conteo respondidas sobre trece, ambar mientras falten y verde al completar. El resultado pasa a ser el elemento dominante del panel" },
   { v: "2.17.1", desc: "Las trece preguntas del arbol pasan de casilla a Si/No explicito. Una casilla sin marcar no distinguia entre no y todavia no contesto, y el panel anunciaba un instrumento aunque nadie hubiera respondido nada. Ahora hay tres estados: las preguntas sin responder se marcan en ambar, y mientras falte alguna el resultado se titula preliminar y dice cuantas faltan y que una sin responder se toma como no. Al cambiar el tipo de dato habia que revisar cada lectura, porque la cadena no es truthy en JavaScript: se corrigieron las del arbol, las de clausulas sugeridas y una que activaba los anexos flow-down cuando se respondia NO al gatillo 2" },
   { v: "2.17.0", desc: "Pestana Objeto y clausulas. El clausulado deja de estar escrito dentro del Word y pasa a ser biblioteca editable: 58 items sembrados desde las cuatro plantillas reales, con su texto y sus marcadores intactos. Se elige el instrumento y aparece la estructura del documento con sus clausulas; las obligatorias van siempre y no se pueden desmarcar, las demas se marcan solas cuando las respuestas del arbol las sugieren -- proteccion de datos con el gatillo 4, propiedad intelectual con el 5, integridad con el riesgo 2 -- y el resto se marca a mano. La numeracion se calcula sobre lo seleccionado y se ve en vivo, asi que una clausula que no se pacta simplemente no se activa: se acabo el problema de borrar un parrafo y dejar el documento saltando de OCTAVA a DECIMA. Las respuestas del arbol ahora viven en la pestana Contratos y no dentro de un panel, para que cambiar de subpestana no las pierda; el Generador pasa a llamarse Diagnostico. Quitar una clausula la desactiva, no la borra: los contratos ya generados no cambian. Requiere 31-clausulas.sql" },
   { v: "2.16.0", desc: "Generador de instrumentos contractuales. Las once casillas del arbol se evaluan en cascada y el resultado se ve en vivo, con la ruta en texto legible que queda guardada para auditoria; la primera compuerta afirmativa decide y las siguientes ya no se evaluan, por eso la ruta nombra UNA. El formulario cambia segun el instrumento que resulto: los campos salen de los marcadores reales de cada plantilla, no de una lista fija. Genera el .docx bajando la plantilla activa de Storage y reemplazando marcadores con JSZip; si el gatillo 2 aplica, baja tambien los anexos flow-down. Un marcador sin valor NO se vacia, se deja impreso, y al terminar la app dice cuales quedaron asi. El instrumento se registra ANTES de generar el Word para que el folio quede reservado por el indice unico: si la descarga falla se puede repetir, pero nunca salen dos papeles con el mismo numero. Numero a letra en espanol con apocope correcto (un peso, veintiun pesos) y preposicion en cifras exactas de millon. REQUIERE npm install jszip. Requiere 30-storage-plantillas.sql" },
@@ -10797,32 +10798,72 @@ const esSi = (v) => v === "si";
 const RESPUESTAS_ARBOL = [...GATILLOS.map((g) => g.id), "superaOperacion", "superaAcumulado",
   ...RIESGOS.map((r) => r.id)];
 
-function PreguntaSiNo({ numero, texto, valor, onChange }) {
+/* El ancho está acotado a 760px a propósito: sin tope, en pantalla ancha el
+   par Sí/No termina contra el borde derecho y el ojo tiene que recorrer media
+   pantalla para relacionarlo con la pregunta que contesta. */
+const ANCHO_PREGUNTAS = 760;
+
+function PreguntaSiNo({ numero, texto, valor, onChange, apagado }) {
   const sinResponder = valor !== "si" && valor !== "no";
+  const barra = sinResponder ? "transparent" : valor === "si" ? T.accent : T.border;
   return (
     <div style={{
-      display: "flex", alignItems: "flex-start", gap: 14, padding: "8px 0",
-      borderBottom: `1px solid ${T.borderSoft}`,
+      display: "grid", gridTemplateColumns: "1fr auto", alignItems: "center", gap: 18,
+      padding: "9px 12px 9px 11px", borderLeft: `3px solid ${barra}`,
+      background: valor === "si" && !apagado ? T.accentBg : "transparent",
+      borderRadius: 4, marginBottom: 2, transition: "background 120ms",
     }}>
-      <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.5, color: sinResponder ? T.textDim : T.text }}>
-        {numero ? <b style={{ color: T.textFaint }}>{numero}. </b> : null}{texto}
+      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: sinResponder ? T.textDim : T.text }}>
+        {numero ? <span style={{ color: T.textFaint, fontVariantNumeric: "tabular-nums" }}>{numero}. </span> : null}{texto}
       </div>
       <div style={{
-        display: "flex", gap: 3, flexShrink: 0, padding: 2, borderRadius: 6,
-        background: T.panelAlt, border: `1px solid ${sinResponder ? T.amber : T.border}`,
+        display: "flex", gap: 2, flexShrink: 0, padding: 2, borderRadius: 7,
+        background: T.panel, border: `1px solid ${T.border}`,
       }}>
         {[["si", "Sí", T.accent], ["no", "No", T.textDim]].map(([v, etiqueta, fondo]) => (
           <button
             key={v} type="button" onClick={() => onChange(v)}
             style={{
-              padding: "4px 15px", borderRadius: 4, border: "none", cursor: "pointer",
+              padding: "5px 17px", borderRadius: 5, border: "none", cursor: "pointer",
               background: valor === v ? fondo : "transparent",
-              color: valor === v ? "#FFFFFF" : T.textDim,
-              fontWeight: 600, fontSize: 12, fontFamily: T.fontUI,
+              color: valor === v ? "#FFFFFF" : T.textFaint,
+              fontWeight: 600, fontSize: 12, fontFamily: T.fontUI, lineHeight: 1.3,
             }}
           >{etiqueta}</button>
         ))}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Un bloque por compuerta. El estado no es decorativo: "decide" marca la que
+ * determinó el instrumento, y "ya no se evalúa" atenúa las posteriores,
+ * porque en una cascada literalmente dejan de correr. Siguen contestables
+ * -- sirve dejar constancia -- pero no cambian el resultado.
+ */
+function BloqueCompuerta({ n, titulo, salida, estado, children }) {
+  const decide = estado === "decide";
+  const muerta = estado === "inerte";
+  return (
+    <div style={{
+      border: `1px solid ${decide ? T.accent : T.border}`, borderRadius: 8,
+      background: decide ? T.panel : muerta ? "transparent" : T.panel,
+      padding: "13px 14px 9px", marginBottom: 12, maxWidth: ANCHO_PREGUNTAS,
+      opacity: muerta ? 0.5 : 1,
+    }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 9 }}>
+        <span style={{
+          fontSize: 11, fontWeight: 700, color: decide ? "#FFFFFF" : T.textDim,
+          background: decide ? T.accent : T.panelAlt, borderRadius: 4,
+          padding: "2px 7px", flexShrink: 0,
+        }}>{n}</span>
+        <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{titulo}</span>
+        <span style={{ fontSize: 11.5, color: T.textFaint, marginLeft: "auto", textAlign: "right" }}>
+          {decide ? `Determina: ${salida}` : muerta ? "Ya no se evalúa" : `Si hay un sí: ${salida}`}
+        </span>
+      </div>
+      {children}
     </div>
   );
 }
@@ -11097,6 +11138,10 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
   const proveedor = provLegalApi.rows.find((p) => normRfc(p.rfc) === normRfc(rfc)) || null;
   const decision = decidirInstrumento(resp);
   const sinResponder = RESPUESTAS_ARBOL.filter((k) => resp[k] !== "si" && resp[k] !== "no");
+  const estadoCompuerta = (n) =>
+    decision.compuerta === n ? "decide"
+    : decision.compuerta !== 0 && n > decision.compuerta ? "inerte"
+    : "abierta";
   const meta = TIPOS_INSTRUMENTO[decision.tipo];
 
   const campos = CAMPOS_FORM.filter(
@@ -11287,49 +11332,73 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
             )}
           </Panel>
 
-          <Panel title="Árbol de decisión" subtitle="Cuatro compuertas en cascada. La primera afirmativa decide y las siguientes ya no se evalúan.">
-            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 8 }}>
-              Compuerta 1 · Gatillos obligatorios
-            </div>
-            {GATILLOS.map((g, i) => (
-              <PreguntaSiNo key={g.id} numero={i + 1} texto={g.texto}
-                valor={resp[g.id]} onChange={(v) => setResp({ ...resp, [g.id]: v })} />
-            ))}
-
-            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, margin: "16px 0 8px" }}>
-              Compuertas 2 y 3 · Umbrales
-            </div>
-            <PreguntaSiNo
-              texto={<>¿Alguna operación con este proveedor supera <b>{dinero(parametros.umbral_operacion)}</b> sin IVA?</>}
-              valor={resp.superaOperacion} onChange={(v) => setResp({ ...resp, superaOperacion: v })} />
-            <PreguntaSiNo
-              texto={<>¿El acumulado anual con este proveedor supera <b>{dinero(parametros.umbral_acumulado)}</b> sin IVA?</>}
-              valor={resp.superaAcumulado} onChange={(v) => setResp({ ...resp, superaAcumulado: v })} />
-
-            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, margin: "16px 0 8px" }}>
-              Compuerta 4 · Riesgos agravantes
-            </div>
-            {RIESGOS.map((r, i) => (
-              <PreguntaSiNo key={r.id} numero={i + 1} texto={r.texto}
-                valor={resp[r.id]} onChange={(v) => setResp({ ...resp, [r.id]: v })} />
-            ))}
-
-            <div style={{ marginTop: 18, background: T.panelAlt, border: `1px solid ${sinResponder.length ? T.amber : T.border}`, borderRadius: 8, padding: "13px 15px" }}>
-              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim }}>
-                {sinResponder.length ? "Resultado preliminar" : "Resultado"}
+          <Panel
+            title="Árbol de decisión"
+            subtitle="Se evalúan en orden. La primera compuerta con un sí determina el instrumento y las siguientes ya no corren."
+            right={
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <div style={{ width: 90, height: 5, background: T.panelAlt, borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{
+                    width: `${((RESPUESTAS_ARBOL.length - sinResponder.length) / RESPUESTAS_ARBOL.length) * 100}%`,
+                    height: "100%", background: sinResponder.length ? T.amber : T.teal,
+                  }} />
+                </div>
+                <span style={{ fontSize: 11.5, color: T.textFaint, fontVariantNumeric: "tabular-nums" }}>
+                  {RESPUESTAS_ARBOL.length - sinResponder.length} de {RESPUESTAS_ARBOL.length}
+                </span>
               </div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: sinResponder.length ? T.textDim : T.text, marginTop: 4 }}>
+            }
+          >
+            <BloqueCompuerta n={1} titulo="Gatillos obligatorios" salida="contrato específico"
+              estado={estadoCompuerta(1)}>
+              {GATILLOS.map((g, i) => (
+                <PreguntaSiNo key={g.id} numero={i + 1} texto={g.texto} apagado={estadoCompuerta(1) === "inerte"}
+                  valor={resp[g.id]} onChange={(v) => setResp({ ...resp, [g.id]: v })} />
+              ))}
+            </BloqueCompuerta>
+
+            <BloqueCompuerta n={2} titulo="Umbral por operación" salida="contrato específico"
+              estado={estadoCompuerta(2)}>
+              <PreguntaSiNo apagado={estadoCompuerta(2) === "inerte"}
+                texto={<>¿Alguna operación con este proveedor supera <b>{dinero(parametros.umbral_operacion)}</b> sin IVA?</>}
+                valor={resp.superaOperacion} onChange={(v) => setResp({ ...resp, superaOperacion: v })} />
+            </BloqueCompuerta>
+
+            <BloqueCompuerta n={3} titulo="Umbral acumulado" salida="contrato marco y órdenes"
+              estado={estadoCompuerta(3)}>
+              <PreguntaSiNo apagado={estadoCompuerta(3) === "inerte"}
+                texto={<>¿El acumulado anual con este proveedor supera <b>{dinero(parametros.umbral_acumulado)}</b> sin IVA?</>}
+                valor={resp.superaAcumulado} onChange={(v) => setResp({ ...resp, superaAcumulado: v })} />
+            </BloqueCompuerta>
+
+            <BloqueCompuerta n={4} titulo="Riesgos agravantes" salida="contrato específico"
+              estado={estadoCompuerta(4)}>
+              {RIESGOS.map((r, i) => (
+                <PreguntaSiNo key={r.id} numero={i + 1} texto={r.texto} apagado={estadoCompuerta(4) === "inerte"}
+                  valor={resp[r.id]} onChange={(v) => setResp({ ...resp, [r.id]: v })} />
+              ))}
+            </BloqueCompuerta>
+
+            <div style={{
+              maxWidth: ANCHO_PREGUNTAS, marginTop: 6, borderRadius: 8, padding: "16px 18px",
+              background: sinResponder.length ? T.panelAlt : T.accentBg,
+              border: `1px solid ${sinResponder.length ? T.amber : T.accent}`,
+            }}>
+              <div style={{ fontSize: 11.5, color: T.textDim }}>
+                {sinResponder.length ? "Resultado preliminar" : "Corresponde emitir"}
+              </div>
+              <div style={{ fontSize: 21, fontWeight: 700, color: sinResponder.length ? T.textDim : T.text, marginTop: 3, letterSpacing: "-0.01em" }}>
                 {meta.label}{decision.flowdown ? " + anexos flow-down" : ""}
               </div>
               {sinResponder.length > 0 && (
-                <div style={{ fontSize: 12, color: T.amber, marginTop: 5, lineHeight: 1.5 }}>
+                <div style={{ fontSize: 12, color: T.amberDim, marginTop: 7, lineHeight: 1.5 }}>
                   Faltan {sinResponder.length} de {RESPUESTAS_ARBOL.length} preguntas. Una sin responder
-                  cuenta como «no», así que el resultado puede cambiar.
+                  cuenta como «no», así que esto todavía puede cambiar.
                 </div>
               )}
-              <div style={{ fontSize: 12, color: T.textDim, marginTop: 6, lineHeight: 1.5 }}>{decision.ruta}</div>
-              <div style={{ fontSize: 11, color: T.textFaint, marginTop: 8 }}>
-                Parámetros vigentes desde {parametros.vigente_desde}. Queda guardado con el instrumento.
+              <div style={{ fontSize: 12.5, color: T.textDim, marginTop: 8, lineHeight: 1.55 }}>{decision.ruta}</div>
+              <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10 }}>
+                Umbrales vigentes desde {parametros.vigente_desde}. Se guardan con el instrumento.
               </div>
             </div>
           </Panel>

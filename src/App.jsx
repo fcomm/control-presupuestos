@@ -319,8 +319,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.17.0";
+const APP_VERSION = "2.17.1";
 const CHANGELOG = [
+  { v: "2.17.1", desc: "Las trece preguntas del arbol pasan de casilla a Si/No explicito. Una casilla sin marcar no distinguia entre no y todavia no contesto, y el panel anunciaba un instrumento aunque nadie hubiera respondido nada. Ahora hay tres estados: las preguntas sin responder se marcan en ambar, y mientras falte alguna el resultado se titula preliminar y dice cuantas faltan y que una sin responder se toma como no. Al cambiar el tipo de dato habia que revisar cada lectura, porque la cadena no es truthy en JavaScript: se corrigieron las del arbol, las de clausulas sugeridas y una que activaba los anexos flow-down cuando se respondia NO al gatillo 2" },
   { v: "2.17.0", desc: "Pestana Objeto y clausulas. El clausulado deja de estar escrito dentro del Word y pasa a ser biblioteca editable: 58 items sembrados desde las cuatro plantillas reales, con su texto y sus marcadores intactos. Se elige el instrumento y aparece la estructura del documento con sus clausulas; las obligatorias van siempre y no se pueden desmarcar, las demas se marcan solas cuando las respuestas del arbol las sugieren -- proteccion de datos con el gatillo 4, propiedad intelectual con el 5, integridad con el riesgo 2 -- y el resto se marca a mano. La numeracion se calcula sobre lo seleccionado y se ve en vivo, asi que una clausula que no se pacta simplemente no se activa: se acabo el problema de borrar un parrafo y dejar el documento saltando de OCTAVA a DECIMA. Las respuestas del arbol ahora viven en la pestana Contratos y no dentro de un panel, para que cambiar de subpestana no las pierda; el Generador pasa a llamarse Diagnostico. Quitar una clausula la desactiva, no la borra: los contratos ya generados no cambian. Requiere 31-clausulas.sql" },
   { v: "2.16.0", desc: "Generador de instrumentos contractuales. Las once casillas del arbol se evaluan en cascada y el resultado se ve en vivo, con la ruta en texto legible que queda guardada para auditoria; la primera compuerta afirmativa decide y las siguientes ya no se evaluan, por eso la ruta nombra UNA. El formulario cambia segun el instrumento que resulto: los campos salen de los marcadores reales de cada plantilla, no de una lista fija. Genera el .docx bajando la plantilla activa de Storage y reemplazando marcadores con JSZip; si el gatillo 2 aplica, baja tambien los anexos flow-down. Un marcador sin valor NO se vacia, se deja impreso, y al terminar la app dice cuales quedaron asi. El instrumento se registra ANTES de generar el Word para que el folio quede reservado por el indice unico: si la descarga falla se puede repetir, pero nunca salen dos papeles con el mismo numero. Numero a letra en espanol con apocope correcto (un peso, veintiun pesos) y preposicion en cifras exactas de millon. REQUIERE npm install jszip. Requiere 30-storage-plantillas.sql" },
   { v: "2.15.1", desc: "Las plantillas contractuales dejan de decir OSB cuando el contrato es de CTM o ISE. El clausulado traia 78 menciones de OSB escritas como texto, no como marcador -- la razon social salia bien por su marcador, pero cada clausula seguia refiriendose a OSB por su nombre corto, y el documento se veia correcto. Ahora esas 78 menciones son {{CONTRATANTE}}, que se llena con la unidad activa, y los siete marcadores con sufijo _OSB pasan a _CONTRATANTE. Las etiquetas del panel Datos recurrentes se actualizan en consecuencia. Cambio en las plantillas Word, no en la base: hay que volver a subirlas a Storage" },
@@ -10789,6 +10790,43 @@ const RIESGOS = [
   { id: "r4", texto: "El proveedor es de reciente creación o sin infraestructura demostrable." },
 ];
 
+/* Las respuestas del árbol son "si" | "no" | sin responder. El tercer estado
+   es el que faltaba: con casillas, "sin marcar" y "no" se veían igual, y el
+   panel anunciaba un instrumento aunque nadie hubiera contestado nada. */
+const esSi = (v) => v === "si";
+const RESPUESTAS_ARBOL = [...GATILLOS.map((g) => g.id), "superaOperacion", "superaAcumulado",
+  ...RIESGOS.map((r) => r.id)];
+
+function PreguntaSiNo({ numero, texto, valor, onChange }) {
+  const sinResponder = valor !== "si" && valor !== "no";
+  return (
+    <div style={{
+      display: "flex", alignItems: "flex-start", gap: 14, padding: "8px 0",
+      borderBottom: `1px solid ${T.borderSoft}`,
+    }}>
+      <div style={{ flex: 1, fontSize: 12.5, lineHeight: 1.5, color: sinResponder ? T.textDim : T.text }}>
+        {numero ? <b style={{ color: T.textFaint }}>{numero}. </b> : null}{texto}
+      </div>
+      <div style={{
+        display: "flex", gap: 3, flexShrink: 0, padding: 2, borderRadius: 6,
+        background: T.panelAlt, border: `1px solid ${sinResponder ? T.amber : T.border}`,
+      }}>
+        {[["si", "Sí", T.accent], ["no", "No", T.textDim]].map(([v, etiqueta, fondo]) => (
+          <button
+            key={v} type="button" onClick={() => onChange(v)}
+            style={{
+              padding: "4px 15px", borderRadius: 4, border: "none", cursor: "pointer",
+              background: valor === v ? fondo : "transparent",
+              color: valor === v ? "#FFFFFF" : T.textDim,
+              fontWeight: 600, fontSize: 12, fontFamily: T.fontUI,
+            }}
+          >{etiqueta}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 const TIPOS_INSTRUMENTO = {
   orden_compra:        { label: "Orden de compra",  plantilla: "orden_compra",        prefijo: "OC", marcadorFolio: "NUM_ORDEN_COMPRA" },
   contrato_especifico: { label: "Contrato específico", plantilla: "contrato_especifico", prefijo: "CE", marcadorFolio: "NUM_CONTRATO" },
@@ -10906,9 +10944,9 @@ const escaparXml = (v) => String(v ?? "")
  * compuerta, no todas las que hubieran aplicado.
  */
 function decidirInstrumento(resp) {
-  const gatillos = GATILLOS.filter((g) => resp[g.id]);
+  const gatillos = GATILLOS.filter((g) => esSi(resp[g.id]));
   if (gatillos.length) {
-    const flowdown = !!resp.g2;
+    const flowdown = esSi(resp.g2);
     const n = GATILLOS.findIndex((g) => g.id === gatillos[0].id) + 1;
     return {
       tipo: "contrato_especifico",
@@ -10919,19 +10957,19 @@ function decidirInstrumento(resp) {
         (flowdown ? " Se adjuntan los anexos flow-down por el gatillo 2." : ""),
     };
   }
-  if (resp.superaOperacion) {
+  if (esSi(resp.superaOperacion)) {
     return {
       tipo: "contrato_especifico", flowdown: false, compuerta: 2,
       ruta: "Contrato específico. Compuerta 2: el monto de la operación supera el umbral individual.",
     };
   }
-  if (resp.superaAcumulado) {
+  if (esSi(resp.superaAcumulado)) {
     return {
       tipo: "contrato_marco", flowdown: false, compuerta: 3,
       ruta: "Contrato marco más órdenes al amparo. Compuerta 3: el acumulado con el proveedor supera el umbral anual.",
     };
   }
-  const riesgos = RIESGOS.filter((r) => resp[r.id]);
+  const riesgos = RIESGOS.filter((r) => esSi(resp[r.id]));
   if (riesgos.length) {
     const n = RIESGOS.findIndex((r) => r.id === riesgos[0].id) + 1;
     return {
@@ -11058,6 +11096,7 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
 
   const proveedor = provLegalApi.rows.find((p) => normRfc(p.rfc) === normRfc(rfc)) || null;
   const decision = decidirInstrumento(resp);
+  const sinResponder = RESPUESTAS_ARBOL.filter((k) => resp[k] !== "si" && resp[k] !== "no");
   const meta = TIPOS_INSTRUMENTO[decision.tipo];
 
   const campos = CAMPOS_FORM.filter(
@@ -11253,39 +11292,41 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
               Compuerta 1 · Gatillos obligatorios
             </div>
             {GATILLOS.map((g, i) => (
-              <label key={g.id} style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "6px 0", fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
-                <input type="checkbox" checked={!!resp[g.id]} onChange={(e) => setResp({ ...resp, [g.id]: e.target.checked })} style={{ marginTop: 2 }} />
-                <span><b style={{ color: T.textFaint }}>{i + 1}.</b> {g.texto}</span>
-              </label>
+              <PreguntaSiNo key={g.id} numero={i + 1} texto={g.texto}
+                valor={resp[g.id]} onChange={(v) => setResp({ ...resp, [g.id]: v })} />
             ))}
 
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, margin: "16px 0 8px" }}>
               Compuertas 2 y 3 · Umbrales
             </div>
-            <label style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "6px 0", fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
-              <input type="checkbox" checked={!!resp.superaOperacion} onChange={(e) => setResp({ ...resp, superaOperacion: e.target.checked })} style={{ marginTop: 2 }} />
-              <span>Alguna operación con este proveedor supera <b>{dinero(parametros.umbral_operacion)}</b> sin IVA.</span>
-            </label>
-            <label style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "6px 0", fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
-              <input type="checkbox" checked={!!resp.superaAcumulado} onChange={(e) => setResp({ ...resp, superaAcumulado: e.target.checked })} style={{ marginTop: 2 }} />
-              <span>El acumulado anual con este proveedor supera <b>{dinero(parametros.umbral_acumulado)}</b> sin IVA.</span>
-            </label>
+            <PreguntaSiNo
+              texto={<>¿Alguna operación con este proveedor supera <b>{dinero(parametros.umbral_operacion)}</b> sin IVA?</>}
+              valor={resp.superaOperacion} onChange={(v) => setResp({ ...resp, superaOperacion: v })} />
+            <PreguntaSiNo
+              texto={<>¿El acumulado anual con este proveedor supera <b>{dinero(parametros.umbral_acumulado)}</b> sin IVA?</>}
+              valor={resp.superaAcumulado} onChange={(v) => setResp({ ...resp, superaAcumulado: v })} />
 
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, margin: "16px 0 8px" }}>
               Compuerta 4 · Riesgos agravantes
             </div>
             {RIESGOS.map((r, i) => (
-              <label key={r.id} style={{ display: "flex", gap: 9, alignItems: "flex-start", padding: "6px 0", fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
-                <input type="checkbox" checked={!!resp[r.id]} onChange={(e) => setResp({ ...resp, [r.id]: e.target.checked })} style={{ marginTop: 2 }} />
-                <span><b style={{ color: T.textFaint }}>{i + 1}.</b> {r.texto}</span>
-              </label>
+              <PreguntaSiNo key={r.id} numero={i + 1} texto={r.texto}
+                valor={resp[r.id]} onChange={(v) => setResp({ ...resp, [r.id]: v })} />
             ))}
 
-            <div style={{ marginTop: 18, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: "13px 15px" }}>
-              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim }}>Resultado</div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: T.text, marginTop: 4 }}>
+            <div style={{ marginTop: 18, background: T.panelAlt, border: `1px solid ${sinResponder.length ? T.amber : T.border}`, borderRadius: 8, padding: "13px 15px" }}>
+              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim }}>
+                {sinResponder.length ? "Resultado preliminar" : "Resultado"}
+              </div>
+              <div style={{ fontSize: 16, fontWeight: 700, color: sinResponder.length ? T.textDim : T.text, marginTop: 4 }}>
                 {meta.label}{decision.flowdown ? " + anexos flow-down" : ""}
               </div>
+              {sinResponder.length > 0 && (
+                <div style={{ fontSize: 12, color: T.amber, marginTop: 5, lineHeight: 1.5 }}>
+                  Faltan {sinResponder.length} de {RESPUESTAS_ARBOL.length} preguntas. Una sin responder
+                  cuenta como «no», así que el resultado puede cambiar.
+                </div>
+              )}
               <div style={{ fontSize: 12, color: T.textDim, marginTop: 6, lineHeight: 1.5 }}>{decision.ruta}</div>
               <div style={{ fontSize: 11, color: T.textFaint, marginTop: 8 }}>
                 Parámetros vigentes desde {parametros.vigente_desde}. Queda guardado con el instrumento.
@@ -11432,13 +11473,13 @@ function ClausulasPanel({ clausulasApi, resp, instrumento, setInstrumento, objet
     .filter((c) => c.instrumento === instrumento && c.activa !== false)
     .sort((a, b) => (a.orden - b.orden) || String(a.titulo).localeCompare(String(b.titulo)));
 
-  const sugerenciasDe = (c) => (c.sugerida_si || []).filter((k) => resp[k]);
+  const sugerenciasDe = (c) => (c.sugerida_si || []).filter((k) => esSi(resp[k]));
   const estadoDe = (c) => c.obligatoria ? "obligatoria" : (sugerenciasDe(c).length ? "sugerida" : "opcional");
 
   /* La selección se recalcula cuando cambia el instrumento o las respuestas
      del árbol, pero respeta lo que el usuario ya marcó a mano: lo que se
      siembra es el default, no una imposición. */
-  const claveAuto = `${instrumento}|${items.map((c) => c.id).join(",")}|${TODAS_CASILLAS.filter((k) => resp[k.id]).map((k) => k.id).join(",")}`;
+  const claveAuto = `${instrumento}|${items.map((c) => c.id).join(",")}|${TODAS_CASILLAS.filter((k) => esSi(resp[k.id])).map((k) => k.id).join(",")}`;
   const autoRef = useRef(null);
   useEffect(() => {
     if (autoRef.current === claveAuto) return;
@@ -11501,7 +11542,7 @@ function ClausulasPanel({ clausulasApi, resp, instrumento, setInstrumento, objet
     catch (err) { alert("No se pudo: " + (err.message || err)); }
   };
 
-  const casillasActivas = TODAS_CASILLAS.filter((k) => resp[k.id]);
+  const casillasActivas = TODAS_CASILLAS.filter((k) => esSi(resp[k.id]));
 
   return (
     <>

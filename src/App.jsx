@@ -319,8 +319,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.16.0";
+const APP_VERSION = "2.17.0";
 const CHANGELOG = [
+  { v: "2.17.0", desc: "Pestana Objeto y clausulas. El clausulado deja de estar escrito dentro del Word y pasa a ser biblioteca editable: 58 items sembrados desde las cuatro plantillas reales, con su texto y sus marcadores intactos. Se elige el instrumento y aparece la estructura del documento con sus clausulas; las obligatorias van siempre y no se pueden desmarcar, las demas se marcan solas cuando las respuestas del arbol las sugieren -- proteccion de datos con el gatillo 4, propiedad intelectual con el 5, integridad con el riesgo 2 -- y el resto se marca a mano. La numeracion se calcula sobre lo seleccionado y se ve en vivo, asi que una clausula que no se pacta simplemente no se activa: se acabo el problema de borrar un parrafo y dejar el documento saltando de OCTAVA a DECIMA. Las respuestas del arbol ahora viven en la pestana Contratos y no dentro de un panel, para que cambiar de subpestana no las pierda; el Generador pasa a llamarse Diagnostico. Quitar una clausula la desactiva, no la borra: los contratos ya generados no cambian. Requiere 31-clausulas.sql" },
   { v: "2.16.0", desc: "Generador de instrumentos contractuales. Las once casillas del arbol se evaluan en cascada y el resultado se ve en vivo, con la ruta en texto legible que queda guardada para auditoria; la primera compuerta afirmativa decide y las siguientes ya no se evaluan, por eso la ruta nombra UNA. El formulario cambia segun el instrumento que resulto: los campos salen de los marcadores reales de cada plantilla, no de una lista fija. Genera el .docx bajando la plantilla activa de Storage y reemplazando marcadores con JSZip; si el gatillo 2 aplica, baja tambien los anexos flow-down. Un marcador sin valor NO se vacia, se deja impreso, y al terminar la app dice cuales quedaron asi. El instrumento se registra ANTES de generar el Word para que el folio quede reservado por el indice unico: si la descarga falla se puede repetir, pero nunca salen dos papeles con el mismo numero. Numero a letra en espanol con apocope correcto (un peso, veintiun pesos) y preposicion en cifras exactas de millon. REQUIERE npm install jszip. Requiere 30-storage-plantillas.sql" },
   { v: "2.15.1", desc: "Las plantillas contractuales dejan de decir OSB cuando el contrato es de CTM o ISE. El clausulado traia 78 menciones de OSB escritas como texto, no como marcador -- la razon social salia bien por su marcador, pero cada clausula seguia refiriendose a OSB por su nombre corto, y el documento se veia correcto. Ahora esas 78 menciones son {{CONTRATANTE}}, que se llena con la unidad activa, y los siete marcadores con sufijo _OSB pasan a _CONTRATANTE. Las etiquetas del panel Datos recurrentes se actualizan en consecuencia. Cambio en las plantillas Word, no en la base: hay que volver a subirlas a Storage" },
   { v: "2.15.0", desc: "Modulo de Contratos, primera parte: pestana nueva con la seccion Datos recurrentes. Tres paneles. Datos legales de la empresa contratante, una fila por unidad, con cada campo etiquetado con el marcador de plantilla que alimenta -- un campo vacio no se vacia en el Word, sale impreso como {{MARCADOR}}, asi que conviene ver de antemano cual es cual. Parametros versionados: guardar NUNCA sobrescribe, inserta una version con fecha nueva, y antes de confirmar se listan los valores que cambian con su valor anterior al lado; la version previa se conserva porque los instrumentos ya emitidos guardan con cual se generaron. Y datos legales de proveedores -- representante, escritura, personalidad, REPSE, opinion 32-D -- capturados UNA vez por RFC y no una por compania, porque son datos del proveedor y no cambian segun a quien le facture; lo que si es criterio nuestro, el nivel de debida diligencia, se guarda por compania aparte. El generador y el expediente quedan pendientes. Requiere 29-modulo-contratos.sql" },
@@ -10119,7 +10120,8 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, session, grupos
 
 const SUBS_CONTRATOS = [
   { id: "datos", label: "Datos recurrentes" },
-  { id: "generador", label: "Generador" },
+  { id: "generador", label: "Diagnóstico" },
+  { id: "clausulas", label: "Objeto y cláusulas" },
   { id: "expediente", label: "Expediente" },
 ];
 
@@ -11024,11 +11026,10 @@ function descargarBlob(blob, nombre) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
-function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, session }) {
+function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, resp, setResp, session }) {
   const [datosUnidad, setDatosUnidad] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [rfc, setRfc] = useState("");
-  const [resp, setResp] = useState({});
   const [form, setForm] = useState({ MONEDA: "MXP", ivaTasa: 16 });
   const [trabajando, setTrabajando] = useState(false);
   const [resultado, setResultado] = useState(null);
@@ -11048,7 +11049,7 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
     return () => { vivo = false; };
   }, [unidad]);
 
-  useEffect(() => { setRfc(""); setResp({}); setResultado(null); }, [unidad]);
+  useEffect(() => { setRfc(""); setResultado(null); }, [unidad]);
 
   const hoy = hoyISO();
   const parametros = parametrosApi.rows
@@ -11367,9 +11368,350 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
   );
 }
 
-function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, instrumentosApi, session }) {
+/* ----------------------------------------------------------------------
+   BIBLIOTECA DE CLÁUSULAS
+---------------------------------------------------------------------- */
+
+const INSTRUMENTOS_CLAUSULA = [
+  { id: "contrato_especifico", label: "Contrato específico", numeracion: "ordinal" },
+  { id: "contrato_marco",      label: "Contrato marco",      numeracion: "ordinal" },
+  { id: "orden_compra",        label: "Orden de compra",     numeracion: "numero" },
+  { id: "anexo_flowdown",      label: "Anexos flow-down",    numeracion: "letra" },
+];
+
+/* El esqueleto que aporta la plantilla. El clausulado es lo único que se
+   arma aquí; lo demás vive en el .docx y no se elige. */
+const ESTRUCTURA_DOC = {
+  contrato_especifico: ["Proemio y comparecencia", "Declaraciones de las partes", "Clausulado", "Lugar, fecha y firmas"],
+  contrato_marco:      ["Proemio y comparecencia", "Declaraciones de las partes", "Clausulado", "Lugar, fecha y firmas", "Anexos A–D del marco"],
+  orden_compra:        ["Carátula con datos de la orden", "Descripción y partidas", "Condiciones generales", "Firmas de emisión y aceptación"],
+  anexo_flowdown:      ["Encabezado con referencia al contrato principal", "Anexos aplicables", "Lugar, fecha y firmas"],
+};
+
+const ORD_UNIDAD = ["PRIMERA", "SEGUNDA", "TERCERA", "CUARTA", "QUINTA", "SEXTA", "SÉPTIMA", "OCTAVA", "NOVENA"];
+const ORD_DECENA = ["", "DÉCIMA", "VIGÉSIMA", "TRIGÉSIMA", "CUADRAGÉSIMA", "QUINCUAGÉSIMA"];
+
+/* DÉCIMA PRIMERA, no UNDÉCIMA: es la forma que usa el clausulado mexicano y
+   la que ya traían las plantillas. */
+function ordinalEnLetra(n) {
+  if (n < 1) return "";
+  if (n <= 9) return ORD_UNIDAD[n - 1];
+  const d = Math.floor(n / 10), u = n % 10;
+  if (d >= ORD_DECENA.length) return `${n}ª`;
+  return ORD_DECENA[d] + (u ? " " + ORD_UNIDAD[u - 1] : "");
+}
+
+function etiquetaNumero(i, modo) {
+  if (modo === "numero") return `${i}.`;
+  if (modo === "letra") return `ANEXO ${String.fromCharCode(64 + i)}.`;
+  return `${ordinalEnLetra(i)}.`;
+}
+
+const TODAS_CASILLAS = [
+  ...GATILLOS.map((g, i) => ({ id: g.id, etiqueta: `Gatillo ${i + 1}`, texto: g.texto })),
+  ...RIESGOS.map((r, i) => ({ id: r.id, etiqueta: `Riesgo ${i + 1}`, texto: r.texto })),
+];
+
+const slugClave = (t) =>
+  String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/\{\{[A-Z_0-9]+\}\}/g, "")
+    .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/_+/g, "_")
+    .replace(/^_|_$/g, "").slice(0, 40);
+
+const parrafosDe = (cuerpo) =>
+  String(cuerpo || "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+
+function ClausulasPanel({ clausulasApi, resp, instrumento, setInstrumento, objeto, setObjeto, incluidas, setIncluidas, session }) {
+  const [editando, setEditando] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [verCuerpo, setVerCuerpo] = useState(null);
+
+  const modo = (INSTRUMENTOS_CLAUSULA.find((i) => i.id === instrumento) || {}).numeracion || "ordinal";
+
+  const items = clausulasApi.rows
+    .filter((c) => c.instrumento === instrumento && c.activa !== false)
+    .sort((a, b) => (a.orden - b.orden) || String(a.titulo).localeCompare(String(b.titulo)));
+
+  const sugerenciasDe = (c) => (c.sugerida_si || []).filter((k) => resp[k]);
+  const estadoDe = (c) => c.obligatoria ? "obligatoria" : (sugerenciasDe(c).length ? "sugerida" : "opcional");
+
+  /* La selección se recalcula cuando cambia el instrumento o las respuestas
+     del árbol, pero respeta lo que el usuario ya marcó a mano: lo que se
+     siembra es el default, no una imposición. */
+  const claveAuto = `${instrumento}|${items.map((c) => c.id).join(",")}|${TODAS_CASILLAS.filter((k) => resp[k.id]).map((k) => k.id).join(",")}`;
+  const autoRef = useRef(null);
+  useEffect(() => {
+    if (autoRef.current === claveAuto) return;
+    autoRef.current = claveAuto;
+    const base = new Set(items.filter((c) => estadoDe(c) !== "opcional").map((c) => c.id));
+    setIncluidas(base);
+  }, [claveAuto]);
+
+  const marcadas = items.filter((c) => c.obligatoria || incluidas.has(c.id));
+  let n = 0;
+  const numeradas = items.map((c) => {
+    const dentro = c.obligatoria || incluidas.has(c.id);
+    if (dentro) n += 1;
+    return { c, dentro, etiqueta: dentro ? etiquetaNumero(n, modo) : null };
+  });
+
+  const alternar = (c) => {
+    if (c.obligatoria) return;
+    const s = new Set(incluidas);
+    if (s.has(c.id)) s.delete(c.id); else s.add(c.id);
+    setIncluidas(s);
+  };
+
+  const nuevo = () => setEditando({
+    _nuevo: true, instrumento, tipo_item: instrumento === "anexo_flowdown" ? "anexo" : "clausula",
+    titulo: "", cuerpo: "", obligatoria: false, sugerida_si: [],
+    orden: (items.length ? Math.max(...items.map((c) => c.orden)) : 0) + 10,
+  });
+
+  const guardar = async () => {
+    const titulo = String(editando.titulo || "").trim();
+    const cuerpo = String(editando.cuerpo || "").trim();
+    if (!titulo || !cuerpo) { alert("El título y el cuerpo son obligatorios."); return; }
+    setGuardando(true);
+    try {
+      const fila = {
+        clave: editando.clave || `${editando.instrumento.slice(0, 3)}_${slugClave(titulo)}`,
+        tipo_item: editando.tipo_item,
+        instrumento: editando.instrumento,
+        titulo, cuerpo,
+        obligatoria: !!editando.obligatoria,
+        sugerida_si: editando.sugerida_si || [],
+        orden: Number(editando.orden) || 100,
+        actualizado_en: new Date().toISOString(),
+        ...(session?.user?.id ? { actualizado_por: session.user.id } : {}),
+      };
+      if (editando._nuevo) await clausulasApi.insert({ id: uid(), ...fila });
+      else await clausulasApi.update(editando.id, fila);
+      setEditando(null);
+    } catch (err) {
+      alert("No se pudo guardar: " + (err.message || err));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const desactivar = async (c) => {
+    if (!confirm(`¿Sacar "${c.titulo}" de la biblioteca?\n\nNo se borra: queda inactiva y deja de ofrecerse al armar contratos. Los que ya se generaron no cambian.`)) return;
+    try { await clausulasApi.update(c.id, { activa: false, actualizado_en: new Date().toISOString() }); }
+    catch (err) { alert("No se pudo: " + (err.message || err)); }
+  };
+
+  const casillasActivas = TODAS_CASILLAS.filter((k) => resp[k.id]);
+
+  return (
+    <>
+      <Panel title="Instrumento y objeto" subtitle="Elige el instrumento que te indicó el árbol. La estructura y las cláusulas se acomodan a esa elección.">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14 }}>
+          <Field label="Tipo de instrumento">
+            <Select value={instrumento} onChange={(e) => setInstrumento(e.target.value)}>
+              {INSTRUMENTOS_CLAUSULA.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
+            </Select>
+          </Field>
+          <Field label="Objeto del contrato" style={{ gridColumn: "span 2" }}>
+            <TextInput value={objeto} onChange={(e) => setObjeto(e.target.value)} placeholder="Suministro de…, prestación del servicio de…" />
+            <MarcadorHint marcador="OBJETO" />
+          </Field>
+        </div>
+
+        <div style={{ marginTop: 16, display: "flex", gap: 24, flexWrap: "wrap" }}>
+          <div>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 6 }}>
+              Estructura del documento
+            </div>
+            {(ESTRUCTURA_DOC[instrumento] || []).map((s, i) => (
+              <div key={s} style={{ fontSize: 12, color: s === "Clausulado" ? T.text : T.textFaint, fontWeight: s === "Clausulado" ? 600 : 400, padding: "2px 0" }}>
+                {i + 1}. {s}{s === "Clausulado" ? `  ← ${marcadas.length} ítem(s) seleccionado(s)` : ""}
+              </div>
+            ))}
+            <div style={{ fontSize: 11, color: T.textFaint, marginTop: 6, maxWidth: 340, lineHeight: 1.5 }}>
+              Lo demás lo aporta la plantilla y no se elige aquí.
+            </div>
+          </div>
+
+          <div style={{ flex: 1, minWidth: 260 }}>
+            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 6 }}>
+              Respuestas del árbol que están sugiriendo
+            </div>
+            {casillasActivas.length ? casillasActivas.map((k) => (
+              <div key={k.id} style={{ fontSize: 11.5, color: T.textDim, padding: "2px 0" }}>
+                <b>{k.etiqueta}:</b> {k.texto}
+              </div>
+            )) : (
+              <div style={{ fontSize: 11.5, color: T.textFaint, lineHeight: 1.5 }}>
+                Ninguna casilla marcada. Respóndelas en Diagnóstico y las cláusulas que dependen de ellas
+                se marcan solas; mientras tanto solo se preseleccionan las obligatorias.
+              </div>
+            )}
+          </div>
+        </div>
+      </Panel>
+
+      <Panel
+        title={instrumento === "anexo_flowdown" ? "Anexos disponibles" : "Cláusulas"}
+        subtitle="Las obligatorias van siempre. Las sugeridas se marcan solas por las respuestas del árbol; puedes desmarcarlas."
+        right={<Button onClick={nuevo}>+ Nueva</Button>}
+      >
+        {editando && (
+          <div style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 16, marginBottom: 16 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 700, color: T.text, marginBottom: 12 }}>
+              {editando._nuevo ? "Nueva cláusula" : `Editar — ${editando.titulo}`}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 13 }}>
+              <Field label="Título *" style={{ gridColumn: "span 2" }}>
+                <TextInput value={editando.titulo} onChange={(e) => setEditando({ ...editando, titulo: e.target.value })} />
+                <span style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>
+                  Sin el ordinal: se calcula al generar.
+                </span>
+              </Field>
+              <Field label="Instrumento">
+                <Select value={editando.instrumento} onChange={(e) => setEditando({ ...editando, instrumento: e.target.value })}>
+                  {INSTRUMENTOS_CLAUSULA.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
+                </Select>
+              </Field>
+              <Field label="Orden">
+                <TextInput type="number" step="10" value={editando.orden}
+                  onChange={(e) => setEditando({ ...editando, orden: e.target.value })} />
+              </Field>
+            </div>
+
+            <Field label="Cuerpo *" style={{ marginTop: 13 }}>
+              <textarea
+                value={editando.cuerpo}
+                onChange={(e) => setEditando({ ...editando, cuerpo: e.target.value })}
+                rows={10}
+                style={{
+                  width: "100%", padding: "9px 11px", border: `1px solid ${T.border}`, borderRadius: 6,
+                  background: T.panel, color: T.text, fontSize: 12.5, fontFamily: T.fontUI,
+                  lineHeight: 1.55, resize: "vertical", boxSizing: "border-box",
+                }}
+              />
+              <span style={{ fontSize: 10.5, color: T.textFaint, marginTop: 4 }}>
+                Un renglón en blanco separa párrafos. Admite los mismos marcadores, por ejemplo {"{{PLAZO_PAGO_DIAS}}"}.
+              </span>
+            </Field>
+
+            <div style={{ marginTop: 13 }}>
+              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
+                <input type="checkbox" checked={!!editando.obligatoria}
+                  onChange={(e) => setEditando({ ...editando, obligatoria: e.target.checked })} />
+                Obligatoria — va en todos los contratos de este tipo y no se puede desmarcar
+              </label>
+            </div>
+
+            {!editando.obligatoria && (
+              <div style={{ marginTop: 13 }}>
+                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 3 }}>
+                  Se sugiere cuando se marca
+                </div>
+                <div style={{ fontSize: 11, color: T.textFaint, marginBottom: 8 }}>
+                  Si no eliges ninguna, la cláusula queda como opcional y solo se incluye marcándola a mano.
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(270px, 1fr))", gap: 4 }}>
+                  {TODAS_CASILLAS.map((k) => (
+                    <label key={k.id} style={{ display: "flex", gap: 7, alignItems: "flex-start", fontSize: 11.5, color: T.textDim, cursor: "pointer", padding: "2px 0" }}>
+                      <input
+                        type="checkbox"
+                        checked={(editando.sugerida_si || []).includes(k.id)}
+                        onChange={(e) => {
+                          const s = new Set(editando.sugerida_si || []);
+                          if (e.target.checked) s.add(k.id); else s.delete(k.id);
+                          setEditando({ ...editando, sugerida_si: [...s] });
+                        }}
+                        style={{ marginTop: 2 }}
+                      />
+                      <span><b>{k.etiqueta}.</b> {k.texto.slice(0, 64)}{k.texto.length > 64 ? "…" : ""}</span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+              <Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Button>
+              <Button variant="ghost" onClick={() => setEditando(null)}>Cancelar</Button>
+            </div>
+          </div>
+        )}
+
+        {!items.length ? (
+          <EmptyState
+            title="Sin ítems para este instrumento"
+            body="Si acabas de correr la migración 31, revisa que haya sembrado. Si no, crea el primero."
+          />
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
+            {numeradas.map(({ c, dentro, etiqueta }) => {
+              const estado = estadoDe(c);
+              const sug = sugerenciasDe(c);
+              const marcadores = [...new Set(String(c.cuerpo || "").match(/\{\{[A-Z_0-9]+\}\}/g) || [])];
+              return (
+                <div key={c.id} style={{ background: T.panel, padding: "10px 12px", opacity: dentro ? 1 : 0.55 }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 11 }}>
+                    <input
+                      type="checkbox"
+                      checked={dentro}
+                      disabled={c.obligatoria}
+                      onChange={() => alternar(c)}
+                      style={{ marginTop: 3, cursor: c.obligatoria ? "not-allowed" : "pointer" }}
+                    />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, color: T.text, fontWeight: 600 }}>
+                        {etiqueta && <span style={{ fontFamily: T.fontMono, color: T.accent, marginRight: 7 }}>{etiqueta}</span>}
+                        {c.titulo}
+                      </div>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 5 }}>
+                        {estado === "obligatoria" && <Pill>obligatoria</Pill>}
+                        {estado === "sugerida" && <Pill>sugerida por {sug.map((k) => (TODAS_CASILLAS.find((x) => x.id === k) || {}).etiqueta).join(", ")}</Pill>}
+                        {estado === "opcional" && <Pill>opcional</Pill>}
+                        <span style={{ fontSize: 10.5, color: T.textFaint }}>
+                          {parrafosDe(c.cuerpo).length} párrafo(s)
+                          {marcadores.length ? ` · ${marcadores.length} marcador(es)` : ""}
+                        </span>
+                      </div>
+                      {verCuerpo === c.id && (
+                        <div style={{ marginTop: 9, fontSize: 11.5, color: T.textDim, lineHeight: 1.6, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "9px 11px" }}>
+                          {parrafosDe(c.cuerpo).map((p, i) => <div key={i} style={{ marginBottom: 7 }}>{p}</div>)}
+                        </div>
+                      )}
+                    </div>
+                    <Button variant="ghost" onClick={() => setVerCuerpo(verCuerpo === c.id ? null : c.id)} style={{ padding: "4px 10px" }}>
+                      {verCuerpo === c.id ? "Ocultar" : "Ver"}
+                    </Button>
+                    <Button variant="ghost" onClick={() => setEditando({ ...c })} style={{ padding: "4px 10px" }}>Editar</Button>
+                    <Button variant="danger" onClick={() => desactivar(c)} style={{ padding: "4px 10px" }}>Quitar</Button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        <div style={{ marginTop: 13, fontSize: 12, color: T.textDim }}>
+          {marcadas.length} de {items.length} seleccionados.
+          {modo === "ordinal" && marcadas.length > 0 && ` Numerarán de PRIMERA a ${ordinalEnLetra(marcadas.length)}.`}
+          {modo === "numero" && marcadas.length > 0 && ` Numerarán del 1 al ${marcadas.length}.`}
+          {modo === "letra" && marcadas.length > 0 && ` Irán del ANEXO A al ANEXO ${String.fromCharCode(64 + marcadas.length)}.`}
+        </div>
+      </Panel>
+    </>
+  );
+}
+
+function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, instrumentosApi, clausulasApi, session }) {
   const [sub, setSub] = useSessionState("ss-contratos-sub", "datos");
   const [hayDatosUnidad, setHayDatosUnidad] = useState(false);
+  /* Las respuestas del árbol se comparten: se capturan en Diagnóstico y de
+     ellas dependen las cláusulas sugeridas. Si vivieran dentro de un solo
+     panel, cambiar de pestaña las perdería. */
+  const [resp, setResp] = useState({});
+  const [instrumento, setInstrumento] = useState("contrato_especifico");
+  const [objeto, setObjeto] = useState("");
+  const [incluidas, setIncluidas] = useState(() => new Set());
 
   /* El resto del panel depende de que exista la fila de la unidad: parámetros
      y nivel de debida diligencia la referencian por llave foránea. Se
@@ -11427,6 +11769,22 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
           parametrosApi={parametrosApi}
           provLegalApi={provLegalApi}
           instrumentosApi={instrumentosApi}
+          resp={resp}
+          setResp={setResp}
+          session={session}
+        />
+      )}
+
+      {sub === "clausulas" && (
+        <ClausulasPanel
+          clausulasApi={clausulasApi}
+          resp={resp}
+          instrumento={instrumento}
+          setInstrumento={setInstrumento}
+          objeto={objeto}
+          setObjeto={setObjeto}
+          incluidas={incluidas}
+          setIncluidas={setIncluidas}
           session={session}
         />
       )}
@@ -13252,6 +13610,7 @@ export default function App() {
   const contratosProvLegalApi = useCollection("contratos_proveedor_legal", "razon_social");
   const contratosProvUnidadApi = useCollection("contratos_proveedor_unidad", "rfc");
   const contratosInstrumentosApi = useCollection("contratos_instrumentos", "folio");
+  const contratosClausulasApi = useCollection("contratos_clausulas", "orden");
   const [unidad, setUnidad] = useState("CTM");
   const [tab, setTab] = useState("dashboard");
   // Puente entre pestañas: al crear una transacción a partir de una
@@ -13438,7 +13797,7 @@ export default function App() {
               unidadesPermitidas={miPerfil?.unidades_permitidas || []}
             />
           )}
-          {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} session={session} />}
+          {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} clausulasApi={contratosClausulasApi} session={session} />}
           {tab === "catalogo" && <CatalogoTab key={catalogoVersion} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>
       )}

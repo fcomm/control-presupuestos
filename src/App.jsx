@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.21.0";
+const APP_VERSION = "2.21.1";
 const CHANGELOG = [
+  { v: "2.21.1", desc: "Arreglo: la pestana Contratos se quedaba en blanco. En ContratosTab la lista de clausulas del documento leia `incluidas` siete lineas antes de su useState; al ser const, cae en la zona muerta temporal y lanzaba ReferenceError en CADA render, tumbando el subarbol completo. Se movieron las declaraciones de estado arriba de los valores calculados. El verificador no lo atrapo porque solo comprobaba que el identificador existiera en alguna parte, no el orden, asi que se le agrego un chequeo de zona muerta temporal. Lo fino fue distinguir el callback de un onClick, que corre mucho despues y puede referenciar lo que sea, del de un .filter o .map, que corre en el acto y si esta sujeto a la zona muerta; y respetar los parametros de esos callbacks, para que un .map((p) => p.x) no se confunda con un const p declarado mas abajo" },
   { v: "2.21.0", desc: "Los contratos salen integramente en MAYUSCULA. Se aplica sobre los nodos de texto del XML ya armado, no en cada punto donde se escribe: asi cubre por igual los valores sustituidos, el clausulado de la biblioteca y el texto fijo de la plantilla -- hacerlo solo en la parte generada habria dejado el documento mitad y mitad. Las entidades XML se saltan, para que &amp; no se vuelva &AMP;. Se puede revertir con la constante CONTRATOS_EN_MAYUSCULAS. Y la orden de compra sale del alcance: la emite Contabilidad desde el SAE. Sigue siendo salida del arbol cuando ninguna compuerta resulta afirmativa -- hay que decirle a quien pregunta que corresponde -- pero ya no aparece en el selector de clausulas y, cuando el arbol cae ahi, el panel de emision se sustituye por el aviso de que se emite en el SAE. Con ella se fueron sus campos exclusivos y el calculo de IVA, que solo existia para ese documento" },
   { v: "2.20.0", desc: "Migracion terminada: el documento que sale ya es el que marcaste. Las plantillas se adelgazaron -- se les quito el clausulado escrito y en su lugar llevan un solo marcador CLAUSULADO -- y el generador arma ahi los parrafos de Word de las clausulas seleccionadas, numeradas segun el instrumento: ordinal en contratos, numero en orden de compra, letra en anexos. Conservan carátula, declaraciones, firmas y todo el formato, que es lo que sigue justificando que existan. El clausulado se inyecta ANTES de resolver marcadores, asi que los que traen las clausulas se sustituyen en la misma pasada que los de la plantilla. Se sustituye el PARRAFO completo, no la cadena: cambiando solo el texto, las veinte clausulas caerian dentro de un mismo parrafo. Si una plantilla no trae el marcador -- version vieja en Storage -- el documento sale con su texto y la app lo dice en rojo en vez de dejarlo pasar. El boton exige clausulas marcadas. Requiere volver a subir las plantillas adelgazadas a Storage" },
   { v: "2.19.1", desc: "Limpieza del modulo de Contratos, que quedo con costuras de las idas y vueltas de diseno. Habia DOS listas paralelas de tipos de instrumento: una para el arbol con plantilla y folio, otra para las clausulas con el estilo de numeracion, compartiendo etiquetas -- renombrar un instrumento obligaba a tocar las dos, y a la primera le faltaba anexo_flowdown. Ahora hay un solo INSTRUMENTOS con todo. El objeto del contrato se capturaba en DOS campos independientes, uno en Diagnostico y otro en Clausulas, cada uno con su valor: ahora son el mismo dato y se edita desde cualquiera de los dos. El selector de instrumento de Clausulas ya no arranca fijo en contrato especifico: sigue al resultado del arbol, se puede cambiar a mano y avisa cuando difiere de lo que el arbol indico. Y se quitaron cuatro props que los componentes recibian sin usar. Auditado con AST: cero declaraciones muertas, cero props sin usar" },
@@ -12206,6 +12207,9 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
      panel, cambiar de pestaña las perdería. */
   const [resp, setResp] = useState({});
   const [instrumento, setInstrumento] = useState("contrato_especifico");
+  const [objeto, setObjeto] = useState("");
+  const [incluidas, setIncluidas] = useState(() => new Set());
+
   /* El árbol es quien decide el instrumento; el selector de la pestaña de
      cláusulas solo lo refleja. Se puede cambiar a mano, pero si el árbol
      cambia de opinión, vuelve a mandar él. */
@@ -12213,7 +12217,9 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
   useEffect(() => { setInstrumento(tipoSugerido); }, [tipoSugerido]);
 
   /* Las cláusulas que van en el documento, calculadas aquí para que la
-     pestaña que las marca y la que genera lean exactamente lo mismo. */
+     pestaña que las marca y la que genera lean exactamente lo mismo.
+     OJO con el orden: esto lee `incluidas`, así que va DESPUÉS de su
+     useState — si no, la zona muerta temporal revienta en cada render. */
   const ordenadas = (instr) => clausulasApi.rows
     .filter((c) => c.instrumento === instr && c.activa !== false)
     .sort((a, b) => (a.orden - b.orden) || String(a.titulo).localeCompare(String(b.titulo)));
@@ -12223,8 +12229,6 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
      obligatorias más las que sugieran las respuestas del árbol. */
   const itemsAnexo = ordenadas("anexo_flowdown")
     .filter((c) => c.obligatoria || (c.sugerida_si || []).some((k) => esSi(resp[k])));
-  const [objeto, setObjeto] = useState("");
-  const [incluidas, setIncluidas] = useState(() => new Set());
 
   /* El resto del panel depende de que exista la fila de la unidad: parámetros
      y nivel de debida diligencia la referencian por llave foránea. Se

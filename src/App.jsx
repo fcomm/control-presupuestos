@@ -322,8 +322,11 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.19.0";
+const APP_VERSION = "2.21.0";
 const CHANGELOG = [
+  { v: "2.21.0", desc: "Los contratos salen integramente en MAYUSCULA. Se aplica sobre los nodos de texto del XML ya armado, no en cada punto donde se escribe: asi cubre por igual los valores sustituidos, el clausulado de la biblioteca y el texto fijo de la plantilla -- hacerlo solo en la parte generada habria dejado el documento mitad y mitad. Las entidades XML se saltan, para que &amp; no se vuelva &AMP;. Se puede revertir con la constante CONTRATOS_EN_MAYUSCULAS. Y la orden de compra sale del alcance: la emite Contabilidad desde el SAE. Sigue siendo salida del arbol cuando ninguna compuerta resulta afirmativa -- hay que decirle a quien pregunta que corresponde -- pero ya no aparece en el selector de clausulas y, cuando el arbol cae ahi, el panel de emision se sustituye por el aviso de que se emite en el SAE. Con ella se fueron sus campos exclusivos y el calculo de IVA, que solo existia para ese documento" },
+  { v: "2.20.0", desc: "Migracion terminada: el documento que sale ya es el que marcaste. Las plantillas se adelgazaron -- se les quito el clausulado escrito y en su lugar llevan un solo marcador CLAUSULADO -- y el generador arma ahi los parrafos de Word de las clausulas seleccionadas, numeradas segun el instrumento: ordinal en contratos, numero en orden de compra, letra en anexos. Conservan carátula, declaraciones, firmas y todo el formato, que es lo que sigue justificando que existan. El clausulado se inyecta ANTES de resolver marcadores, asi que los que traen las clausulas se sustituyen en la misma pasada que los de la plantilla. Se sustituye el PARRAFO completo, no la cadena: cambiando solo el texto, las veinte clausulas caerian dentro de un mismo parrafo. Si una plantilla no trae el marcador -- version vieja en Storage -- el documento sale con su texto y la app lo dice en rojo en vez de dejarlo pasar. El boton exige clausulas marcadas. Requiere volver a subir las plantillas adelgazadas a Storage" },
+  { v: "2.19.1", desc: "Limpieza del modulo de Contratos, que quedo con costuras de las idas y vueltas de diseno. Habia DOS listas paralelas de tipos de instrumento: una para el arbol con plantilla y folio, otra para las clausulas con el estilo de numeracion, compartiendo etiquetas -- renombrar un instrumento obligaba a tocar las dos, y a la primera le faltaba anexo_flowdown. Ahora hay un solo INSTRUMENTOS con todo. El objeto del contrato se capturaba en DOS campos independientes, uno en Diagnostico y otro en Clausulas, cada uno con su valor: ahora son el mismo dato y se edita desde cualquiera de los dos. El selector de instrumento de Clausulas ya no arranca fijo en contrato especifico: sigue al resultado del arbol, se puede cambiar a mano y avisa cuando difiere de lo que el arbol indico. Y se quitaron cuatro props que los componentes recibian sin usar. Auditado con AST: cero declaraciones muertas, cero props sin usar" },
   { v: "2.19.0", desc: "Datos recurrentes - Proveedores: cargar RFC, razon social, personalidad y domicilio desde la Constancia de Situacion Fiscal en PDF. El PDF se lee en el navegador y no sale del equipo. Nunca escribe solo: muestra campo por campo lo leido junto a lo capturado y marcas que aplicas, porque un domicilio mal leido que se escribe en silencio termina impreso en un contrato firmado. Dos cosas del CSF obligaron a un parser especial: mete dos pares etiqueta-valor por renglon, y el extractor de PDF se come espacios de forma impredecible -- Estatusen elpadron, Nombre de laColonia, Nombre delMunicipioo Demarcacion Territorial -- asi que buscar las etiquetas como texto literal falla en la mitad. La busqueda corre sobre una copia sin espacios ni acentos con mapa de vuelta al original, y el valor se recorta del texto original entre etiqueta y etiqueta. La razon social se arma con el regimen capital abreviado como lo pide un contrato: SOCIEDAD ANONIMA DE CAPITAL VARIABLE sale S.A. DE C.V. Si el estatus en el padron no dice ACTIVO, se advierte. Un PDF que no sea CSF se rechaza al no hallar RFC con forma valida. REQUIERE npm install pdfjs-dist@2.16.105" },
   { v: "2.18.0", desc: "El arbol de decision se rehizo visualmente. Cada compuerta es ahora su propio bloque numerado que dice que determina si algo sale afirmativo, en vez de cuatro listas de aspecto identico. Y la cascada se ve: la compuerta que decidio se resalta con el borde en acento, y las posteriores se atenuan con la leyenda ya no se evalua -- porque en una cascada literalmente dejan de correr; siguen contestables por si conviene dejar constancia, pero no cambian el resultado. Las preguntas se acotan a 760px: sin tope, el par Si/No se iba contra el borde derecho y quedaba a media pantalla de la pregunta que contesta. Una respuesta afirmativa tine su renglon y marca la barra lateral en acento, la negativa la deja gris, y sin responder no pinta nada. Barra de avance con el conteo respondidas sobre trece, ambar mientras falten y verde al completar. El resultado pasa a ser el elemento dominante del panel" },
   { v: "2.17.1", desc: "Las trece preguntas del arbol pasan de casilla a Si/No explicito. Una casilla sin marcar no distinguia entre no y todavia no contesto, y el panel anunciaba un instrumento aunque nadie hubiera respondido nada. Ahora hay tres estados: las preguntas sin responder se marcan en ambar, y mientras falte alguna el resultado se titula preliminar y dice cuantas faltan y que una sin responder se toma como no. Al cambiar el tipo de dato habia que revisar cada lectura, porque la cadena no es truthy en JavaScript: se corrigieron las del arbol, las de clausulas sugeridas y una que activaba los anexos flow-down cuando se respondia NO al gatillo 2" },
@@ -2950,7 +2953,7 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
  */
 function ResumenComparativoPanel({
   partidasRango, idsRango, transacciones, proyectosUnidad,
-  proyectoKpi, setProyectoKpi, controlesFiltro,
+  proyectoKpi, controlesFiltro,
 }) {
   const partidaDe = (t) => partidasRango.find((p) => p.id === t.partida_id);
   const monedaDe = (x) => (x.moneda || "MXP") === "USD" ? "USD" : "MXP";
@@ -3415,7 +3418,7 @@ function ColumnVisibilityControl({ columns, hidden, onToggle, onShowAll, etiquet
 // un panel con un renglón por nivel (campo + dirección + quitar), botón para agregar
 // subgrupo, y accesos para contraer/expandir todo. `options` = [{value,label}].
 // `value` = [{field, dir}]. `groupedTree` (opcional) habilita Contraer/Expandir todo.
-function GroupByControl({ options, value, onChange, maxLevels = 3, groupedTree, collapsed, setCollapsed }) {
+function GroupByControl({ options, value, onChange, maxLevels = 3, groupedTree, setCollapsed }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useClickOutside(ref, () => setOpen(false));
@@ -4778,7 +4781,7 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
  * queda como su propio registro completo, con quién y cuándo (via
  * created_by/created_at, igual que en partidas y transacciones).
  */
-function EditarSolicitudPagoModal({ solicitud, onClose, unidad, session, onGuardado }) {
+function EditarSolicitudPagoModal({ solicitud, onClose, session, onGuardado }) {
   const [f, setF] = useState({ ...solicitud });
   const [formato, setFormato] = useState("pdf");
   const [guardando, setGuardando] = useState(false);
@@ -9877,7 +9880,7 @@ const SUBS_CATALOGO = [
  * botones de exportar invitaría a generarlo por costumbre y a versionar
  * envíos que nunca salieron.
  */
-function ReportesDireccionTab({ unidad, partidas, transacciones, session, gruposZona = {} }) {
+function ReportesDireccionTab({ unidad, partidas, transacciones, gruposZona = {} }) {
   const [sub, setSub] = useSessionState("ss-repdir-sub", "presupuesto");
   const [reportes, setReportes] = useState([]);
   const [reportado, setReportado] = useState([]);
@@ -11134,11 +11137,43 @@ function BloqueCompuerta({ n, titulo, salida, estado, children }) {
   );
 }
 
-const TIPOS_INSTRUMENTO = {
-  orden_compra:        { label: "Orden de compra",  plantilla: "orden_compra",        prefijo: "OC", marcadorFolio: "NUM_ORDEN_COMPRA" },
-  contrato_especifico: { label: "Contrato específico", plantilla: "contrato_especifico", prefijo: "CE", marcadorFolio: "NUM_CONTRATO" },
-  contrato_marco:      { label: "Contrato marco",   plantilla: "contrato_marco",      prefijo: "CM", marcadorFolio: "NUM_CONTRATO_MARCO" },
+/**
+ * Los instrumentos, en un solo lugar.
+ *
+ * Había dos listas paralelas: una para el árbol, con plantilla y folio, y
+ * otra para las cláusulas, con el estilo de numeración. Compartían las
+ * etiquetas, así que renombrar un instrumento obligaba a acordarse de tocar
+ * las dos, y la segunda tenía un tipo que a la primera le faltaba.
+ *
+ * `estructura` es el esqueleto que aporta la plantilla; de todo eso, lo único
+ * que se arma desde la biblioteca es el clausulado.
+ */
+const INSTRUMENTOS = {
+  contrato_especifico: {
+    label: "Contrato específico", plantilla: "contrato_especifico",
+    prefijo: "CE", marcadorFolio: "NUM_CONTRATO", numeracion: "ordinal",
+    estructura: ["Proemio y comparecencia", "Declaraciones de las partes", "Clausulado", "Lugar, fecha y firmas"],
+  },
+  contrato_marco: {
+    label: "Contrato marco", plantilla: "contrato_marco",
+    prefijo: "CM", marcadorFolio: "NUM_CONTRATO_MARCO", numeracion: "ordinal",
+    estructura: ["Proemio y comparecencia", "Declaraciones de las partes", "Clausulado", "Lugar, fecha y firmas", "Anexos A–D del marco"],
+  },
+  /* La orden de compra la emite Contabilidad desde el SAE. Sigue siendo una
+     salida del árbol —hay que decirle a quien pregunta qué corresponde— pero
+     la app no la genera. Por eso no tiene plantilla ni prefijo de folio. */
+  orden_compra: {
+    label: "Orden de compra", externo: "Se emite desde el SAE, en Contabilidad.",
+  },
+  /* No sale del árbol: acompaña al contrato específico cuando aplica el
+     gatillo 2. Por eso no tiene prefijo de folio propio. */
+  anexo_flowdown: {
+    label: "Anexos flow-down", plantilla: "anexo_flowdown", numeracion: "letra",
+    estructura: ["Encabezado con referencia al contrato principal", "Anexos aplicables", "Lugar, fecha y firmas"],
+  },
 };
+/* Solo los que la app genera: la orden de compra no aparece como opción. */
+const ORDEN_INSTRUMENTOS = ["contrato_especifico", "contrato_marco", "anexo_flowdown"];
 
 /* Qué le toca capturar al usuario según el instrumento que resultó. Sale de
    leer los marcadores reales de cada plantilla: pedir de más es ruido, y
@@ -11146,27 +11181,17 @@ const TIPOS_INSTRUMENTO = {
 const CAMPOS_FORM = [
   { key: "OBJETO",                 label: "Objeto del contrato",       tipo: "texto",  ancho: 2, en: ["contrato_especifico", "contrato_marco"] },
   { key: "TIPO_CONTRATO",          label: "Tipo",                      tipo: "texto",  en: ["contrato_especifico", "contrato_marco"], ayuda: "Va en el título: «Contrato marco de ___»" },
-  { key: "DESCRIPCION_ORDEN",      label: "Descripción de lo solicitado", tipo: "texto", ancho: 2, en: ["orden_compra"] },
-  { key: "IMPORTE_SIN_IVA",        label: "Importe sin IVA",           tipo: "monto",  en: ["orden_compra"] },
   { key: "MONTO_NUMERO",           label: "Monto sin IVA",             tipo: "monto",  en: ["contrato_especifico"] },
   { key: "MONTO_MAXIMO",           label: "Monto máximo sin IVA",      tipo: "monto",  en: ["contrato_marco"] },
-  { key: "MONEDA",                 label: "Moneda",                    tipo: "moneda", en: ["orden_compra", "contrato_especifico"] },
-  { key: "LUGAR_ENTREGA",          label: "Lugar de entrega o ejecución", tipo: "texto", en: ["orden_compra", "contrato_especifico"] },
-  { key: "FECHA_ENTREGA",          label: "Fecha límite de entrega",   tipo: "fecha",  en: ["orden_compra"] },
+  { key: "MONEDA",                 label: "Moneda",                    tipo: "moneda", en: ["contrato_especifico"] },
+  { key: "LUGAR_ENTREGA",          label: "Lugar de entrega o ejecución", tipo: "texto", en: ["contrato_especifico"] },
   { key: "VIGENCIA_INICIO",        label: "Vigencia — inicio",         tipo: "fecha",  en: ["contrato_especifico", "contrato_marco"] },
   { key: "VIGENCIA_FIN",           label: "Vigencia — fin",            tipo: "fecha",  en: ["contrato_especifico", "contrato_marco"] },
   { key: "VIGENCIA_PRECIOS",       label: "Vigencia de precios",       tipo: "texto",  en: ["contrato_marco"], ayuda: "Ej. «los primeros 12 meses»" },
   { key: "TIPO_GARANTIA",          label: "Tipo de garantía",          tipo: "texto",  en: ["contrato_especifico"], ayuda: "Fianza, cheque, retención…" },
-  { key: "ADMINISTRADOR_CONTRATO", label: "Administrador del contrato", tipo: "texto", en: ["orden_compra", "contrato_especifico"] },
-  { key: "CENTRO_COSTO",           label: "Centro de costo o proyecto", tipo: "texto", en: ["orden_compra"] },
+  { key: "ADMINISTRADOR_CONTRATO", label: "Administrador del contrato", tipo: "texto", en: ["contrato_especifico"] },
   { key: "CLIENTE_FINAL",          label: "Cliente final",             tipo: "texto",  soloFlowdown: true, en: ["contrato_especifico"] },
   { key: "NUM_CONTRATO_PRINCIPAL", label: "No. del contrato principal", tipo: "texto", soloFlowdown: true, en: ["contrato_especifico"] },
-];
-
-const TASAS_IVA = [
-  { value: 16, label: "16%" },
-  { value: 8,  label: "8% (frontera)" },
-  { value: 0,  label: "0% / exento" },
 ];
 
 /* ---------- Número a letra, en español ---------- */
@@ -11286,7 +11311,8 @@ function decidirInstrumento(resp) {
   }
   return {
     tipo: "orden_compra", flowdown: false, compuerta: 0,
-    ruta: "Orden de compra con condiciones generales. Ninguna compuerta resultó afirmativa.",
+    ruta: "Orden de compra con condiciones generales. Ninguna compuerta resultó afirmativa. "
+      + "La emite Contabilidad desde el SAE; esta herramienta no la genera.",
   };
 }
 
@@ -11310,7 +11336,7 @@ async function maxFolioInstrumentoReal(prefijo) {
 
 async function insertarInstrumentoConReintento(instrumentosApi, fila, unidad, tipo) {
   const anio = new Date().getFullYear();
-  const prefijo = `${unidad}-${TIPOS_INSTRUMENTO[tipo].prefijo}-${anio}-`;
+  const prefijo = `${unidad}-${INSTRUMENTOS[tipo].prefijo}-${anio}-`;
   const siguiente = (await maxFolioInstrumentoReal(prefijo)) + 1;
   const maxIntentos = 8;
   for (let intento = 0; intento < maxIntentos; intento++) {
@@ -11334,7 +11360,21 @@ async function insertarInstrumentoConReintento(instrumentosApi, fila, unidad, ti
  * vea en el Word en lugar de pasar inadvertido. La función devuelve cuáles
  * quedaron sin resolver para poder avisarlo antes de la descarga.
  */
-async function llenarPlantilla(storagePath, valores) {
+/* Los contratos se emiten íntegramente en mayúscula. Se aplica sobre los
+   nodos de texto del XML ya armado, de modo que cubra por igual los valores
+   sustituidos, el clausulado de la biblioteca y el texto fijo de la
+   plantilla: hacerlo solo en la parte generada dejaría el documento mitad y
+   mitad. Las entidades XML se saltan — &amp; no puede volverse &AMP;. */
+const CONTRATOS_EN_MAYUSCULAS = true;
+
+function mayusculasXml(xml) {
+  return xml.replace(/(<w:t\b[^>]*>)([\s\S]*?)(<\/w:t>)/g, (todo, ini, txt, fin) =>
+    ini + txt.split(/(&[a-zA-Z]+;|&#\d+;)/)
+             .map((p, i) => (i % 2 ? p : p.toLocaleUpperCase("es-MX")))
+             .join("") + fin);
+}
+
+async function llenarPlantilla(storagePath, valores, clausuladoXML) {
   const { data, error } = await supabase.storage.from("contratos-plantillas").download(storagePath);
   if (error) throw new Error(`No se pudo descargar la plantilla (${storagePath}): ${error.message}`);
 
@@ -11342,22 +11382,33 @@ async function llenarPlantilla(storagePath, valores) {
   const partes = Object.keys(zip.files).filter((n) =>
     /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/.test(n));
   const sinResolver = new Set();
+  let huboClausulado = false;
 
   for (const parte of partes) {
-    const xml = await zip.file(parte).async("string");
+    let xml = await zip.file(parte).async("string");
+
+    /* El clausulado se inyecta ANTES de resolver marcadores, para que los
+       {{MARCADORES}} que traen las cláusulas se sustituyan en la misma
+       pasada que los de la plantilla. */
+    if (clausuladoXML !== undefined) {
+      const r = inyectarClausulado(xml, clausuladoXML);
+      xml = r.xml;
+      if (r.encontrado) huboClausulado = true;
+    }
+
     const nuevo = xml.replace(/\{\{([A-Z_0-9]+)\}\}/g, (todo, clave) => {
       const v = valores[clave];
       if (v === undefined || v === null || v === "") { sinResolver.add(clave); return todo; }
       return escaparXml(v);
     });
-    zip.file(parte, nuevo);
+    zip.file(parte, CONTRATOS_EN_MAYUSCULAS ? mayusculasXml(nuevo) : nuevo);
   }
 
   const blob = await zip.generateAsync({
     type: "blob",
     mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
   });
-  return { blob, sinResolver: [...sinResolver].sort() };
+  return { blob, sinResolver: [...sinResolver].sort(), huboClausulado };
 }
 
 function descargarBlob(blob, nombre) {
@@ -11371,11 +11422,11 @@ function descargarBlob(blob, nombre) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
-function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, resp, setResp, session }) {
+function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, resp, setResp, objeto, setObjeto, itemsClausulado, itemsAnexo, session }) {
   const [datosUnidad, setDatosUnidad] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [rfc, setRfc] = useState("");
-  const [form, setForm] = useState({ MONEDA: "MXP", ivaTasa: 16 });
+  const [form, setForm] = useState({ MONEDA: "MXP" });
   const [trabajando, setTrabajando] = useState(false);
   const [resultado, setResultado] = useState(null);
 
@@ -11408,15 +11459,13 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
     decision.compuerta === n ? "decide"
     : decision.compuerta !== 0 && n > decision.compuerta ? "inerte"
     : "abierta";
-  const meta = TIPOS_INSTRUMENTO[decision.tipo];
+  const meta = INSTRUMENTOS[decision.tipo];
 
   const campos = CAMPOS_FORM.filter(
     (c) => c.en.includes(decision.tipo) && (!c.soloFlowdown || decision.flowdown));
 
   const montoBase = Number(
-    form[decision.tipo === "orden_compra" ? "IMPORTE_SIN_IVA"
-      : decision.tipo === "contrato_marco" ? "MONTO_MAXIMO" : "MONTO_NUMERO"]) || 0;
-  const iva = montoBase * (Number(form.ivaTasa) || 0) / 100;
+    form[decision.tipo === "contrato_marco" ? "MONTO_MAXIMO" : "MONTO_NUMERO"]) || 0;
 
   const listo = !!datosUnidad && !!parametros && !!proveedor;
 
@@ -11465,7 +11514,7 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
     };
 
     campos.forEach((c) => {
-      const crudo = form[c.key];
+      const crudo = c.key === "OBJETO" ? objeto : form[c.key];
       if (crudo === undefined || crudo === "") return;
       v[c.key] = c.tipo === "fecha" ? fechaLarga(crudo)
         : c.tipo === "monto" ? dinero(crudo)
@@ -11473,10 +11522,6 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
         : crudo;
     });
 
-    if (decision.tipo === "orden_compra") {
-      v.IVA_ORDEN = dinero(iva);
-      v.IMPORTE_TOTAL = dinero(montoBase + iva);
-    }
     if (decision.tipo === "contrato_especifico" && montoBase) {
       v.MONTO_LETRA = importeALetra(montoBase, form.MONEDA);
     }
@@ -11487,7 +11532,7 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
   };
 
   const generar = async () => {
-    const faltan = campos.filter((c) => !String(form[c.key] ?? "").trim());
+    const faltan = campos.filter((c) => !String((c.key === "OBJETO" ? objeto : form[c.key]) ?? "").trim());
     if (faltan.length) {
       const seguir = confirm(
         `Faltan ${faltan.length} campo(s): ${faltan.map((c) => c.label).join(", ")}.\n\n` +
@@ -11512,7 +11557,7 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
         rfc_proveedor: normRfc(rfc),
         tipo: decision.tipo,
         flowdown: decision.flowdown,
-        objeto: String(form.OBJETO || form.DESCRIPCION_ORDEN || "").slice(0, 500) || "(sin objeto)",
+        objeto: String(objeto || "").slice(0, 500) || "(sin objeto)",
         monto: montoBase || null,
         moneda: form.MONEDA === "USD" ? "USD" : "MXP",
         vigencia_inicio: form.VIGENCIA_INICIO || null,
@@ -11536,15 +11581,25 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
       const valores = construirValores(guardado.folio);
 
       const docs = [];
-      const r1 = await llenarPlantilla(principal.storage_path, valores);
+      const r1 = await llenarPlantilla(
+        principal.storage_path, valores,
+        construirClausuladoXML(itemsClausulado, meta.numeracion));
       descargarBlob(r1.blob, `${guardado.folio}.docx`);
-      docs.push({ nombre: `${guardado.folio}.docx`, sinResolver: r1.sinResolver });
+      docs.push({
+        nombre: `${guardado.folio}.docx`, sinResolver: r1.sinResolver,
+        clausulas: itemsClausulado.length, conClausulado: r1.huboClausulado,
+      });
 
       if (anexo) {
         const vAnexo = { ...valores, NUM_CONTRATO: guardado.folio };
-        const r2 = await llenarPlantilla(anexo.storage_path, vAnexo);
+        const r2 = await llenarPlantilla(
+          anexo.storage_path, vAnexo,
+          construirClausuladoXML(itemsAnexo, INSTRUMENTOS.anexo_flowdown.numeracion));
         descargarBlob(r2.blob, `${guardado.folio}-anexos-flow-down.docx`);
-        docs.push({ nombre: `${guardado.folio}-anexos-flow-down.docx`, sinResolver: r2.sinResolver });
+        docs.push({
+          nombre: `${guardado.folio}-anexos-flow-down.docx`, sinResolver: r2.sinResolver,
+          clausulas: itemsAnexo.length, conClausulado: r2.huboClausulado,
+        });
       }
 
       setResultado({ folio: guardado.folio, docs });
@@ -11669,6 +11724,14 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
             </div>
           </Panel>
 
+          {meta.externo ? (
+            <Panel title="Emisión">
+              <EmptyState
+                title={`${meta.label}: no se emite aquí`}
+                body={`${meta.externo} Esta herramienta solo genera contratos específicos, marcos y sus anexos.`}
+              />
+            </Panel>
+          ) : (
           <Panel
             title="Datos del instrumento"
             subtitle={`Solo lo que ${meta.label.toLowerCase()} necesita. Los campos cambian si cambia el resultado del árbol.`}
@@ -11676,7 +11739,12 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 14 }}>
               {campos.map((c) => (
                 <Field key={c.key} label={c.label} style={c.ancho === 2 ? { gridColumn: "span 2" } : undefined}>
-                  {c.tipo === "moneda" ? (
+                  {c.key === "OBJETO" ? (
+                    /* Mismo dato que el de la pestaña de cláusulas, no una
+                       copia: tenerlo dos veces garantizaba que tarde o
+                       temprano dijeran cosas distintas. */
+                    <TextInput value={objeto} onChange={(e) => setObjeto(e.target.value)} />
+                  ) : c.tipo === "moneda" ? (
                     <Select value={form.MONEDA || "MXP"} onChange={(e) => setForm({ ...form, MONEDA: e.target.value })}>
                       <option value="MXP">MXN — peso mexicano</option>
                       <option value="USD">USD — dólar americano</option>
@@ -11694,29 +11762,29 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
                     : <MarcadorHint marcador={c.key} />}
                 </Field>
               ))}
-              {decision.tipo === "orden_compra" && (
-                <Field label="Tasa de IVA">
-                  <Select value={form.ivaTasa} onChange={(e) => setForm({ ...form, ivaTasa: Number(e.target.value) })}>
-                    {TASAS_IVA.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                  </Select>
-                  <span style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>
-                    IVA {dinero(iva)} · total {dinero(montoBase + iva)}
-                  </span>
-                </Field>
-              )}
             </div>
 
-            {montoBase > 0 && decision.tipo !== "orden_compra" && (
+            {montoBase > 0 && (
               <div style={{ marginTop: 14, fontSize: 11.5, color: T.textFaint, fontFamily: T.fontMono }}>
                 En letra: {importeALetra(montoBase, decision.tipo === "contrato_marco" ? "MXP" : form.MONEDA)}
               </div>
             )}
 
             <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 18 }}>
-              <Button onClick={generar} disabled={!listo || trabajando}>
+              <Button onClick={generar} disabled={!listo || trabajando || !itemsClausulado.length}>
                 {trabajando ? "Generando…" : "Generar y registrar"}
               </Button>
               {!proveedor && <span style={{ fontSize: 12, color: T.textDim }}>Elige un proveedor primero.</span>}
+              {proveedor && !itemsClausulado.length && (
+                <span style={{ fontSize: 12, color: T.textDim }}>
+                  No hay cláusulas marcadas. Elígelas en «Objeto y cláusulas».
+                </span>
+              )}
+              {proveedor && itemsClausulado.length > 0 && (
+                <span style={{ fontSize: 12, color: T.textFaint }}>
+                  {itemsClausulado.length} cláusula(s){itemsAnexo.length && decision.flowdown ? ` y ${itemsAnexo.length} anexo(s)` : ""}
+                </span>
+              )}
             </div>
 
             {resultado && (
@@ -11726,7 +11794,13 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
                 </div>
                 {resultado.docs.map((d) => (
                   <div key={d.nombre} style={{ fontSize: 12, color: T.textDim, marginTop: 6 }}>
-                    {d.nombre}
+                    {d.nombre} — {d.clausulas} cláusula(s)
+                    {!d.conClausulado && (
+                      <div style={{ fontSize: 11, color: T.red, marginTop: 3 }}>
+                        Esta plantilla no tiene {"{{CLAUSULADO}}"}: salió con el texto que trae escrito,
+                        sin tu selección. Vuelve a subir la versión adelgazada.
+                      </div>
+                    )}
                     {d.sinResolver.length > 0 && (
                       <div style={{ fontSize: 11, color: T.red, marginTop: 3, fontFamily: T.fontMono }}>
                         {d.sinResolver.length} marcador(es) sin resolver, impresos en el documento:{" "}
@@ -11738,6 +11812,7 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
               </div>
             )}
           </Panel>
+          )}
         </>
       )}
     </>
@@ -11747,22 +11822,6 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
 /* ----------------------------------------------------------------------
    BIBLIOTECA DE CLÁUSULAS
 ---------------------------------------------------------------------- */
-
-const INSTRUMENTOS_CLAUSULA = [
-  { id: "contrato_especifico", label: "Contrato específico", numeracion: "ordinal" },
-  { id: "contrato_marco",      label: "Contrato marco",      numeracion: "ordinal" },
-  { id: "orden_compra",        label: "Orden de compra",     numeracion: "numero" },
-  { id: "anexo_flowdown",      label: "Anexos flow-down",    numeracion: "letra" },
-];
-
-/* El esqueleto que aporta la plantilla. El clausulado es lo único que se
-   arma aquí; lo demás vive en el .docx y no se elige. */
-const ESTRUCTURA_DOC = {
-  contrato_especifico: ["Proemio y comparecencia", "Declaraciones de las partes", "Clausulado", "Lugar, fecha y firmas"],
-  contrato_marco:      ["Proemio y comparecencia", "Declaraciones de las partes", "Clausulado", "Lugar, fecha y firmas", "Anexos A–D del marco"],
-  orden_compra:        ["Carátula con datos de la orden", "Descripción y partidas", "Condiciones generales", "Firmas de emisión y aceptación"],
-  anexo_flowdown:      ["Encabezado con referencia al contrato principal", "Anexos aplicables", "Lugar, fecha y firmas"],
-};
 
 const ORD_UNIDAD = ["PRIMERA", "SEGUNDA", "TERCERA", "CUARTA", "QUINTA", "SEXTA", "SÉPTIMA", "OCTAVA", "NOVENA"];
 const ORD_DECENA = ["", "DÉCIMA", "VIGÉSIMA", "TRIGÉSIMA", "CUADRAGÉSIMA", "QUINCUAGÉSIMA"];
@@ -11797,12 +11856,68 @@ const slugClave = (t) =>
 const parrafosDe = (cuerpo) =>
   String(cuerpo || "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
 
-function ClausulasPanel({ clausulasApi, resp, instrumento, setInstrumento, objeto, setObjeto, incluidas, setIncluidas, session }) {
+/* ----------------------------------------------------------------------
+   ARMADO DEL CLAUSULADO EN XML DE WORD
+---------------------------------------------------------------------- */
+
+/* Formato copiado de los párrafos que ya traían las plantillas: Arial 10,
+   justificado. El encabezado lleva negrita y más aire arriba; el cuerpo, la
+   interlínea de 276. Si se generara con otro formato, el documento se vería
+   cosido de dos fuentes distintas. */
+const RPR_BASE = '<w:rFonts w:ascii="Arial" w:cs="Arial" w:eastAsia="Arial" w:hAnsi="Arial"/><w:sz w:val="20"/><w:szCs w:val="20"/>';
+
+function parrafoWord(texto, negrita) {
+  const pPr = negrita
+    ? '<w:spacing w:after="100" w:before="220"/><w:jc w:val="both"/>'
+    : '<w:spacing w:after="120" w:line="276"/><w:jc w:val="both"/>';
+  const rPr = negrita ? `<w:b/><w:bCs/>${RPR_BASE}` : RPR_BASE;
+  return `<w:p><w:pPr>${pPr}</w:pPr><w:r><w:rPr>${rPr}</w:rPr>`
+    + `<w:t xml:space="preserve">${escaparXml(texto)}</w:t></w:r></w:p>`;
+}
+
+/**
+ * Convierte las cláusulas elegidas en párrafos de Word, numeradas en el
+ * estilo que corresponda al instrumento. Los {{MARCADORES}} del cuerpo se
+ * dejan crudos a propósito: la sustitución general corre después sobre todo
+ * el documento, así que se resuelven junto con los de la plantilla.
+ */
+function construirClausuladoXML(items, modo) {
+  let n = 0;
+  return items.map((c) => {
+    n += 1;
+    const encabezado = `${etiquetaNumero(n, modo)} ${c.titulo}${/[.:]$/.test(c.titulo) ? "" : "."}`;
+    return parrafoWord(encabezado, true)
+      + parrafosDe(c.cuerpo).map((p) => parrafoWord(p, false)).join("");
+  }).join("");
+}
+
+/* Sustituye el PÁRRAFO COMPLETO que contiene {{CLAUSULADO}}, no solo el
+   texto: si únicamente se cambiara la cadena, las veinte cláusulas caerían
+   dentro de un mismo párrafo, sin encabezados ni separación. */
+function inyectarClausulado(xml, clausuladoXML) {
+  const i = xml.indexOf("{{CLAUSULADO}}");
+  if (i === -1) return { xml, encontrado: false };
+  /* No sirve lastIndexOf("<w:p"): las propiedades del párrafo son <w:pPr>,
+     que también empieza con esa cadena, así que el corte caería a media
+     etiqueta y dejaría el <w:p> sin cerrar. Hay que exigir que lo que sigue
+     sea un espacio o el cierre de la etiqueta. */
+  const rx = /<w:p[ >]/g;
+  let ini = -1, m;
+  while ((m = rx.exec(xml)) !== null) {
+    if (m.index >= i) break;
+    ini = m.index;
+  }
+  const fin = xml.indexOf("</w:p>", i);
+  if (ini === -1 || fin === -1) return { xml, encontrado: false };
+  return { xml: xml.slice(0, ini) + clausuladoXML + xml.slice(fin + 6), encontrado: true };
+}
+
+function ClausulasPanel({ clausulasApi, resp, tipoSugerido, instrumento, setInstrumento, objeto, setObjeto, incluidas, setIncluidas, session }) {
   const [editando, setEditando] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [verCuerpo, setVerCuerpo] = useState(null);
 
-  const modo = (INSTRUMENTOS_CLAUSULA.find((i) => i.id === instrumento) || {}).numeracion || "ordinal";
+  const modo = (INSTRUMENTOS[instrumento] || {}).numeracion || "ordinal";
 
   const items = clausulasApi.rows
     .filter((c) => c.instrumento === instrumento && c.activa !== false)
@@ -11885,8 +12000,13 @@ function ClausulasPanel({ clausulasApi, resp, instrumento, setInstrumento, objet
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14 }}>
           <Field label="Tipo de instrumento">
             <Select value={instrumento} onChange={(e) => setInstrumento(e.target.value)}>
-              {INSTRUMENTOS_CLAUSULA.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
+              {ORDEN_INSTRUMENTOS.map((id) => <option key={id} value={id}>{INSTRUMENTOS[id].label}</option>)}
             </Select>
+            {instrumento !== tipoSugerido && (
+              <span style={{ fontSize: 10.5, color: T.amberDim, marginTop: 3 }}>
+                El árbol indicó {INSTRUMENTOS[tipoSugerido].label.toLowerCase()}.
+              </span>
+            )}
           </Field>
           <Field label="Objeto del contrato" style={{ gridColumn: "span 2" }}>
             <TextInput value={objeto} onChange={(e) => setObjeto(e.target.value)} placeholder="Suministro de…, prestación del servicio de…" />
@@ -11899,7 +12019,7 @@ function ClausulasPanel({ clausulasApi, resp, instrumento, setInstrumento, objet
             <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 6 }}>
               Estructura del documento
             </div>
-            {(ESTRUCTURA_DOC[instrumento] || []).map((s, i) => (
+            {((INSTRUMENTOS[instrumento] || {}).estructura || []).map((s, i) => (
               <div key={s} style={{ fontSize: 12, color: s === "Clausulado" ? T.text : T.textFaint, fontWeight: s === "Clausulado" ? 600 : 400, padding: "2px 0" }}>
                 {i + 1}. {s}{s === "Clausulado" ? `  ← ${marcadas.length} ítem(s) seleccionado(s)` : ""}
               </div>
@@ -11946,7 +12066,7 @@ function ClausulasPanel({ clausulasApi, resp, instrumento, setInstrumento, objet
               </Field>
               <Field label="Instrumento">
                 <Select value={editando.instrumento} onChange={(e) => setEditando({ ...editando, instrumento: e.target.value })}>
-                  {INSTRUMENTOS_CLAUSULA.map((i) => <option key={i.id} value={i.id}>{i.label}</option>)}
+                  {ORDEN_INSTRUMENTOS.map((id) => <option key={id} value={id}>{INSTRUMENTOS[id].label}</option>)}
                 </Select>
               </Field>
               <Field label="Orden">
@@ -12086,6 +12206,23 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
      panel, cambiar de pestaña las perdería. */
   const [resp, setResp] = useState({});
   const [instrumento, setInstrumento] = useState("contrato_especifico");
+  /* El árbol es quien decide el instrumento; el selector de la pestaña de
+     cláusulas solo lo refleja. Se puede cambiar a mano, pero si el árbol
+     cambia de opinión, vuelve a mandar él. */
+  const tipoSugerido = decidirInstrumento(resp).tipo;
+  useEffect(() => { setInstrumento(tipoSugerido); }, [tipoSugerido]);
+
+  /* Las cláusulas que van en el documento, calculadas aquí para que la
+     pestaña que las marca y la que genera lean exactamente lo mismo. */
+  const ordenadas = (instr) => clausulasApi.rows
+    .filter((c) => c.instrumento === instr && c.activa !== false)
+    .sort((a, b) => (a.orden - b.orden) || String(a.titulo).localeCompare(String(b.titulo)));
+  const itemsClausulado = ordenadas(instrumento)
+    .filter((c) => c.obligatoria || incluidas.has(c.id));
+  /* Los anexos flow-down no tienen pantalla de marcado propia: se toman las
+     obligatorias más las que sugieran las respuestas del árbol. */
+  const itemsAnexo = ordenadas("anexo_flowdown")
+    .filter((c) => c.obligatoria || (c.sugerida_si || []).some((k) => esSi(resp[k])));
   const [objeto, setObjeto] = useState("");
   const [incluidas, setIncluidas] = useState(() => new Set());
 
@@ -12147,6 +12284,10 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
           instrumentosApi={instrumentosApi}
           resp={resp}
           setResp={setResp}
+          objeto={objeto}
+          setObjeto={setObjeto}
+          itemsClausulado={itemsClausulado}
+          itemsAnexo={itemsAnexo}
           session={session}
         />
       )}
@@ -12155,6 +12296,7 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
         <ClausulasPanel
           clausulasApi={clausulasApi}
           resp={resp}
+          tipoSugerido={tipoSugerido}
           instrumento={instrumento}
           setInstrumento={setInstrumento}
           objeto={objeto}

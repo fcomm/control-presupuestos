@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.25.0";
+const APP_VERSION = "2.25.1";
 const CHANGELOG = [
+  { v: "2.25.1", desc: "En Importar / Exportar, los dos desplegables -- Importar de Google Sheets y Solicitudes de Pago generadas -- se alinean en una sola fila en vez de apilarse. Cada uno se comporta como item de una fila flexible: cerrado ocupa lo que mide, y al abrirse toma el renglon completo, de modo que su contenido no queda apretado a media pantalla junto al otro" },
   { v: "2.25.0", desc: "Transacciones se parte en dos subpestanas. La pestana mezclaba dos cosas con ritmos distintos: consultar y capturar dia con dia, contra importar o exportar de vez en cuando -- y los importadores estaban ARRIBA de los filtros, ocupando el primer golpe de vista con lo que menos se usa. General queda con los filtros, el agrupado, la tabla, el panel de sin partida vinculada y Nueva transaccion. Importar / Exportar reune el importador de Google Sheets, las solicitudes de pago generadas, la exportacion y la carga masiva. La exportacion deja de ser un panel plegable y es un panel fijo de su pestana; como los filtros que gobiernan la salida ya no se ven desde ahi, el subtitulo dice cuantas transacciones de cuantas se van a exportar -- sin eso, bajarias un archivo filtrado sin saberlo" },
   { v: "2.24.0", desc: "Eliminar un proveedor ahora revisa antes si esta en uso y, si lo esta, exige elegir a quien pasan sus movimientos. Antes se borraba de una: la confirmacion advertia de las cuentas bancarias pero no de las transacciones, asi que borrar un proveedor con movimientos dejaba esas filas apuntando a un id inexistente y el Reporte de Pagos las mostraba sin proveedor sin explicar por que. El conteo mira los DOS vinculos, porque son distintos: proveedor_id, el formal, y el texto del nombre, que es el que quedo en las transacciones importadas cuyo nombre no empato contra el catalogo -- mirar solo el id diria que esta libre un proveedor con decenas de movimientos a su nombre. Al reasignar se actualizan ambos. Las cuentas bancarias NO se mueven por defecto: se listan, se avisa que se borran con el proveedor, y moverlas es una casilla aparte que ademas alerta si el destino ya tiene una CLABE distinta. Si no hay otro proveedor en la compania, se niega y pide dar de alta el sustituto primero. El nombre se escapa antes del ILIKE: sin eso, un proveedor llamado 100% NATURAL empataria con cualquier cosa" },
   { v: "2.23.0", desc: "Las fechas se pueden teclear cortas. 150926 se convierte en 15/09/2026 al salir del campo. Tambien 15092026, 1509 (ano en curso), 15 (mes y ano en curso) y con separadores 15/9/26, 15-09-2026, 15.09.26 -- respetando el mes sin cero a la izquierda, que al quitar separadores dejaria cinco digitos sin patron. Aplica a los 18 campos de fecha de la app: se intercepto dentro de TextInput, que es por donde pasan todos, sin tocar un solo punto de uso, y conservando el mismo contrato de value en ISO. Lo tecleado se valida contra el calendario real: 310926 no pasa porque septiembre no tiene 31 dias, y sin esa comprobacion Date lo habria convertido en 1 de octubre en silencio. Una fecha invalida marca el borde en rojo y conserva lo escrito para corregir, en vez de borrarlo. El ano de dos digitos resuelve 00-79 como 2000-2079 y 80-99 como 1980-1999, porque una escritura puede ser de los noventa pero ninguna fecha va a ser de 2085. Queda un boton de calendario para quien prefiera elegir" },
@@ -5091,7 +5092,10 @@ function SolicitudesPagoListaPanel({ unidad, session }) {
   const historialDe = (folio) => filas.filter((s) => s.folio === folio).sort((a, b) => b.revision - a.revision);
 
   return (
-    <div style={{ marginBottom: 16 }}>
+    /* Como item de una fila flexible: cerrado ocupa lo que mide, y al
+       abrirse toma el renglón completo en vez de quedar apretado a media
+       pantalla junto al otro. */
+    <div style={{ marginBottom: 16, flexBasis: abierto ? "100%" : "auto" }}>
       <Button variant={abierto ? "primary" : "ghost"} onClick={() => setAbierto(!abierto)}>
         Solicitudes de Pago generadas {abierto ? "▲" : "▼"}
       </Button>
@@ -7021,7 +7025,10 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
   if (cargandoConfig) return null;
 
   return (
-    <div style={{ marginBottom: 16 }}>
+    /* Como item de una fila flexible: cerrado ocupa lo que mide, y al
+       abrirse toma el renglón completo en vez de quedar apretado a media
+       pantalla junto al otro. */
+    <div style={{ marginBottom: 16, flexBasis: abierto ? "100%" : "auto" }}>
       <Button variant={abierto ? "primary" : "ghost"} onClick={() => setAbierto(!abierto)}>
         Importar de Google Sheets {abierto ? "▲" : "▼"}
       </Button>
@@ -8060,8 +8067,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       </>)}
 
       {subTx === "io" && (<>
-        <ImportadorSheetsPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
-        <SolicitudesPagoListaPanel unidad={unidad} session={session} />
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-start" }}>
+          <ImportadorSheetsPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
+          <SolicitudesPagoListaPanel unidad={unidad} session={session} />
+        </div>
         <Panel
           title="Exportar transacciones"
           subtitle={`La salida respeta los filtros de la pestaña General: ${transFiltradas.length} de ${transUnidad.length} transacciones.`}

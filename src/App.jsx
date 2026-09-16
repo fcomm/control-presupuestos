@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.23.0";
+const APP_VERSION = "2.24.0";
 const CHANGELOG = [
+  { v: "2.24.0", desc: "Eliminar un proveedor ahora revisa antes si esta en uso y, si lo esta, exige elegir a quien pasan sus movimientos. Antes se borraba de una: la confirmacion advertia de las cuentas bancarias pero no de las transacciones, asi que borrar un proveedor con movimientos dejaba esas filas apuntando a un id inexistente y el Reporte de Pagos las mostraba sin proveedor sin explicar por que. El conteo mira los DOS vinculos, porque son distintos: proveedor_id, el formal, y el texto del nombre, que es el que quedo en las transacciones importadas cuyo nombre no empato contra el catalogo -- mirar solo el id diria que esta libre un proveedor con decenas de movimientos a su nombre. Al reasignar se actualizan ambos. Las cuentas bancarias NO se mueven por defecto: se listan, se avisa que se borran con el proveedor, y moverlas es una casilla aparte que ademas alerta si el destino ya tiene una CLABE distinta. Si no hay otro proveedor en la compania, se niega y pide dar de alta el sustituto primero. El nombre se escapa antes del ILIKE: sin eso, un proveedor llamado 100% NATURAL empataria con cualquier cosa" },
   { v: "2.23.0", desc: "Las fechas se pueden teclear cortas. 150926 se convierte en 15/09/2026 al salir del campo. Tambien 15092026, 1509 (ano en curso), 15 (mes y ano en curso) y con separadores 15/9/26, 15-09-2026, 15.09.26 -- respetando el mes sin cero a la izquierda, que al quitar separadores dejaria cinco digitos sin patron. Aplica a los 18 campos de fecha de la app: se intercepto dentro de TextInput, que es por donde pasan todos, sin tocar un solo punto de uso, y conservando el mismo contrato de value en ISO. Lo tecleado se valida contra el calendario real: 310926 no pasa porque septiembre no tiene 31 dias, y sin esa comprobacion Date lo habria convertido en 1 de octubre en silencio. Una fecha invalida marca el borde en rojo y conserva lo escrito para corregir, en vez de borrarlo. El ano de dos digitos resuelve 00-79 como 2000-2079 y 80-99 como 1980-1999, porque una escritura puede ser de los noventa pero ninguna fecha va a ser de 2085. Queda un boton de calendario para quien prefiera elegir" },
   { v: "2.22.0", desc: "El alta de proveedores distingue persona fisica de moral. Una moral se constituye ante notario y comparece por representante; una fisica comparece por su propio derecho y lo que la identifica es la CURP. El formulario muestra solo lo que aplica -- pedirle escritura y representante a una fisica no solo sobra, invita a inventarlos -- y al cambiar de personalidad limpia lo que dejo de aplicar, para que un representante heredado no acabe impreso en el contrato de una fisica. Si el RFC tiene 12 caracteres y la personalidad dice fisica, o al reves, lo advierte antes de guardar. El lector de CSF saca la CURP y distingue por el regimen a quien factura como actividad empresarial. Y se corrige un error que salia impreso: la plantilla dice Que es una persona PERSONALIDAD_PROVEEDOR y el campo guarda Persona moral, asi que el contrato decia QUE ES UNA PERSONA PERSONA MORAL; ahora el marcador va sin el prefijo. En persona fisica, REPRESENTANTE_PROVEEDOR se llena con su propio nombre. Requiere 32-curp-proveedor.sql" },
   { v: "2.21.1", desc: "Arreglo: la pestana Contratos se quedaba en blanco. En ContratosTab la lista de clausulas del documento leia `incluidas` siete lineas antes de su useState; al ser const, cae en la zona muerta temporal y lanzaba ReferenceError en CADA render, tumbando el subarbol completo. Se movieron las declaraciones de estado arriba de los valores calculados. El verificador no lo atrapo porque solo comprobaba que el identificador existiera en alguna parte, no el orden, asi que se le agrego un chequeo de zona muerta temporal. Lo fino fue distinguir el callback de un onClick, que corre mucho despues y puede referenciar lo que sea, del de un .filter o .map, que corre en el acto y si esta sujeto a la zona muerta; y respetar los parametros de esos callbacks, para que un .map((p) => p.x) no se confunda con un const p declarado mas abajo" },
@@ -12863,6 +12864,156 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
   );
 }
 
+/* ----------------------------------------------------------------------
+   BAJA DE PROVEEDOR CON REASIGNACIÓN
+---------------------------------------------------------------------- */
+
+/* Los nombres pueden traer % o _ , que en ILIKE son comodines. Sin escapar,
+   un proveedor llamado "100% NATURAL" empataría con cualquier cosa. */
+const escaparLike = (s) => String(s || "").replace(/[\\%_]/g, (c) => "\\" + c);
+
+/**
+ * Cuenta de cuántas formas se está usando un proveedor.
+ *
+ * Son dos vínculos distintos y hay que contar los dos: `proveedor_id`, que es
+ * el formal, y el texto de `proveedor`, que es el que quedó en las
+ * transacciones importadas cuyo nombre no empató contra el catálogo. Mirar
+ * solo el id diría que el proveedor está libre cuando en realidad tiene
+ * decenas de movimientos a su nombre.
+ */
+async function usoDeProveedor(proveedor) {
+  const id = proveedor.id;
+  const nombre = escaparLike(proveedor.nombre);
+
+  const porId = await supabase
+    .from("transacciones").select("id", { count: "exact", head: true })
+    .eq("proveedor_id", id);
+
+  const porNombre = await supabase
+    .from("transacciones").select("id", { count: "exact", head: true })
+    .ilike("proveedor", nombre)
+    .or(`proveedor_id.is.null,proveedor_id.neq.${id}`);
+
+  if (porId.error) throw porId.error;
+  if (porNombre.error) throw porNombre.error;
+
+  return {
+    porId: porId.count || 0,
+    porNombre: porNombre.count || 0,
+    total: (porId.count || 0) + (porNombre.count || 0),
+  };
+}
+
+function EliminarProveedorModal({ proveedor, alternativos, cuentas, uso, onCerrar, onHecho }) {
+  const [destinoId, setDestinoId] = useState("");
+  const [moverCuentas, setMoverCuentas] = useState(false);
+  const [trabajando, setTrabajando] = useState(false);
+
+  const destino = alternativos.find((p) => p.id === destinoId) || null;
+  const cuentasDestino = destino ? cuentas.filter((c) => c.proveedor_id === destino.id) : [];
+  const clabesPropias = [...new Set(cuentas.map((c) => (c.clabe || "").trim()).filter(Boolean))];
+  const clabesDestino = [...new Set(cuentasDestino.map((c) => (c.clabe || "").trim()).filter(Boolean))];
+  const chocanClabes = moverCuentas && clabesPropias.some((c) => clabesDestino.length && !clabesDestino.includes(c))
+    && clabesDestino.length > 0;
+
+  const ejecutar = async () => {
+    if (!destino) { alert("Elige a qué proveedor se reasignan los movimientos."); return; }
+    setTrabajando(true);
+    try {
+      // 1. Las que apuntan por id
+      const r1 = await supabase.from("transacciones")
+        .update({ proveedor_id: destino.id, proveedor: destino.nombre })
+        .eq("proveedor_id", proveedor.id);
+      if (r1.error) throw r1.error;
+
+      // 2. Las que solo traen el nombre en texto
+      const r2 = await supabase.from("transacciones")
+        .update({ proveedor_id: destino.id, proveedor: destino.nombre })
+        .ilike("proveedor", escaparLike(proveedor.nombre))
+        .or(`proveedor_id.is.null,proveedor_id.neq.${destino.id}`);
+      if (r2.error) throw r2.error;
+
+      // 3. Cuentas bancarias, solo si se pidió
+      if (moverCuentas && cuentas.length) {
+        const r3 = await supabase.from("proveedor_cuentas")
+          .update({ proveedor_id: destino.id })
+          .eq("proveedor_id", proveedor.id);
+        if (r3.error) throw r3.error;
+      }
+
+      await onHecho(destino);
+    } catch (err) {
+      alert("No se pudo reasignar: " + (err.message || err));
+    } finally {
+      setTrabajando(false);
+    }
+  };
+
+  return (
+    <Modal onClose={onCerrar} title={`Eliminar «${proveedor.nombre}»`}>
+      <div style={{ fontSize: 12.5, color: T.textDim, lineHeight: 1.6, marginBottom: 14 }}>
+        Este proveedor está en uso. Antes de borrarlo hay que decir a quién pasan sus movimientos,
+        o quedarían apuntando a un proveedor que ya no existe.
+      </div>
+
+      <div style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "10px 12px", marginBottom: 16 }}>
+        <div style={{ fontSize: 12, color: T.text }}>
+          <b>{uso.total}</b> transacción(es) lo usan
+        </div>
+        <div style={{ fontSize: 11.5, color: T.textFaint, marginTop: 4, lineHeight: 1.6 }}>
+          {uso.porId} ligada(s) por catálogo
+          {uso.porNombre > 0 && <> · {uso.porNombre} solo por el nombre, sin vínculo formal</>}
+          {cuentas.length > 0 && <> · {cuentas.length} cuenta(s) bancaria(s)</>}
+        </div>
+      </div>
+
+      <Field label="Los movimientos pasan a *">
+        <Select value={destinoId} onChange={(e) => setDestinoId(e.target.value)}>
+          <option value="">— elegir proveedor —</option>
+          {alternativos.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.nombre}{p.rfc ? ` — ${p.rfc}` : ""}
+            </option>
+          ))}
+        </Select>
+      </Field>
+
+      {cuentas.length > 0 && (
+        <div style={{ marginTop: 16, borderTop: `1px solid ${T.border}`, paddingTop: 13 }}>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 7 }}>
+            Sus cuentas bancarias
+          </div>
+          {cuentas.map((c) => (
+            <div key={c.id} style={{ fontSize: 11.5, color: T.textDim, fontFamily: T.fontMono, padding: "2px 0" }}>
+              {(c.banco || "?")} · {c.clabe || c.numero_cuenta || "(sin datos)"} · {c.divisa || ""}
+            </div>
+          ))}
+          <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 10, fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
+            <input type="checkbox" checked={moverCuentas} onChange={(e) => setMoverCuentas(e.target.checked)} style={{ marginTop: 2 }} />
+            <span>
+              Moverlas también al proveedor elegido.
+              {!moverCuentas && <span style={{ color: T.amberDim }}> Si no, se borran junto con el proveedor.</span>}
+            </span>
+          </label>
+          {chocanClabes && (
+            <div style={{ fontSize: 12, color: T.red, marginTop: 9, lineHeight: 1.5 }}>
+              El proveedor elegido ya tiene una cuenta con CLABE distinta. Si mueves estas, va a
+              quedar con varias y elegir la correcta al pagar deja de ser evidente. Revísalo antes.
+            </div>
+          )}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+        <Button onClick={ejecutar} disabled={!destino || trabajando}>
+          {trabajando ? "Reasignando…" : `Reasignar ${uso.total} y eliminar`}
+        </Button>
+        <Button variant="ghost" onClick={onCerrar}>Cancelar</Button>
+      </div>
+    </Modal>
+  );
+}
+
 function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const blank = { nombre: "", rfc: "", id_sae: "", referencia: "", notas: "" };
@@ -12887,10 +13038,46 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
   const openNew = () => { setForm(blank); setEditId(null); setNuevaCuenta(cuentaBlank); setModalOpen(true); };
   const startEdit = (p) => { setForm(p); setEditId(p.id); setNuevaCuenta(cuentaBlank); setModalOpen(true); };
   const closeModal = () => { setModalOpen(false); setEditId(null); setForm(blank); setNuevaCuenta(cuentaBlank); };
-  const remove = (id) => {
+  /* Antes se borraba de una: la confirmación advertía de las cuentas
+     bancarias, pero no de las transacciones. Borrar un proveedor con
+     movimientos dejaba esas filas apuntando a un id inexistente, y el
+     Reporte de Pagos las mostraba sin proveedor sin explicar por qué. */
+  const [baja, setBaja] = useState(null);
+  const [revisandoUso, setRevisandoUso] = useState(null);
+
+  const remove = async (id) => {
     const p = proveedoresApi.rows.find((x) => x.id === id);
-    if (!confirm(`¿Eliminar al proveedor "${p?.nombre || id}"? Esto no se puede deshacer y también borrará sus cuentas bancarias.`)) return;
-    proveedoresApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+    if (!p) return;
+    setRevisandoUso(id);
+    let uso;
+    try {
+      uso = await usoDeProveedor(p);
+    } catch (err) {
+      alert("No se pudo revisar si está en uso: " + (err.message || err));
+      setRevisandoUso(null);
+      return;
+    }
+    setRevisandoUso(null);
+
+    const cuentasDeEste = cuentasApi.rows.filter((c) => c.proveedor_id === id);
+
+    if (uso.total === 0) {
+      const aviso = cuentasDeEste.length
+        ? `\n\nNo tiene transacciones, pero se borrarán sus ${cuentasDeEste.length} cuenta(s) bancaria(s).`
+        : "\n\nNo tiene transacciones ni cuentas.";
+      if (!confirm(`¿Eliminar al proveedor "${p.nombre}"?${aviso}`)) return;
+      proveedoresApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+      return;
+    }
+
+    const alternativos = proveedoresApi.rows
+      .filter((x) => x.unidad === unidad && x.id !== id)
+      .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)));
+    if (!alternativos.length) {
+      alert(`"${p.nombre}" tiene ${uso.total} transacción(es) y no hay otro proveedor en ${unidad} al cual reasignarlas. Da de alta el sustituto primero.`);
+      return;
+    }
+    setBaja({ proveedor: p, uso, cuentas: cuentasDeEste, alternativos });
   };
 
   const submit = async (e) => {
@@ -13014,7 +13201,9 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
                 <td style={tdStyle}>
                   <div style={{ display: "flex", gap: 6 }}>
                     <Button variant="ghost" onClick={() => startEdit(p)}>Editar</Button>
-                    <Button variant="danger" onClick={() => remove(p.id)}>Eliminar</Button>
+                    <Button variant="danger" onClick={() => remove(p.id)} disabled={revisandoUso === p.id}>
+                      {revisandoUso === p.id ? "Revisando…" : "Eliminar"}
+                    </Button>
                   </div>
                 </td>
               </tr>
@@ -13028,6 +13217,22 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
           </tbody>
         </table>
       </div>
+
+      {baja && (
+        <EliminarProveedorModal
+          proveedor={baja.proveedor}
+          alternativos={baja.alternativos}
+          cuentas={baja.cuentas}
+          uso={baja.uso}
+          onCerrar={() => setBaja(null)}
+          onHecho={async (destino) => {
+            await proveedoresApi.remove(baja.proveedor.id);
+            const n = baja.uso.total;
+            setBaja(null);
+            alert(`Listo. ${n} transacción(es) quedaron a nombre de "${destino.nombre}".`);
+          }}
+        />
+      )}
 
       {modalOpen && (
         <Modal title={editId ? "Editar proveedor" : "Nuevo proveedor"} subtitle={`Catálogo de ${unidad}`} onClose={closeModal} width={820} cerrarAlHacerClicFuera={false}>

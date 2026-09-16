@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.24.0";
+const APP_VERSION = "2.25.0";
 const CHANGELOG = [
+  { v: "2.25.0", desc: "Transacciones se parte en dos subpestanas. La pestana mezclaba dos cosas con ritmos distintos: consultar y capturar dia con dia, contra importar o exportar de vez en cuando -- y los importadores estaban ARRIBA de los filtros, ocupando el primer golpe de vista con lo que menos se usa. General queda con los filtros, el agrupado, la tabla, el panel de sin partida vinculada y Nueva transaccion. Importar / Exportar reune el importador de Google Sheets, las solicitudes de pago generadas, la exportacion y la carga masiva. La exportacion deja de ser un panel plegable y es un panel fijo de su pestana; como los filtros que gobiernan la salida ya no se ven desde ahi, el subtitulo dice cuantas transacciones de cuantas se van a exportar -- sin eso, bajarias un archivo filtrado sin saberlo" },
   { v: "2.24.0", desc: "Eliminar un proveedor ahora revisa antes si esta en uso y, si lo esta, exige elegir a quien pasan sus movimientos. Antes se borraba de una: la confirmacion advertia de las cuentas bancarias pero no de las transacciones, asi que borrar un proveedor con movimientos dejaba esas filas apuntando a un id inexistente y el Reporte de Pagos las mostraba sin proveedor sin explicar por que. El conteo mira los DOS vinculos, porque son distintos: proveedor_id, el formal, y el texto del nombre, que es el que quedo en las transacciones importadas cuyo nombre no empato contra el catalogo -- mirar solo el id diria que esta libre un proveedor con decenas de movimientos a su nombre. Al reasignar se actualizan ambos. Las cuentas bancarias NO se mueven por defecto: se listan, se avisa que se borran con el proveedor, y moverlas es una casilla aparte que ademas alerta si el destino ya tiene una CLABE distinta. Si no hay otro proveedor en la compania, se niega y pide dar de alta el sustituto primero. El nombre se escapa antes del ILIKE: sin eso, un proveedor llamado 100% NATURAL empataria con cualquier cosa" },
   { v: "2.23.0", desc: "Las fechas se pueden teclear cortas. 150926 se convierte en 15/09/2026 al salir del campo. Tambien 15092026, 1509 (ano en curso), 15 (mes y ano en curso) y con separadores 15/9/26, 15-09-2026, 15.09.26 -- respetando el mes sin cero a la izquierda, que al quitar separadores dejaria cinco digitos sin patron. Aplica a los 18 campos de fecha de la app: se intercepto dentro de TextInput, que es por donde pasan todos, sin tocar un solo punto de uso, y conservando el mismo contrato de value en ISO. Lo tecleado se valida contra el calendario real: 310926 no pasa porque septiembre no tiene 31 dias, y sin esa comprobacion Date lo habria convertido en 1 de octubre en silencio. Una fecha invalida marca el borde en rojo y conserva lo escrito para corregir, en vez de borrarlo. El ano de dos digitos resuelve 00-79 como 2000-2079 y 80-99 como 1980-1999, porque una escritura puede ser de los noventa pero ninguna fecha va a ser de 2085. Queda un boton de calendario para quien prefiera elegir" },
   { v: "2.22.0", desc: "El alta de proveedores distingue persona fisica de moral. Una moral se constituye ante notario y comparece por representante; una fisica comparece por su propio derecho y lo que la identifica es la CURP. El formulario muestra solo lo que aplica -- pedirle escritura y representante a una fisica no solo sobra, invita a inventarlos -- y al cambiar de personalidad limpia lo que dejo de aplicar, para que un representante heredado no acabe impreso en el contrato de una fisica. Si el RFC tiene 12 caracteres y la personalidad dice fisica, o al reves, lo advierte antes de guardar. El lector de CSF saca la CURP y distingue por el regimen a quien factura como actividad empresarial. Y se corrige un error que salia impreso: la plantilla dice Que es una persona PERSONALIDAD_PROVEEDOR y el campo guarda Persona moral, asi que el contrato decia QUE ES UNA PERSONA PERSONA MORAL; ahora el marcador va sin el prefijo. En persona fisica, REPRESENTANTE_PROVEEDOR se llena con su propio nombre. Requiere 32-curp-proveedor.sql" },
@@ -7146,6 +7147,15 @@ function ConfirmarBorradoTextoModal({ titulo, mensaje, frase = "ELIMINAR", onCon
   );
 }
 
+/* La pestaña mezclaba dos cosas con ritmos distintos: consultar y capturar
+   día con día, contra importar o exportar de vez en cuando. Los importadores
+   estaban arriba de los filtros, ocupando el primer golpe de vista con lo que
+   menos se usa. */
+const SUBS_TRANSACCIONES = [
+  { id: "general", label: "General" },
+  { id: "io",      label: "Importar / Exportar" },
+];
+
 function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO, gruposZona = {}, seedTransaccion, onSeedConsumido }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
@@ -7481,7 +7491,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   ];
   const expVis = useVisibilidadColumnas("colv-transacciones-export", COLUMNAS_EXPORT_TX,
     ["folio_tx", "concepto_p", "area", "solicitante", "forma_pago", "referencia", "factura", "sae"]);
-  const [panelExportTx, setPanelExportTx] = useState(false);
+  const [subTx, setSubTx] = useSessionState("ss-trans-sub", "general");
 
   /* -------- Reporte semanal oficial a Dirección -------- */
   const [semanaOf, setSemanaOf] = useState(lunesDe(new Date().toISOString().slice(0, 10)));
@@ -7811,20 +7821,29 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start" }}>
+        {SUBS_TRANSACCIONES.map((st) => (
+          <button
+            key={st.id}
+            onClick={() => setSubTx(st.id)}
+            style={{
+              padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
+              background: subTx === st.id ? T.accent : "transparent",
+              color: subTx === st.id ? "#FFFFFF" : T.textDim,
+              fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
+            }}
+          >{st.label}</button>
+        ))}
+      </div>
+
+      {subTx === "general" && (<>
       <Panel
         title={`Transacciones de ${unidad}`}
         subtitle={filtrosActivos ? `${transFiltradas.length} de ${transUnidad.length} registradas` : `${transUnidad.length} registradas`}
         right={
-          <div style={{ display: "flex", gap: 8 }}>
-            <Button variant={panelExportTx ? "primary" : "ghost"} onClick={() => setPanelExportTx(!panelExportTx)}>
-              Exportar {panelExportTx ? "▲" : "▼"}
-            </Button>
-            <Button onClick={openNew}>+ Nueva transacción</Button>
-          </div>
+          <Button onClick={openNew}>+ Nueva transacción</Button>
         }
       >
-        <ImportadorSheetsPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
-        <SolicitudesPagoListaPanel unidad={unidad} session={session} />
         <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
           {/* Fila 1 — qué transacciones se ven. Fila 2 — cómo se ven las que
               ya quedaron. Antes vivían once controles en una sola fila que
@@ -7912,62 +7931,6 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <Button variant="danger" onClick={eliminarSeleccionadas} disabled={eliminando}>
               {eliminando ? "Eliminando…" : "Eliminar seleccionadas"}
             </Button>
-          </div>
-        )}
-
-        {/* Mismo criterio que en Partidas: se despliega en su lugar para que
-            los filtros que gobiernan la salida sigan a la vista. */}
-        {panelExportTx && (
-          <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8,
-                        padding: 14, marginBottom: 16 }}>
-            <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
-              La exportación respeta los filtros de arriba —
-              {filtrosActivos ? ` ${transFiltradas.length} de ${transUnidad.length} transacciones` : ` las ${transUnidad.length} transacciones`}
-              {groupKeys.length ? `, agrupadas por ${groupBys.map((g) => etiquetaCampoTx(g.field)).join(" > ")}` : ""}.
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))", gap: 12 }}>
-            <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700 }}>Transacciones (Excel)</div>
-              <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, marginBottom: 10 }}>
-                El gasto real con los datos de su partida —folio, rubro, proyecto— en columnas
-                propias. Respeta el agrupamiento de la vista, con subtotal por grupo y por moneda.
-              </div>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-                <ColumnVisibilityControl
-                  columns={COLUMNAS_EXPORT_TX}
-                  hidden={expVis.hidden} onToggle={expVis.toggle} onShowAll={expVis.showAll}
-                  etiqueta="Columnas"
-                />
-                <Button onClick={exportarTransacciones} disabled={generandoTx} style={{ flex: 1, minWidth: 130 }}>
-                  {generandoTx ? "Generando…" : "Generar Excel"}
-                </Button>
-              </div>
-            </div>
-
-            {/* El reporte semanal oficial: toma toda la semana, sin filtros, y
-                fija la línea base. Va con borde distinto porque no es una
-                exportación más — es un acto que no se deshace fácilmente. */}
-            <div style={{ background: T.panel, border: `2px solid ${T.accent}`, borderRadius: 8, padding: 13,
-                          display: "flex", flexDirection: "column" }}>
-              <div style={{ fontSize: 12.5, fontWeight: 700 }}>Enviar a Dirección (oficial)</div>
-              <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, marginBottom: 10 }}>
-                PDF y Excel de la semana completa, <b>sin filtros</b>, agrupados como la vista.
-                Congela lo enviado como línea base para detectar gasto imprevisto.
-              </div>
-              <Field label="Semana (lunes)">
-                <TextInput type="date" value={semanaOf} onChange={(e) => setSemanaOf(lunesDe(e.target.value))} />
-              </Field>
-              <div style={{ fontSize: 11, color: T.textFaint, margin: "8px 0 10px" }}>
-                Del {semanaOf} al {finSemanaOf} · {transDeLaSemana.length} transacciones
-                {versionesSem.length ? ` · ${versionesSem.length} versión(es) enviada(s)` : " · sin enviar"}
-              </div>
-              <div style={{ flex: 1 }} />
-              <Button onClick={enviarSemanalADireccion} disabled={oficialSem || !transDeLaSemana.length} style={{ width: "100%" }}>
-                {oficialSem ? "Enviando…" : `Enviar versión ${versionesSem.length + 1}`}
-              </Button>
-            </div>
-            </div>
           </div>
         )}
 
@@ -8094,8 +8057,70 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           </div>
         </Panel>
       )}
+      </>)}
+
+      {subTx === "io" && (<>
+        <ImportadorSheetsPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
+        <SolicitudesPagoListaPanel unidad={unidad} session={session} />
+        <Panel
+          title="Exportar transacciones"
+          subtitle={`La salida respeta los filtros de la pestaña General: ${transFiltradas.length} de ${transUnidad.length} transacciones.`}
+        >
+          <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8,
+                        padding: 14, marginBottom: 16 }}>
+            <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
+              La exportación respeta los filtros de arriba —
+              {filtrosActivos ? ` ${transFiltradas.length} de ${transUnidad.length} transacciones` : ` las ${transUnidad.length} transacciones`}
+              {groupKeys.length ? `, agrupadas por ${groupBys.map((g) => etiquetaCampoTx(g.field)).join(" > ")}` : ""}.
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(290px, 1fr))", gap: 12 }}>
+            <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700 }}>Transacciones (Excel)</div>
+              <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, marginBottom: 10 }}>
+                El gasto real con los datos de su partida —folio, rubro, proyecto— en columnas
+                propias. Respeta el agrupamiento de la vista, con subtotal por grupo y por moneda.
+              </div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+                <ColumnVisibilityControl
+                  columns={COLUMNAS_EXPORT_TX}
+                  hidden={expVis.hidden} onToggle={expVis.toggle} onShowAll={expVis.showAll}
+                  etiqueta="Columnas"
+                />
+                <Button onClick={exportarTransacciones} disabled={generandoTx} style={{ flex: 1, minWidth: 130 }}>
+                  {generandoTx ? "Generando…" : "Generar Excel"}
+                </Button>
+              </div>
+            </div>
+
+            {/* El reporte semanal oficial: toma toda la semana, sin filtros, y
+                fija la línea base. Va con borde distinto porque no es una
+                exportación más — es un acto que no se deshace fácilmente. */}
+            <div style={{ background: T.panel, border: `2px solid ${T.accent}`, borderRadius: 8, padding: 13,
+                          display: "flex", flexDirection: "column" }}>
+              <div style={{ fontSize: 12.5, fontWeight: 700 }}>Enviar a Dirección (oficial)</div>
+              <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, marginBottom: 10 }}>
+                PDF y Excel de la semana completa, <b>sin filtros</b>, agrupados como la vista.
+                Congela lo enviado como línea base para detectar gasto imprevisto.
+              </div>
+              <Field label="Semana (lunes)">
+                <TextInput type="date" value={semanaOf} onChange={(e) => setSemanaOf(lunesDe(e.target.value))} />
+              </Field>
+              <div style={{ fontSize: 11, color: T.textFaint, margin: "8px 0 10px" }}>
+                Del {semanaOf} al {finSemanaOf} · {transDeLaSemana.length} transacciones
+                {versionesSem.length ? ` · ${versionesSem.length} versión(es) enviada(s)` : " · sin enviar"}
+              </div>
+              <div style={{ flex: 1 }} />
+              <Button onClick={enviarSemanalADireccion} disabled={oficialSem || !transDeLaSemana.length} style={{ width: "100%" }}>
+                {oficialSem ? "Enviando…" : `Enviar versión ${versionesSem.length + 1}`}
+              </Button>
+            </div>
+            </div>
+          </div>
+        </Panel>
 
       <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />
+      </>)}
 
       {sppDe && (
         <SolicitudPagoModal

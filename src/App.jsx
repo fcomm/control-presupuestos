@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.27.0";
+const APP_VERSION = "2.28.0";
 const CHANGELOG = [
+  { v: "2.28.0", desc: "El arrendamiento queda completo. Lleva plantilla propia: el arbol lo resuelve como contrato especifico, pero su proemio y sus declaraciones no caben en la plantilla de servicios, asi que la naturaleza puede imponer otra plantilla. El formulario se adapta: pide domicilio del inmueble, clave catastral, uso convenido, renta, dia de pago, deposito y tope de servicios, y deja de pedir monto, lugar de entrega y tipo de garantia, que no aplican. La renta y el deposito se convierten a letra solos. Las clausulas se filtran por naturaleza -- sin eso un contrato de servicios arrastraria las 23 del arrendamiento y al reves. Y se resuelve un problema que venia de antes: el marcador COMPARECENCIA_ARRENDADORA se llena con por su propio derecho cuando la otra parte es persona fisica y con representada por FULANO cuando es moral; sin el, el proemio decia GERARDO CELAYA, representada por GERARDO CELAYA. Requiere 33-clausulas-arrendamiento.sql y 34-plantilla-arrendamiento.sql, y subir 06_Contrato_arrendamiento.docx a Storage" },
   { v: "2.27.0", desc: "Naturaleza de la contratacion: un paso previo al arbol con cuatro figuras -- arrendamiento de oficinas o bodegas, servicios profesionales con persona fisica, servicios con persona moral, y obra civil o mantenimiento industrial. No es una clasificacion paralela: tres de las cuatro ya determinan respuestas del cuestionario porque los gatillos las nombran. Arrendamiento resuelve el gatillo 7, servicios profesionales el 3 porque son intangibles por definicion, y obra el 1 porque obra y mantenimiento industrial son el supuesto del REPSE. Servicios con persona moral no resuelve ninguna: depende del caso. Las respuestas asi puestas se marcan como dadas por sentadas y se pueden cambiar, porque son el caso normal y no una regla sin excepcion. La naturaleza tambien llena TIPO_CONTRATO, queda guardada en el instrumento para auditoria, y sirve como senal para sugerir clausulas: un arrendamiento necesita clausulas que una prestacion de servicios no, y eso no depende de ningun gatillo. Con persona fisica se advierte sobre horario y subordinacion, que es lo que convierte una prestacion de servicios en relacion laboral" },
   { v: "2.26.0", desc: "Edicion masiva de transacciones. Con varias seleccionadas aparece Editar seleccionadas: se marca campo por campo cual se quiere cambiar y lo que no se marca no se toca -- sin eso, un campo vacio borraria el valor que cada transaccion ya tenia. Se pueden cambiar proveedor, proyecto, zona, area, categoria, status y fecha de pago. Quedan fuera importe, dia, folios y concepto a proposito: son propios de cada registro y ponerles el mismo valor a veinte transacciones no arregla nada, destruye lo que las distinguia. Al cambiar el proveedor se mueven los DOS campos, el nombre en texto y proveedor_id, porque tocar solo uno deja la fila con el nombre nuevo apuntando al proveedor viejo. Antes de aplicar dice cuantas cambian de verdad en cada campo, y avisa cuando el valor elegido es el que ya tenian. Marcar Pagado exige fecha de pago, la misma regla que al capturar una transaccion suelta" },
   { v: "2.25.1", desc: "En Importar / Exportar, los dos desplegables -- Importar de Google Sheets y Solicitudes de Pago generadas -- se alinean en una sola fila en vez de apilarse. Cada uno se comporta como item de una fila flexible: cerrado ocupa lo que mide, y al abrirse toma el renglon completo, de modo que su contenido no queda apretado a media pantalla junto al otro" },
@@ -11589,6 +11590,10 @@ const NATURALEZAS = [
     id: "arrendamiento",
     label: "Arrendamiento de oficinas o bodegas",
     tipoContrato: "ARRENDAMIENTO",
+    /* El árbol lo resuelve como contrato específico, pero el proemio y las
+       declaraciones de un arrendamiento no caben en la plantilla de
+       servicios: lleva la suya. */
+    plantilla: "contrato_arrendamiento",
     fija: { g7: "si" },
     porque: "El gatillo 7 nombra el arrendamiento entre sus supuestos.",
   },
@@ -11733,6 +11738,15 @@ const CAMPOS_FORM = [
   { key: "VIGENCIA_PRECIOS",       label: "Vigencia de precios",       tipo: "texto",  en: ["contrato_marco"], ayuda: "Ej. «los primeros 12 meses»" },
   { key: "TIPO_GARANTIA",          label: "Tipo de garantía",          tipo: "texto",  en: ["contrato_especifico"], ayuda: "Fianza, cheque, retención…" },
   { key: "ADMINISTRADOR_CONTRATO", label: "Administrador del contrato", tipo: "texto", en: ["contrato_especifico"] },
+  { key: "DOMICILIO_INMUEBLE", label: "Domicilio del inmueble", tipo: "texto", ancho: 2, nat: "arrendamiento", en: ["contrato_especifico"] },
+  { key: "CLAVE_CATASTRAL",    label: "Clave catastral o cuenta predial", tipo: "texto", nat: "arrendamiento", en: ["contrato_especifico"] },
+  { key: "USO_CONVENIDO",      label: "Uso convenido", tipo: "texto", nat: "arrendamiento", en: ["contrato_especifico"],
+    ayuda: "Oficinas administrativas, bodega, etc." },
+  { key: "RENTA_MENSUAL",      label: "Renta mensual", tipo: "monto", nat: "arrendamiento", en: ["contrato_especifico"] },
+  { key: "DIA_PAGO_RENTA",     label: "Se paga dentro de los primeros (días hábiles)", tipo: "texto", nat: "arrendamiento", en: ["contrato_especifico"] },
+  { key: "DEPOSITO_GARANTIA",  label: "Depósito en garantía", tipo: "monto", nat: "arrendamiento", en: ["contrato_especifico"] },
+  { key: "TOPE_SERVICIOS",     label: "Tope de servicios a cargo de la arrendadora", tipo: "monto", nat: "arrendamiento", en: ["contrato_especifico"],
+    ayuda: "Solo si marcaste esa cláusula" },
   { key: "CLIENTE_FINAL",          label: "Cliente final",             tipo: "texto",  soloFlowdown: true, en: ["contrato_especifico"] },
   { key: "NUM_CONTRATO_PRINCIPAL", label: "No. del contrato principal", tipo: "texto", soloFlowdown: true, en: ["contrato_especifico"] },
 ];
@@ -12006,7 +12020,12 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
   const meta = INSTRUMENTOS[decision.tipo];
 
   const campos = CAMPOS_FORM.filter(
-    (c) => c.en.includes(decision.tipo) && (!c.soloFlowdown || decision.flowdown));
+    (c) => c.en.includes(decision.tipo)
+      && (!c.soloFlowdown || decision.flowdown)
+      /* Un campo marcado con `nat` solo existe para esa naturaleza: pedir el
+         domicilio del inmueble en una prestación de servicios sería ruido. */
+      && (!c.nat || c.nat === naturaleza)
+      && !(naturaleza === "arrendamiento" && ["MONTO_NUMERO", "LUGAR_ENTREGA", "TIPO_GARANTIA"].includes(c.key)));
 
   const montoBase = Number(
     form[decision.tipo === "contrato_marco" ? "MONTO_MAXIMO" : "MONTO_NUMERO"]) || 0;
@@ -12073,6 +12092,20 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
         : crudo;
     });
 
+    /* Una persona física comparece por su propio derecho; una moral, por
+       representante. Sin este marcador el proemio decía "GERARDO CELAYA,
+       representada por GERARDO CELAYA". */
+    v.COMPARECENCIA_ARRENDADORA = esMoral(proveedor.personalidad)
+      ? `representada por ${proveedor.representante || "su representante legal"}`
+      : "quien comparece por su propio derecho";
+
+    if (naturaleza === "arrendamiento") {
+      const renta = Number(form.RENTA_MENSUAL) || 0;
+      const dep = Number(form.DEPOSITO_GARANTIA) || 0;
+      if (renta) v.RENTA_LETRA = importeALetra(renta, form.MONEDA);
+      if (dep) v.DEPOSITO_LETRA = importeALetra(dep, form.MONEDA);
+    }
+
     if (decision.tipo === "contrato_especifico" && montoBase) {
       v.MONTO_LETRA = importeALetra(montoBase, form.MONEDA);
     }
@@ -12098,8 +12131,11 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
         .from("contratos_plantillas").select("*").eq("activa", true);
       if (ePlant) throw ePlant;
 
-      const principal = plantillas.find((p) => p.tipo === meta.plantilla);
-      if (!principal) throw new Error(`No hay plantilla activa de tipo "${meta.plantilla}". Súbela y regístrala en contratos_plantillas.`);
+      const plantillaNat = naturalezaDe(naturaleza)?.plantilla;
+      const tipoPlantilla = plantillaNat && decision.tipo === "contrato_especifico"
+        ? plantillaNat : meta.plantilla;
+      const principal = plantillas.find((p) => p.tipo === tipoPlantilla);
+      if (!principal) throw new Error(`No hay plantilla activa de tipo "${tipoPlantilla}". Súbela y regístrala en contratos_plantillas.`);
       const anexo = decision.flowdown ? plantillas.find((p) => p.tipo === "anexo_flowdown") : null;
       if (decision.flowdown && !anexo) throw new Error('El gatillo 2 exige los anexos flow-down y no hay plantilla activa de tipo "anexo_flowdown".');
 
@@ -12479,15 +12515,21 @@ function inyectarClausulado(xml, clausuladoXML) {
   return { xml: xml.slice(0, ini) + clausuladoXML + xml.slice(fin + 6), encontrado: true };
 }
 
-function ClausulasPanel({ clausulasApi, resp, tipoSugerido, instrumento, setInstrumento, objeto, setObjeto, incluidas, setIncluidas, session }) {
+function ClausulasPanel({ clausulasApi, resp, naturalezaSel, tipoSugerido, instrumento, setInstrumento, objeto, setObjeto, incluidas, setIncluidas, session }) {
   const [editando, setEditando] = useState(null);
   const [guardando, setGuardando] = useState(false);
   const [verCuerpo, setVerCuerpo] = useState(null);
 
   const modo = (INSTRUMENTOS[instrumento] || {}).numeracion || "ordinal";
 
+  /* Una cláusula sin naturalezas sirve para todas; con naturalezas, solo
+     para las que lista. Sin esto, un contrato de servicios arrastraría las
+     cláusulas de arrendamiento y al revés. */
+  const aplicaNaturaleza = (c) =>
+    !c.naturalezas || !c.naturalezas.length || !naturalezaSel
+      || c.naturalezas.includes(naturalezaSel);
   const items = clausulasApi.rows
-    .filter((c) => c.instrumento === instrumento && c.activa !== false)
+    .filter((c) => c.instrumento === instrumento && c.activa !== false && aplicaNaturaleza(c))
     .sort((a, b) => (a.orden - b.orden) || String(a.titulo).localeCompare(String(b.titulo)));
 
   const sugerenciasDe = (c) => (c.sugerida_si || []).filter((k) => esSi(resp[k]));
@@ -12791,7 +12833,8 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
      OJO con el orden: esto lee `incluidas`, así que va DESPUÉS de su
      useState — si no, la zona muerta temporal revienta en cada render. */
   const ordenadas = (instr) => clausulasApi.rows
-    .filter((c) => c.instrumento === instr && c.activa !== false)
+    .filter((c) => c.instrumento === instr && c.activa !== false
+      && (!c.naturalezas || !c.naturalezas.length || !naturaleza || c.naturalezas.includes(naturaleza)))
     .sort((a, b) => (a.orden - b.orden) || String(a.titulo).localeCompare(String(b.titulo)));
   const itemsClausulado = ordenadas(instrumento)
     .filter((c) => c.obligatoria || incluidas.has(c.id));
@@ -12872,6 +12915,7 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
         <ClausulasPanel
           clausulasApi={clausulasApi}
           resp={senales}
+          naturalezaSel={naturaleza}
           tipoSugerido={tipoSugerido}
           instrumento={instrumento}
           setInstrumento={setInstrumento}

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.29.0";
+const APP_VERSION = "2.30.0";
 const CHANGELOG = [
+  { v: "2.30.0", desc: "Bandeja de Solicitudes con captura manual, replicando el formulario de Zoho. La cabecera lleva solicitante de la lista blanca, folio del solicitante, tipo, zona y proyecto del catalogo, y los impuestos; vehiculo y kilometraje solo aparecen si el tipo es mantenimiento vehicular. Los conceptos se agregan y quitan, cada uno con su subtotal en vivo. Los impuestos son de la solicitud y no de cada linea, porque una SMI se cotiza en una sola moneda. El total va NETO de retenciones, que es lo que se paga, y cuando hay retencion se dice aparte cuanto factura el proveedor. El consecutivo se consulta contra la base y no contra el estado local -- dos pestanas calcularian el mismo numero -- y si chocan, el indice unico rebota el insert y se reintenta. Se capturan a mano a proposito: conviene ver si el modelo aguanta con datos reales antes de exponer un formulario a toda la empresa. Requiere 38-solicitudes-consecutivo.sql" },
   { v: "2.29.0", desc: "Pestana Solicitudes con su subpestana de Parametros, primer paso para migrar la captura de SMI desde Zoho Forms. El formato del folio es dato, no codigo: se arma con marcas -- {n} el consecutivo, {aa} y {aaaa} el ano, {mm} el mes, {unidad} la compania -- y hay una fila por unidad, porque la serie de OSB va en 263P26 y tiene que continuar en 264 o las carpetas de Drive quedarian con dos numeraciones, mientras que CTM e ISE empezaran la suya. Se ve en vivo como saldrian los tres primeros folios al teclear el formato. Avisa si falta {n}, porque todos los folios saldrian iguales, y si el consecutivo reinicia cada ano pero el formato no incluye el ano, porque el folio de enero proximo chocaria con el de este enero. Tambien guarda el id de la carpeta de Drive bajo la que se creara una por solicitud: el id y no el enlace, porque una carpeta movida cambia de enlace y conserva el id. La bandeja queda pendiente. Requiere 35-solicitudes.sql y 36-solicitudes-parametros.sql" },
   { v: "2.28.1", desc: "En el modal de elegir proveedor, las cuentas bancarias ya se pueden editar: antes solo habia Eliminar, asi que corregir un digito obligaba a borrar la cuenta y recapturarla completa. Editar carga la cuenta en el mismo formulario de abajo, que cambia a Guardar cuenta y resalta el renglon; un segundo formulario habria que mantenerlo igual al primero para siempre. Al guardar, la CLABE y el numero de cuenta se quedan solo con digitos y el banco en mayusculas -- los datos viejos traen comillas, asteriscos y espacios de Excel, y BANAMEX contra Banamex contaban como cuentas distintas. Si la CLABE no queda en 18 digitos exactos, se rechaza y dice cuantos quedaron. Lo que no tiene ningun digito, como CODIGO DE BARRAS, se respeta: ahi no hay una cuenta sino la instruccion de como se paga ese recibo" },
   { v: "2.28.0", desc: "El arrendamiento queda completo. Lleva plantilla propia: el arbol lo resuelve como contrato especifico, pero su proemio y sus declaraciones no caben en la plantilla de servicios, asi que la naturaleza puede imponer otra plantilla. El formulario se adapta: pide domicilio del inmueble, clave catastral, uso convenido, renta, dia de pago, deposito y tope de servicios, y deja de pedir monto, lugar de entrega y tipo de garantia, que no aplican. La renta y el deposito se convierten a letra solos. Las clausulas se filtran por naturaleza -- sin eso un contrato de servicios arrastraria las 23 del arrendamiento y al reves. Y se resuelve un problema que venia de antes: el marcador COMPARECENCIA_ARRENDADORA se llena con por su propio derecho cuando la otra parte es persona fisica y con representada por FULANO cuando es moral; sin el, el proemio decia GERARDO CELAYA, representada por GERARDO CELAYA. Requiere 33-clausulas-arrendamiento.sql y 34-plantilla-arrendamiento.sql, y subir 06_Contrato_arrendamiento.docx a Storage" },
@@ -13180,8 +13181,377 @@ function SolicitudesParametrosPanel({ unidad, session }) {
   );
 }
 
-function SolicitudesTab({ unidad, session }) {
+/* ----------------------------------------------------------------------
+   SOLICITUDES — CAPTURA
+---------------------------------------------------------------------- */
+
+const TIPOS_SOLICITUD = [
+  { value: "productos_servicios",     label: "Productos / Servicios" },
+  { value: "mantenimiento_vehicular", label: "Mantenimiento vehicular" },
+];
+
+const TASAS_IVA_SOLICITUD = [
+  { value: 16, label: "16%" },
+  { value: 8,  label: "8% frontera" },
+  { value: 0,  label: "0%" },
+];
+
+const conceptoBlank = () => ({
+  _k: uid(), numero_parte: "", descripcion: "", notas: "", enlace: "",
+  cantidad: "", unidad_medida: "Pza", precio_unitario: "",
+});
+
+const subtotalConcepto = (c) => (Number(c.cantidad) || 0) * (Number(c.precio_unitario) || 0);
+
+/**
+ * Totales de la solicitud.
+ *
+ * El total resta las retenciones porque es lo que se va a pagar: con una
+ * retención de ISR capturada, el proveedor factura más de lo que cobra. Si
+ * alguna vez hace falta el importe facturado sin retener, es subtotal + iva.
+ */
+function totalesSolicitud(conceptos, ivaTasa, sinImpuesto, retIsr, retIva) {
+  const subtotal = conceptos.reduce((s, c) => s + subtotalConcepto(c), 0);
+  const iva = sinImpuesto ? 0 : subtotal * (Number(ivaTasa) || 0) / 100;
+  const total = subtotal + iva - (Number(retIsr) || 0) - (Number(retIva) || 0);
+  return { subtotal, iva, total };
+}
+
+/**
+ * El siguiente folio.
+ *
+ * El consecutivo se consulta contra la base y no contra el estado local: dos
+ * pestañas abiertas calcularían el mismo número. Si aun así chocan, el índice
+ * único (unidad, anio, consecutivo) rebota el insert y se reintenta.
+ */
+async function siguienteConsecutivoSolicitud(unidad, anio, inicial, reinicia) {
+  let q = supabase.from("solicitudes").select("consecutivo")
+    .eq("unidad", unidad).not("consecutivo", "is", null)
+    .order("consecutivo", { ascending: false }).limit(1);
+  if (reinicia) q = q.eq("anio", anio);
+  const { data, error } = await q;
+  if (error) throw error;
+  const ultimo = data?.length ? Number(data[0].consecutivo) : null;
+  return ultimo === null ? Number(inicial) || 1 : ultimo + 1;
+}
+
+function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, zonas, onGuardada, onCancelar }) {
+  const hoy = hoyISO();
+  const [f, setF] = useState({
+    correo_solicitante: "", nombre_solicitante: "", zona: "", proyecto: "",
+    tipo_solicitud: "productos_servicios", vehiculo: "", kilometraje: "",
+    folio_usuario: "", descripcion_general: "", justificacion: "", proveedor_sugerido: "",
+    fecha_solicitud: hoy, divisa: "MXP", iva_tasa: 16, sin_impuesto: false,
+    ret_isr: "", ret_iva: "",
+  });
+  const [conceptos, setConceptos] = useState([conceptoBlank()]);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState("");
+
+  const vehicular = f.tipo_solicitud === "mantenimiento_vehicular";
+  const tot = totalesSolicitud(conceptos, f.iva_tasa, f.sin_impuesto, f.ret_isr, f.ret_iva);
+
+  const setC = (k, campo, valor) =>
+    setConceptos(conceptos.map((c) => (c._k === k ? { ...c, [campo]: valor } : c)));
+
+  const elegirCorreo = (correo) => {
+    const a = correos.find((x) => x.correo === correo);
+    setF({ ...f, correo_solicitante: correo, nombre_solicitante: a?.nombre || f.nombre_solicitante });
+  };
+
+  const guardar = async () => {
+    if (!f.correo_solicitante) { alert("Elige quién solicita."); return; }
+    if (!String(f.descripcion_general).trim()) { alert("Falta la descripción general."); return; }
+    const conValor = conceptos.filter((c) => String(c.descripcion).trim());
+    if (!conValor.length) { alert("Captura al menos un concepto con descripción."); return; }
+
+    setGuardando(true);
+    setError("");
+    try {
+      const anio = Number(String(f.fecha_solicitud).slice(0, 4)) || new Date().getFullYear();
+      const base = await siguienteConsecutivoSolicitud(
+        unidad, anio, parametros.consecutivo_inicial, parametros.reinicia_cada_anio);
+
+      let guardada = null;
+      for (let intento = 0; intento < 8 && !guardada; intento++) {
+        const consecutivo = base + intento;
+        const folio = armarFolioSolicitud(
+          parametros.formato_folio, consecutivo, parametros.ancho_consecutivo,
+          unidad, new Date(`${f.fecha_solicitud}T12:00:00`));
+        const fila = {
+          id: uid(), folio, consecutivo, anio, unidad,
+          folio_usuario: String(f.folio_usuario).trim() || null,
+          correo_solicitante: f.correo_solicitante,
+          nombre_solicitante: String(f.nombre_solicitante).trim() || null,
+          zona: f.zona || null, proyecto: f.proyecto || null,
+          tipo_solicitud: f.tipo_solicitud,
+          vehiculo: vehicular ? (String(f.vehiculo).trim() || null) : null,
+          kilometraje: vehicular && f.kilometraje !== "" ? Number(f.kilometraje) : null,
+          descripcion_general: String(f.descripcion_general).trim(),
+          justificacion: String(f.justificacion).trim() || null,
+          proveedor_sugerido: String(f.proveedor_sugerido).trim() || null,
+          fecha_solicitud: f.fecha_solicitud,
+          divisa: f.divisa, iva_tasa: Number(f.iva_tasa), sin_impuesto: !!f.sin_impuesto,
+          ret_isr: Number(f.ret_isr) || 0, ret_iva: Number(f.ret_iva) || 0,
+          subtotal: Number(tot.subtotal.toFixed(2)),
+          iva: Number(tot.iva.toFixed(2)),
+          total: Number(tot.total.toFixed(2)),
+          estado: "entrada",
+        };
+        const { data, error: e } = await supabase.from("solicitudes").insert(fila).select().single();
+        if (!e) { guardada = data; break; }
+        const choco = /solicitudes_consecutivo_idx|solicitudes_folio_idx|duplicate/i.test(e.message || "");
+        if (!choco || intento === 7) throw e;
+      }
+
+      const lineas = conValor.map((c, i) => ({
+        id: uid(), solicitud_id: guardada.id, orden: i + 1,
+        numero_parte: String(c.numero_parte).trim() || null,
+        descripcion: String(c.descripcion).trim(),
+        notas: String(c.notas).trim() || null,
+        enlace: String(c.enlace).trim() || null,
+        cantidad: Number(c.cantidad) || 0,
+        unidad_medida: String(c.unidad_medida).trim() || null,
+        precio_unitario: Number(c.precio_unitario) || 0,
+        subtotal: Number(subtotalConcepto(c).toFixed(2)),
+      }));
+      const { error: e2 } = await supabase.from("solicitud_conceptos").insert(lineas);
+      if (e2) throw e2;
+
+      onGuardada(guardada);
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const money = (n) => `$${numMx(n)} ${f.divisa === "USD" ? "USD" : "MXN"}`;
+
+  return (
+    <>
+      <Panel
+        title="Nueva solicitud"
+        subtitle={`El folio se asigna al guardar, siguiendo la serie de ${unidad}.`}
+        right={
+          <div style={{ display: "flex", gap: 8 }}>
+            <Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Button>
+            <Button variant="ghost" onClick={onCancelar}>Cancelar</Button>
+          </div>
+        }
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 14 }}>
+          <Field label="Solicitante *">
+            <Select value={f.correo_solicitante} onChange={(e) => elegirCorreo(e.target.value)}>
+              <option value="">— elegir —</option>
+              {correos.map((c) => (
+                <option key={c.correo} value={c.correo}>{c.nombre || c.correo}</option>
+              ))}
+            </Select>
+            {!correos.length && (
+              <span style={{ fontSize: 10.5, color: T.amberDim, marginTop: 3 }}>
+                No hay correos autorizados. Cárgalos en solicitudes_correos_autorizados.
+              </span>
+            )}
+          </Field>
+          <Field label="Correo">
+            <TextInput value={f.correo_solicitante} disabled />
+          </Field>
+          <Field label="Folio del solicitante">
+            <TextInput value={f.folio_usuario} onChange={(e) => setF({ ...f, folio_usuario: e.target.value })}
+              placeholder="REQ-DO-08-09092026" />
+          </Field>
+
+          <Field label="Tipo">
+            <Select value={f.tipo_solicitud} onChange={(e) => setF({ ...f, tipo_solicitud: e.target.value })}>
+              {TIPOS_SOLICITUD.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </Select>
+          </Field>
+          <Field label="Zona">
+            <Select value={f.zona} onChange={(e) => setF({ ...f, zona: e.target.value })}>
+              <option value="">— sin zona —</option>
+              {zonas.map((z) => <option key={z} value={z}>{z}</option>)}
+            </Select>
+          </Field>
+          <Field label="Proyecto">
+            <Select value={f.proyecto} onChange={(e) => setF({ ...f, proyecto: e.target.value })}>
+              <option value="">— sin proyecto —</option>
+              {proyectos.map((p) => <option key={p} value={p}>{p}</option>)}
+            </Select>
+          </Field>
+
+          {vehicular && (
+            <>
+              <Field label="Vehículo">
+                <TextInput value={f.vehiculo} onChange={(e) => setF({ ...f, vehiculo: e.target.value })} />
+              </Field>
+              <Field label="Kilometraje">
+                <TextInput type="number" value={f.kilometraje}
+                  onChange={(e) => setF({ ...f, kilometraje: e.target.value })} />
+              </Field>
+            </>
+          )}
+
+          <Field label="Fecha de solicitud">
+            <TextInput type="date" value={f.fecha_solicitud}
+              onChange={(e) => setF({ ...f, fecha_solicitud: e.target.value })} />
+          </Field>
+          <Field label="Posible proveedor">
+            <TextInput value={f.proveedor_sugerido}
+              onChange={(e) => setF({ ...f, proveedor_sugerido: e.target.value })} />
+          </Field>
+        </div>
+
+        <Field label="Descripción general *" style={{ marginTop: 14 }}>
+          <TextInput value={f.descripcion_general}
+            onChange={(e) => setF({ ...f, descripcion_general: e.target.value })} />
+        </Field>
+        <Field label="Justificación" style={{ marginTop: 14 }}>
+          <textarea
+            value={f.justificacion}
+            onChange={(e) => setF({ ...f, justificacion: e.target.value })}
+            rows={3}
+            style={{
+              width: "100%", padding: "9px 11px", border: `1px solid ${T.border}`, borderRadius: 6,
+              background: T.panel, color: T.text, fontSize: 12.5, fontFamily: T.fontUI,
+              lineHeight: 1.55, resize: "vertical", boxSizing: "border-box",
+            }}
+          />
+        </Field>
+      </Panel>
+
+      <Panel
+        title="Conceptos"
+        subtitle="Lo que se pide. El formulario los llama partidas, pero aquí ese nombre ya es de las partidas presupuestales."
+        right={<Button variant="ghost" onClick={() => setConceptos([...conceptos, conceptoBlank()])}>+ Concepto</Button>}
+      >
+        {conceptos.map((c, i) => (
+          <div key={c._k} style={{
+            background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8,
+            padding: 13, marginBottom: 10,
+          }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <span style={{ fontSize: 11.5, fontWeight: 700, color: T.textDim }}>#{i + 1}</span>
+              <span style={{ marginLeft: "auto", fontSize: 12.5, fontFamily: T.fontMono, color: T.text }}>
+                {money(subtotalConcepto(c))}
+              </span>
+              {conceptos.length > 1 && (
+                <Button variant="danger" style={{ padding: "4px 10px" }}
+                  onClick={() => setConceptos(conceptos.filter((x) => x._k !== c._k))}>Quitar</Button>
+              )}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 11 }}>
+              <Field label="Descripción *" style={{ gridColumn: "span 2" }}>
+                <TextInput value={c.descripcion} onChange={(e) => setC(c._k, "descripcion", e.target.value)} />
+              </Field>
+              <Field label="No. de parte">
+                <TextInput value={c.numero_parte} onChange={(e) => setC(c._k, "numero_parte", e.target.value)} />
+              </Field>
+              <Field label="Cantidad">
+                <TextInput type="number" step="0.001" value={c.cantidad}
+                  onChange={(e) => setC(c._k, "cantidad", e.target.value)} />
+              </Field>
+              <Field label="Unidad">
+                <TextInput value={c.unidad_medida} onChange={(e) => setC(c._k, "unidad_medida", e.target.value)} />
+              </Field>
+              <Field label="Precio unitario">
+                <TextInput type="number" step="0.0001" value={c.precio_unitario}
+                  onChange={(e) => setC(c._k, "precio_unitario", e.target.value)} />
+              </Field>
+              <Field label="Notas" style={{ gridColumn: "span 2" }}>
+                <TextInput value={c.notas} onChange={(e) => setC(c._k, "notas", e.target.value)} />
+              </Field>
+              <Field label="Enlace">
+                <TextInput value={c.enlace} onChange={(e) => setC(c._k, "enlace", e.target.value)} />
+              </Field>
+            </div>
+          </div>
+        ))}
+      </Panel>
+
+      <Panel title="Impuestos y total" subtitle="Aplican a toda la solicitud, no a cada concepto.">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 14, maxWidth: 780 }}>
+          <Field label="Divisa">
+            <Select value={f.divisa} onChange={(e) => setF({ ...f, divisa: e.target.value })}>
+              <option value="MXP">MXN</option>
+              <option value="USD">USD</option>
+            </Select>
+          </Field>
+          <Field label="IVA">
+            <Select value={f.iva_tasa} disabled={f.sin_impuesto}
+              onChange={(e) => setF({ ...f, iva_tasa: Number(e.target.value) })}>
+              {TASAS_IVA_SOLICITUD.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </Select>
+          </Field>
+          <Field label="Retención ISR">
+            <TextInput type="number" step="0.01" value={f.ret_isr}
+              onChange={(e) => setF({ ...f, ret_isr: e.target.value })} />
+          </Field>
+          <Field label="Retención IVA">
+            <TextInput type="number" step="0.01" value={f.ret_iva}
+              onChange={(e) => setF({ ...f, ret_iva: e.target.value })} />
+          </Field>
+        </div>
+
+        <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 12, fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
+          <input type="checkbox" checked={f.sin_impuesto}
+            onChange={(e) => setF({ ...f, sin_impuesto: e.target.checked })} />
+          Sin impuesto — exento, que no es lo mismo que gravado a tasa cero
+        </label>
+
+        <div style={{ marginTop: 16, maxWidth: 380, fontSize: 13, fontFamily: T.fontMono }}>
+          {[["Subtotal", tot.subtotal], ["IVA", tot.iva],
+            ...(Number(f.ret_isr) ? [["Ret. ISR", -Number(f.ret_isr)]] : []),
+            ...(Number(f.ret_iva) ? [["Ret. IVA", -Number(f.ret_iva)]] : [])
+          ].map(([k, v]) => (
+            <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: T.textDim }}>
+              <span>{k}</span><span>{money(v)}</span>
+            </div>
+          ))}
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0 0",
+                        borderTop: `1px solid ${T.border}`, marginTop: 6, fontWeight: 700, color: T.text, fontSize: 15 }}>
+            <span>Total</span><span>{money(tot.total)}</span>
+          </div>
+          {(Number(f.ret_isr) || Number(f.ret_iva)) ? (
+            <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 8, fontFamily: T.fontUI, lineHeight: 1.5 }}>
+              El total va neto de retenciones: es lo que se paga. El proveedor factura {money(tot.subtotal + tot.iva)}.
+            </div>
+          ) : null}
+        </div>
+
+        {error && <div style={{ marginTop: 14, fontSize: 12, color: T.red }}>No se pudo guardar: {error}</div>}
+      </Panel>
+    </>
+  );
+}
+
+function SolicitudesTab({ unidad, session, proyectos = [], zonas = [] }) {
   const [sub, setSub] = useSessionState("ss-solicitudes-sub", "parametros");
+  const [capturando, setCapturando] = useState(false);
+  const [parametros, setParametros] = useState(null);
+  const [correos, setCorreos] = useState([]);
+  const [recientes, setRecientes] = useState([]);
+  const [cargando, setCargando] = useState(false);
+
+  const recargar = async () => {
+    setCargando(true);
+    try {
+      const [p, c, r] = await Promise.all([
+        supabase.from("solicitudes_parametros").select("*").eq("unidad", unidad).maybeSingle(),
+        supabase.from("solicitudes_correos_autorizados").select("*")
+          .or(`unidad.eq.${unidad},unidad.is.null`).eq("activo", true).order("nombre"),
+        supabase.from("solicitudes").select("*").eq("unidad", unidad)
+          .order("creado_en", { ascending: false }).limit(50),
+      ]);
+      setParametros(p.data || null);
+      setCorreos(c.data || []);
+      setRecientes(r.data || []);
+    } finally {
+      setCargando(false);
+    }
+  };
+  useEffect(() => { if (sub === "bandeja") recargar(); }, [sub, unidad]);
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start" }}>
@@ -13201,12 +13571,55 @@ function SolicitudesTab({ unidad, session }) {
 
       {sub === "parametros" && <SolicitudesParametrosPanel unidad={unidad} session={session} />}
 
-      {sub === "bandeja" && (
-        <Panel title="Bandeja de solicitudes" subtitle="Pendiente.">
-          <EmptyState
-            title="Todavía no hay captura"
-            body="Aquí llegarán las SMI para revisarlas, asignarles partida y convertirlas en transacciones."
-          />
+      {sub === "bandeja" && capturando && parametros && (
+        <NuevaSolicitudPanel
+          unidad={unidad} session={session} parametros={parametros}
+          correos={correos} proyectos={proyectos} zonas={zonas}
+          onCancelar={() => setCapturando(false)}
+          onGuardada={(s) => { setCapturando(false); recargar(); alert(`Guardada como ${s.folio}.`); }}
+        />
+      )}
+
+      {sub === "bandeja" && !capturando && (
+        <Panel
+          title={`Solicitudes de ${unidad}`}
+          subtitle="Por ahora se capturan a mano. El formulario público viene después."
+          right={
+            <Button onClick={() => setCapturando(true)} disabled={!parametros}>+ Nueva solicitud</Button>
+          }
+        >
+          {!parametros ? (
+            <EmptyState
+              title={`${unidad} no tiene parámetros`}
+              body="Define el formato del folio en la pestaña de Parámetros antes de capturar."
+            />
+          ) : cargando ? (
+            <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
+          ) : !recientes.length ? (
+            <EmptyState
+              title="Todavía no hay solicitudes"
+              body="Captura una para ver si el modelo aguanta antes de exponer el formulario a toda la empresa."
+            />
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
+              {recientes.map((s) => (
+                <div key={s.id} style={{ display: "flex", gap: 12, alignItems: "center", background: T.panel, padding: "10px 12px" }}>
+                  <span style={{ fontFamily: T.fontMono, fontSize: 12.5, color: T.accent, minWidth: 110 }}>{s.folio}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, color: T.text }}>{s.descripcion_general}</div>
+                    <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>
+                      {[s.nombre_solicitante || s.correo_solicitante, s.zona, s.proyecto, s.fecha_solicitud]
+                        .filter(Boolean).join(" · ")}
+                    </div>
+                  </div>
+                  <Pill>{s.estado}</Pill>
+                  <span style={{ fontFamily: T.fontMono, fontSize: 12.5, color: T.text, whiteSpace: "nowrap" }}>
+                    ${numMx(s.total)} {s.divisa === "USD" ? "USD" : "MXN"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
         </Panel>
       )}
     </div>
@@ -15414,7 +15827,7 @@ export default function App() {
               unidadesPermitidas={miPerfil?.unidades_permitidas || []}
             />
           )}
-          {tab === "solicitudes" && <SolicitudesTab unidad={unidad} session={session} />}
+          {tab === "solicitudes" && <SolicitudesTab unidad={unidad} session={session} proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} zonas={zonas.map((z) => (typeof z === "string" ? z : z.nombre))} />}
           {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} clausulasApi={contratosClausulasApi} session={session} />}
           {tab === "catalogo" && <CatalogoTab key={catalogoVersion} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>

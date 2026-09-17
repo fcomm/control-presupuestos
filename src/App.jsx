@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.33.0";
+const APP_VERSION = "2.34.0";
 const CHANGELOG = [
+  { v: "2.34.0", desc: "Adjuntos en el detalle de la solicitud: subir varios a la vez con su categoria -- cotizacion, soporte, relacionado --, abrirlos y quitarlos. Van a un bufer en Supabase con ruta legible unidad/folio/archivo, de modo que quien abra el bucket entienda de que solicitud es cada uno sin consultar la tabla; el nombre se limpia de acentos y espacios para la clave de Storage y el original se conserva en la tabla, que es el que ve la gente. El bucket es privado, asi que abrir genera una URL firmada de un minuto en vez de exponer el archivo. Si la fila de la tabla falla despues de subir, el objeto se retira del bucket: quedaria huerfano y nadie sabria de donde salio. Cada adjunto muestra si esta En transito o En Drive, y mientras haya archivos en el bufer se avisa que siguen ocupando espacio de la base. Requiere 39-storage-adjuntos.sql" },
   { v: "2.33.0", desc: "Subpestana Solicitantes: administrar la lista blanca desde la app en vez de por SQL. Esa lista no es una comodidad de la interfaz -- la politica de la base rechaza un envio cuyo correo no este ahi y activo, aunque alguien llame a la API directo -- asi que desactivar a alguien lo deja fuera del formulario publico de inmediato, sin desplegar nada. El correo no se puede cambiar una vez creado: las solicitudes lo guardan como texto y quedarian huerfanas. Y borrar a alguien con solicitudes a su nombre se niega y sugiere desactivarlo, que cumple lo mismo y conserva de quien eran. Las subpestanas se reordenan: Bandeja primero, que es donde se trabaja, y Parametros al final, que se toca una vez" },
   { v: "2.32.0", desc: "Editar una solicitud ya capturada, desde su detalle. Usa el MISMO formulario del alta: con dos habria que mantenerlos iguales cada vez que cambie un campo, y el dia que dejaran de estarlo lo capturado y lo corregido empezarian a diferir sin que nadie lo note. El folio y el consecutivo no se tocan al editar: son la identidad de la solicitud y va a haber una carpeta de Drive nombrada con ellos. Los conceptos se guardan por diferencia -- se actualizan los que siguen, se insertan los nuevos y se borran los quitados -- en vez de borrar todos y reinsertar: asi las transacciones que mas adelante apunten a un concepto no quedan apuntando a un id que ya no existe. Una solicitud convertida no se puede editar, porque sus importes ya viven en transacciones" },
   { v: "2.31.0", desc: "Abrir una solicitud desde la bandeja. Muestra la cabecera completa, sus conceptos con cantidad, precio y subtotal, y el desglose de impuestos hasta el total. Desde ahi se cambia el estado y se dejan notas de revision, guardando quien reviso y cuando. El detalle comprueba que la suma de los conceptos cuadre con el subtotal guardado y lo avisa si no: un descuadre significa que alguien edito por fuera o que hubo un redondeo distinto al capturar, y es mejor verlo aqui que cuando el importe llegue a un reporte. Los estados se muestran con su etiqueta legible en vez del valor de la base" },
@@ -13618,6 +13619,177 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
 }
 
 /* ----------------------------------------------------------------------
+   ADJUNTOS
+---------------------------------------------------------------------- */
+
+const CATEGORIAS_ADJUNTO = [
+  { value: "cotizacion",  label: "Cotización o factura" },
+  { value: "soporte",     label: "Soporte" },
+  { value: "relacionado", label: "Relacionado" },
+  { value: "otro",        label: "Otro" },
+];
+const etiquetaCategoria = (v) =>
+  (CATEGORIAS_ADJUNTO.find((c) => c.value === v) || { label: v || "Sin categoría" }).label;
+
+const pesoLegible = (b) => {
+  const n = Number(b) || 0;
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / 1048576).toFixed(1)} MB`;
+};
+
+/* Las claves de Storage no admiten acentos ni espacios sin darle problemas a
+   la URL firmada. Se limpia el nombre para la ruta y el original se conserva
+   en la tabla, que es el que ve la gente. */
+const nombreParaRuta = (n) =>
+  String(n || "archivo").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^A-Za-z0-9._-]+/g, "_").replace(/_+/g, "_").slice(0, 80);
+
+const BUCKET_ADJUNTOS = "solicitudes-adjuntos";
+
+/**
+ * Los archivos entran aquí, a un búfer en Supabase, y de aquí los recoge el
+ * proceso que los lleva a Drive. Mientras `storage_path` tenga valor y
+ * `drive_file_id` no, el archivo está en tránsito — y eso se ve en la lista,
+ * para que nadie suponga que ya está archivado donde debe.
+ */
+function AdjuntosPanel({ entidad, entidadId, unidad, folio }) {
+  const [filas, setFilas] = useState(null);
+  const [categoria, setCategoria] = useState("cotizacion");
+  const [subiendo, setSubiendo] = useState(false);
+  const [progreso, setProgreso] = useState("");
+  const [error, setError] = useState("");
+  const refArchivo = useRef(null);
+
+  const cargar = async () => {
+    const { data, error: e } = await supabase
+      .from("adjuntos").select("*")
+      .eq("entidad", entidad).eq("entidad_id", entidadId)
+      .order("subido_en");
+    if (e) setError(e.message); else setFilas(data || []);
+  };
+  useEffect(() => { cargar(); }, [entidad, entidadId]);
+
+  const subir = async (e) => {
+    const archivos = [...(e.target.files || [])];
+    e.target.value = "";
+    if (!archivos.length) return;
+
+    setSubiendo(true);
+    setError("");
+    try {
+      for (let i = 0; i < archivos.length; i++) {
+        const a = archivos[i];
+        setProgreso(`${i + 1} de ${archivos.length}: ${a.name}`);
+        const id = uid();
+        /* Ruta legible a propósito: si alguien abre el bucket desde Supabase,
+           entiende de qué solicitud es cada archivo sin consultar la tabla. */
+        const ruta = `${unidad}/${folio}/${id}-${nombreParaRuta(a.name)}`;
+
+        const up = await supabase.storage.from(BUCKET_ADJUNTOS)
+          .upload(ruta, a, { contentType: a.type || undefined, upsert: false });
+        if (up.error) throw up.error;
+
+        const ins = await supabase.from("adjuntos").insert({
+          id, entidad, entidad_id: entidadId, categoria,
+          nombre: a.name, mime: a.type || null, tamano: a.size,
+          storage_path: ruta, estado: "en_transito",
+        });
+        if (ins.error) {
+          // Sin la fila, el objeto quedaría huérfano en el bucket y nadie
+          // sabría de dónde salió. Se retira.
+          await supabase.storage.from(BUCKET_ADJUNTOS).remove([ruta]);
+          throw ins.error;
+        }
+      }
+      await cargar();
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setSubiendo(false);
+      setProgreso("");
+    }
+  };
+
+  const abrir = async (r) => {
+    if (r.drive_link) { window.open(r.drive_link, "_blank"); return; }
+    if (!r.storage_path) { alert("Este adjunto no tiene archivo ni enlace."); return; }
+    const { data, error: e } = await supabase.storage.from(BUCKET_ADJUNTOS)
+      .createSignedUrl(r.storage_path, 60);
+    if (e) { setError(e.message); return; }
+    window.open(data.signedUrl, "_blank");
+  };
+
+  const eliminar = async (r) => {
+    if (!confirm(`¿Quitar "${r.nombre}"?`)) return;
+    try {
+      if (r.storage_path) {
+        const { error: e } = await supabase.storage.from(BUCKET_ADJUNTOS).remove([r.storage_path]);
+        if (e) throw e;
+      }
+      const { error: e2 } = await supabase.from("adjuntos").delete().eq("id", r.id);
+      if (e2) throw e2;
+      await cargar();
+    } catch (err) {
+      setError(err.message || String(err));
+    }
+  };
+
+  const enTransito = (filas || []).filter((r) => r.estado === "en_transito").length;
+
+  return (
+    <Panel
+      title="Adjuntos"
+      subtitle="Se guardan aquí y de aquí pasan a Drive. Mientras tanto viven en Supabase."
+      right={
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <Select value={categoria} onChange={(e) => setCategoria(e.target.value)} style={{ maxWidth: 200 }}>
+            {CATEGORIAS_ADJUNTO.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+          </Select>
+          <Button onClick={() => refArchivo.current?.click()} disabled={subiendo}>
+            {subiendo ? "Subiendo…" : "+ Adjuntar"}
+          </Button>
+          <input ref={refArchivo} type="file" multiple onChange={subir} style={{ display: "none" }} />
+        </div>
+      }
+    >
+      {progreso && <div style={{ fontSize: 12, color: T.textDim, marginBottom: 10 }}>{progreso}</div>}
+
+      {filas === null ? (
+        <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
+      ) : !filas.length ? (
+        <EmptyState title="Sin adjuntos" body="Cotizaciones, soporte o cualquier archivo que acompañe a la solicitud." />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
+          {filas.map((r) => (
+            <div key={r.id} style={{ display: "flex", gap: 12, alignItems: "center", background: T.panel, padding: "10px 12px" }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, color: T.text, wordBreak: "break-word" }}>{r.nombre}</div>
+                <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>
+                  {[etiquetaCategoria(r.categoria), pesoLegible(r.tamano), formatFechaHora(r.subido_en)]
+                    .filter(Boolean).join("  ·  ")}
+                </div>
+              </div>
+              <Pill>{r.estado === "en_drive" ? "En Drive" : r.estado === "en_transito" ? "En tránsito" : r.estado}</Pill>
+              <Button variant="ghost" onClick={() => abrir(r)} style={{ padding: "4px 10px" }}>Abrir</Button>
+              <Button variant="danger" onClick={() => eliminar(r)} style={{ padding: "4px 10px" }}>Quitar</Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {enTransito > 0 && (
+        <div style={{ marginTop: 12, fontSize: 11.5, color: T.textFaint, lineHeight: 1.5 }}>
+          {enTransito} archivo(s) siguen en Supabase. Pasarán a Drive cuando exista el proceso que los mueve;
+          hasta entonces ocupan el espacio de la base.
+        </div>
+      )}
+      {error && <div style={{ marginTop: 12, fontSize: 12, color: T.red }}>{error}</div>}
+    </Panel>
+  );
+}
+
+/* ----------------------------------------------------------------------
    SOLICITUDES — DETALLE
 ---------------------------------------------------------------------- */
 
@@ -13785,6 +13957,13 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
           </div>
         )}
       </Panel>
+
+      <AdjuntosPanel
+        entidad="solicitud"
+        entidadId={solicitud.id}
+        unidad={solicitud.unidad}
+        folio={solicitud.folio}
+      />
 
       <Panel title="Revisión" subtitle="Dónde va la solicitud en el proceso.">
         <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.28.0";
+const APP_VERSION = "2.28.1";
 const CHANGELOG = [
+  { v: "2.28.1", desc: "En el modal de elegir proveedor, las cuentas bancarias ya se pueden editar: antes solo habia Eliminar, asi que corregir un digito obligaba a borrar la cuenta y recapturarla completa. Editar carga la cuenta en el mismo formulario de abajo, que cambia a Guardar cuenta y resalta el renglon; un segundo formulario habria que mantenerlo igual al primero para siempre. Al guardar, la CLABE y el numero de cuenta se quedan solo con digitos y el banco en mayusculas -- los datos viejos traen comillas, asteriscos y espacios de Excel, y BANAMEX contra Banamex contaban como cuentas distintas. Si la CLABE no queda en 18 digitos exactos, se rechaza y dice cuantos quedaron. Lo que no tiene ningun digito, como CODIGO DE BARRAS, se respeta: ahi no hay una cuenta sino la instruccion de como se paga ese recibo" },
   { v: "2.28.0", desc: "El arrendamiento queda completo. Lleva plantilla propia: el arbol lo resuelve como contrato especifico, pero su proemio y sus declaraciones no caben en la plantilla de servicios, asi que la naturaleza puede imponer otra plantilla. El formulario se adapta: pide domicilio del inmueble, clave catastral, uso convenido, renta, dia de pago, deposito y tope de servicios, y deja de pedir monto, lugar de entrega y tipo de garantia, que no aplican. La renta y el deposito se convierten a letra solos. Las clausulas se filtran por naturaleza -- sin eso un contrato de servicios arrastraria las 23 del arrendamiento y al reves. Y se resuelve un problema que venia de antes: el marcador COMPARECENCIA_ARRENDADORA se llena con por su propio derecho cuando la otra parte es persona fisica y con representada por FULANO cuando es moral; sin el, el proemio decia GERARDO CELAYA, representada por GERARDO CELAYA. Requiere 33-clausulas-arrendamiento.sql y 34-plantilla-arrendamiento.sql, y subir 06_Contrato_arrendamiento.docx a Storage" },
   { v: "2.27.0", desc: "Naturaleza de la contratacion: un paso previo al arbol con cuatro figuras -- arrendamiento de oficinas o bodegas, servicios profesionales con persona fisica, servicios con persona moral, y obra civil o mantenimiento industrial. No es una clasificacion paralela: tres de las cuatro ya determinan respuestas del cuestionario porque los gatillos las nombran. Arrendamiento resuelve el gatillo 7, servicios profesionales el 3 porque son intangibles por definicion, y obra el 1 porque obra y mantenimiento industrial son el supuesto del REPSE. Servicios con persona moral no resuelve ninguna: depende del caso. Las respuestas asi puestas se marcan como dadas por sentadas y se pueden cambiar, porque son el caso normal y no una regla sin excepcion. La naturaleza tambien llena TIPO_CONTRATO, queda guardada en el instrumento para auditoria, y sirve como senal para sugerir clausulas: un arrendamiento necesita clausulas que una prestacion de servicios no, y eso no depende de ningun gatillo. Con persona fisica se advierte sobre horario y subordinacion, que es lo que convierte una prestacion de servicios en relacion laboral" },
   { v: "2.26.0", desc: "Edicion masiva de transacciones. Con varias seleccionadas aparece Editar seleccionadas: se marca campo por campo cual se quiere cambiar y lo que no se marca no se toca -- sin eso, un campo vacio borraria el valor que cada transaccion ya tenia. Se pueden cambiar proveedor, proyecto, zona, area, categoria, status y fecha de pago. Quedan fuera importe, dia, folios y concepto a proposito: son propios de cada registro y ponerles el mismo valor a veinte transacciones no arregla nada, destruye lo que las distinguia. Al cambiar el proveedor se mueven los DOS campos, el nombre en texto y proveedor_id, porque tocar solo uno deja la fila con el nombre nuevo apuntando al proveedor viejo. Antes de aplicar dice cuantas cambian de verdad en cada campo, y avisa cuando el valor elegido es el que ya tenian. Marcar Pagado exige fecha de pago, la misma regla que al capturar una transaccion suelta" },
@@ -1012,6 +1013,9 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
   const [editando, setEditando] = useState(null); // null = lista; {id:null,...} = creando; {id:"x",...} = editando existente
   const [guardando, setGuardando] = useState(false);
   const [nuevaCuenta, setNuevaCuenta] = useState(cuentaBlank);
+  /* El mismo formulario sirve para alta y para edición: con dos, habría que
+     mantener los dos iguales para siempre. */
+  const [cuentaEditId, setCuentaEditId] = useState(null);
   const cuentasDeEditando = (editando?.id && cuentasApi) ? cuentasApi.rows.filter((c) => c.proveedor_id === editando.id) : [];
 
   /* Búsqueda en el catálogo maestro (11 mil proveedores de ASPEL).
@@ -1103,12 +1107,46 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
     }
   };
 
+  const iniciarEditarCuenta = (c) => {
+    setCuentaEditId(c.id);
+    setNuevaCuenta({
+      banco: c.banco || "", sucursal: c.sucursal || "", swift: c.swift || "",
+      clabe: c.clabe || "", numero_cuenta: c.numero_cuenta || "", divisa: c.divisa || "MXP",
+    });
+  };
+  const cancelarEdicionCuenta = () => { setCuentaEditId(null); setNuevaCuenta(cuentaBlank); };
+
+  /* Se guarda solo con dígitos: los datos viejos traen comillas, asteriscos y
+     espacios que Excel dejó al importar, y una CLABE con un carácter que no
+     es número no sirve para transferir. Lo que NO tiene ningún dígito
+     —"CÓDIGO DE BARRAS"— se respeta tal cual: ahí no hay una cuenta, hay una
+     instrucción de cómo se paga ese recibo. */
+  const limpiarDigitos = (v) => {
+    const d = String(v || "").replace(/\D/g, "");
+    return d || String(v || "").trim();
+  };
+
   const agregarCuentaEditando = async () => {
     if (!editando?.id) return;
     if (!nuevaCuenta.banco.trim() && !nuevaCuenta.clabe.trim() && !nuevaCuenta.numero_cuenta.trim()) return;
+
+    const clabe = limpiarDigitos(nuevaCuenta.clabe);
+    if (/\d/.test(clabe) && clabe.length !== 18) {
+      alert(`La CLABE quedó en ${clabe.length} dígitos y una CLABE mexicana son 18 exactos.\n\nRevísala antes de guardar: una CLABE incompleta no sirve para transferir.`);
+      return;
+    }
+    const limpia = {
+      ...nuevaCuenta,
+      banco: nuevaCuenta.banco.trim().toUpperCase(),
+      clabe,
+      numero_cuenta: limpiarDigitos(nuevaCuenta.numero_cuenta),
+    };
+
     try {
-      await cuentasApi.insert({ id: uid(), proveedor_id: editando.id, ...nuevaCuenta });
+      if (cuentaEditId) await cuentasApi.update(cuentaEditId, limpia);
+      else await cuentasApi.insert({ id: uid(), proveedor_id: editando.id, ...limpia });
       setNuevaCuenta(cuentaBlank);
+      setCuentaEditId(null);
     } catch (err) {
       alert("No se pudo agregar la cuenta: " + (err.message || err));
     }
@@ -1174,12 +1212,15 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
                       </thead>
                       <tbody>
                         {cuentasDeEditando.map((c) => (
-                          <tr key={c.id}>
+                          <tr key={c.id} style={c.id === cuentaEditId ? { background: T.accentBg } : undefined}>
                             <td style={tdStyle}>{c.banco || "—"}</td>
                             <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.clabe || "—"}</td>
                             <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.numero_cuenta || "—"}</td>
                             <td style={tdStyle}><Pill>{c.divisa || "MXP"}</Pill></td>
-                            <td style={tdStyle}><Button type="button" variant="danger" onClick={() => eliminarCuentaEditando(c.id)}>Eliminar</Button></td>
+                            <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
+                              <Button type="button" variant="ghost" onClick={() => iniciarEditarCuenta(c)} style={{ padding: "4px 10px", marginRight: 6 }}>Editar</Button>
+                              <Button type="button" variant="danger" onClick={() => eliminarCuentaEditando(c.id)} style={{ padding: "4px 10px" }}>Eliminar</Button>
+                            </td>
                           </tr>
                         ))}
                       </tbody>
@@ -1208,7 +1249,14 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
                         {MONEDAS.map((m) => <option key={m}>{m}</option>)}
                       </Select>
                     </Field>
-                    <Button type="button" variant="ghost" onClick={agregarCuentaEditando}>+ Agregar cuenta</Button>
+                    <div style={{ display: "flex", gap: 6, alignItems: "flex-end" }}>
+                      <Button type="button" variant={cuentaEditId ? "primary" : "ghost"} onClick={agregarCuentaEditando}>
+                        {cuentaEditId ? "Guardar cuenta" : "+ Agregar cuenta"}
+                      </Button>
+                      {cuentaEditId && (
+                        <Button type="button" variant="ghost" onClick={cancelarEdicionCuenta}>Cancelar</Button>
+                      )}
+                    </div>
                   </div>
                   <Button type="button" onClick={confirmar} style={{ marginTop: 12 }}>Seleccionar este proveedor</Button>
                 </div>

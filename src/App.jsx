@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.30.0";
+const APP_VERSION = "2.32.0";
 const CHANGELOG = [
+  { v: "2.32.0", desc: "Editar una solicitud ya capturada, desde su detalle. Usa el MISMO formulario del alta: con dos habria que mantenerlos iguales cada vez que cambie un campo, y el dia que dejaran de estarlo lo capturado y lo corregido empezarian a diferir sin que nadie lo note. El folio y el consecutivo no se tocan al editar: son la identidad de la solicitud y va a haber una carpeta de Drive nombrada con ellos. Los conceptos se guardan por diferencia -- se actualizan los que siguen, se insertan los nuevos y se borran los quitados -- en vez de borrar todos y reinsertar: asi las transacciones que mas adelante apunten a un concepto no quedan apuntando a un id que ya no existe. Una solicitud convertida no se puede editar, porque sus importes ya viven en transacciones" },
+  { v: "2.31.0", desc: "Abrir una solicitud desde la bandeja. Muestra la cabecera completa, sus conceptos con cantidad, precio y subtotal, y el desglose de impuestos hasta el total. Desde ahi se cambia el estado y se dejan notas de revision, guardando quien reviso y cuando. El detalle comprueba que la suma de los conceptos cuadre con el subtotal guardado y lo avisa si no: un descuadre significa que alguien edito por fuera o que hubo un redondeo distinto al capturar, y es mejor verlo aqui que cuando el importe llegue a un reporte. Los estados se muestran con su etiqueta legible en vez del valor de la base" },
   { v: "2.30.0", desc: "Bandeja de Solicitudes con captura manual, replicando el formulario de Zoho. La cabecera lleva solicitante de la lista blanca, folio del solicitante, tipo, zona y proyecto del catalogo, y los impuestos; vehiculo y kilometraje solo aparecen si el tipo es mantenimiento vehicular. Los conceptos se agregan y quitan, cada uno con su subtotal en vivo. Los impuestos son de la solicitud y no de cada linea, porque una SMI se cotiza en una sola moneda. El total va NETO de retenciones, que es lo que se paga, y cuando hay retencion se dice aparte cuanto factura el proveedor. El consecutivo se consulta contra la base y no contra el estado local -- dos pestanas calcularian el mismo numero -- y si chocan, el indice unico rebota el insert y se reintenta. Se capturan a mano a proposito: conviene ver si el modelo aguanta con datos reales antes de exponer un formulario a toda la empresa. Requiere 38-solicitudes-consecutivo.sql" },
   { v: "2.29.0", desc: "Pestana Solicitudes con su subpestana de Parametros, primer paso para migrar la captura de SMI desde Zoho Forms. El formato del folio es dato, no codigo: se arma con marcas -- {n} el consecutivo, {aa} y {aaaa} el ano, {mm} el mes, {unidad} la compania -- y hay una fila por unidad, porque la serie de OSB va en 263P26 y tiene que continuar en 264 o las carpetas de Drive quedarian con dos numeraciones, mientras que CTM e ISE empezaran la suya. Se ve en vivo como saldrian los tres primeros folios al teclear el formato. Avisa si falta {n}, porque todos los folios saldrian iguales, y si el consecutivo reinicia cada ano pero el formato no incluye el ano, porque el folio de enero proximo chocaria con el de este enero. Tambien guarda el id de la carpeta de Drive bajo la que se creara una por solicitud: el id y no el enlace, porque una carpeta movida cambia de enlace y conserva el id. La bandeja queda pendiente. Requiere 35-solicitudes.sql y 36-solicitudes-parametros.sql" },
   { v: "2.28.1", desc: "En el modal de elegir proveedor, las cuentas bancarias ya se pueden editar: antes solo habia Eliminar, asi que corregir un digito obligaba a borrar la cuenta y recapturarla completa. Editar carga la cuenta en el mismo formulario de abajo, que cambia a Guardar cuenta y resalta el renglon; un segundo formulario habria que mantenerlo igual al primero para siempre. Al guardar, la CLABE y el numero de cuenta se quedan solo con digitos y el banco en mayusculas -- los datos viejos traen comillas, asteriscos y espacios de Excel, y BANAMEX contra Banamex contaban como cuentas distintas. Si la CLABE no queda en 18 digitos exactos, se rechaza y dice cuantos quedaron. Lo que no tiene ningun digito, como CODIGO DE BARRAS, se respeta: ahi no hay una cuenta sino la instruccion de como se paga ese recibo" },
@@ -13235,16 +13237,48 @@ async function siguienteConsecutivoSolicitud(unidad, anio, inicial, reinicia) {
   return ultimo === null ? Number(inicial) || 1 : ultimo + 1;
 }
 
-function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, zonas, onGuardada, onCancelar }) {
+/**
+ * Alta y edición con el mismo formulario. Con dos, habría que mantener los
+ * dos iguales cada vez que cambie un campo — y el día que dejaran de estarlo,
+ * lo capturado y lo corregido empezarían a diferir sin que nadie lo note.
+ */
+function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, zonas, onGuardada, onCancelar, solicitud = null, conceptosIniciales = null }) {
   const hoy = hoyISO();
-  const [f, setF] = useState({
+  const editando = !!solicitud;
+  const [f, setF] = useState(() => solicitud ? ({
+    correo_solicitante: solicitud.correo_solicitante || "",
+    nombre_solicitante: solicitud.nombre_solicitante || "",
+    zona: solicitud.zona || "", proyecto: solicitud.proyecto || "",
+    tipo_solicitud: solicitud.tipo_solicitud || "productos_servicios",
+    vehiculo: solicitud.vehiculo || "", kilometraje: solicitud.kilometraje ?? "",
+    folio_usuario: solicitud.folio_usuario || "",
+    descripcion_general: solicitud.descripcion_general || "",
+    justificacion: solicitud.justificacion || "",
+    proveedor_sugerido: solicitud.proveedor_sugerido || "",
+    fecha_solicitud: String(solicitud.fecha_solicitud || hoy).slice(0, 10),
+    divisa: solicitud.divisa || "MXP", iva_tasa: Number(solicitud.iva_tasa ?? 16),
+    sin_impuesto: !!solicitud.sin_impuesto,
+    ret_isr: Number(solicitud.ret_isr) || "", ret_iva: Number(solicitud.ret_iva) || "",
+  }) : ({
     correo_solicitante: "", nombre_solicitante: "", zona: "", proyecto: "",
     tipo_solicitud: "productos_servicios", vehiculo: "", kilometraje: "",
     folio_usuario: "", descripcion_general: "", justificacion: "", proveedor_sugerido: "",
     fecha_solicitud: hoy, divisa: "MXP", iva_tasa: 16, sin_impuesto: false,
     ret_isr: "", ret_iva: "",
-  });
-  const [conceptos, setConceptos] = useState([conceptoBlank()]);
+  }));
+  /* `_id` recuerda de qué fila vino cada concepto: sin eso, guardar obligaría
+     a borrar todos y reinsertarlos, y las transacciones que más adelante
+     apunten a un concepto quedarían apuntando a un id que ya no existe. */
+  const [conceptos, setConceptos] = useState(() =>
+    (conceptosIniciales && conceptosIniciales.length)
+      ? conceptosIniciales.map((c) => ({
+          _k: uid(), _id: c.id,
+          numero_parte: c.numero_parte || "", descripcion: c.descripcion || "",
+          notas: c.notas || "", enlace: c.enlace || "",
+          cantidad: c.cantidad ?? "", unidad_medida: c.unidad_medida || "",
+          precio_unitario: c.precio_unitario ?? "",
+        }))
+      : [conceptoBlank()]);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
 
@@ -13268,6 +13302,60 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
     setGuardando(true);
     setError("");
     try {
+      const cabecera = {
+        correo_solicitante: f.correo_solicitante,
+        nombre_solicitante: String(f.nombre_solicitante).trim() || null,
+        zona: f.zona || null, proyecto: f.proyecto || null,
+        tipo_solicitud: f.tipo_solicitud,
+        vehiculo: vehicular ? (String(f.vehiculo).trim() || null) : null,
+        kilometraje: vehicular && f.kilometraje !== "" ? Number(f.kilometraje) : null,
+        folio_usuario: String(f.folio_usuario).trim() || null,
+        descripcion_general: String(f.descripcion_general).trim(),
+        justificacion: String(f.justificacion).trim() || null,
+        proveedor_sugerido: String(f.proveedor_sugerido).trim() || null,
+        fecha_solicitud: f.fecha_solicitud,
+        divisa: f.divisa, iva_tasa: Number(f.iva_tasa), sin_impuesto: !!f.sin_impuesto,
+        ret_isr: Number(f.ret_isr) || 0, ret_iva: Number(f.ret_iva) || 0,
+        subtotal: Number(tot.subtotal.toFixed(2)),
+        iva: Number(tot.iva.toFixed(2)),
+        total: Number(tot.total.toFixed(2)),
+      };
+
+      if (editando) {
+        /* El folio y el consecutivo no se tocan: son la identidad de la
+           solicitud y hay una carpeta de Drive nombrada con ellos. */
+        const { data, error: e } = await supabase
+          .from("solicitudes").update(cabecera).eq("id", solicitud.id).select().single();
+        if (e) throw e;
+
+        const vivos = conValor.filter((c) => c._id).map((c) => c._id);
+        const borrar = (conceptosIniciales || []).filter((c) => !vivos.includes(c.id)).map((c) => c.id);
+        if (borrar.length) {
+          const { error: eb } = await supabase.from("solicitud_conceptos").delete().in("id", borrar);
+          if (eb) throw eb;
+        }
+        for (let i = 0; i < conValor.length; i++) {
+          const c = conValor[i];
+          const fila = {
+            orden: i + 1,
+            numero_parte: String(c.numero_parte).trim() || null,
+            descripcion: String(c.descripcion).trim(),
+            notas: String(c.notas).trim() || null,
+            enlace: String(c.enlace).trim() || null,
+            cantidad: Number(c.cantidad) || 0,
+            unidad_medida: String(c.unidad_medida).trim() || null,
+            precio_unitario: Number(c.precio_unitario) || 0,
+            subtotal: Number(subtotalConcepto(c).toFixed(2)),
+          };
+          const r = c._id
+            ? await supabase.from("solicitud_conceptos").update(fila).eq("id", c._id)
+            : await supabase.from("solicitud_conceptos").insert({ id: uid(), solicitud_id: solicitud.id, ...fila });
+          if (r.error) throw r.error;
+        }
+        onGuardada(data);
+        return;
+      }
+
       const anio = Number(String(f.fecha_solicitud).slice(0, 4)) || new Date().getFullYear();
       const base = await siguienteConsecutivoSolicitud(
         unidad, anio, parametros.consecutivo_inicial, parametros.reinicia_cada_anio);
@@ -13331,8 +13419,10 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
   return (
     <>
       <Panel
-        title="Nueva solicitud"
-        subtitle={`El folio se asigna al guardar, siguiendo la serie de ${unidad}.`}
+        title={editando ? `Editar ${solicitud.folio}` : "Nueva solicitud"}
+        subtitle={editando
+          ? "El folio no cambia: hay una carpeta de Drive nombrada con él."
+          : `El folio se asigna al guardar, siguiendo la serie de ${unidad}.`}
         right={
           <div style={{ display: "flex", gap: 8 }}>
             <Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Button>
@@ -13525,9 +13615,206 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
   );
 }
 
+/* ----------------------------------------------------------------------
+   SOLICITUDES — DETALLE
+---------------------------------------------------------------------- */
+
+const ESTADOS_SOLICITUD = [
+  { value: "entrada",     label: "Entrada" },
+  { value: "en_revision", label: "En revisión" },
+  { value: "cotizando",   label: "Cotizando" },
+  { value: "autorizada",  label: "Autorizada" },
+  { value: "rechazada",   label: "Rechazada" },
+  { value: "convertida",  label: "Convertida" },
+  { value: "cancelada",   label: "Cancelada" },
+];
+const etiquetaEstado = (v) =>
+  (ESTADOS_SOLICITUD.find((e) => e.value === v) || { label: v }).label;
+
+function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEditar }) {
+  const [conceptos, setConceptos] = useState(null);
+  const [estado, setEstado] = useState(solicitud.estado);
+  const [notas, setNotas] = useState(solicitud.notas_revision || "");
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      const { data, error: e } = await supabase
+        .from("solicitud_conceptos").select("*")
+        .eq("solicitud_id", solicitud.id).order("orden");
+      if (!vivo) return;
+      if (e) setError(e.message);
+      setConceptos(data || []);
+    })();
+    return () => { vivo = false; };
+  }, [solicitud.id]);
+
+  const money = (n) => `$${numMx(n)} ${solicitud.divisa === "USD" ? "USD" : "MXN"}`;
+  const cambio = estado !== solicitud.estado || notas !== (solicitud.notas_revision || "");
+
+  /* La suma de los conceptos debe dar el subtotal guardado. Si no, alguien
+     editó la solicitud por fuera o hubo un redondeo distinto al capturar, y
+     conviene verlo aquí y no cuando el importe llegue a un reporte. */
+  const sumaConceptos = (conceptos || []).reduce((s, c) => s + Number(c.subtotal || 0), 0);
+  const descuadre = conceptos && Math.abs(sumaConceptos - Number(solicitud.subtotal || 0)) > 0.01;
+
+  const guardar = async () => {
+    setGuardando(true);
+    setError("");
+    try {
+      const patch = {
+        estado, notas_revision: notas.trim() || null,
+        revisado_en: new Date().toISOString(),
+        ...(session?.user?.id ? { revisado_por: session.user.id } : {}),
+      };
+      const { data, error: e } = await supabase
+        .from("solicitudes").update(patch).eq("id", solicitud.id).select().single();
+      if (e) throw e;
+      onCambiada(data);
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const dato = (k, v) => v ? (
+    <div key={k}>
+      <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", color: T.textDim }}>{k}</div>
+      <div style={{ fontSize: 12.5, color: T.text, marginTop: 2 }}>{v}</div>
+    </div>
+  ) : null;
+
+  return (
+    <>
+      <Panel
+        title={solicitud.folio}
+        subtitle={solicitud.descripcion_general}
+        right={
+          <div style={{ display: "flex", gap: 8 }}>
+            {/* Una solicitud ya convertida no se edita: sus importes viven en
+                transacciones y cambiarlos aquí las dejaría desfasadas. */}
+            <Button
+              onClick={() => onEditar(conceptos || [])}
+              disabled={!conceptos || solicitud.estado === "convertida"}
+              title={solicitud.estado === "convertida" ? "Ya se convirtió en transacciones" : undefined}
+            >Editar</Button>
+            <Button variant="ghost" onClick={onVolver}>Volver a la lista</Button>
+          </div>
+        }
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 16 }}>
+          {dato("Solicitante", solicitud.nombre_solicitante || solicitud.correo_solicitante)}
+          {dato("Correo", solicitud.correo_solicitante)}
+          {dato("Folio del solicitante", solicitud.folio_usuario)}
+          {dato("Tipo", solicitud.tipo_solicitud === "mantenimiento_vehicular"
+            ? "Mantenimiento vehicular" : "Productos / Servicios")}
+          {dato("Zona", solicitud.zona)}
+          {dato("Proyecto", solicitud.proyecto)}
+          {dato("Vehículo", solicitud.vehiculo)}
+          {dato("Kilometraje", solicitud.kilometraje ? numMx(solicitud.kilometraje) : null)}
+          {dato("Fecha", solicitud.fecha_solicitud)}
+          {dato("Posible proveedor", solicitud.proveedor_sugerido)}
+        </div>
+
+        {solicitud.justificacion && (
+          <div style={{ marginTop: 16, paddingTop: 13, borderTop: `1px solid ${T.border}` }}>
+            <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", color: T.textDim }}>Justificación</div>
+            <div style={{ fontSize: 12.5, color: T.textDim, marginTop: 4, lineHeight: 1.6 }}>{solicitud.justificacion}</div>
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="Conceptos" subtitle={conceptos ? `${conceptos.length} en total` : ""}>
+        {!conceptos ? (
+          <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
+        ) : !conceptos.length ? (
+          <EmptyState title="Sin conceptos" body="La solicitud se guardó sin líneas de detalle." />
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
+            {conceptos.map((c) => (
+              <div key={c.id} style={{ background: T.panel, padding: "11px 13px" }}>
+                <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
+                  <span style={{ fontSize: 11.5, color: T.textFaint, fontVariantNumeric: "tabular-nums", minWidth: 20 }}>{c.orden}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, color: T.text }}>{c.descripcion}</div>
+                    <div style={{ fontSize: 11, color: T.textFaint, marginTop: 3 }}>
+                      {[c.numero_parte && `Parte ${c.numero_parte}`,
+                        `${numMx(c.cantidad)} ${c.unidad_medida || ""}`.trim(),
+                        `× $${numMx(c.precio_unitario)}`].filter(Boolean).join("  ·  ")}
+                    </div>
+                    {c.notas && <div style={{ fontSize: 11, color: T.textDim, marginTop: 4 }}>{c.notas}</div>}
+                    {c.enlace && (
+                      <a href={c.enlace} target="_blank" rel="noreferrer"
+                        style={{ fontSize: 11, color: T.accent, marginTop: 4, display: "inline-block" }}>{c.enlace}</a>
+                    )}
+                  </div>
+                  <span style={{ fontFamily: T.fontMono, fontSize: 12.5, color: T.text, whiteSpace: "nowrap" }}>
+                    {money(c.subtotal)}
+                  </span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ marginTop: 16, maxWidth: 360, fontSize: 13, fontFamily: T.fontMono, marginLeft: "auto" }}>
+          {[["Subtotal", solicitud.subtotal],
+            [solicitud.sin_impuesto ? "IVA (exento)" : `IVA ${numMx(solicitud.iva_tasa)}%`, solicitud.iva],
+            ...(Number(solicitud.ret_isr) ? [["Ret. ISR", -Number(solicitud.ret_isr)]] : []),
+            ...(Number(solicitud.ret_iva) ? [["Ret. IVA", -Number(solicitud.ret_iva)]] : []),
+          ].map(([k, v]) => (
+            <div key={k} style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: T.textDim }}>
+              <span>{k}</span><span>{money(v)}</span>
+            </div>
+          ))}
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0 0",
+                        borderTop: `1px solid ${T.border}`, marginTop: 6, fontWeight: 700, color: T.text, fontSize: 15 }}>
+            <span>Total</span><span>{money(solicitud.total)}</span>
+          </div>
+        </div>
+
+        {descuadre && (
+          <div style={{ marginTop: 14, fontSize: 12, color: T.amberDim, background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 6, padding: "9px 11px", lineHeight: 1.5 }}>
+            Los conceptos suman {money(sumaConceptos)} pero el subtotal guardado dice {money(solicitud.subtotal)}.
+            Algo se editó por fuera o hubo un redondeo distinto al capturar.
+          </div>
+        )}
+      </Panel>
+
+      <Panel title="Revisión" subtitle="Dónde va la solicitud en el proceso.">
+        <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
+          <Field label="Estado" style={{ maxWidth: 220 }}>
+            <Select value={estado} onChange={(e) => setEstado(e.target.value)}>
+              {ESTADOS_SOLICITUD.map((e) => <option key={e.value} value={e.value}>{e.label}</option>)}
+            </Select>
+          </Field>
+          <Field label="Notas de revisión" style={{ flex: 1, minWidth: 260 }}>
+            <TextInput value={notas} onChange={(e) => setNotas(e.target.value)} />
+          </Field>
+          <Button onClick={guardar} disabled={!cambio || guardando} style={{ marginBottom: 1 }}>
+            {guardando ? "Guardando…" : "Guardar"}
+          </Button>
+        </div>
+
+        {solicitud.revisado_en && (
+          <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10 }}>
+            Última revisión: {formatFechaHora(solicitud.revisado_en)}
+          </div>
+        )}
+        {error && <div style={{ marginTop: 12, fontSize: 12, color: T.red }}>No se pudo guardar: {error}</div>}
+      </Panel>
+    </>
+  );
+}
+
 function SolicitudesTab({ unidad, session, proyectos = [], zonas = [] }) {
   const [sub, setSub] = useSessionState("ss-solicitudes-sub", "parametros");
   const [capturando, setCapturando] = useState(false);
+  const [abierta, setAbierta] = useState(null);
+  const [editando, setEditando] = useState(null);
   const [parametros, setParametros] = useState(null);
   const [correos, setCorreos] = useState([]);
   const [recientes, setRecientes] = useState([]);
@@ -13551,6 +13838,7 @@ function SolicitudesTab({ unidad, session, proyectos = [], zonas = [] }) {
     }
   };
   useEffect(() => { if (sub === "bandeja") recargar(); }, [sub, unidad]);
+  useEffect(() => { setAbierta(null); setCapturando(false); setEditando(null); }, [unidad]);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -13571,7 +13859,34 @@ function SolicitudesTab({ unidad, session, proyectos = [], zonas = [] }) {
 
       {sub === "parametros" && <SolicitudesParametrosPanel unidad={unidad} session={session} />}
 
-      {sub === "bandeja" && capturando && parametros && (
+      {sub === "bandeja" && editando && parametros && (
+        <NuevaSolicitudPanel
+          unidad={unidad} session={session} parametros={parametros}
+          correos={correos} proyectos={proyectos} zonas={zonas}
+          solicitud={editando.solicitud} conceptosIniciales={editando.conceptos}
+          onCancelar={() => setEditando(null)}
+          onGuardada={(s) => {
+            setEditando(null);
+            setAbierta(s);
+            setRecientes((r) => r.map((x) => (x.id === s.id ? s : x)));
+          }}
+        />
+      )}
+
+      {sub === "bandeja" && !editando && abierta && (
+        <SolicitudDetallePanel
+          solicitud={abierta}
+          session={session}
+          onVolver={() => setAbierta(null)}
+          onEditar={(cs) => setEditando({ solicitud: abierta, conceptos: cs })}
+          onCambiada={(s) => {
+            setAbierta(s);
+            setRecientes((r) => r.map((x) => (x.id === s.id ? s : x)));
+          }}
+        />
+      )}
+
+      {sub === "bandeja" && !editando && !abierta && capturando && parametros && (
         <NuevaSolicitudPanel
           unidad={unidad} session={session} parametros={parametros}
           correos={correos} proyectos={proyectos} zonas={zonas}
@@ -13580,7 +13895,7 @@ function SolicitudesTab({ unidad, session, proyectos = [], zonas = [] }) {
         />
       )}
 
-      {sub === "bandeja" && !capturando && (
+      {sub === "bandeja" && !editando && !abierta && !capturando && (
         <Panel
           title={`Solicitudes de ${unidad}`}
           subtitle="Por ahora se capturan a mano. El formulario público viene después."
@@ -13603,7 +13918,9 @@ function SolicitudesTab({ unidad, session, proyectos = [], zonas = [] }) {
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
               {recientes.map((s) => (
-                <div key={s.id} style={{ display: "flex", gap: 12, alignItems: "center", background: T.panel, padding: "10px 12px" }}>
+                <div key={s.id}
+                  onClick={() => setAbierta(s)}
+                  style={{ display: "flex", gap: 12, alignItems: "center", background: T.panel, padding: "10px 12px", cursor: "pointer" }}>
                   <span style={{ fontFamily: T.fontMono, fontSize: 12.5, color: T.accent, minWidth: 110 }}>{s.folio}</span>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 12.5, color: T.text }}>{s.descripcion_general}</div>
@@ -13612,7 +13929,7 @@ function SolicitudesTab({ unidad, session, proyectos = [], zonas = [] }) {
                         .filter(Boolean).join(" · ")}
                     </div>
                   </div>
-                  <Pill>{s.estado}</Pill>
+                  <Pill>{etiquetaEstado(s.estado)}</Pill>
                   <span style={{ fontFamily: T.fontMono, fontSize: 12.5, color: T.text, whiteSpace: "nowrap" }}>
                     ${numMx(s.total)} {s.divisa === "USD" ? "USD" : "MXN"}
                   </span>

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.25.1";
+const APP_VERSION = "2.26.0";
 const CHANGELOG = [
+  { v: "2.26.0", desc: "Edicion masiva de transacciones. Con varias seleccionadas aparece Editar seleccionadas: se marca campo por campo cual se quiere cambiar y lo que no se marca no se toca -- sin eso, un campo vacio borraria el valor que cada transaccion ya tenia. Se pueden cambiar proveedor, proyecto, zona, area, categoria, status y fecha de pago. Quedan fuera importe, dia, folios y concepto a proposito: son propios de cada registro y ponerles el mismo valor a veinte transacciones no arregla nada, destruye lo que las distinguia. Al cambiar el proveedor se mueven los DOS campos, el nombre en texto y proveedor_id, porque tocar solo uno deja la fila con el nombre nuevo apuntando al proveedor viejo. Antes de aplicar dice cuantas cambian de verdad en cada campo, y avisa cuando el valor elegido es el que ya tenian. Marcar Pagado exige fecha de pago, la misma regla que al capturar una transaccion suelta" },
   { v: "2.25.1", desc: "En Importar / Exportar, los dos desplegables -- Importar de Google Sheets y Solicitudes de Pago generadas -- se alinean en una sola fila en vez de apilarse. Cada uno se comporta como item de una fila flexible: cerrado ocupa lo que mide, y al abrirse toma el renglon completo, de modo que su contenido no queda apretado a media pantalla junto al otro" },
   { v: "2.25.0", desc: "Transacciones se parte en dos subpestanas. La pestana mezclaba dos cosas con ritmos distintos: consultar y capturar dia con dia, contra importar o exportar de vez en cuando -- y los importadores estaban ARRIBA de los filtros, ocupando el primer golpe de vista con lo que menos se usa. General queda con los filtros, el agrupado, la tabla, el panel de sin partida vinculada y Nueva transaccion. Importar / Exportar reune el importador de Google Sheets, las solicitudes de pago generadas, la exportacion y la carga masiva. La exportacion deja de ser un panel plegable y es un panel fijo de su pestana; como los filtros que gobiernan la salida ya no se ven desde ahi, el subtitulo dice cuantas transacciones de cuantas se van a exportar -- sin eso, bajarias un archivo filtrado sin saberlo" },
   { v: "2.24.0", desc: "Eliminar un proveedor ahora revisa antes si esta en uso y, si lo esta, exige elegir a quien pasan sus movimientos. Antes se borraba de una: la confirmacion advertia de las cuentas bancarias pero no de las transacciones, asi que borrar un proveedor con movimientos dejaba esas filas apuntando a un id inexistente y el Reporte de Pagos las mostraba sin proveedor sin explicar por que. El conteo mira los DOS vinculos, porque son distintos: proveedor_id, el formal, y el texto del nombre, que es el que quedo en las transacciones importadas cuyo nombre no empato contra el catalogo -- mirar solo el id diria que esta libre un proveedor con decenas de movimientos a su nombre. Al reasignar se actualizan ambos. Las cuentas bancarias NO se mueven por defecto: se listan, se avisa que se borran con el proveedor, y moverlas es una casilla aparte que ademas alerta si el destino ya tiene una CLABE distinta. Si no hay otro proveedor en la compania, se niega y pide dar de alta el sustituto primero. El nombre se escapa antes del ILIKE: sin eso, un proveedor llamado 100% NATURAL empataria con cualquier cosa" },
@@ -7154,6 +7155,155 @@ function ConfirmarBorradoTextoModal({ titulo, mensaje, frase = "ELIMINAR", onCon
   );
 }
 
+/* ----------------------------------------------------------------------
+   EDICIÓN MASIVA DE TRANSACCIONES
+---------------------------------------------------------------------- */
+
+/**
+ * Los campos que se pueden cambiar en bloque.
+ *
+ * Quedan fuera importe, día, folios y concepto a propósito: son propios de
+ * cada registro, y ponerles el mismo valor a veinte transacciones no arregla
+ * nada — destruye la información que las distinguía.
+ *
+ * `proveedor` es especial: no basta con el texto. La transacción guarda el
+ * nombre en `proveedor` y el vínculo en `proveedor_id`, y hay que mover los
+ * dos o la fila queda con el nombre nuevo apuntando al proveedor viejo.
+ */
+const CAMPOS_MASIVOS = [
+  { key: "proveedor", label: "Proveedor", tipo: "proveedor" },
+  { key: "proyecto",  label: "Proyecto",  tipo: "lista" },
+  { key: "zona",      label: "Zona",      tipo: "lista" },
+  { key: "area",      label: "Área",      tipo: "texto" },
+  { key: "categoria", label: "Categoría", tipo: "texto" },
+  { key: "status",    label: "Status",    tipo: "lista", opciones: ["Pagado", "No Pagado"] },
+  { key: "fecha_pago", label: "Fecha de pago", tipo: "fecha" },
+];
+
+function EditarMasivoModal({ filas, proveedores, proyectos, zonas, onCerrar, onAplicar }) {
+  const [activos, setActivos] = useState(() => new Set());
+  const [valores, setValores] = useState({});
+  const [trabajando, setTrabajando] = useState(false);
+
+  const alternar = (k) => {
+    const s = new Set(activos);
+    if (s.has(k)) s.delete(k); else s.add(k);
+    setActivos(s);
+  };
+
+  const campos = CAMPOS_MASIVOS.filter((c) => activos.has(c.key));
+
+  /* Cuántas filas cambiarían de verdad. Si el valor elegido es el que ya
+     tienen, decirlo evita la sensación de que no pasó nada. */
+  const cuantasCambian = (c) => {
+    const nuevo = c.key === "proveedor"
+      ? (proveedores.find((p) => p.id === valores.proveedor) || {}).nombre
+      : valores[c.key];
+    if (nuevo === undefined || nuevo === "") return 0;
+    return filas.filter((t) => String(t[c.key] || "") !== String(nuevo)).length;
+  };
+
+  const opcionesDe = (c) =>
+    c.key === "proyecto" ? proyectos
+    : c.key === "zona" ? zonas
+    : c.opciones || [];
+
+  const pagadasSinFecha = activos.has("status") && valores.status === "Pagado"
+    && !(activos.has("fecha_pago") && valores.fecha_pago)
+    && filas.some((t) => !t.fecha_pago);
+
+  const aplicar = async () => {
+    if (!campos.length) { alert("Marca al menos un campo para cambiar."); return; }
+    if (pagadasSinFecha) {
+      alert("Marcar como Pagado exige fecha de pago, igual que al capturar una transacción. Activa también el campo Fecha de pago.");
+      return;
+    }
+    const parche = {};
+    campos.forEach((c) => {
+      if (c.key === "proveedor") {
+        const p = proveedores.find((x) => x.id === valores.proveedor);
+        if (!p) return;
+        parche.proveedor = p.nombre;
+        parche.proveedor_id = p.id;
+      } else {
+        parche[c.key] = valores[c.key] ?? "";
+      }
+    });
+    if (!Object.keys(parche).length) { alert("Falta elegir el valor."); return; }
+
+    const resumen = campos
+      .map((c) => `  ${c.label}: ${cuantasCambian(c)} de ${filas.length} cambian`)
+      .join("\n");
+    if (!confirm(`Se van a modificar ${filas.length} transacción(es):\n\n${resumen}\n\n¿Continuar?`)) return;
+
+    setTrabajando(true);
+    try {
+      await onAplicar(parche);
+    } finally {
+      setTrabajando(false);
+    }
+  };
+
+  return (
+    <Modal onClose={onCerrar} title={`Editar ${filas.length} transacción(es)`} width={620}>
+      <div style={{ fontSize: 12.5, color: T.textDim, lineHeight: 1.6, marginBottom: 14 }}>
+        Solo se toca lo que marques. Lo demás de cada transacción queda igual.
+      </div>
+
+      {CAMPOS_MASIVOS.map((c) => {
+        const on = activos.has(c.key);
+        return (
+          <div key={c.key} style={{
+            display: "grid", gridTemplateColumns: "auto 150px 1fr", gap: 12, alignItems: "center",
+            padding: "8px 0", borderBottom: `1px solid ${T.borderSoft}`,
+          }}>
+            <input type="checkbox" checked={on} onChange={() => alternar(c.key)} />
+            <span style={{ fontSize: 12.5, color: on ? T.text : T.textFaint }}>{c.label}</span>
+            <div>
+              {!on ? (
+                <span style={{ fontSize: 11.5, color: T.textFaint }}>sin cambio</span>
+              ) : c.key === "proveedor" ? (
+                <Select value={valores.proveedor || ""} onChange={(e) => setValores({ ...valores, proveedor: e.target.value })}>
+                  <option value="">— elegir —</option>
+                  {proveedores.map((p) => <option key={p.id} value={p.id}>{p.nombre}</option>)}
+                </Select>
+              ) : c.tipo === "lista" ? (
+                <Select value={valores[c.key] ?? ""} onChange={(e) => setValores({ ...valores, [c.key]: e.target.value })}>
+                  <option value="">— elegir —</option>
+                  {opcionesDe(c).map((o) => <option key={o} value={o}>{o}</option>)}
+                </Select>
+              ) : c.tipo === "fecha" ? (
+                <TextInput type="date" value={valores[c.key] || ""} onChange={(e) => setValores({ ...valores, [c.key]: e.target.value })} />
+              ) : (
+                <TextInput value={valores[c.key] ?? ""} onChange={(e) => setValores({ ...valores, [c.key]: e.target.value })} />
+              )}
+              {on && cuantasCambian(c) === 0 && (valores[c.key] || valores.proveedor) && (
+                <span style={{ fontSize: 10.5, color: T.textFaint, display: "block", marginTop: 3 }}>
+                  Ninguna cambia: ya tienen ese valor.
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+
+      {pagadasSinFecha && (
+        <div style={{ fontSize: 12, color: T.amberDim, marginTop: 12, lineHeight: 1.5 }}>
+          Vas a marcar como Pagado y algunas no tienen fecha de pago. Activa también ese campo:
+          la app lo exige al capturar una transacción y aquí no debería ser distinto.
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, marginTop: 18 }}>
+        <Button onClick={aplicar} disabled={trabajando || !campos.length}>
+          {trabajando ? "Aplicando…" : `Aplicar a ${filas.length}`}
+        </Button>
+        <Button variant="ghost" onClick={onCerrar}>Cancelar</Button>
+      </div>
+    </Modal>
+  );
+}
+
 /* La pestaña mezclaba dos cosas con ritmos distintos: consultar y capturar
    día con día, contra importar o exportar de vez en cuando. Los importadores
    estaban arriba de los filtros, ocupando el primer golpe de vista con lo que
@@ -7795,6 +7945,27 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     const todasSeleccionadas = idsVisibles.length > 0 && idsVisibles.every((id) => seleccionadas.has(id));
     setSeleccionadas(todasSeleccionadas ? new Set() : new Set(idsVisibles));
   };
+  const [editandoMasivo, setEditandoMasivo] = useState(false);
+  const [aplicandoMasivo, setAplicandoMasivo] = useState(false);
+
+  /* Se actualiza de una en una, igual que las otras acciones masivas de esta
+     pantalla: transaccionesApi.update es lo que mantiene el caché local en
+     sincronía, y un update por lote contra Supabase lo dejaría desfasado. */
+  const aplicarMasivo = async (parche) => {
+    setAplicandoMasivo(true);
+    try {
+      for (const id of seleccionadas) {
+        await transaccionesApi.update(id, parche);
+      }
+      setEditandoMasivo(false);
+      setSeleccionadas(new Set());
+    } catch (err) {
+      alert("No se pudo actualizar: " + (err.message || err));
+    } finally {
+      setAplicandoMasivo(false);
+    }
+  };
+
   const marcarReportadas = async (reportar) => {
     setMarcandoReportado(true);
     try {
@@ -7933,6 +8104,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               {marcandoEnviado ? "Marcando…" : "Marcar como enviadas a Pagos"}
             </Button>
             <Button variant="ghost" onClick={() => marcarEnviadasPagos(false)} disabled={marcandoEnviado}>Quitar marca</Button>
+            <div style={{ width: 1, alignSelf: "stretch", background: T.accent, opacity: 0.3, margin: "0 2px" }} />
+            <Button onClick={() => setEditandoMasivo(true)} disabled={aplicandoMasivo}>
+              {aplicandoMasivo ? "Aplicando…" : "Editar seleccionadas"}
+            </Button>
             <Button variant="ghost" onClick={() => setSeleccionadas(new Set())}>Cancelar selección</Button>
             <div style={{ width: 1, alignSelf: "stretch", background: T.accent, opacity: 0.3, margin: "0 2px" }} />
             <Button variant="danger" onClick={eliminarSeleccionadas} disabled={eliminando}>
@@ -8130,6 +8305,18 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 
       <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />
       </>)}
+
+      {editandoMasivo && (
+        <EditarMasivoModal
+          filas={[...transUnidad, ...sinVincular].filter((t) => seleccionadas.has(t.id))}
+          proveedores={proveedoresApi.rows.filter((p) => p.unidad === unidad)
+            .sort((a, b) => String(a.nombre).localeCompare(String(b.nombre)))}
+          proyectos={proyectosUnidad}
+          zonas={zonas}
+          onCerrar={() => setEditandoMasivo(false)}
+          onAplicar={aplicarMasivo}
+        />
+      )}
 
       {sppDe && (
         <SolicitudPagoModal

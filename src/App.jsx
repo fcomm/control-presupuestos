@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.32.0";
+const APP_VERSION = "2.33.0";
 const CHANGELOG = [
+  { v: "2.33.0", desc: "Subpestana Solicitantes: administrar la lista blanca desde la app en vez de por SQL. Esa lista no es una comodidad de la interfaz -- la politica de la base rechaza un envio cuyo correo no este ahi y activo, aunque alguien llame a la API directo -- asi que desactivar a alguien lo deja fuera del formulario publico de inmediato, sin desplegar nada. El correo no se puede cambiar una vez creado: las solicitudes lo guardan como texto y quedarian huerfanas. Y borrar a alguien con solicitudes a su nombre se niega y sugiere desactivarlo, que cumple lo mismo y conserva de quien eran. Las subpestanas se reordenan: Bandeja primero, que es donde se trabaja, y Parametros al final, que se toca una vez" },
   { v: "2.32.0", desc: "Editar una solicitud ya capturada, desde su detalle. Usa el MISMO formulario del alta: con dos habria que mantenerlos iguales cada vez que cambie un campo, y el dia que dejaran de estarlo lo capturado y lo corregido empezarian a diferir sin que nadie lo note. El folio y el consecutivo no se tocan al editar: son la identidad de la solicitud y va a haber una carpeta de Drive nombrada con ellos. Los conceptos se guardan por diferencia -- se actualizan los que siguen, se insertan los nuevos y se borran los quitados -- en vez de borrar todos y reinsertar: asi las transacciones que mas adelante apunten a un concepto no quedan apuntando a un id que ya no existe. Una solicitud convertida no se puede editar, porque sus importes ya viven en transacciones" },
   { v: "2.31.0", desc: "Abrir una solicitud desde la bandeja. Muestra la cabecera completa, sus conceptos con cantidad, precio y subtotal, y el desglose de impuestos hasta el total. Desde ahi se cambia el estado y se dejan notas de revision, guardando quien reviso y cuando. El detalle comprueba que la suma de los conceptos cuadre con el subtotal guardado y lo avisa si no: un descuadre significa que alguien edito por fuera o que hubo un redondeo distinto al capturar, y es mejor verlo aqui que cuando el importe llegue a un reporte. Los estados se muestran con su etiqueta legible en vez del valor de la base" },
   { v: "2.30.0", desc: "Bandeja de Solicitudes con captura manual, replicando el formulario de Zoho. La cabecera lleva solicitante de la lista blanca, folio del solicitante, tipo, zona y proyecto del catalogo, y los impuestos; vehiculo y kilometraje solo aparecen si el tipo es mantenimiento vehicular. Los conceptos se agregan y quitan, cada uno con su subtotal en vivo. Los impuestos son de la solicitud y no de cada linea, porque una SMI se cotiza en una sola moneda. El total va NETO de retenciones, que es lo que se paga, y cuando hay retencion se dice aparte cuanto factura el proveedor. El consecutivo se consulta contra la base y no contra el estado local -- dos pestanas calcularian el mismo numero -- y si chocan, el indice unico rebota el insert y se reintenta. Se capturan a mano a proposito: conviene ver si el modelo aguanta con datos reales antes de exponer un formulario a toda la empresa. Requiere 38-solicitudes-consecutivo.sql" },
@@ -12996,8 +12997,9 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
 ---------------------------------------------------------------------- */
 
 const SUBS_SOLICITUDES = [
-  { id: "parametros", label: "Parámetros" },
-  { id: "bandeja",    label: "Bandeja" },
+  { id: "bandeja",      label: "Bandeja" },
+  { id: "solicitantes", label: "Solicitantes" },
+  { id: "parametros",   label: "Parámetros" },
 ];
 
 const MARCAS_FOLIO = [
@@ -13810,8 +13812,191 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
   );
 }
 
-function SolicitudesTab({ unidad, session, proyectos = [], zonas = [] }) {
-  const [sub, setSub] = useSessionState("ss-solicitudes-sub", "parametros");
+/* ----------------------------------------------------------------------
+   SOLICITUDES — SOLICITANTES AUTORIZADOS
+---------------------------------------------------------------------- */
+
+/**
+ * La lista blanca que la base hace cumplir.
+ *
+ * No es una comodidad de la interfaz: la política de `solicitudes` rechaza un
+ * insert cuyo correo no esté aquí y activo. Quitar a alguien de esta lista lo
+ * deja fuera del formulario público de inmediato, sin desplegar nada.
+ */
+function SolicitantesPanel({ unidad, unidades = [] }) {
+  const [filas, setFilas] = useState(null);
+  const [editando, setEditando] = useState(null);
+  const [guardando, setGuardando] = useState(false);
+  const [error, setError] = useState("");
+
+  const cargar = async () => {
+    setError("");
+    const { data, error: e } = await supabase
+      .from("solicitudes_correos_autorizados").select("*").order("nombre");
+    if (e) setError(e.message); else setFilas(data || []);
+  };
+  useEffect(() => { cargar(); }, []);
+
+  /* Se muestran los de la unidad activa y los que no tienen unidad, que son
+     los que pueden solicitar en cualquiera. Es el mismo criterio que usa el
+     selector de la bandeja. */
+  const visibles = (filas || []).filter((r) => !r.unidad || r.unidad === unidad);
+  const deOtras = (filas || []).length - visibles.length;
+
+  const nuevo = () => setEditando({ _nuevo: true, correo: "", nombre: "", unidad, area: "", activo: true });
+
+  const guardar = async () => {
+    const correo = String(editando.correo || "").trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(correo)) { alert("El correo no tiene forma válida."); return; }
+    setGuardando(true);
+    setError("");
+    try {
+      const fila = {
+        correo,
+        nombre: String(editando.nombre || "").trim() || null,
+        unidad: editando.unidad || null,
+        area: String(editando.area || "").trim() || null,
+        activo: !!editando.activo,
+      };
+      const r = editando._nuevo
+        ? await supabase.from("solicitudes_correos_autorizados").insert(fila)
+        : await supabase.from("solicitudes_correos_autorizados").update(fila).eq("correo", editando.correo);
+      if (r.error) {
+        if (/duplicate|correos_autorizados_pkey/i.test(r.error.message || "")) {
+          throw new Error(`${correo} ya está en la lista. Búscalo abajo y edítalo en vez de agregarlo otra vez.`);
+        }
+        throw r.error;
+      }
+      setEditando(null);
+      await cargar();
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const alternarActivo = async (r) => {
+    const { error: e } = await supabase.from("solicitudes_correos_autorizados")
+      .update({ activo: !r.activo }).eq("correo", r.correo);
+    if (e) setError(e.message); else cargar();
+  };
+
+  /* Borrar es distinto de desactivar. Las solicitudes guardan el correo como
+     texto, sin llave foránea, así que borrarlo no rompe nada visiblemente —
+     pero deja registros apuntando a alguien que ya no está en la lista y no
+     hay forma de reconstruir quién era. Desactivar cumple el mismo propósito
+     y conserva el nombre. */
+  const eliminar = async (r) => {
+    const { count, error: e } = await supabase
+      .from("solicitudes").select("id", { count: "exact", head: true })
+      .ilike("correo_solicitante", r.correo);
+    if (e) { setError(e.message); return; }
+    if (count) {
+      alert(`${r.correo} tiene ${count} solicitud(es) a su nombre.\n\nDesactívalo en vez de borrarlo: deja de poder enviar, y las solicitudes conservan a quién pertenecen.`);
+      return;
+    }
+    if (!confirm(`¿Quitar a ${r.correo} de la lista?`)) return;
+    const { error: e2 } = await supabase
+      .from("solicitudes_correos_autorizados").delete().eq("correo", r.correo);
+    if (e2) setError(e2.message); else cargar();
+  };
+
+  return (
+    <Panel
+      title="Quién puede levantar solicitudes"
+      subtitle="Esta lista la hace cumplir la base: un envío con un correo que no esté aquí y activo se rechaza, aunque alguien llame a la API directo."
+      right={<Button onClick={nuevo}>+ Agregar</Button>}
+    >
+      {editando && (
+        <div style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 15, marginBottom: 16 }}>
+          <div style={{ fontSize: 12.5, fontWeight: 700, color: T.text, marginBottom: 12 }}>
+            {editando._nuevo ? "Nuevo solicitante" : editando.correo}
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 13 }}>
+            <Field label="Correo *">
+              <TextInput
+                value={editando.correo}
+                disabled={!editando._nuevo}
+                onChange={(e) => setEditando({ ...editando, correo: e.target.value })}
+              />
+              {!editando._nuevo && (
+                <span style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>
+                  No se cambia: las solicitudes lo guardan como texto y quedarían huérfanas.
+                </span>
+              )}
+            </Field>
+            <Field label="Nombre">
+              <TextInput value={editando.nombre}
+                onChange={(e) => setEditando({ ...editando, nombre: e.target.value })} />
+            </Field>
+            <Field label="Compañía">
+              <Select value={editando.unidad || ""}
+                onChange={(e) => setEditando({ ...editando, unidad: e.target.value })}>
+                <option value="">Todas</option>
+                {(unidades.length ? unidades : [unidad]).map((u) => <option key={u} value={u}>{u}</option>)}
+              </Select>
+              <span style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>
+                Una persona aparece una sola vez: o es de una compañía, o es de todas.
+              </span>
+            </Field>
+            <Field label="Área">
+              <TextInput value={editando.area}
+                onChange={(e) => setEditando({ ...editando, area: e.target.value })} />
+            </Field>
+          </div>
+          <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 13, fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
+            <input type="checkbox" checked={!!editando.activo}
+              onChange={(e) => setEditando({ ...editando, activo: e.target.checked })} />
+            Activo — puede enviar solicitudes
+          </label>
+          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
+            <Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Button>
+            <Button variant="ghost" onClick={() => setEditando(null)}>Cancelar</Button>
+          </div>
+        </div>
+      )}
+
+      {filas === null ? (
+        <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
+      ) : !visibles.length ? (
+        <EmptyState
+          title="Nadie autorizado para esta compañía"
+          body="Sin al menos un correo aquí, la bandeja no deja capturar y el formulario público rechazaría todo."
+        />
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
+          {visibles.map((r) => (
+            <div key={r.correo} style={{ display: "flex", gap: 12, alignItems: "center", background: T.panel, padding: "10px 12px", opacity: r.activo ? 1 : 0.55 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12.5, color: T.text, fontWeight: 600 }}>{r.nombre || r.correo}</div>
+                <div style={{ fontSize: 11, color: T.textFaint, fontFamily: T.fontMono, marginTop: 2 }}>{r.correo}</div>
+              </div>
+              {r.area && <Pill>{r.area}</Pill>}
+              <Pill>{r.unidad || "Todas"}</Pill>
+              <Pill>{r.activo ? "Activo" : "Inactivo"}</Pill>
+              <Button variant="ghost" onClick={() => alternarActivo(r)} style={{ padding: "4px 10px" }}>
+                {r.activo ? "Desactivar" : "Activar"}
+              </Button>
+              <Button variant="ghost" onClick={() => setEditando({ ...r })} style={{ padding: "4px 10px" }}>Editar</Button>
+              <Button variant="danger" onClick={() => eliminar(r)} style={{ padding: "4px 10px" }}>Quitar</Button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {deOtras > 0 && (
+        <div style={{ marginTop: 12, fontSize: 11.5, color: T.textFaint }}>
+          Hay {deOtras} más asignados a otras compañías. Cambia de compañía arriba para verlos.
+        </div>
+      )}
+      {error && <div style={{ marginTop: 12, fontSize: 12, color: T.red }}>{error}</div>}
+    </Panel>
+  );
+}
+
+function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas = [] }) {
+  const [sub, setSub] = useSessionState("ss-solicitudes-sub", "bandeja");
   const [capturando, setCapturando] = useState(false);
   const [abierta, setAbierta] = useState(null);
   const [editando, setEditando] = useState(null);
@@ -13858,6 +14043,8 @@ function SolicitudesTab({ unidad, session, proyectos = [], zonas = [] }) {
       </div>
 
       {sub === "parametros" && <SolicitudesParametrosPanel unidad={unidad} session={session} />}
+
+      {sub === "solicitantes" && <SolicitantesPanel unidad={unidad} unidades={unidades} />}
 
       {sub === "bandeja" && editando && parametros && (
         <NuevaSolicitudPanel
@@ -16144,7 +16331,7 @@ export default function App() {
               unidadesPermitidas={miPerfil?.unidades_permitidas || []}
             />
           )}
-          {tab === "solicitudes" && <SolicitudesTab unidad={unidad} session={session} proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} zonas={zonas.map((z) => (typeof z === "string" ? z : z.nombre))} />}
+          {tab === "solicitudes" && <SolicitudesTab unidad={unidad} session={session} unidades={unidades} proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} zonas={zonas.map((z) => (typeof z === "string" ? z : z.nombre))} />}
           {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} clausulasApi={contratosClausulasApi} session={session} />}
           {tab === "catalogo" && <CatalogoTab key={catalogoVersion} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>

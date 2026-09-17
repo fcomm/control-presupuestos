@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.28.1";
+const APP_VERSION = "2.29.0";
 const CHANGELOG = [
+  { v: "2.29.0", desc: "Pestana Solicitudes con su subpestana de Parametros, primer paso para migrar la captura de SMI desde Zoho Forms. El formato del folio es dato, no codigo: se arma con marcas -- {n} el consecutivo, {aa} y {aaaa} el ano, {mm} el mes, {unidad} la compania -- y hay una fila por unidad, porque la serie de OSB va en 263P26 y tiene que continuar en 264 o las carpetas de Drive quedarian con dos numeraciones, mientras que CTM e ISE empezaran la suya. Se ve en vivo como saldrian los tres primeros folios al teclear el formato. Avisa si falta {n}, porque todos los folios saldrian iguales, y si el consecutivo reinicia cada ano pero el formato no incluye el ano, porque el folio de enero proximo chocaria con el de este enero. Tambien guarda el id de la carpeta de Drive bajo la que se creara una por solicitud: el id y no el enlace, porque una carpeta movida cambia de enlace y conserva el id. La bandeja queda pendiente. Requiere 35-solicitudes.sql y 36-solicitudes-parametros.sql" },
   { v: "2.28.1", desc: "En el modal de elegir proveedor, las cuentas bancarias ya se pueden editar: antes solo habia Eliminar, asi que corregir un digito obligaba a borrar la cuenta y recapturarla completa. Editar carga la cuenta en el mismo formulario de abajo, que cambia a Guardar cuenta y resalta el renglon; un segundo formulario habria que mantenerlo igual al primero para siempre. Al guardar, la CLABE y el numero de cuenta se quedan solo con digitos y el banco en mayusculas -- los datos viejos traen comillas, asteriscos y espacios de Excel, y BANAMEX contra Banamex contaban como cuentas distintas. Si la CLABE no queda en 18 digitos exactos, se rechaza y dice cuantos quedaron. Lo que no tiene ningun digito, como CODIGO DE BARRAS, se respeta: ahi no hay una cuenta sino la instruccion de como se paga ese recibo" },
   { v: "2.28.0", desc: "El arrendamiento queda completo. Lleva plantilla propia: el arbol lo resuelve como contrato especifico, pero su proemio y sus declaraciones no caben en la plantilla de servicios, asi que la naturaleza puede imponer otra plantilla. El formulario se adapta: pide domicilio del inmueble, clave catastral, uso convenido, renta, dia de pago, deposito y tope de servicios, y deja de pedir monto, lugar de entrega y tipo de garantia, que no aplican. La renta y el deposito se convierten a letra solos. Las clausulas se filtran por naturaleza -- sin eso un contrato de servicios arrastraria las 23 del arrendamiento y al reves. Y se resuelve un problema que venia de antes: el marcador COMPARECENCIA_ARRENDADORA se llena con por su propio derecho cuando la otra parte es persona fisica y con representada por FULANO cuando es moral; sin el, el proemio decia GERARDO CELAYA, representada por GERARDO CELAYA. Requiere 33-clausulas-arrendamiento.sql y 34-plantilla-arrendamiento.sql, y subir 06_Contrato_arrendamiento.docx a Storage" },
   { v: "2.27.0", desc: "Naturaleza de la contratacion: un paso previo al arbol con cuatro figuras -- arrendamiento de oficinas o bodegas, servicios profesionales con persona fisica, servicios con persona moral, y obra civil o mantenimiento industrial. No es una clasificacion paralela: tres de las cuatro ya determinan respuestas del cuestionario porque los gatillos las nombran. Arrendamiento resuelve el gatillo 7, servicios profesionales el 3 porque son intangibles por definicion, y obra el 1 porque obra y mantenimiento industrial son el supuesto del REPSE. Servicios con persona moral no resuelve ninguna: depende del caso. Las respuestas asi puestas se marcan como dadas por sentadas y se pueden cambiar, porque son el caso normal y no una regla sin excepcion. La naturaleza tambien llena TIPO_CONTRATO, queda guardada en el instrumento para auditoria, y sirve como senal para sugerir clausulas: un arrendamiento necesita clausulas que una prestacion de servicios no, y eso no depende de ningun gatillo. Con persona fisica se advierte sobre horario y subordinacion, que es lo que convierte una prestacion de servicios en relacion laboral" },
@@ -12987,6 +12988,231 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
   );
 }
 
+/* ----------------------------------------------------------------------
+   SOLICITUDES — PARÁMETROS
+---------------------------------------------------------------------- */
+
+const SUBS_SOLICITUDES = [
+  { id: "parametros", label: "Parámetros" },
+  { id: "bandeja",    label: "Bandeja" },
+];
+
+const MARCAS_FOLIO = [
+  { marca: "{n}",      que: "el consecutivo" },
+  { marca: "{aa}",     que: "año a dos dígitos" },
+  { marca: "{aaaa}",   que: "año a cuatro dígitos" },
+  { marca: "{mm}",     que: "mes a dos dígitos" },
+  { marca: "{unidad}", que: "la compañía" },
+];
+
+/* El orden importa: {aaaa} debe resolverse antes que {aa}, o la primera se
+   quedaría a medias y dejaría un "26" colgando. */
+function armarFolioSolicitud(formato, consecutivo, ancho, unidad, fecha = new Date()) {
+  const anio = String(fecha.getFullYear());
+  return String(formato || "")
+    .replace(/\{n\}/g, String(consecutivo).padStart(Math.max(1, Number(ancho) || 1), "0"))
+    .replace(/\{aaaa\}/g, anio)
+    .replace(/\{aa\}/g, anio.slice(-2))
+    .replace(/\{mm\}/g, String(fecha.getMonth() + 1).padStart(2, "0"))
+    .replace(/\{unidad\}/g, unidad || "");
+}
+
+function SolicitudesParametrosPanel({ unidad, session }) {
+  const vacio = {
+    formato_folio: "{n}P{aa}", ancho_consecutivo: 1, consecutivo_inicial: 1,
+    reinicia_cada_anio: true, drive_carpeta_raiz: "", drive_carpeta_nombre: "",
+  };
+  const [form, setForm] = useState(vacio);
+  const [cargando, setCargando] = useState(true);
+  const [guardando, setGuardando] = useState(false);
+  const [existia, setExistia] = useState(false);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      setCargando(true);
+      setError("");
+      try {
+        const { data, error: e } = await supabase
+          .from("solicitudes_parametros").select("*").eq("unidad", unidad).maybeSingle();
+        if (e) throw e;
+        if (!vivo) return;
+        setForm(data ? { ...vacio, ...data } : vacio);
+        setExistia(!!data);
+      } catch (err) {
+        if (vivo) setError(err.message || String(err));
+      } finally {
+        if (vivo) setCargando(false);
+      }
+    })();
+    return () => { vivo = false; };
+  }, [unidad]);
+
+  const n0 = Number(form.consecutivo_inicial) || 0;
+  const ancho = Number(form.ancho_consecutivo) || 1;
+  const ejemplos = [n0, n0 + 1, n0 + 2]
+    .map((n) => armarFolioSolicitud(form.formato_folio, n, ancho, unidad));
+  const sinConsecutivo = !/\{n\}/.test(String(form.formato_folio || ""));
+  /* Sin año en el formato y con reinicio anual, el folio del año que viene
+     chocaría contra el de éste. El índice único lo rebotaría, pero es mejor
+     decirlo antes de capturar mil solicitudes. */
+  const choqueAnual = form.reinicia_cada_anio
+    && !/\{aa\}|\{aaaa\}/.test(String(form.formato_folio || ""));
+
+  const guardar = async () => {
+    if (sinConsecutivo) { alert("El formato tiene que incluir {n}, o todos los folios saldrían iguales."); return; }
+    setGuardando(true);
+    setError("");
+    try {
+      const fila = {
+        unidad,
+        formato_folio: String(form.formato_folio || "").trim(),
+        ancho_consecutivo: ancho,
+        consecutivo_inicial: n0,
+        reinicia_cada_anio: !!form.reinicia_cada_anio,
+        drive_carpeta_raiz: String(form.drive_carpeta_raiz || "").trim(),
+        drive_carpeta_nombre: String(form.drive_carpeta_nombre || "").trim(),
+        actualizado_en: new Date().toISOString(),
+        ...(session?.user?.id ? { actualizado_por: session.user.id } : {}),
+      };
+      const { error: e } = await supabase
+        .from("solicitudes_parametros").upsert(fila, { onConflict: "unidad" });
+      if (e) throw e;
+      setExistia(true);
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  if (cargando) {
+    return <Panel title="Parámetros"><div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div></Panel>;
+  }
+
+  return (
+    <>
+      <Panel
+        title={`Folio de solicitudes — ${unidad}`}
+        subtitle="Cómo se numeran las SMI. El formato no está en el código porque cada compañía puede llevar el suyo."
+        right={<Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : existia ? "Guardar" : "Crear"}</Button>}
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14, maxWidth: 780 }}>
+          <Field label="Formato">
+            <TextInput value={form.formato_folio}
+              onChange={(e) => setForm({ ...form, formato_folio: e.target.value })} />
+            {sinConsecutivo && (
+              <span style={{ fontSize: 10.5, color: T.red, marginTop: 3 }}>Falta {"{n}"}</span>
+            )}
+          </Field>
+          <Field label="Consecutivo inicial">
+            <TextInput type="number" value={form.consecutivo_inicial}
+              onChange={(e) => setForm({ ...form, consecutivo_inicial: e.target.value })} />
+          </Field>
+          <Field label="Dígitos del consecutivo">
+            <TextInput type="number" min="1" max="8" value={form.ancho_consecutivo}
+              onChange={(e) => setForm({ ...form, ancho_consecutivo: e.target.value })} />
+            <span style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>
+              1 = sin ceros a la izquierda
+            </span>
+          </Field>
+        </div>
+
+        <label style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 14, fontSize: 12.5, color: T.textDim, cursor: "pointer", maxWidth: 780 }}>
+          <input type="checkbox" checked={!!form.reinicia_cada_anio}
+            onChange={(e) => setForm({ ...form, reinicia_cada_anio: e.target.checked })}
+            style={{ marginTop: 2 }} />
+          <span>
+            Reiniciar el consecutivo cada año.
+            <span style={{ color: T.textFaint }}> Sin esto, la serie es continua para siempre.</span>
+          </span>
+        </label>
+
+        {choqueAnual && (
+          <div style={{ marginTop: 12, maxWidth: 780, fontSize: 12, color: T.amberDim, background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 6, padding: "9px 11px", lineHeight: 1.5 }}>
+            El consecutivo reinicia cada año pero el formato no incluye el año, así que el folio de
+            enero próximo chocaría con el de este enero. Agrega {"{aa}"} o desactiva el reinicio.
+          </div>
+        )}
+
+        <div style={{ marginTop: 16, maxWidth: 780, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: "12px 14px" }}>
+          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 7 }}>
+            Así saldrían los primeros
+          </div>
+          <div style={{ fontFamily: T.fontMono, fontSize: 15, color: T.text }}>
+            {ejemplos.join("   ·   ")}
+          </div>
+          <div style={{ fontSize: 11, color: T.textFaint, marginTop: 8, lineHeight: 1.6 }}>
+            {MARCAS_FOLIO.map((m) => (
+              <span key={m.marca} style={{ marginRight: 14, whiteSpace: "nowrap" }}>
+                <b style={{ fontFamily: T.fontMono }}>{m.marca}</b> {m.que}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        {error && <div style={{ marginTop: 12, fontSize: 12, color: T.red }}>No se pudo guardar: {error}</div>}
+      </Panel>
+
+      <Panel
+        title="Carpeta en Drive"
+        subtitle="Dónde crea la app una carpeta por solicitud. El id se toma de la URL de Drive, después de /folders/."
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14, maxWidth: 780 }}>
+          <Field label="Id de la carpeta raíz">
+            <TextInput value={form.drive_carpeta_raiz}
+              onChange={(e) => setForm({ ...form, drive_carpeta_raiz: e.target.value })}
+              placeholder="1AbC…" />
+          </Field>
+          <Field label="Nombre, solo para reconocerla">
+            <TextInput value={form.drive_carpeta_nombre}
+              onChange={(e) => setForm({ ...form, drive_carpeta_nombre: e.target.value })}
+              placeholder="adm/osb/Compras/2026" />
+          </Field>
+        </div>
+        <div style={{ marginTop: 12, maxWidth: 780, fontSize: 11.5, color: T.textFaint, lineHeight: 1.6 }}>
+          Se guarda el id y no el enlace: el enlace se deriva del id, pero una carpeta movida o
+          renombrada cambia de enlace y conserva el id.
+        </div>
+      </Panel>
+    </>
+  );
+}
+
+function SolicitudesTab({ unidad, session }) {
+  const [sub, setSub] = useSessionState("ss-solicitudes-sub", "parametros");
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start" }}>
+        {SUBS_SOLICITUDES.map((s) => (
+          <button
+            key={s.id}
+            onClick={() => setSub(s.id)}
+            style={{
+              padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
+              background: sub === s.id ? T.accent : "transparent",
+              color: sub === s.id ? "#FFFFFF" : T.textDim,
+              fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
+            }}
+          >{s.label}</button>
+        ))}
+      </div>
+
+      {sub === "parametros" && <SolicitudesParametrosPanel unidad={unidad} session={session} />}
+
+      {sub === "bandeja" && (
+        <Panel title="Bandeja de solicitudes" subtitle="Pendiente.">
+          <EmptyState
+            title="Todavía no hay captura"
+            body="Aquí llegarán las SMI para revisarlas, asignarles partida y convertirlas en transacciones."
+          />
+        </Panel>
+      )}
+    </div>
+  );
+}
+
 function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [sub, setSub] = useSessionState("ss-catalogo-sub", "proyectos");
@@ -15062,6 +15288,7 @@ export default function App() {
     { id: "reporte-direccion", label: "Reporte Pagos Dirección" },
     { id: "reportes-direccion", label: "Reportes a Dirección" },
     { id: "vehiculos", label: "Vehículos" },
+    { id: "solicitudes", label: "Solicitudes" },
     { id: "contratos", label: "Contratos" },
     { id: "catalogo", label: "Catálogo" },
   ];
@@ -15187,6 +15414,7 @@ export default function App() {
               unidadesPermitidas={miPerfil?.unidades_permitidas || []}
             />
           )}
+          {tab === "solicitudes" && <SolicitudesTab unidad={unidad} session={session} />}
           {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} clausulasApi={contratosClausulasApi} session={session} />}
           {tab === "catalogo" && <CatalogoTab key={catalogoVersion} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>

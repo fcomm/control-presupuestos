@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.34.0";
+const APP_VERSION = "2.34.1";
 const CHANGELOG = [
+  { v: "2.34.1", desc: "Arreglo: el boton de adjuntar no se veia. Estaba en el encabezado del panel, donde el bloque del titulo no tiene tope de ancho y con un subtitulo largo empuja los controles fuera de la vista. Se movieron al cuerpo, en una barra propia con la categoria, el boton y el recordatorio del limite de 25 MB" },
   { v: "2.34.0", desc: "Adjuntos en el detalle de la solicitud: subir varios a la vez con su categoria -- cotizacion, soporte, relacionado --, abrirlos y quitarlos. Van a un bufer en Supabase con ruta legible unidad/folio/archivo, de modo que quien abra el bucket entienda de que solicitud es cada uno sin consultar la tabla; el nombre se limpia de acentos y espacios para la clave de Storage y el original se conserva en la tabla, que es el que ve la gente. El bucket es privado, asi que abrir genera una URL firmada de un minuto en vez de exponer el archivo. Si la fila de la tabla falla despues de subir, el objeto se retira del bucket: quedaria huerfano y nadie sabria de donde salio. Cada adjunto muestra si esta En transito o En Drive, y mientras haya archivos en el bufer se avisa que siguen ocupando espacio de la base. Requiere 39-storage-adjuntos.sql" },
   { v: "2.33.0", desc: "Subpestana Solicitantes: administrar la lista blanca desde la app en vez de por SQL. Esa lista no es una comodidad de la interfaz -- la politica de la base rechaza un envio cuyo correo no este ahi y activo, aunque alguien llame a la API directo -- asi que desactivar a alguien lo deja fuera del formulario publico de inmediato, sin desplegar nada. El correo no se puede cambiar una vez creado: las solicitudes lo guardan como texto y quedarian huerfanas. Y borrar a alguien con solicitudes a su nombre se niega y sugiere desactivarlo, que cumple lo mismo y conserva de quien eran. Las subpestanas se reordenan: Bandeja primero, que es donde se trabaja, y Parametros al final, que se toca una vez" },
   { v: "2.32.0", desc: "Editar una solicitud ya capturada, desde su detalle. Usa el MISMO formulario del alta: con dos habria que mantenerlos iguales cada vez que cambie un campo, y el dia que dejaran de estarlo lo capturado y lo corregido empezarian a diferir sin que nadie lo note. El folio y el consecutivo no se tocan al editar: son la identidad de la solicitud y va a haber una carpeta de Drive nombrada con ellos. Los conceptos se guardan por diferencia -- se actualizan los que siguen, se insertan los nuevos y se borran los quitados -- en vez de borrar todos y reinsertar: asi las transacciones que mas adelante apunten a un concepto no quedan apuntando a un id que ya no existe. Una solicitud convertida no se puede editar, porque sus importes ya viven en transacciones" },
@@ -13741,18 +13742,29 @@ function AdjuntosPanel({ entidad, entidadId, unidad, folio }) {
     <Panel
       title="Adjuntos"
       subtitle="Se guardan aquí y de aquí pasan a Drive. Mientras tanto viven en Supabase."
-      right={
-        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <Select value={categoria} onChange={(e) => setCategoria(e.target.value)} style={{ maxWidth: 200 }}>
+    >
+      {/* Los controles van en el cuerpo y no en el encabezado: ahí el bloque
+          del título no tiene tope de ancho y con un subtítulo largo los
+          empuja fuera de la vista. */}
+      <div style={{
+        display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap",
+        background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8,
+        padding: "12px 14px", marginBottom: 14,
+      }}>
+        <Field label="Categoría" style={{ maxWidth: 230, flex: "0 0 230px" }}>
+          <Select value={categoria} onChange={(e) => setCategoria(e.target.value)}>
             {CATEGORIAS_ADJUNTO.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
           </Select>
-          <Button onClick={() => refArchivo.current?.click()} disabled={subiendo}>
-            {subiendo ? "Subiendo…" : "+ Adjuntar"}
-          </Button>
-          <input ref={refArchivo} type="file" multiple onChange={subir} style={{ display: "none" }} />
-        </div>
-      }
-    >
+        </Field>
+        <Button onClick={() => refArchivo.current?.click()} disabled={subiendo}>
+          {subiendo ? "Subiendo…" : "+ Adjuntar archivos"}
+        </Button>
+        <input ref={refArchivo} type="file" multiple onChange={subir} style={{ display: "none" }} />
+        <span style={{ fontSize: 11, color: T.textFaint, paddingBottom: 9 }}>
+          Se pueden elegir varios a la vez. Máximo 25 MB por archivo.
+        </span>
+      </div>
+
       {progreso && <div style={{ fontSize: 12, color: T.textDim, marginBottom: 10 }}>{progreso}</div>}
 
       {filas === null ? (

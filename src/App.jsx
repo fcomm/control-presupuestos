@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.26.0";
+const APP_VERSION = "2.27.0";
 const CHANGELOG = [
+  { v: "2.27.0", desc: "Naturaleza de la contratacion: un paso previo al arbol con cuatro figuras -- arrendamiento de oficinas o bodegas, servicios profesionales con persona fisica, servicios con persona moral, y obra civil o mantenimiento industrial. No es una clasificacion paralela: tres de las cuatro ya determinan respuestas del cuestionario porque los gatillos las nombran. Arrendamiento resuelve el gatillo 7, servicios profesionales el 3 porque son intangibles por definicion, y obra el 1 porque obra y mantenimiento industrial son el supuesto del REPSE. Servicios con persona moral no resuelve ninguna: depende del caso. Las respuestas asi puestas se marcan como dadas por sentadas y se pueden cambiar, porque son el caso normal y no una regla sin excepcion. La naturaleza tambien llena TIPO_CONTRATO, queda guardada en el instrumento para auditoria, y sirve como senal para sugerir clausulas: un arrendamiento necesita clausulas que una prestacion de servicios no, y eso no depende de ningun gatillo. Con persona fisica se advierte sobre horario y subordinacion, que es lo que convierte una prestacion de servicios en relacion laboral" },
   { v: "2.26.0", desc: "Edicion masiva de transacciones. Con varias seleccionadas aparece Editar seleccionadas: se marca campo por campo cual se quiere cambiar y lo que no se marca no se toca -- sin eso, un campo vacio borraria el valor que cada transaccion ya tenia. Se pueden cambiar proveedor, proyecto, zona, area, categoria, status y fecha de pago. Quedan fuera importe, dia, folios y concepto a proposito: son propios de cada registro y ponerles el mismo valor a veinte transacciones no arregla nada, destruye lo que las distinguia. Al cambiar el proveedor se mueven los DOS campos, el nombre en texto y proveedor_id, porque tocar solo uno deja la fila con el nombre nuevo apuntando al proveedor viejo. Antes de aplicar dice cuantas cambian de verdad en cada campo, y avisa cuando el valor elegido es el que ya tenian. Marcar Pagado exige fecha de pago, la misma regla que al capturar una transaccion suelta" },
   { v: "2.25.1", desc: "En Importar / Exportar, los dos desplegables -- Importar de Google Sheets y Solicitudes de Pago generadas -- se alinean en una sola fila en vez de apilarse. Cada uno se comporta como item de una fila flexible: cerrado ocupa lo que mide, y al abrirse toma el renglon completo, de modo que su contenido no queda apretado a media pantalla junto al otro" },
   { v: "2.25.0", desc: "Transacciones se parte en dos subpestanas. La pestana mezclaba dos cosas con ritmos distintos: consultar y capturar dia con dia, contra importar o exportar de vez en cuando -- y los importadores estaban ARRIBA de los filtros, ocupando el primer golpe de vista con lo que menos se usa. General queda con los filtros, el agrupado, la tabla, el panel de sin partida vinculada y Nueva transaccion. Importar / Exportar reune el importador de Google Sheets, las solicitudes de pago generadas, la exportacion y la carga masiva. La exportacion deja de ser un panel plegable y es un panel fijo de su pestana; como los filtros que gobiernan la salida ya no se ven desde ahi, el subtitulo dice cuantas transacciones de cuantas se van a exportar -- sin eso, bajarias un archivo filtrado sin saberlo" },
@@ -11498,7 +11499,7 @@ const RESPUESTAS_ARBOL = [...GATILLOS.map((g) => g.id), "superaOperacion", "supe
    pantalla para relacionarlo con la pregunta que contesta. */
 const ANCHO_PREGUNTAS = 760;
 
-function PreguntaSiNo({ numero, texto, valor, onChange, apagado }) {
+function PreguntaSiNo({ numero, texto, valor, onChange, apagado, preestablecida }) {
   const sinResponder = valor !== "si" && valor !== "no";
   const barra = sinResponder ? "transparent" : valor === "si" ? T.accent : T.border;
   return (
@@ -11510,6 +11511,11 @@ function PreguntaSiNo({ numero, texto, valor, onChange, apagado }) {
     }}>
       <div style={{ fontSize: 12.5, lineHeight: 1.5, color: sinResponder ? T.textDim : T.text }}>
         {numero ? <span style={{ color: T.textFaint, fontVariantNumeric: "tabular-nums" }}>{numero}. </span> : null}{texto}
+        {preestablecida && (
+          <span style={{ fontSize: 10.5, color: T.textFaint, marginLeft: 7, whiteSpace: "nowrap" }}>
+            — la da por sentada la naturaleza
+          </span>
+        )}
       </div>
       <div style={{
         display: "flex", gap: 2, flexShrink: 0, padding: 2, borderRadius: 7,
@@ -11560,6 +11566,117 @@ function BloqueCompuerta({ n, titulo, salida, estado, children }) {
       </div>
       {children}
     </div>
+  );
+}
+
+/* ----------------------------------------------------------------------
+   NATURALEZA DE LA CONTRATACIÓN
+---------------------------------------------------------------------- */
+
+/**
+ * El paso previo al árbol. No es una clasificación paralela: tres de las
+ * cuatro naturalezas ya determinan respuestas del cuestionario, porque los
+ * gatillos las nombran. Preguntarlas otra vez sería pedirle al usuario que
+ * deduzca lo que la categoría ya dijo.
+ *
+ * `fija` son las respuestas que la naturaleza da por sentadas. Se marcan
+ * como preestablecidas y se pueden cambiar: son el caso normal, no una regla
+ * sin excepción. Un mantenimiento que el proveedor ejecute sin personal en
+ * sitio no cae en el REPSE, y quien captura debe poder decirlo.
+ */
+const NATURALEZAS = [
+  {
+    id: "arrendamiento",
+    label: "Arrendamiento de oficinas o bodegas",
+    tipoContrato: "ARRENDAMIENTO",
+    fija: { g7: "si" },
+    porque: "El gatillo 7 nombra el arrendamiento entre sus supuestos.",
+  },
+  {
+    id: "servicios_fisica",
+    label: "Servicios profesionales con persona física",
+    tipoContrato: "PRESTACIÓN DE SERVICIOS PROFESIONALES",
+    fija: { g3: "si" },
+    porque: "Un servicio profesional es intangible por definición: gatillo 3.",
+    alerta: "Con persona física, cuida que el contrato no describa horario, subordinación ni herramientas nuestras: es lo que convierte una prestación de servicios en una relación laboral.",
+  },
+  {
+    id: "servicios_moral",
+    label: "Servicios con persona moral",
+    tipoContrato: "PRESTACIÓN DE SERVICIOS",
+    fija: {},
+    porque: "No predetermina ninguna compuerta: depende de si el servicio es intangible, si entra a instalaciones del cliente y del monto.",
+  },
+  {
+    id: "obra",
+    label: "Obra civil o mantenimiento industrial",
+    tipoContrato: "EJECUCIÓN DE OBRA Y MANTENIMIENTO",
+    fija: { g1: "si" },
+    porque: "Obra y mantenimiento industrial son obras y servicios especializados, que es el supuesto del REPSE: gatillo 1.",
+  },
+];
+
+const naturalezaDe = (id) => NATURALEZAS.find((n) => n.id === id) || null;
+
+/* Las señales que pueden sugerir una cláusula: las once casillas del árbol
+   más la naturaleza elegida. Se expresan igual —"si" o nada— para que la
+   biblioteca no tenga que distinguirlas. */
+const senalesDe = (resp, naturaleza) =>
+  naturaleza ? { ...resp, ["nat_" + naturaleza]: "si" } : resp;
+
+function NaturalezaPanel({ naturaleza, onElegir }) {
+  const n = naturalezaDe(naturaleza);
+  return (
+    <Panel
+      title="Naturaleza de la contratación"
+      subtitle="Qué se va a contratar. Responde de entrada parte del árbol, porque los gatillos nombran varias de estas figuras."
+    >
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10, maxWidth: ANCHO_PREGUNTAS }}>
+        {NATURALEZAS.map((o) => {
+          const activa = o.id === naturaleza;
+          return (
+            <button
+              key={o.id}
+              type="button"
+              onClick={() => onElegir(o.id)}
+              style={{
+                textAlign: "left", cursor: "pointer", borderRadius: 8, padding: "12px 13px",
+                background: activa ? T.accentBg : T.panel,
+                border: `1px solid ${activa ? T.accent : T.border}`,
+                fontFamily: T.fontUI,
+              }}
+            >
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: T.text, lineHeight: 1.4 }}>{o.label}</div>
+              <div style={{ fontSize: 11, color: T.textFaint, marginTop: 5 }}>
+                {Object.keys(o.fija).length
+                  ? `Deja resuelto: ${Object.keys(o.fija).map((k) => k.toUpperCase()).join(", ")}`
+                  : "No resuelve ninguna compuerta"}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+
+      {n && (
+        <div style={{ marginTop: 14, maxWidth: ANCHO_PREGUNTAS, fontSize: 12, color: T.textDim, lineHeight: 1.55 }}>
+          {n.porque}
+          {Object.keys(n.fija).length > 0 && (
+            <> Esas respuestas quedan marcadas abajo y se pueden cambiar si el caso concreto no encaja.</>
+          )}
+          {n.alerta && (
+            <div style={{ marginTop: 10, color: T.amberDim, background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 6, padding: "9px 11px" }}>
+              {n.alerta}
+            </div>
+          )}
+        </div>
+      )}
+
+      {!n && (
+        <div style={{ marginTop: 12, fontSize: 12, color: T.textFaint }}>
+          Puedes saltarte este paso y responder el árbol completo a mano.
+        </div>
+      )}
+    </Panel>
   );
 }
 
@@ -11848,7 +11965,7 @@ function descargarBlob(blob, nombre) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
-function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, resp, setResp, objeto, setObjeto, itemsClausulado, itemsAnexo, session }) {
+function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, resp, setResp, naturaleza, setNaturaleza, objeto, setObjeto, itemsClausulado, itemsAnexo, session }) {
   const [datosUnidad, setDatosUnidad] = useState(null);
   const [cargando, setCargando] = useState(true);
   const [rfc, setRfc] = useState("");
@@ -11881,6 +11998,7 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
   const proveedor = provLegalApi.rows.find((p) => normRfc(p.rfc) === normRfc(rfc)) || null;
   const decision = decidirInstrumento(resp);
   const sinResponder = RESPUESTAS_ARBOL.filter((k) => resp[k] !== "si" && resp[k] !== "no");
+  const fijasPorNaturaleza = naturalezaDe(naturaleza)?.fija || {};
   const estadoCompuerta = (n) =>
     decision.compuerta === n ? "decide"
     : decision.compuerta !== 0 && n > decision.compuerta ? "inerte"
@@ -11996,7 +12114,7 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
         vigencia_inicio: form.VIGENCIA_INICIO || null,
         vigencia_fin: form.VIGENCIA_FIN || null,
         monto_maximo: decision.tipo === "contrato_marco" ? (montoBase || null) : null,
-        respuestas: { ...resp, _compuerta: decision.compuerta },
+        respuestas: { ...resp, _compuerta: decision.compuerta, _naturaleza: naturaleza || null },
         ruta_decision: decision.ruta,
         parametros_id: parametros.id,
         estado: "generado",
@@ -12086,6 +12204,17 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
             )}
           </Panel>
 
+          <NaturalezaPanel
+            naturaleza={naturaleza}
+            onElegir={(id) => {
+              setNaturaleza(id);
+              const n = naturalezaDe(id);
+              setResp({ ...resp, ...(n ? n.fija : {}) });
+              const tc = n?.tipoContrato;
+              if (tc) setForm((f) => ({ ...f, TIPO_CONTRATO: tc }));
+            }}
+          />
+
           <Panel
             title="Árbol de decisión"
             subtitle="Se evalúan en orden. La primera compuerta con un sí determina el instrumento y las siguientes ya no corren."
@@ -12107,6 +12236,7 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
               estado={estadoCompuerta(1)}>
               {GATILLOS.map((g, i) => (
                 <PreguntaSiNo key={g.id} numero={i + 1} texto={g.texto} apagado={estadoCompuerta(1) === "inerte"}
+                  preestablecida={fijasPorNaturaleza[g.id] !== undefined && resp[g.id] === fijasPorNaturaleza[g.id]}
                   valor={resp[g.id]} onChange={(v) => setResp({ ...resp, [g.id]: v })} />
               ))}
             </BloqueCompuerta>
@@ -12275,9 +12405,13 @@ function etiquetaNumero(i, modo) {
   return `${ordinalEnLetra(i)}.`;
 }
 
+/* Una cláusula se puede amarrar a un gatillo, a un riesgo o directamente a
+   la naturaleza de la contratación: un arrendamiento necesita cláusulas que
+   una prestación de servicios no, y eso no depende de ningún gatillo. */
 const TODAS_CASILLAS = [
   ...GATILLOS.map((g, i) => ({ id: g.id, etiqueta: `Gatillo ${i + 1}`, texto: g.texto })),
   ...RIESGOS.map((r, i) => ({ id: r.id, etiqueta: `Riesgo ${i + 1}`, texto: r.texto })),
+  ...NATURALEZAS.map((n) => ({ id: "nat_" + n.id, etiqueta: "Naturaleza", texto: n.label })),
 ];
 
 const slugClave = (t) =>
@@ -12638,6 +12772,7 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
      ellas dependen las cláusulas sugeridas. Si vivieran dentro de un solo
      panel, cambiar de pestaña las perdería. */
   const [resp, setResp] = useState({});
+  const [naturaleza, setNaturaleza] = useState("");
   const [instrumento, setInstrumento] = useState("contrato_especifico");
   const [objeto, setObjeto] = useState("");
   const [incluidas, setIncluidas] = useState(() => new Set());
@@ -12645,6 +12780,9 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
   /* El árbol es quien decide el instrumento; el selector de la pestaña de
      cláusulas solo lo refleja. Se puede cambiar a mano, pero si el árbol
      cambia de opinión, vuelve a mandar él. */
+  /* La naturaleza viaja junto a las respuestas: para la biblioteca de
+     cláusulas es una señal más, indistinguible de un gatillo. */
+  const senales = senalesDe(resp, naturaleza);
   const tipoSugerido = decidirInstrumento(resp).tipo;
   useEffect(() => { setInstrumento(tipoSugerido); }, [tipoSugerido]);
 
@@ -12720,6 +12858,8 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
           instrumentosApi={instrumentosApi}
           resp={resp}
           setResp={setResp}
+          naturaleza={naturaleza}
+          setNaturaleza={setNaturaleza}
           objeto={objeto}
           setObjeto={setObjeto}
           itemsClausulado={itemsClausulado}
@@ -12731,7 +12871,7 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
       {sub === "clausulas" && (
         <ClausulasPanel
           clausulasApi={clausulasApi}
-          resp={resp}
+          resp={senales}
           tipoSugerido={tipoSugerido}
           instrumento={instrumento}
           setInstrumento={setInstrumento}

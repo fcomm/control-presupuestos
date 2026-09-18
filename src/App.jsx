@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.43.0";
+const APP_VERSION = "2.44.0";
 const CHANGELOG = [
+  { v: "2.44.0", desc: "Registrar transacciones: el momento en que uno se compromete con una. Antes se trabaja sin consecuencias -- se crea, se edita, se borra -- y no tiene folio; al registrarla recibe el suyo, que ya existe para siempre, y queda habilitada para irse a un reporte. NO bloquea los datos: una registrada se sigue editando igual, lo unico que cambia es que tiene numero y expediente. Resuelve dos cosas: hoy no habia frontera entre una transaccion a medio capturar y una lista para pagarse -- las dos se veian igual y las dos entraban a un reporte -- y el folio se gastaba en transacciones que nunca se concretaban. Se registra en bloque desde la barra de seleccion, porque las importadas llegan por decenas y una por una nadie lo haria. Van de a una contra la base y no en lote: cada folio se confirma y se reintenta si choca, y un insert masivo calcularia todos de golpe para que el primer choque tumbara el resto. Las transacciones que ya existian quedaron registradas por la migracion, asi que ningun reporte cambia. Requiere 49-transaccion-registrada.sql" },
   { v: "2.43.0", desc: "Se agrega Por programar a pago y se retira Convertida. Convertida era exactamente lo mismo que Agendado a pago con otro nombre, y dos formas de decir lo mismo acaban usandose a medias. Por programar a pago si hace falta: entre autorizar y agendar hay trabajo real -- asignar partida, elegir proveedor, capturar la transaccion -- y ese trabajo es de administracion, no de quien autoriza. Y Agendado a pago deja de aceptar que le suelten tarjetas: lo pone el sistema al convertir. Si se pudiera marcar a mano, el tablero diria que hay pagos agendados sin que exista ninguna transaccion detras. Mientras la conversion no exista, esa columna queda vacia y lo dice. Requiere 47-por-programar-pago.sql" },
   { v: "2.42.0", desc: "El detalle de una solicitud se abre en dialogo en vez de reemplazar la vista: el tablero se queda detras, asi que al cerrar no hay que volver a encontrar donde se estaba. El pie del dialogo tiene Guardar y cerrar, que aplica el cambio de estado y las notas, y Cancelar, que los descarta. Se dice ahi mismo que los adjuntos y el PDF ya quedaron guardados: implican un archivo que ya viajo, y alguien podria cancelar creyendo que deshace tambien eso. El dialogo no se cierra al hacer clic fuera, porque hacerlo con cambios sin guardar los perderia sin preguntar" },
   { v: "2.41.1", desc: "El tablero pasa a seis columnas: Entrada, En revision, Con el solicitante, Cotizando, Por autorizar y Agendado a pago. El criterio para que algo sea columna es que la solicitud se QUEDE esperando ahi y se pueda decir de quien es la pelota; si nada espera, no es un estado sino un instante. Con el solicitante es el que mas se va a usar y el que no suele estar: sin el, una solicitud parada porque alguien no contesta se ve identica a una en revision, y el tablero hace parecer lenta a administracion cuando el trabajo esta afuera. Por autorizar va DESPUES de cotizando: primero hay precio, luego alguien lo aprueba. Cada columna dice a quien espera al pasar el cursor. Requiere 46-estados-tablero.sql" },
@@ -676,6 +677,45 @@ async function maxFolioTransaccionReal(prefix) {
   if (error || !data?.length) return 0;
   const n = parseInt(data[0].folio_transaccion.slice(prefix.length), 10);
   return isNaN(n) ? 0 : n;
+}
+
+/**
+ * Registrar una transacción: comprometerse con ella.
+ *
+ * Antes de registrarla se trabaja sin consecuencias —se crea, se edita, se
+ * borra— y no tiene folio. Al registrarla se le asigna uno, que ya existe
+ * para siempre, y queda habilitada para irse a un reporte de pago.
+ *
+ * NO bloquea los datos: una transacción registrada se sigue editando igual.
+ * Lo único que cambia es que tiene número y expediente.
+ *
+ * El folio se confirma contra la base y se reintenta si choca, igual que al
+ * insertar: el índice único de folio_transaccion es global, así que dos
+ * registros casi simultáneos pueden calcular el mismo número.
+ */
+async function registrarTransaccion(transaccionesApi, t, unidad, transUnidad) {
+  if (t.registrada_en) return t;
+
+  const ahora = new Date().toISOString();
+  if (t.folio_transaccion) {
+    return await transaccionesApi.update(t.id, { registrada_en: ahora });
+  }
+
+  const mes = t.mes || (t.dia ? MESES[Number(String(t.dia).slice(5, 7)) - 1] : null);
+  const anio = t.anio || (t.dia ? Number(String(t.dia).slice(0, 4)) : new Date().getFullYear());
+  const { prefix, siguiente: local } = nextFolioTransaccion(unidad, mes, anio, transUnidad, 0);
+  const real = await maxFolioTransaccionReal(prefix);
+  const desde = Math.max(local, real + 1);
+
+  for (let intento = 0; intento < 8; intento++) {
+    const folio = `${prefix}${String(desde + intento).padStart(3, "0")}`;
+    try {
+      return await transaccionesApi.update(t.id, { folio_transaccion: folio, registrada_en: ahora });
+    } catch (err) {
+      const choco = /folio_transaccion|idx_transacciones_folio_transaccion/i.test(err?.message || "");
+      if (!choco || intento === 7) throw err;
+    }
+  }
 }
 
 // Inserta una transacción nueva reintentando el folio si otra persona (u otra
@@ -8035,6 +8075,31 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
   };
 
+  const [registrando, setRegistrando] = useState(false);
+
+  const registrarSeleccionadas = async () => {
+    const pend = [...seleccionadas]
+      .map((id) => transUnidad.find((t) => t.id === id))
+      .filter((t) => t && !t.registrada_en);
+    if (!pend.length) { alert("Las seleccionadas ya están registradas."); return; }
+    if (!confirm(`Se van a registrar ${pend.length} transacción(es).\n\nCada una recibe su folio definitivo y su carpeta de expediente. El folio ya no se libera: si después no se concreta, hay que cancelarla.\n\n¿Continuar?`)) return;
+
+    setRegistrando(true);
+    try {
+      /* Una por una y no en lote: cada folio se confirma contra la base y se
+         reintenta si choca. Un insert masivo calcularía todos los números de
+         golpe y el primer choque tumbaría el resto. */
+      for (const t of pend) {
+        await registrarTransaccion(transaccionesApi, t, unidad, transUnidad);
+      }
+      setSeleccionadas(new Set());
+    } catch (err) {
+      alert("No se pudo registrar: " + (err.message || err));
+    } finally {
+      setRegistrando(false);
+    }
+  };
+
   const marcarReportadas = async (reportar) => {
     setMarcandoReportado(true);
     try {
@@ -8173,6 +8238,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               {marcandoEnviado ? "Marcando…" : "Marcar como enviadas a Pagos"}
             </Button>
             <Button variant="ghost" onClick={() => marcarEnviadasPagos(false)} disabled={marcandoEnviado}>Quitar marca</Button>
+            {(() => {
+              const sinRegistrar = [...seleccionadas]
+                .map((id) => transUnidad.find((t) => t.id === id))
+                .filter((t) => t && !t.registrada_en).length;
+              return sinRegistrar > 0 ? (
+                <Button onClick={registrarSeleccionadas} disabled={registrando}>
+                  {registrando ? "Registrando…" : `Registrar ${sinRegistrar}`}
+                </Button>
+              ) : null;
+            })()}
             <div style={{ width: 1, alignSelf: "stretch", background: T.accent, opacity: 0.3, margin: "0 2px" }} />
             <Button onClick={() => setEditandoMasivo(true)} disabled={aplicandoMasivo}>
               {aplicandoMasivo ? "Aplicando…" : "Editar seleccionadas"}

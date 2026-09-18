@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.38.1";
+const APP_VERSION = "2.39.0";
 const CHANGELOG = [
+  { v: "2.39.0", desc: "El PDF de la SMI termina en la carpeta de Drive, junto al resto del expediente. El formulario publico lo genera al enviar -- si esperara a que alguien pulse un boton en la bandeja, el expediente quedaria incompleto justo cuando Pagos lo pide -- y en el detalle hay un boton PDF al expediente para regenerarlo cuando la solicitud cambie de estado o se corrija. Reemplaza al anterior en vez de acumular: el PDF refleja el estado, y uno viejo al lado del nuevo solo sirve para que alguien imprima el equivocado. Va con categoria propia para poder encontrarlo sin adivinar por el nombre del archivo. El boton anterior se renombra a Descargar PDF, que es lo que hace. Requiere 44-categoria-smi.sql" },
   { v: "2.38.1", desc: "El PDF de la SMI lleva el logo real y el centro de costo. El logo va incrustado en el archivo, no como URL: el documento tiene que verse igual abierto desde cualquier lado sin depender de que una imagen siga publicada en un servidor. El CC no esta en la solicitud sino en el catalogo de proyectos, y la solicitud guarda el nombre del proyecto como texto, asi que se resuelve al abrir el detalle. Si el proyecto no tiene CC capturado, el campo sale vacio en vez de inventar algo" },
   { v: "2.38.0", desc: "PDF oficial de la SMI desde el detalle, el documento que pide el area de Pagos. Replica el formato de Zoho -- bloque de codificacion COM-FR-01-7, identificacion en tres columnas, descripcion y justificacion, tabla de conceptos, estado y totales -- porque Pagos ya lo reconoce y cambiar el diseno obligaria a que alguien aprenda a leer otro documento sin ganar nada. Dos diferencias a proposito: se imprime la CANTIDAD, que en el original salia en blanco aunque el subtotal dependiera de ella, y el estado sale en espanol en vez de Pending. Los datos de control del formato estan en una constante aparte porque describen el documento y no su contenido: si Calidad emite una revision, se cambia ahi" },
   { v: "2.37.0", desc: "Formulario publico de solicitudes en /solicitud, sin cuenta ni sesion. Se atiende antes del login, que es el unico punto donde este modulo toca la raiz de la app y solo agrega una condicion. Quien entra teclea su correo y la base confirma si esta autorizado devolviendo su nombre y su compania -- asi no hay lista de correos que enumerar y la compania sale del correo en vez de preguntarla. Las tres opciones que se evaluaron para esto ultimo eran por URL, por desplegable o por correo; se eligio la tercera porque usa algo que ya existe y evita equivocarse de compania. Los archivos se acumulan en el navegador y se suben AL ENVIAR: subirlos antes dejaria archivos colgando de solicitudes abandonadas, y anon no puede borrarlos, asi que serian basura permanente. Si alguno falla despues de crear la solicitud, se avisa con nombre y folio en vez de perder lo capturado. El alta la hace solicitud_crear del lado del servidor, porque anon no puede leer parametros ni solicitudes para calcular el folio. Requiere 41, 42 y 43" },
@@ -13681,10 +13682,34 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
    ADJUNTOS
 ---------------------------------------------------------------------- */
 
+/**
+ * Genera el PDF de la solicitud y lo deja en el búfer para que el proceso lo
+ * lleve a Drive, junto al resto del expediente.
+ *
+ * Reemplaza el anterior en vez de acumular: el PDF refleja el estado de la
+ * solicitud, así que uno viejo al lado del nuevo solo sirve para que alguien
+ * imprima el equivocado.
+ */
+async function guardarPdfEnDrive(solicitud, conceptos, centroCosto) {
+  const previos = await supabase.from("adjuntos").select("*")
+    .eq("entidad", "solicitud").eq("entidad_id", solicitud.id).eq("categoria", "smi");
+  for (const p of (previos.data || [])) {
+    try { await borrarAdjunto(p); } catch { /* si ya estaba en Drive, se queda el viejo allá */ }
+  }
+
+  const blob = pdfSolicitud(solicitud, conceptos, centroCosto).output("blob");
+  const archivo = new File([blob], `${solicitud.folio}.pdf`, { type: "application/pdf" });
+  await subirAdjunto({
+    archivo, entidad: "solicitud", entidadId: solicitud.id,
+    categoria: "smi", unidad: solicitud.unidad, carpeta: solicitud.id,
+  });
+}
+
 const CATEGORIAS_ADJUNTO = [
   { value: "cotizacion",  label: "Cotización o factura" },
   { value: "soporte",     label: "Soporte" },
   { value: "relacionado", label: "Relacionado" },
+  { value: "smi",         label: "PDF de la solicitud" },
   { value: "otro",        label: "Otro" },
 ];
 const etiquetaCategoria = (v) =>
@@ -14167,6 +14192,7 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
      proyectos, y la solicitud guarda el nombre del proyecto como texto. Se
      resuelve al abrir para poder imprimirlo. */
   const [centroCosto, setCentroCosto] = useState("");
+  const [guardandoPdf, setGuardandoPdf] = useState(false);
   const [estado, setEstado] = useState(solicitud.estado);
   const [notas, setNotas] = useState(solicitud.notas_revision || "");
   const [guardando, setGuardando] = useState(false);
@@ -14257,7 +14283,19 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
               variant="ghost"
               disabled={!conceptos}
               onClick={() => pdfSolicitud(solicitud, conceptos, centroCosto).save(`${solicitud.folio}.pdf`)}
-            >PDF</Button>
+            >Descargar PDF</Button>
+            <Button
+              variant="ghost"
+              disabled={!conceptos || guardandoPdf}
+              onClick={async () => {
+                setGuardandoPdf(true);
+                try {
+                  await guardarPdfEnDrive(solicitud, conceptos, centroCosto);
+                  alert("El PDF quedó en el expediente. Pasa a Drive en la siguiente corrida del proceso.");
+                } catch (err) { alert("No se pudo: " + (err.message || err)); }
+                finally { setGuardandoPdf(false); }
+              }}
+            >{guardandoPdf ? "Guardando…" : "PDF al expediente"}</Button>
             <Button variant="ghost" onClick={onVolver}>Volver a la lista</Button>
           </div>
         }
@@ -14720,6 +14758,32 @@ function SolicitudPublicaPage() {
           });
         } catch { fallidos.push(c._spec.name); }
       }
+
+      /* El PDF se genera aquí mismo: si esperara a que alguien pulse un botón
+         en la bandeja, el expediente quedaría incompleto justo cuando Pagos
+         lo pide. Los datos que necesita son los que se acaban de enviar. */
+      try {
+        await guardarPdfEnDrive(
+          {
+            id: idSolicitud, folio, unidad,
+            nombre_solicitante: ident?.nombre || "", correo_solicitante: correo.trim().toLowerCase(),
+            fecha_solicitud: f.fecha_solicitud, zona: f.zona, proyecto: f.proyecto,
+            folio_usuario: f.folio_usuario, tipo_solicitud: f.tipo_solicitud,
+            vehiculo: f.vehiculo, kilometraje: f.kilometraje,
+            descripcion_general: f.descripcion_general, justificacion: f.justificacion,
+            divisa: f.divisa, iva_tasa: f.iva_tasa, sin_impuesto: f.sin_impuesto,
+            ret_isr: Number(f.ret_isr) || 0, ret_iva: Number(f.ret_iva) || 0,
+            subtotal: tot.subtotal, iva: tot.iva, total: tot.total,
+            estado: "entrada",
+          },
+          conValor.map((c, i) => ({
+            orden: i + 1, numero_parte: c.numero_parte, descripcion: c.descripcion,
+            notas: c.notas, cantidad: Number(c.cantidad) || 0, unidad_medida: c.unidad_medida,
+            precio_unitario: Number(c.precio_unitario) || 0, subtotal: subtotalConcepto(c),
+          })),
+          ""   // el centro de costo lo resuelve la bandeja al regenerarlo
+        );
+      } catch { fallidos.push(`${folio}.pdf`); }
 
       setFolioAsignado(folio);
       setPaso("listo");

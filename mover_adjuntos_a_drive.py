@@ -87,18 +87,45 @@ def rest(metodo, ruta, **kw):
     return r.json() if r.content and r.headers.get("content-type", "").startswith("application/json") else None
 
 
+MAX_INTENTOS = 5
+
+
 def pendientes():
-    """Adjuntos que ya están en el búfer y todavía no en Drive."""
+    """Adjuntos que ya están en el búfer y todavía no en Drive.
+
+       Incluye los que fallaron antes. Guardar el error y no volver a
+       intentarlos dejaría el archivo atrapado en el búfer para siempre, que
+       es justo lo contrario de lo que el manejo de errores pretende.
+
+       El tope de intentos evita el otro extremo: un adjunto roto reintentado
+       en cada corrida, para siempre, llenando el registro de errores."""
     return rest("GET", "adjuntos",
-                params={"select": "*", "estado": "eq.en_transito",
-                        "storage_path": "not.is.null", "order": "subido_en.asc"})
+                params={"select": "*",
+                        "estado": "in.(en_transito,error)",
+                        "intentos": f"lt.{MAX_INTENTOS}",
+                        "storage_path": "not.is.null",
+                        "order": "subido_en.asc"})
 
 
 def solicitud_de(adj):
-    if adj["entidad"] != "solicitud":
+    """La solicitud a la que pertenece el adjunto.
+
+       Un adjunto puede colgar de la solicitud —cotizaciones, soporte— o de
+       uno de sus conceptos, que es el caso de las especificaciones. En el
+       segundo hay que dar un salto más para llegar a la solicitud."""
+    sol_id = adj["entidad_id"]
+
+    if adj["entidad"] == "solicitud_concepto":
+        conc = rest("GET", "solicitud_conceptos",
+                    params={"select": "solicitud_id", "id": f"eq.{sol_id}"})
+        if not conc:
+            return None
+        sol_id = conc[0]["solicitud_id"]
+    elif adj["entidad"] != "solicitud":
         return None
+
     filas = rest("GET", "solicitudes",
-                 params={"select": "id,folio,unidad,anio,drive_folder_id", "id": f"eq.{adj['entidad_id']}"})
+                 params={"select": "id,folio,unidad,anio,drive_folder_id", "id": f"eq.{sol_id}"})
     return filas[0] if filas else None
 
 
@@ -207,6 +234,15 @@ def main():
     lista = pendientes() or []
     if not lista:
         print("Nada pendiente.")
+        atorados = rest("GET", "adjuntos",
+                        params={"select": "id,nombre,ultimo_error",
+                                "estado": "eq.error",
+                                "intentos": f"gte.{MAX_INTENTOS}"}) or []
+        if atorados:
+            print(f"\n{len(atorados)} adjunto(s) rendidos tras {MAX_INTENTOS} intentos:")
+            for a in atorados:
+                print(f"  {a['nombre']}: {a['ultimo_error']}")
+            print("Para reintentarlos, pon intentos = 0 en esas filas.")
         return
 
     print(f"{len(lista)} adjunto(s) por mover.")

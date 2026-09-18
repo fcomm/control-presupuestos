@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.35.0";
+const APP_VERSION = "2.36.0";
 const CHANGELOG = [
+  { v: "2.36.0", desc: "Se pueden adjuntar archivos ANTES de guardar la solicitud, tanto al capturarla como al editarla. Antes solo se podia desde el detalle, porque la ruta del bufer llevaba el folio y el folio se asigna al guardar; quien llena un formulario espera adjuntar la cotizacion antes de enviar, no despues. Ahora la carpeta del bufer es el ID de la solicitud, que se genera al abrir la pantalla, y ese mismo id es el que se inserta -- asi los archivos ya subidos quedan colgando de la solicitud correcta. Lo mismo con los conceptos: su id se genera al agregarlos, de modo que sus especificaciones se pueden cargar desde el alta. Cancelar un alta con archivos ya subidos los descarta previo aviso: quedarian colgando de una solicitud que nunca existio, invisibles para la app e inmovibles para el proceso de Drive. Y quitar un concepto se lleva sus especificaciones. Se pierde poder navegar el bucket a ojo, pero el bufer es de paso: en Drive la carpeta sigue llevando el folio, que es donde la gente busca" },
   { v: "2.35.0", desc: "Especificaciones por concepto: el campo Specs del formulario. Es UN archivo por linea, no una lista, asi que se presenta como ranura -- si no hay, un boton; si hay, el archivo con Abrir, Reemplazar y Quitar. Reemplazar borra el anterior antes de subir el nuevo, para que no queden dos versiones sin saber cual rige. Van a la subcarpeta specs del bufer y de ahi a Drive como cualquier otro adjunto. Las specs de todos los conceptos se traen en UNA consulta y no una por concepto: con doce lineas serian doce viajes para pintar una pantalla. De paso la logica de subir, borrar y abrir se saco a funciones compartidas, que ya usaban dos pantallas: copiada, acabaria manteniendo dos versiones de lo mismo. Borrar un adjunto que ya esta en Drive solo retira la referencia y deja el archivo alla -- borrarlo seria destruir el expediente" },
   { v: "2.34.2", desc: "Se aclara el parametro de carpeta de Drive: la que se captura es la de la COMPANIA -- Compras/OSB --, y el proceso crea dentro el nivel del ano y luego una carpeta por solicitud. Si el ano estuviera en el parametro habria que cambiarlo a mano cada enero, y el primero que capturara en enero dejaria su solicitud en la carpeta del ano anterior" },
   { v: "2.34.1", desc: "Arreglo: el boton de adjuntar no se veia. Estaba en el encabezado del panel, donde el bloque del titulo no tiene tope de ancho y con un subtitulo largo empuja los controles fuera de la vista. Se movieron al cuerpo, en una barra propia con la categoria, el boton y el recordatorio del limite de 25 MB" },
@@ -13251,6 +13252,11 @@ async function siguienteConsecutivoSolicitud(unidad, anio, inicial, reinicia) {
 function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, zonas, onGuardada, onCancelar, solicitud = null, conceptosIniciales = null }) {
   const hoy = hoyISO();
   const editando = !!solicitud;
+  /* El id se genera al abrir la pantalla, no al guardar: es lo que permite
+     adjuntar antes de enviar. Al insertar se usa este mismo, de modo que los
+     archivos ya subidos queden colgando de la solicitud correcta. */
+  const [solicitudId] = useState(() => solicitud?.id || uid());
+  const [specs, setSpecs] = useState({});
   const [f, setF] = useState(() => solicitud ? ({
     correo_solicitante: solicitud.correo_solicitante || "",
     nombre_solicitante: solicitud.nombre_solicitante || "",
@@ -13278,7 +13284,9 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
   const [conceptos, setConceptos] = useState(() =>
     (conceptosIniciales && conceptosIniciales.length)
       ? conceptosIniciales.map((c) => ({
-          _k: uid(), _id: c.id,
+          /* La clave de React es el id real: así las especificaciones se
+             cuelgan del concepto correcto sin un segundo identificador. */
+          _k: c.id, _id: c.id,
           numero_parte: c.numero_parte || "", descripcion: c.descripcion || "",
           notas: c.notas || "", enlace: c.enlace || "",
           cantidad: c.cantidad ?? "", unidad_medida: c.unidad_medida || "",
@@ -13287,6 +13295,15 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
       : [conceptoBlank()]);
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
+
+  const cargarSpecs = async () => {
+    const ids = conceptos.map((c) => c._k);
+    if (!ids.length) { setSpecs({}); return; }
+    const { data } = await supabase.from("adjuntos").select("*")
+      .eq("entidad", "solicitud_concepto").in("entidad_id", ids);
+    setSpecs(Object.fromEntries((data || []).map((a) => [a.entidad_id, a])));
+  };
+  useEffect(() => { if (editando) cargarSpecs(); }, []);
 
   const vehicular = f.tipo_solicitud === "mantenimiento_vehicular";
   const tot = totalesSolicitud(conceptos, f.iva_tasa, f.sin_impuesto, f.ret_isr, f.ret_iva);
@@ -13297,6 +13314,21 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
   const elegirCorreo = (correo) => {
     const a = correos.find((x) => x.correo === correo);
     setF({ ...f, correo_solicitante: correo, nombre_solicitante: a?.nombre || f.nombre_solicitante });
+  };
+
+  /* Al cancelar un alta, lo que ya se subió queda colgando de una solicitud
+     que nunca existió: ni la app lo muestra ni el proceso puede moverlo a
+     Drive. Se retira. En una edición no se toca nada, porque la solicitud
+     sigue ahí. */
+  const cancelar = async () => {
+    if (editando) { onCancelar(); return; }
+    const ids = [solicitudId, ...conceptos.map((c) => c._k)];
+    const { data } = await supabase.from("adjuntos").select("*").in("entidad_id", ids);
+    if (data && data.length) {
+      if (!confirm(`Hay ${data.length} archivo(s) ya subidos. Al cancelar se descartan.\n\n¿Continuar?`)) return;
+      for (const r of data) { try { await borrarAdjunto(r); } catch { /* se ignora */ } }
+    }
+    onCancelar();
   };
 
   const guardar = async () => {
@@ -13355,7 +13387,7 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
           };
           const r = c._id
             ? await supabase.from("solicitud_conceptos").update(fila).eq("id", c._id)
-            : await supabase.from("solicitud_conceptos").insert({ id: uid(), solicitud_id: solicitud.id, ...fila });
+            : await supabase.from("solicitud_conceptos").insert({ id: c._k, solicitud_id: solicitud.id, ...fila });
           if (r.error) throw r.error;
         }
         onGuardada(data);
@@ -13373,7 +13405,7 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
           parametros.formato_folio, consecutivo, parametros.ancho_consecutivo,
           unidad, new Date(`${f.fecha_solicitud}T12:00:00`));
         const fila = {
-          id: uid(), folio, consecutivo, anio, unidad,
+          id: solicitudId, folio, consecutivo, anio, unidad,
           folio_usuario: String(f.folio_usuario).trim() || null,
           correo_solicitante: f.correo_solicitante,
           nombre_solicitante: String(f.nombre_solicitante).trim() || null,
@@ -13399,7 +13431,7 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
       }
 
       const lineas = conValor.map((c, i) => ({
-        id: uid(), solicitud_id: guardada.id, orden: i + 1,
+        id: c._k, solicitud_id: guardada.id, orden: i + 1,
         numero_parte: String(c.numero_parte).trim() || null,
         descripcion: String(c.descripcion).trim(),
         notas: String(c.notas).trim() || null,
@@ -13432,7 +13464,7 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
         right={
           <div style={{ display: "flex", gap: 8 }}>
             <Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Button>
-            <Button variant="ghost" onClick={onCancelar}>Cancelar</Button>
+            <Button variant="ghost" onClick={cancelar}>Cancelar</Button>
           </div>
         }
       >
@@ -13533,7 +13565,14 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
               </span>
               {conceptos.length > 1 && (
                 <Button variant="danger" style={{ padding: "4px 10px" }}
-                  onClick={() => setConceptos(conceptos.filter((x) => x._k !== c._k))}>Quitar</Button>
+                  onClick={async () => {
+                    /* Sus especificaciones se van con él: si no, quedarían
+                       colgando de un concepto que ya no existe. */
+                    if (specs[c._k]) {
+                      try { await borrarAdjunto(specs[c._k]); await cargarSpecs(); } catch { /* se ignora */ }
+                    }
+                    setConceptos(conceptos.filter((x) => x._k !== c._k));
+                  }}>Quitar</Button>
               )}
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 11 }}>
@@ -13561,9 +13600,23 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
                 <TextInput value={c.enlace} onChange={(e) => setC(c._k, "enlace", e.target.value)} />
               </Field>
             </div>
+            <SpecsConcepto
+              concepto={{ id: c._k }}
+              unidad={unidad}
+              carpeta={solicitudId}
+              adjunto={specs[c._k] || null}
+              onCambio={cargarSpecs}
+            />
           </div>
         ))}
       </Panel>
+
+      <AdjuntosPanel
+        entidad="solicitud"
+        entidadId={solicitudId}
+        unidad={unidad}
+        carpeta={solicitudId}
+      />
 
       <Panel title="Impuestos y total" subtitle="Aplican a toda la solicitud, no a cada concepto.">
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 14, maxWidth: 780 }}>
@@ -13658,9 +13711,16 @@ const BUCKET_ADJUNTOS = "solicitudes-adjuntos";
  * Si la fila falla después de subir, el objeto se retira del bucket. Sin eso
  * quedaría huérfano y nadie sabría de dónde salió.
  */
-async function subirAdjunto({ archivo, entidad, entidadId, categoria, unidad, folio, subcarpeta }) {
+async function subirAdjunto({ archivo, entidad, entidadId, categoria, unidad, carpeta, subcarpeta }) {
   const id = uid();
-  const ruta = [unidad, folio, subcarpeta, `${id}-${nombreParaRuta(archivo.name)}`]
+  /* La carpeta del búfer es el ID de la solicitud, no su folio. El folio se
+     asigna al guardar, y quien llena un formulario espera adjuntar la
+     cotización ANTES de enviar, no después. El id existe desde que se abre
+     la pantalla.
+
+     Se pierde poder navegar el bucket a ojo, pero el búfer es de paso: en
+     Drive la carpeta sigue llevando el folio, que es donde la gente busca. */
+  const ruta = [unidad, carpeta, subcarpeta, `${id}-${nombreParaRuta(archivo.name)}`]
     .filter(Boolean).join("/");
 
   const up = await supabase.storage.from(BUCKET_ADJUNTOS)
@@ -13705,7 +13765,7 @@ async function abrirAdjunto(r) {
  * Reemplazar borra el anterior antes de subir el nuevo, para que no se
  * acumulen dos versiones sin saber cuál rige.
  */
-function SpecsConcepto({ concepto, unidad, folio, adjunto, onCambio }) {
+function SpecsConcepto({ concepto, unidad, carpeta, adjunto, onCambio }) {
   const [trabajando, setTrabajando] = useState(false);
   const ref = useRef(null);
 
@@ -13718,7 +13778,7 @@ function SpecsConcepto({ concepto, unidad, folio, adjunto, onCambio }) {
       if (adjunto) await borrarAdjunto(adjunto);
       await subirAdjunto({
         archivo, entidad: "solicitud_concepto", entidadId: concepto.id,
-        categoria: "specs", unidad, folio, subcarpeta: "specs",
+        categoria: "specs", unidad, carpeta, subcarpeta: "specs",
       });
       await onCambio();
     } catch (err) {
@@ -13769,7 +13829,7 @@ function SpecsConcepto({ concepto, unidad, folio, adjunto, onCambio }) {
  * `drive_file_id` no, el archivo está en tránsito — y eso se ve en la lista,
  * para que nadie suponga que ya está archivado donde debe.
  */
-function AdjuntosPanel({ entidad, entidadId, unidad, folio }) {
+function AdjuntosPanel({ entidad, entidadId, unidad, carpeta }) {
   const [filas, setFilas] = useState(null);
   const [categoria, setCategoria] = useState("cotizacion");
   const [subiendo, setSubiendo] = useState(false);
@@ -13797,7 +13857,7 @@ function AdjuntosPanel({ entidad, entidadId, unidad, folio }) {
       for (let i = 0; i < archivos.length; i++) {
         const a = archivos[i];
         setProgreso(`${i + 1} de ${archivos.length}: ${a.name}`);
-        await subirAdjunto({ archivo: a, entidad, entidadId, categoria, unidad, folio });
+        await subirAdjunto({ archivo: a, entidad, entidadId, categoria, unidad, carpeta });
       }
       await cargar();
     } catch (err) {
@@ -14027,7 +14087,7 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
                     <SpecsConcepto
                       concepto={c}
                       unidad={solicitud.unidad}
-                      folio={solicitud.folio}
+                      carpeta={solicitud.id}
                       adjunto={specs[c.id] || null}
                       onCambio={() => cargarSpecs(conceptos.map((x) => x.id))}
                     />
@@ -14069,7 +14129,7 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
         entidad="solicitud"
         entidadId={solicitud.id}
         unidad={solicitud.unidad}
-        folio={solicitud.folio}
+        carpeta={solicitud.id}
       />
 
       <Panel title="Revisión" subtitle="Dónde va la solicitud en el proceso.">

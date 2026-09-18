@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.39.0";
+const APP_VERSION = "2.40.0";
 const CHANGELOG = [
+  { v: "2.40.0", desc: "Bandeja de solicitudes usable: busqueda, rango de fechas y filtro por estado. Los estados son botones con su conteo y no un desplegable, porque cuantas hay esperando es la primera pregunta de quien abre esta pantalla y en un desplegable no se ve sin abrirlo; solo aparecen los estados que tienen algo. La busqueda cubre folio, folio del solicitante, descripcion, quien pidio, proyecto y zona -- es lo que alguien recuerda cuando viene a preguntar por una solicitud, y rara vez es el folio. El encabezado dice cuantas se ven de cuantas y su importe. Los filtros se recuerdan mientras dure la sesion. Y la consulta sube de 50 a 1000: con 50, las solicitudes viejas simplemente no aparecian en la busqueda" },
   { v: "2.39.0", desc: "El PDF de la SMI termina en la carpeta de Drive, junto al resto del expediente. El formulario publico lo genera al enviar -- si esperara a que alguien pulse un boton en la bandeja, el expediente quedaria incompleto justo cuando Pagos lo pide -- y en el detalle hay un boton PDF al expediente para regenerarlo cuando la solicitud cambie de estado o se corrija. Reemplaza al anterior en vez de acumular: el PDF refleja el estado, y uno viejo al lado del nuevo solo sirve para que alguien imprima el equivocado. Va con categoria propia para poder encontrarlo sin adivinar por el nombre del archivo. El boton anterior se renombra a Descargar PDF, que es lo que hace. Requiere 44-categoria-smi.sql" },
   { v: "2.38.1", desc: "El PDF de la SMI lleva el logo real y el centro de costo. El logo va incrustado en el archivo, no como URL: el documento tiene que verse igual abierto desde cualquier lado sin depender de que una imagen siga publicada en un servidor. El CC no esta en la solicitud sino en el catalogo de proyectos, y la solicitud guarda el nombre del proyecto como texto, asi que se resuelve al abrir el detalle. Si el proyecto no tiene CC capturado, el campo sale vacio en vez de inventar algo" },
   { v: "2.38.0", desc: "PDF oficial de la SMI desde el detalle, el documento que pide el area de Pagos. Replica el formato de Zoho -- bloque de codificacion COM-FR-01-7, identificacion en tres columnas, descripcion y justificacion, tabla de conceptos, estado y totales -- porque Pagos ya lo reconoce y cambiar el diseno obligaria a que alguien aprenda a leer otro documento sin ganar nada. Dos diferencias a proposito: se imprime la CANTIDAD, que en el original salia en blanco aunque el subtotal dependiera de ella, y el estado sale en espanol en vez de Pending. Los datos de control del formato estan en una constante aparte porque describen el documento y no su contenido: si Calidad emite una revision, se cambia ahi" },
@@ -15057,6 +15058,10 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
   const [correos, setCorreos] = useState([]);
   const [recientes, setRecientes] = useState([]);
   const [cargando, setCargando] = useState(false);
+  const [busca, setBusca] = useSessionState("ss-sol-busca", "");
+  const [filtroEstado, setFiltroEstado] = useSessionState("ss-sol-estado", "");
+  const [desde, setDesde] = useSessionState("ss-sol-desde", "");
+  const [hasta, setHasta] = useSessionState("ss-sol-hasta", "");
 
   const recargar = async () => {
     setCargando(true);
@@ -15065,8 +15070,11 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
         supabase.from("solicitudes_parametros").select("*").eq("unidad", unidad).maybeSingle(),
         supabase.from("solicitudes_correos_autorizados").select("*")
           .or(`unidad.eq.${unidad},unidad.is.null`).eq("activo", true).order("nombre"),
+        /* Mil alcanza para varios años de solicitudes. Si algún día no
+           alcanzara, el síntoma sería que las más viejas dejan de aparecer
+           en la búsqueda, no un error. */
         supabase.from("solicitudes").select("*").eq("unidad", unidad)
-          .order("creado_en", { ascending: false }).limit(50),
+          .order("creado_en", { ascending: false }).limit(1000),
       ]);
       setParametros(p.data || null);
       setCorreos(c.data || []);
@@ -15077,6 +15085,25 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
   };
   useEffect(() => { if (sub === "bandeja") recargar(); }, [sub, unidad]);
   useEffect(() => { setAbierta(null); setCapturando(false); setEditando(null); }, [unidad]);
+
+  /* La búsqueda cubre folio, folio del solicitante, descripción, quién pidió,
+     proyecto y zona: es lo que alguien recuerda cuando viene a preguntar por
+     una solicitud, y rara vez es el folio. */
+  const q = busca.trim().toLowerCase();
+  const enRango = (s) => (!desde || String(s.fecha_solicitud) >= desde)
+                      && (!hasta || String(s.fecha_solicitud) <= hasta);
+  const visibles = recientes.filter((s) =>
+    (!filtroEstado || s.estado === filtroEstado)
+    && enRango(s)
+    && (!q || [s.folio, s.folio_usuario, s.descripcion_general, s.nombre_solicitante,
+               s.correo_solicitante, s.proyecto, s.zona]
+              .some((v) => String(v || "").toLowerCase().includes(q))));
+
+  const porEstado = ESTADOS_SOLICITUD.map((e) => ({
+    ...e, n: recientes.filter((s) => s.estado === e.value && enRango(s)).length,
+  }));
+  const sumaVisible = visibles.reduce((a, s) => a + (Number(s.total) || 0), 0);
+  const hayFiltro = !!(q || filtroEstado || desde || hasta);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -15138,11 +15165,59 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
       {sub === "bandeja" && !editando && !abierta && !capturando && (
         <Panel
           title={`Solicitudes de ${unidad}`}
-          subtitle="Por ahora se capturan a mano. El formulario público viene después."
+          subtitle={`${visibles.length}${hayFiltro ? ` de ${recientes.length}` : ""} · $${numMx(sumaVisible)}`}
           right={
             <Button onClick={() => setCapturando(true)} disabled={!parametros}>+ Nueva solicitud</Button>
           }
         >
+          {/* Los estados son botones y no un desplegable: el conteo de cada
+              uno es la primera pregunta de quien abre esta pantalla —cuántas
+              hay esperando— y en un desplegable no se ve sin abrirlo. */}
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
+            <button
+              onClick={() => setFiltroEstado("")}
+              style={{
+                padding: "5px 12px", borderRadius: 14, cursor: "pointer", fontFamily: T.fontUI,
+                fontSize: 12, fontWeight: 600,
+                border: `1px solid ${!filtroEstado ? T.accent : T.border}`,
+                background: !filtroEstado ? T.accent : T.panel,
+                color: !filtroEstado ? "#FFFFFF" : T.textDim,
+              }}
+            >Todas {recientes.filter(enRango).length}</button>
+            {porEstado.filter((e) => e.n > 0 || e.value === filtroEstado).map((e) => (
+              <button
+                key={e.value}
+                onClick={() => setFiltroEstado(filtroEstado === e.value ? "" : e.value)}
+                style={{
+                  padding: "5px 12px", borderRadius: 14, cursor: "pointer", fontFamily: T.fontUI,
+                  fontSize: 12, fontWeight: 600,
+                  border: `1px solid ${filtroEstado === e.value ? T.accent : T.border}`,
+                  background: filtroEstado === e.value ? T.accent : T.panel,
+                  color: filtroEstado === e.value ? "#FFFFFF" : T.textDim,
+                }}
+              >{e.label} {e.n}</button>
+            ))}
+          </div>
+
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
+            <Field label="Buscar" style={{ flex: 1, minWidth: 220 }}>
+              <TextInput value={busca} onChange={(e) => setBusca(e.target.value)}
+                placeholder="Folio, descripción, quién pidió, proyecto…" />
+            </Field>
+            <Field label="Desde" style={{ maxWidth: 160 }}>
+              <TextInput type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
+            </Field>
+            <Field label="Hasta" style={{ maxWidth: 160 }}>
+              <TextInput type="date" value={hasta} onChange={(e) => setHasta(e.target.value)} />
+            </Field>
+            {hayFiltro && (
+              <Button variant="ghost" style={{ marginBottom: 1 }}
+                onClick={() => { setBusca(""); setFiltroEstado(""); setDesde(""); setHasta(""); }}>
+                Limpiar
+              </Button>
+            )}
+          </div>
+
           {!parametros ? (
             <EmptyState
               title={`${unidad} no tiene parámetros`}
@@ -15153,11 +15228,16 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
           ) : !recientes.length ? (
             <EmptyState
               title="Todavía no hay solicitudes"
-              body="Captura una para ver si el modelo aguanta antes de exponer el formulario a toda la empresa."
+              body="Las que lleguen por el formulario público aparecen aquí, y también puedes capturarlas a mano."
+            />
+          ) : !visibles.length ? (
+            <EmptyState
+              title="Ninguna coincide"
+              body="Prueba con otro término o quita los filtros."
             />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
-              {recientes.map((s) => (
+              {visibles.map((s) => (
                 <div key={s.id}
                   onClick={() => setAbierta(s)}
                   style={{ display: "flex", gap: 12, alignItems: "center", background: T.panel, padding: "10px 12px", cursor: "pointer" }}>

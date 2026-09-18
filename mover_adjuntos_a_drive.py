@@ -20,12 +20,13 @@ grabar el fileId y algo fallara en medio, el archivo se perdería sin rastro.
 Al revés, lo peor que pasa es que quede un objeto huérfano en el búfer, que se
 recoge después sin haber perdido nada.
 
-Configuración por variables de entorno:
-  SUPABASE_URL          https://xxxx.supabase.co
+Configuración, en %USERPROFILE%\\.smi\\config.env o en el entorno:
+  SUPABASE_URL          https://tu-proyecto.supabase.co
   SUPABASE_SERVICE_KEY  la llave service_role
-  GOOGLE_CREDENCIALES   ruta al client_secret.json de escritorio (opcional,
-                        por defecto ./credenciales.json)
-  GOOGLE_TOKEN          ruta donde se guarda el token (por defecto ./token.json)
+  GOOGLE_CREDENCIALES   ruta al client_secret.json (por omisión, junto al config)
+  GOOGLE_TOKEN          dónde guardar el token   (por omisión, junto al config)
+  ALERTA_CORREO         a quién avisar cuando un archivo se rinde (opcional)
+  REMITENTE             desde qué cuenta salen los correos (opcional)
 
 La llave service_role omite las políticas de seguridad a propósito: este
 proceso no actúa como ningún usuario. NUNCA debe llegar al navegador ni
@@ -36,6 +37,8 @@ import os
 import sys
 import io as _io
 import mimetypes
+import base64
+from email.message import EmailMessage
 from datetime import datetime, timezone
 
 import requests
@@ -45,11 +48,48 @@ from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
+# --------------------------------------------------------------------------
+# Configuración
+#
+# Se lee de un archivo fuera del repositorio, y las variables de entorno lo
+# sobreescriben si están puestas. Así una tarea programada no necesita que
+# alguien exporte nada antes de correr, y los secretos no viven donde Git
+# pueda verlos.
+#
+# Por omisión: %USERPROFILE%\.smi\config.env  (o ~/.smi/config.env)
+# --------------------------------------------------------------------------
+CARPETA_CONF = os.environ.get("SMI_CONF_DIR") or os.path.join(os.path.expanduser("~"), ".smi")
+ARCHIVO_CONF = os.path.join(CARPETA_CONF, "config.env")
+
+
+def _cargar_conf():
+    """Lee CLAVE=valor del archivo de configuración. Ignora comentarios y
+       líneas vacías, y no pisa lo que ya venga del entorno."""
+    if not os.path.exists(ARCHIVO_CONF):
+        return
+    with open(ARCHIVO_CONF, encoding="utf8") as fh:
+        for linea in fh:
+            linea = linea.strip()
+            if not linea or linea.startswith("#") or "=" not in linea:
+                continue
+            clave, _, valor = linea.partition("=")
+            clave, valor = clave.strip(), valor.strip().strip('"').strip("'")
+            if clave and clave not in os.environ:
+                os.environ[clave] = valor
+
+
+_cargar_conf()
+
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SERVICE_KEY  = os.environ.get("SUPABASE_SERVICE_KEY", "")
-CREDENCIALES = os.environ.get("GOOGLE_CREDENCIALES", "credenciales.json")
-TOKEN        = os.environ.get("GOOGLE_TOKEN", "token.json")
+CREDENCIALES = os.environ.get("GOOGLE_CREDENCIALES") or os.path.join(CARPETA_CONF, "credenciales.json")
+TOKEN        = os.environ.get("GOOGLE_TOKEN") or os.path.join(CARPETA_CONF, "token.json")
 BUCKET       = "solicitudes-adjuntos"
+
+# A quién se le avisa cuando un archivo se rinde. Vacío = no se avisa.
+ALERTA_CORREO = os.environ.get("ALERTA_CORREO", "")
+# Desde qué cuenta salen los correos. Vacío = la que autorizó el token.
+REMITENTE     = os.environ.get("REMITENTE", "me")
 
 # Dos scopes, y la combinación importa:
 #
@@ -66,10 +106,13 @@ BUCKET       = "solicitudes-adjuntos"
 SCOPES = [
     "https://www.googleapis.com/auth/drive.file",
     "https://www.googleapis.com/auth/drive.metadata.readonly",
+    # Solo enviar. No permite leer ni borrar correo.
+    "https://www.googleapis.com/auth/gmail.send",
 ]
 
 if not SUPABASE_URL or not SERVICE_KEY:
-    sys.exit("Faltan SUPABASE_URL o SUPABASE_SERVICE_KEY en el entorno.")
+    sys.exit(f"Faltan SUPABASE_URL o SUPABASE_SERVICE_KEY.\n"
+             f"Ponlos en {ARCHIVO_CONF} o en el entorno.")
 
 CAB = {
     "apikey": SERVICE_KEY,
@@ -167,7 +210,9 @@ def fallo(adj, mensaje):
 # --------------------------------------------------------------------------
 # Drive
 # --------------------------------------------------------------------------
-def servicio_drive():
+def credenciales_google():
+    """Un solo juego de credenciales para Drive y Gmail: dos tokens separados
+       significarían dos autorizaciones que caducan por su cuenta."""
     cred = None
     if os.path.exists(TOKEN):
         cred = Credentials.from_authorized_user_file(TOKEN, SCOPES)
@@ -186,7 +231,7 @@ def servicio_drive():
             cred = InstalledAppFlow.from_client_secrets_file(CREDENCIALES, SCOPES).run_local_server(port=0)
         with open(TOKEN, "w", encoding="utf8") as fh:
             fh.write(cred.to_json())
-    return build("drive", "v3", credentials=cred, cache_discovery=False)
+    return cred
 
 
 def subcarpeta(drive, padre, nombre):
@@ -230,24 +275,111 @@ def subir_a_drive(drive, carpeta, nombre, contenido, mime):
 
 
 # --------------------------------------------------------------------------
-def main():
-    lista = pendientes() or []
-    if not lista:
-        print("Nada pendiente.")
-        atorados = rest("GET", "adjuntos",
-                        params={"select": "id,nombre,ultimo_error",
-                                "estado": "eq.error",
-                                "intentos": f"gte.{MAX_INTENTOS}"}) or []
-        if atorados:
-            print(f"\n{len(atorados)} adjunto(s) rendidos tras {MAX_INTENTOS} intentos:")
-            for a in atorados:
-                print(f"  {a['nombre']}: {a['ultimo_error']}")
-            print("Para reintentarlos, pon intentos = 0 en esas filas.")
-        return
+# Correo
+# --------------------------------------------------------------------------
+def enviar_correo(gmail, para, asunto, cuerpo):
+    """Texto plano a propósito: un acuse no necesita formato, y el texto llega
+       igual de bien a un cliente de correo viejo que a un teléfono."""
+    msg = EmailMessage()
+    msg["To"] = para
+    msg["Subject"] = asunto
+    if REMITENTE and REMITENTE != "me":
+        msg["From"] = REMITENTE
+    msg.set_content(cuerpo)
+    gmail.users().messages().send(
+        userId="me",
+        body={"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}).execute()
 
-    print(f"{len(lista)} adjunto(s) por mover.")
-    drive = servicio_drive()
+
+def acuses(gmail):
+    """Confirma la recepción a quien levantó una solicitud.
+
+       Solo las que ya tienen todos sus archivos en Drive: avisar antes
+       significaría que si alguien abre el expediente en ese momento, lo
+       encuentra a medias."""
+    pend = rest("GET", "solicitudes",
+                params={"select": "id,folio,unidad,correo_solicitante,nombre_solicitante,"
+                                  "descripcion_general,total,divisa,creado_en",
+                        "acuse_enviado_en": "is.null",
+                        "estado": "neq.cancelada",
+                        "order": "creado_en.asc", "limit": "50"}) or []
+    enviados = 0
+    for s in pend:
+        sin_mover = rest("GET", "adjuntos",
+                         params={"select": "id", "entidad": "eq.solicitud",
+                                 "entidad_id": f"eq.{s['id']}",
+                                 "estado": "in.(en_transito,error)", "limit": "1"}) or []
+        if sin_mover:
+            continue
+
+        cuerpo = (
+            f"Hola {s.get('nombre_solicitante') or ''},\n\n"
+            f"Recibimos tu solicitud y quedó registrada con el folio {s['folio']}.\n\n"
+            f"  Qué pediste: {s.get('descripcion_general') or ''}\n"
+            f"  Importe estimado: ${float(s.get('total') or 0):,.2f} "
+            f"{'USD' if s.get('divisa') == 'USD' else 'MXN'}\n\n"
+            f"Administración la va a revisar. Si hace falta algo más, te buscamos.\n\n"
+            f"Cita el folio {s['folio']} para cualquier seguimiento.\n")
+        try:
+            enviar_correo(gmail, s["correo_solicitante"],
+                          f"Solicitud {s['folio']} recibida", cuerpo)
+            requests.patch(f"{SUPABASE_URL}/rest/v1/solicitudes",
+                           headers={**CAB, "Prefer": "return=minimal"},
+                           params={"id": f"eq.{s['id']}"},
+                           json={"acuse_enviado_en": datetime.now(timezone.utc).isoformat()},
+                           timeout=60).raise_for_status()
+            enviados += 1
+            print(f"  acuse -> {s['correo_solicitante']} ({s['folio']})")
+        except Exception as e:
+            print(f"  No se pudo avisar de {s['folio']}: {e}")
+    return enviados
+
+
+def alertar_atorados(gmail):
+    """Avisa de los archivos que se rindieron. Corriendo desatendido, sin esto
+       un adjunto atorado pasa inadvertido hasta que alguien lo reclama."""
+    if not ALERTA_CORREO:
+        return 0
+    rotos = rest("GET", "adjuntos",
+                 params={"select": "id,nombre,entidad,entidad_id,ultimo_error",
+                         "estado": "eq.error",
+                         "intentos": f"gte.{MAX_INTENTOS}",
+                         "alertado_en": "is.null"}) or []
+    if not rotos:
+        return 0
+    lineas = [f"  {a['nombre']}: {a.get('ultimo_error') or 'sin detalle'}" for a in rotos]
+    cuerpo = (f"{len(rotos)} archivo(s) no se pudieron mover a Drive tras "
+              f"{MAX_INTENTOS} intentos:\n\n" + "\n".join(lineas) +
+              "\n\nSiguen en el búfer de Supabase. Para reintentarlos, pon "
+              "intentos = 0 en esas filas de la tabla adjuntos.\n")
+    try:
+        enviar_correo(gmail, ALERTA_CORREO, f"{len(rotos)} adjunto(s) atorados", cuerpo)
+        for a in rotos:
+            marcar(a["id"], {"alertado_en": datetime.now(timezone.utc).isoformat()})
+        print(f"  alerta -> {ALERTA_CORREO} ({len(rotos)} atorados)")
+        return len(rotos)
+    except Exception as e:
+        print(f"  No se pudo alertar: {e}")
+        return 0
+
+
+# --------------------------------------------------------------------------
+def main():
+    print(f"--- {datetime.now():%Y-%m-%d %H:%M:%S} ---")
+    lista = pendientes() or []
+
+    # El servicio se construye siempre, aunque no haya nada que mover: los
+    # acuses y las alertas también salen por aquí, y en la mayoría de las
+    # corridas eso es lo único que hay que hacer.
+    cred = credenciales_google()
+    drive = build("drive", "v3", credentials=cred, cache_discovery=False)
+    gmail = build("gmail", "v1", credentials=cred, cache_discovery=False)
+
     movidos = fallidos = 0
+    if lista:
+        print(f"{len(lista)} adjunto(s) por mover.")
+    else:
+        print("Sin archivos por mover.")
 
     for adj in lista:
         print(f"  {adj['nombre']}")
@@ -297,7 +429,11 @@ def main():
             fallo(adj, e)
             fallidos += 1
 
-    print(f"\nMovidos {movidos}, con error {fallidos}.")
+    enviados = acuses(gmail)
+    alertados = alertar_atorados(gmail)
+
+    print(f"Movidos {movidos}, con error {fallidos}, "
+          f"acuses {enviados}, alertas {alertados}.")
 
 
 if __name__ == "__main__":

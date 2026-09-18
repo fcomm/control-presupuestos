@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.40.0";
+const APP_VERSION = "2.41.1";
 const CHANGELOG = [
+  { v: "2.41.1", desc: "El tablero pasa a seis columnas: Entrada, En revision, Con el solicitante, Cotizando, Por autorizar y Agendado a pago. El criterio para que algo sea columna es que la solicitud se QUEDE esperando ahi y se pueda decir de quien es la pelota; si nada espera, no es un estado sino un instante. Con el solicitante es el que mas se va a usar y el que no suele estar: sin el, una solicitud parada porque alguien no contesta se ve identica a una en revision, y el tablero hace parecer lenta a administracion cuando el trabajo esta afuera. Por autorizar va DESPUES de cotizando: primero hay precio, luego alguien lo aprueba. Cada columna dice a quien espera al pasar el cursor. Requiere 46-estados-tablero.sql" },
+  { v: "2.41.0", desc: "Tablero de solicitudes con cuatro columnas: Entrada, Revision, Cotizando y Agendado a pago. Se arrastra una tarjeta y cambia de estado. El arrastre es el nativo del navegador y no una biblioteca: son unas cuantas lineas y no agrega una dependencia que despues haya que mantener. El movimiento es optimista -- la tarjeta se mueve al soltarla y se regresa si la base lo rechaza -- porque esperar la respuesta para pintar haria que arrastrar se sintiera roto en una conexion lenta. Rechazada, cancelada y convertida no son columnas: son desenlaces, y una solicitud que llega a uno sale del tablero; se siguen eligiendo desde el detalle. El filtro por estado solo aparece en la vista de lista, porque en el tablero los estados YA son las columnas y filtrar dejaria el resto vacias sin explicar por que. Requiere 46-estado-agendado.sql" },
   { v: "2.40.0", desc: "Bandeja de solicitudes usable: busqueda, rango de fechas y filtro por estado. Los estados son botones con su conteo y no un desplegable, porque cuantas hay esperando es la primera pregunta de quien abre esta pantalla y en un desplegable no se ve sin abrirlo; solo aparecen los estados que tienen algo. La busqueda cubre folio, folio del solicitante, descripcion, quien pidio, proyecto y zona -- es lo que alguien recuerda cuando viene a preguntar por una solicitud, y rara vez es el folio. El encabezado dice cuantas se ven de cuantas y su importe. Los filtros se recuerdan mientras dure la sesion. Y la consulta sube de 50 a 1000: con 50, las solicitudes viejas simplemente no aparecian en la busqueda" },
   { v: "2.39.0", desc: "El PDF de la SMI termina en la carpeta de Drive, junto al resto del expediente. El formulario publico lo genera al enviar -- si esperara a que alguien pulse un boton en la bandeja, el expediente quedaria incompleto justo cuando Pagos lo pide -- y en el detalle hay un boton PDF al expediente para regenerarlo cuando la solicitud cambie de estado o se corrija. Reemplaza al anterior en vez de acumular: el PDF refleja el estado, y uno viejo al lado del nuevo solo sirve para que alguien imprima el equivocado. Va con categoria propia para poder encontrarlo sin adivinar por el nombre del archivo. El boton anterior se renombra a Descargar PDF, que es lo que hace. Requiere 44-categoria-smi.sql" },
   { v: "2.38.1", desc: "El PDF de la SMI lleva el logo real y el centro de costo. El logo va incrustado en el archivo, no como URL: el documento tiene que verse igual abierto desde cualquier lado sin depender de que una imagen siga publicada en un servidor. El CC no esta en la solicitud sino en el catalogo de proyectos, y la solicitud guarda el nombre del proyecto como texto, asi que se resuelve al abrir el detalle. Si el proyecto no tiene CC capturado, el campo sale vacio en vez de inventar algo" },
@@ -14174,15 +14176,21 @@ function pdfSolicitud(solicitud, conceptos, centroCosto) {
    SOLICITUDES — DETALLE
 ---------------------------------------------------------------------- */
 
+/* `tablero` marca los cuatro pasos del flujo. Rechazada, cancelada y
+   convertida no son pasos sino desenlaces: se pueden elegir en el detalle,
+   pero no son columnas — una solicitud que llega ahí sale del tablero. */
 const ESTADOS_SOLICITUD = [
-  { value: "entrada",     label: "Entrada" },
-  { value: "en_revision", label: "En revisión" },
-  { value: "cotizando",   label: "Cotizando" },
-  { value: "autorizada",  label: "Autorizada" },
-  { value: "rechazada",   label: "Rechazada" },
-  { value: "convertida",  label: "Convertida" },
-  { value: "cancelada",   label: "Cancelada" },
+  { value: "entrada",         label: "Entrada",            tablero: true, quien: "Administración" },
+  { value: "en_revision",     label: "En revisión",        tablero: true, quien: "Administración" },
+  { value: "con_solicitante", label: "Con el solicitante", tablero: true, quien: "Quien la levantó" },
+  { value: "cotizando",       label: "Cotizando",          tablero: true, quien: "El proveedor" },
+  { value: "por_autorizar",   label: "Por autorizar",      tablero: true, quien: "Quien autoriza" },
+  { value: "agendado_pago",   label: "Agendado a pago",    tablero: true, quien: "Pagos" },
+  { value: "rechazada",       label: "Rechazada" },
+  { value: "convertida",      label: "Convertida" },
+  { value: "cancelada",       label: "Cancelada" },
 ];
+const COLUMNAS_TABLERO = ESTADOS_SOLICITUD.filter((e) => e.tablero);
 const etiquetaEstado = (v) =>
   (ESTADOS_SOLICITUD.find((e) => e.value === v) || { label: v }).label;
 
@@ -15049,6 +15057,84 @@ function SolicitudPublicaPage() {
   );
 }
 
+/**
+ * El tablero. Arrastrar una tarjeta cambia su estado.
+ *
+ * Se usa el arrastre nativo del navegador en vez de una biblioteca: son unas
+ * cuantas líneas y no agrega una dependencia que después haya que mantener.
+ */
+function TableroSolicitudes({ filas, onMover, onAbrir }) {
+  const [arrastrando, setArrastrando] = useState(null);
+  const [encima, setEncima] = useState("");
+
+  return (
+    <div style={{ display: "flex", gap: 10, alignItems: "flex-start", overflowX: "auto", paddingBottom: 6 }}>
+      {COLUMNAS_TABLERO.map((col) => {
+        const dela = filas.filter((s) => s.estado === col.value);
+        const suma = dela.reduce((a, s) => a + (Number(s.total) || 0), 0);
+        const activa = encima === col.value;
+        return (
+          <div
+            key={col.value}
+            onDragOver={(e) => { e.preventDefault(); setEncima(col.value); }}
+            onDragLeave={() => setEncima("")}
+            onDrop={(e) => {
+              e.preventDefault();
+              setEncima("");
+              if (arrastrando && arrastrando.estado !== col.value) onMover(arrastrando, col.value);
+              setArrastrando(null);
+            }}
+            style={{
+              flex: "1 1 220px", minWidth: 220,
+              background: activa ? T.accentBg : T.panelAlt,
+              border: `1px solid ${activa ? T.accent : T.border}`,
+              borderRadius: 8, padding: 10, minHeight: 160,
+            }}
+          >
+            <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 9 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, color: T.text }} title={col.quien ? `Espera a: ${col.quien}` : undefined}>{col.label}</span>
+              <span style={{ fontSize: 11, color: T.textFaint }}>{dela.length}</span>
+              {suma > 0 && (
+                <span style={{ marginLeft: "auto", fontSize: 10.5, color: T.textFaint, fontFamily: T.fontMono }}>
+                  ${numMx(suma)}
+                </span>
+              )}
+            </div>
+
+            {!dela.length ? (
+              <div style={{ fontSize: 11, color: T.textFaint, padding: "10px 2px" }}>Vacío</div>
+            ) : dela.map((s) => (
+              <div
+                key={s.id}
+                draggable
+                onDragStart={() => setArrastrando(s)}
+                onDragEnd={() => { setArrastrando(null); setEncima(""); }}
+                onClick={() => onAbrir(s)}
+                style={{
+                  background: T.panel, border: `1px solid ${T.border}`, borderRadius: 6,
+                  padding: "8px 10px", marginBottom: 7, cursor: "grab",
+                  opacity: arrastrando?.id === s.id ? 0.4 : 1,
+                }}
+              >
+                <div style={{ fontSize: 11.5, fontFamily: T.fontMono, color: T.accent }}>{s.folio}</div>
+                <div style={{ fontSize: 12, color: T.text, marginTop: 3, lineHeight: 1.35 }}>
+                  {s.descripcion_general}
+                </div>
+                <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 4 }}>
+                  {[s.nombre_solicitante, s.proyecto].filter(Boolean).join(" · ")}
+                </div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 4, fontFamily: T.fontMono }}>
+                  ${numMx(s.total)} {s.divisa === "USD" ? "USD" : "MXN"}
+                </div>
+              </div>
+            ))}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas = [] }) {
   const [sub, setSub] = useSessionState("ss-solicitudes-sub", "bandeja");
   const [capturando, setCapturando] = useState(false);
@@ -15058,6 +15144,7 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
   const [correos, setCorreos] = useState([]);
   const [recientes, setRecientes] = useState([]);
   const [cargando, setCargando] = useState(false);
+  const [vista, setVista] = useSessionState("ss-sol-vista", "tablero");
   const [busca, setBusca] = useSessionState("ss-sol-busca", "");
   const [filtroEstado, setFiltroEstado] = useSessionState("ss-sol-estado", "");
   const [desde, setDesde] = useSessionState("ss-sol-desde", "");
@@ -15104,6 +15191,24 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
   }));
   const sumaVisible = visibles.reduce((a, s) => a + (Number(s.total) || 0), 0);
   const hayFiltro = !!(q || filtroEstado || desde || hasta);
+
+  const moverEstado = async (s, estado) => {
+    /* Optimista: la tarjeta se mueve al soltarla y se corrige si la base
+       rechaza. Esperar la respuesta para pintar haría que arrastrar se
+       sintiera roto en una conexión lenta. */
+    setRecientes((r) => r.map((x) => (x.id === s.id ? { ...x, estado } : x)));
+    const { error } = await supabase.from("solicitudes")
+      .update({
+        estado,
+        revisado_en: new Date().toISOString(),
+        ...(session?.user?.id ? { revisado_por: session.user.id } : {}),
+      })
+      .eq("id", s.id);
+    if (error) {
+      setRecientes((r) => r.map((x) => (x.id === s.id ? { ...x, estado: s.estado } : x)));
+      alert("No se pudo mover: " + error.message);
+    }
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
@@ -15170,9 +15275,22 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
             <Button onClick={() => setCapturando(true)} disabled={!parametros}>+ Nueva solicitud</Button>
           }
         >
-          {/* Los estados son botones y no un desplegable: el conteo de cada
-              uno es la primera pregunta de quien abre esta pantalla —cuántas
-              hay esperando— y en un desplegable no se ve sin abrirlo. */}
+          <div style={{ display: "flex", gap: 3, marginBottom: 12, background: T.panelAlt,
+                        border: `1px solid ${T.border}`, borderRadius: 7, padding: 3, alignSelf: "flex-start", width: "fit-content" }}>
+            {[["tablero", "Tablero"], ["lista", "Lista"]].map(([v, et]) => (
+              <button key={v} onClick={() => setVista(v)}
+                style={{
+                  padding: "5px 14px", borderRadius: 5, border: "none", cursor: "pointer",
+                  background: vista === v ? T.accent : "transparent",
+                  color: vista === v ? "#FFFFFF" : T.textDim,
+                  fontWeight: 600, fontSize: 12, fontFamily: T.fontUI,
+                }}>{et}</button>
+            ))}
+          </div>
+
+          {/* En el tablero los estados ya son las columnas: filtrar por estado
+              ahí dejaría el resto vacías sin explicar por qué. */}
+          {vista === "lista" && (
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
             <button
               onClick={() => setFiltroEstado("")}
@@ -15198,6 +15316,7 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
               >{e.label} {e.n}</button>
             ))}
           </div>
+          )}
 
           <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
             <Field label="Buscar" style={{ flex: 1, minWidth: 220 }}>
@@ -15234,6 +15353,12 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
             <EmptyState
               title="Ninguna coincide"
               body="Prueba con otro término o quita los filtros."
+            />
+          ) : vista === "tablero" ? (
+            <TableroSolicitudes
+              filas={visibles.filter((s) => COLUMNAS_TABLERO.some((c) => c.value === s.estado))}
+              onMover={moverEstado}
+              onAbrir={setAbierta}
             />
           ) : (
             <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>

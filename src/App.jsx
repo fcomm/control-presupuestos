@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.45.0";
+const APP_VERSION = "2.45.2";
 const CHANGELOG = [
+  { v: "2.45.2", desc: "Diagnostico en el importador de Sheets: cada fila que se va a tratar como nueva deja en consola la celda exacta, el valor leido de Procesado, el valor crudo antes de limpiarlo y cuantas columnas trajo esa fila. Se reporto que ocho filas marcadas TRUE se siguen detectando como nuevas, y TRUE ya se reconocia desde antes, asi que la explicacion del idioma no cubre este caso. Sin ver que lee la app celda por celda, cualquier arreglo seria adivinar" },
+  { v: "2.45.1", desc: "Arreglo: el importador de Sheets volvia a traer filas ya procesadas. Eran DOS problemas que se tapaban entre si. Al LEER, la hoja se lee con valores formateados y una casilla marcada en una hoja con idioma espanol devuelve VERDADERO, no TRUE -- palabra que la validacion no contemplaba, asi que toda fila marcada a mano se veia como nueva. Al ESCRIBIR, marcaba con el texto literal TRUE usando RAW, que en una columna de casillas guarda la palabra como texto y deja la casilla sin marcar; la app se entendia a si misma pero no escribia lo mismo que produce un clic humano. Ahora se acepta VERDADERO y las formas que alguien puede teclear -- si, ok, listo, procesado -- sin distinguir acentos, y se marca con un booleano usando USER_ENTERED. Ademas, una marca que no se reconoce se reporta en consola con hoja y numero de fila, en vez de reimportar en silencio" },
   { v: "2.45.0", desc: "Se cierra el circuito del registro: una transaccion nueva nace BORRADOR, sin folio, y los reportes de pago dejan de verla. Antes el folio se gastaba en cada intento, incluidos los que no llegaban a nada, y una transaccion a medio capturar podia irse a Pagos sin que nada lo detuviera. Las importadas de Sheets ya nacian sin folio, asi que quedan como borradores solas. Los borradores se marcan en la tabla y se registran en bloque desde la barra de seleccion. Duplicar ya no hereda el registro: el duplicado es una transaccion nueva y comprometerse con ella es una decision aparte -- sin eso habria nacido registrada pero sin folio. Todo lo que ya existia quedo registrado por la migracion 49, asi que ningun reporte cambia de contenido" },
   { v: "2.44.0", desc: "Registrar transacciones: el momento en que uno se compromete con una. Antes se trabaja sin consecuencias -- se crea, se edita, se borra -- y no tiene folio; al registrarla recibe el suyo, que ya existe para siempre, y queda habilitada para irse a un reporte. NO bloquea los datos: una registrada se sigue editando igual, lo unico que cambia es que tiene numero y expediente. Resuelve dos cosas: hoy no habia frontera entre una transaccion a medio capturar y una lista para pagarse -- las dos se veian igual y las dos entraban a un reporte -- y el folio se gastaba en transacciones que nunca se concretaban. Se registra en bloque desde la barra de seleccion, porque las importadas llegan por decenas y una por una nadie lo haria. Van de a una contra la base y no en lote: cada folio se confirma y se reintenta si choca, y un insert masivo calcularia todos de golpe para que el primer choque tumbara el resto. Las transacciones que ya existian quedaron registradas por la migracion, asi que ningun reporte cambia. Requiere 49-transaccion-registrada.sql" },
   { v: "2.43.0", desc: "Se agrega Por programar a pago y se retira Convertida. Convertida era exactamente lo mismo que Agendado a pago con otro nombre, y dos formas de decir lo mismo acaban usandose a medias. Por programar a pago si hace falta: entre autorizar y agendar hay trabajo real -- asignar partida, elegir proveedor, capturar la transaccion -- y ese trabajo es de administracion, no de quien autoriza. Y Agendado a pago deja de aceptar que le suelten tarjetas: lo pone el sistema al convertir. Si se pudiera marcar a mano, el tablero diria que hay pagos agendados sin que exista ninguna transaccion detras. Mientras la conversion no exista, esa columna queda vacia y lo dice. Requiere 47-por-programar-pago.sql" },
@@ -6815,7 +6817,22 @@ function columnaLetra(indiceCero) {
   return s;
 }
 
-const SHEETS_PROCESADO_VALORES = /^(true|si|sí|x|1|yes)$/i;
+/* Qué cuenta como "ya procesada".
+ *
+ * La hoja se lee con valores FORMATEADOS, y una casilla marcada en una hoja
+ * con idioma español no devuelve TRUE sino VERDADERO. Sin esa palabra, toda
+ * fila marcada a mano se veía como nueva y se reimportaba.
+ *
+ * Se aceptan además las formas que alguien puede teclear en vez de usar la
+ * casilla. Los acentos se quitan antes de comparar: "Sí" y "SI" son lo mismo
+ * para quien captura. */
+const SHEETS_PROCESADO_VALORES =
+  /^(true|verdadero|si|s|x|1|yes|ok|listo|procesado|importado)$/i;
+
+const esProcesado = (v) => {
+  const t = String(v ?? "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
+  return SHEETS_PROCESADO_VALORES.test(t);
+};
 const limpiarImporteSheet = (s) => Number(String(s || "").replace(/[^0-9.-]/g, "")) || 0;
 
 /**
@@ -6956,7 +6973,16 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
     const noImportables = [];
     filas.slice(1).forEach((row, i) => {
       const numeroFila = i + 2; // la fila 1 es encabezado
-      if (SHEETS_PROCESADO_VALORES.test(dato(row, col.procesado))) return; // ya importada antes
+      const marcaProcesado = dato(row, col.procesado);
+      if (esProcesado(marcaProcesado)) return; // ya importada antes
+      /* Toda fila que se vaya a tratar como nueva deja constancia de QUÉ tenía
+         en Procesado y en qué celda. Sin esto, un desacuerdo entre lo que se
+         ve en la hoja y lo que lee la app solo se puede adivinar. */
+      console.warn(
+        `[Sheets] "${hoja.etiqueta}" celda ${columnaLetra(col.procesado)}${numeroFila}: ` +
+        `Procesado = ${JSON.stringify(marcaProcesado)} ` +
+        `(crudo: ${JSON.stringify(row[col.procesado])}) -> se trata como NUEVA. ` +
+        `Fila con ${row.length} columna(s).`);
 
       const companiaHoja = dato(row, col.compania);
       const idSae = dato(row, col.idProvSae);
@@ -7092,13 +7118,16 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
       const fallosMarcado = [];
       for (const [sheetId, filasDeEstaHoja] of porHoja) {
         const letra = columnaLetra(filasDeEstaHoja[0].colProcesadoIdx);
-        const dataUpdate = filasDeEstaHoja.map((f) => ({ range: `${letra}${f.numeroFila}`, values: [["TRUE"]] }));
+        /* Booleano y USER_ENTERED, no el texto "TRUE" con RAW: si la columna
+           es una casilla, RAW guarda la palabra como texto y la casilla queda
+           sin marcar. Así la hoja termina con lo mismo que produce un clic. */
+        const dataUpdate = filasDeEstaHoja.map((f) => ({ range: `${letra}${f.numeroFila}`, values: [[true]] }));
         const resp = await fetch(
           `https://sheets.googleapis.com/v4/spreadsheets/${sheetId}/values:batchUpdate`,
           {
             method: "POST",
             headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-            body: JSON.stringify({ valueInputOption: "RAW", data: dataUpdate }),
+            body: JSON.stringify({ valueInputOption: "USER_ENTERED", data: dataUpdate }),
           }
         );
         if (!resp.ok) fallosMarcado.push(filasDeEstaHoja[0].hoja);

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.44.0";
+const APP_VERSION = "2.45.0";
 const CHANGELOG = [
+  { v: "2.45.0", desc: "Se cierra el circuito del registro: una transaccion nueva nace BORRADOR, sin folio, y los reportes de pago dejan de verla. Antes el folio se gastaba en cada intento, incluidos los que no llegaban a nada, y una transaccion a medio capturar podia irse a Pagos sin que nada lo detuviera. Las importadas de Sheets ya nacian sin folio, asi que quedan como borradores solas. Los borradores se marcan en la tabla y se registran en bloque desde la barra de seleccion. Duplicar ya no hereda el registro: el duplicado es una transaccion nueva y comprometerse con ella es una decision aparte -- sin eso habria nacido registrada pero sin folio. Todo lo que ya existia quedo registrado por la migracion 49, asi que ningun reporte cambia de contenido" },
   { v: "2.44.0", desc: "Registrar transacciones: el momento en que uno se compromete con una. Antes se trabaja sin consecuencias -- se crea, se edita, se borra -- y no tiene folio; al registrarla recibe el suyo, que ya existe para siempre, y queda habilitada para irse a un reporte. NO bloquea los datos: una registrada se sigue editando igual, lo unico que cambia es que tiene numero y expediente. Resuelve dos cosas: hoy no habia frontera entre una transaccion a medio capturar y una lista para pagarse -- las dos se veian igual y las dos entraban a un reporte -- y el folio se gastaba en transacciones que nunca se concretaban. Se registra en bloque desde la barra de seleccion, porque las importadas llegan por decenas y una por una nadie lo haria. Van de a una contra la base y no en lote: cada folio se confirma y se reintenta si choca, y un insert masivo calcularia todos de golpe para que el primer choque tumbara el resto. Las transacciones que ya existian quedaron registradas por la migracion, asi que ningun reporte cambia. Requiere 49-transaccion-registrada.sql" },
   { v: "2.43.0", desc: "Se agrega Por programar a pago y se retira Convertida. Convertida era exactamente lo mismo que Agendado a pago con otro nombre, y dos formas de decir lo mismo acaban usandose a medias. Por programar a pago si hace falta: entre autorizar y agendar hay trabajo real -- asignar partida, elegir proveedor, capturar la transaccion -- y ese trabajo es de administracion, no de quien autoriza. Y Agendado a pago deja de aceptar que le suelten tarjetas: lo pone el sistema al convertir. Si se pudiera marcar a mano, el tablero diria que hay pagos agendados sin que exista ninguna transaccion detras. Mientras la conversion no exista, esa columna queda vacia y lo dice. Requiere 47-por-programar-pago.sql" },
   { v: "2.42.0", desc: "El detalle de una solicitud se abre en dialogo en vez de reemplazar la vista: el tablero se queda detras, asi que al cerrar no hay que volver a encontrar donde se estaba. El pie del dialogo tiene Guardar y cerrar, que aplica el cambio de estado y las notas, y Cancelar, que los descarta. Se dice ahi mismo que los adjuntos y el PDF ya quedaron guardados: implican un archivo que ya viajo, y alguien podria cancelar creyendo que deshace tambien eso. El dialogo no se cierra al hacer clic fuera, porque hacerlo con cambios sin guardar los perderia sin preguntar" },
@@ -723,24 +724,11 @@ async function registrarTransaccion(transaccionesApi, t, unidad, transUnidad) {
 // siguiente folio se hace en el navegador, así que dos inserciones casi
 // simultáneas pueden calcular el mismo. Si el choque es por otra causa
 // (no folio_transaccion), no reintenta — deja que el error normal se muestre.
-async function insertTransaccionConReintento(transaccionesApi, rest, unidad, mesForm, anioForm, transUnidad) {
-  const { prefix, siguiente: siguienteLocal } = nextFolioTransaccion(unidad, mesForm, anioForm, transUnidad, 0);
-  // El estado local (transUnidad) puede estar desactualizado tras una carga
-  // masiva grande — se confirma el número real contra la base antes de usarlo.
-  const maxReal = await maxFolioTransaccionReal(prefix);
-  let siguiente = Math.max(siguienteLocal, maxReal + 1);
-
-  const maxIntentos = 8;
-  for (let intento = 0; intento < maxIntentos; intento++) {
-    const folio = `${prefix}${String(siguiente + intento).padStart(3, "0")}`;
-    try {
-      return await transaccionesApi.insert({ ...rest, id: uid(), folio_transaccion: folio });
-    } catch (err) {
-      const chocoPorFolio = /folio_transaccion|idx_transacciones_folio_transaccion/i.test(err?.message || "");
-      if (!chocoPorFolio || intento === maxIntentos - 1) throw err;
-      // reintenta con el siguiente número
-    }
-  }
+/* Una transacción nueva nace BORRADOR: sin folio y sin registrar. El folio se
+   asigna al registrarla, que es cuando alguien se compromete con ella. Antes
+   se gastaba un número en cada intento, incluidos los que no llegaban a nada. */
+async function insertTransaccionBorrador(transaccionesApi, rest) {
+  return await transaccionesApi.insert({ ...rest, id: uid(), folio_transaccion: null, registrada_en: null });
 }
 
 // Captura TODAS las columnas del Excel que no tengan ya su propio campo en la
@@ -7942,6 +7930,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <IconButton icon="§" label="Generar Solicitud de Pago" tone={T.teal} onClick={() => setSppDe(t)} />
           )}
           <IconButton icon="✎" label="Editar" tone={T.accent} onClick={() => startEdit(t)} />
+          {!t.registrada_en && (
+            <span title="Borrador: sin folio, fuera de los reportes de pago"
+              style={{ fontSize: 10, color: T.amberDim, border: `1px solid ${T.amber}`,
+                       borderRadius: 4, padding: "1px 5px", marginRight: 4, whiteSpace: "nowrap" }}>
+              Borrador
+            </span>
+          )}
           <IconButton icon="⧉" label="Duplicar" tone={T.textDim} onClick={() => duplicar(t)} />
           <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => remove(t.id)} />
         </div>
@@ -7990,10 +7985,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         await transaccionesApi.update(editId, rest);
         setEditId(null);
       } else {
-        const fechaForm = form.dia ? new Date(`${form.dia}T00:00:00`) : new Date();
-        const mesForm = MESES[fechaForm.getMonth()];
-        const anioForm = fechaForm.getFullYear();
-        const creada = await insertTransaccionConReintento(transaccionesApi, rest, unidad, mesForm, anioForm, transUnidad);
+        const creada = await insertTransaccionBorrador(transaccionesApi, rest);
         transaccionId = creada.id;
       }
       await guardarNotaPrivada(transaccionId);
@@ -8034,7 +8026,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     // Copia los datos de la transacción, pero como registro NUEVO: sin folio propio,
     // sin fecha de pago/status heredado (nace "No Pagado"), y sin folios de compra/
     // factura (son específicos de cada pago, no algo que tenga sentido clonar).
-    const { id, folio_transaccion, created_by, updated_by, updated_at, created_at, reportado_at, ...resto } = t;
+    // `registrada_en` tampoco se hereda: el duplicado es una transacción
+    // nueva, y comprometerse con ella es una decisión aparte.
+    const { id, folio_transaccion, registrada_en, created_by, updated_by, updated_at, created_at, reportado_at, ...resto } = t;
     const limpio = Object.fromEntries(Object.entries(resto).filter(([k]) => !k.startsWith("_")));
     setForm({ ...limpio, status: "No Pagado", fecha_pago: "", folio_compra_sae: "", folio_factura: "", referencia_pago: "" });
     setEditId(null);
@@ -8853,8 +8847,13 @@ function anchosProporcionalesPDF(columnas, filas, disponible) {
 function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi, cuentasApi, gruposZona = {} }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
+  /* Un borrador no entra a un reporte de pago: todavía no tiene folio ni
+     nadie se comprometió con él. Es justamente lo que el registro separa —
+     antes, una transacción a medio capturar podía irse a Pagos sin que nada
+     lo detuviera. */
   const transUnidad = transacciones.filter(
-    (t) => partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad
+    (t) => (partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad)
+      && t.registrada_en
   );
 
   const filas = transUnidad.map((t) => {
@@ -9484,8 +9483,13 @@ const COLUMNAS_REPORTE_DIRECCION = [
 function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
+  /* Un borrador no entra a un reporte de pago: todavía no tiene folio ni
+     nadie se comprometió con él. Es justamente lo que el registro separa —
+     antes, una transacción a medio capturar podía irse a Pagos sin que nada
+     lo detuviera. */
   const transUnidad = transacciones.filter(
-    (t) => partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad
+    (t) => (partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad)
+      && t.registrada_en
   );
 
   const filas = transUnidad.map((t) => {

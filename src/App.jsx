@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.41.1";
+const APP_VERSION = "2.43.0";
 const CHANGELOG = [
+  { v: "2.43.0", desc: "Se agrega Por programar a pago y se retira Convertida. Convertida era exactamente lo mismo que Agendado a pago con otro nombre, y dos formas de decir lo mismo acaban usandose a medias. Por programar a pago si hace falta: entre autorizar y agendar hay trabajo real -- asignar partida, elegir proveedor, capturar la transaccion -- y ese trabajo es de administracion, no de quien autoriza. Y Agendado a pago deja de aceptar que le suelten tarjetas: lo pone el sistema al convertir. Si se pudiera marcar a mano, el tablero diria que hay pagos agendados sin que exista ninguna transaccion detras. Mientras la conversion no exista, esa columna queda vacia y lo dice. Requiere 47-por-programar-pago.sql" },
+  { v: "2.42.0", desc: "El detalle de una solicitud se abre en dialogo en vez de reemplazar la vista: el tablero se queda detras, asi que al cerrar no hay que volver a encontrar donde se estaba. El pie del dialogo tiene Guardar y cerrar, que aplica el cambio de estado y las notas, y Cancelar, que los descarta. Se dice ahi mismo que los adjuntos y el PDF ya quedaron guardados: implican un archivo que ya viajo, y alguien podria cancelar creyendo que deshace tambien eso. El dialogo no se cierra al hacer clic fuera, porque hacerlo con cambios sin guardar los perderia sin preguntar" },
   { v: "2.41.1", desc: "El tablero pasa a seis columnas: Entrada, En revision, Con el solicitante, Cotizando, Por autorizar y Agendado a pago. El criterio para que algo sea columna es que la solicitud se QUEDE esperando ahi y se pueda decir de quien es la pelota; si nada espera, no es un estado sino un instante. Con el solicitante es el que mas se va a usar y el que no suele estar: sin el, una solicitud parada porque alguien no contesta se ve identica a una en revision, y el tablero hace parecer lenta a administracion cuando el trabajo esta afuera. Por autorizar va DESPUES de cotizando: primero hay precio, luego alguien lo aprueba. Cada columna dice a quien espera al pasar el cursor. Requiere 46-estados-tablero.sql" },
   { v: "2.41.0", desc: "Tablero de solicitudes con cuatro columnas: Entrada, Revision, Cotizando y Agendado a pago. Se arrastra una tarjeta y cambia de estado. El arrastre es el nativo del navegador y no una biblioteca: son unas cuantas lineas y no agrega una dependencia que despues haya que mantener. El movimiento es optimista -- la tarjeta se mueve al soltarla y se regresa si la base lo rechaza -- porque esperar la respuesta para pintar haria que arrastrar se sintiera roto en una conexion lenta. Rechazada, cancelada y convertida no son columnas: son desenlaces, y una solicitud que llega a uno sale del tablero; se siguen eligiendo desde el detalle. El filtro por estado solo aparece en la vista de lista, porque en el tablero los estados YA son las columnas y filtrar dejaria el resto vacias sin explicar por que. Requiere 46-estado-agendado.sql" },
   { v: "2.40.0", desc: "Bandeja de solicitudes usable: busqueda, rango de fechas y filtro por estado. Los estados son botones con su conteo y no un desplegable, porque cuantas hay esperando es la primera pregunta de quien abre esta pantalla y en un desplegable no se ve sin abrirlo; solo aparecen los estados que tienen algo. La busqueda cubre folio, folio del solicitante, descripcion, quien pidio, proyecto y zona -- es lo que alguien recuerda cuando viene a preguntar por una solicitud, y rara vez es el folio. El encabezado dice cuantas se ven de cuantas y su importe. Los filtros se recuerdan mientras dure la sesion. Y la consulta sube de 50 a 1000: con 50, las solicitudes viejas simplemente no aparecian en la busqueda" },
@@ -14185,9 +14187,12 @@ const ESTADOS_SOLICITUD = [
   { value: "con_solicitante", label: "Con el solicitante", tablero: true, quien: "Quien la levantó" },
   { value: "cotizando",       label: "Cotizando",          tablero: true, quien: "El proveedor" },
   { value: "por_autorizar",   label: "Por autorizar",      tablero: true, quien: "Quien autoriza" },
-  { value: "agendado_pago",   label: "Agendado a pago",    tablero: true, quien: "Pagos" },
+  { value: "por_programar_pago", label: "Por programar a pago", tablero: true, quien: "Administración" },
+  /* No acepta que le suelten tarjetas: lo pone el sistema al convertir la
+     solicitud en transacción. Si se pudiera marcar a mano, el tablero diría
+     que hay pagos agendados sin que exista ninguna transacción detrás. */
+  { value: "agendado_pago",   label: "Agendado a pago",    tablero: true, quien: "Pagos", soloSistema: true },
   { value: "rechazada",       label: "Rechazada" },
-  { value: "convertida",      label: "Convertida" },
   { value: "cancelada",       label: "Cancelada" },
 ];
 const COLUMNAS_TABLERO = ESTADOS_SOLICITUD.filter((e) => e.tablero);
@@ -14260,6 +14265,7 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
         .from("solicitudes").update(patch).eq("id", solicitud.id).select().single();
       if (e) throw e;
       onCambiada(data);
+      onVolver();
     } catch (err) {
       setError(err.message || String(err));
     } finally {
@@ -14277,8 +14283,7 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
   return (
     <>
       <Panel
-        title={solicitud.folio}
-        subtitle={solicitud.descripcion_general}
+        title="Datos de la solicitud"
         right={
           <div style={{ display: "flex", gap: 8 }}>
             {/* Una solicitud ya convertida no se edita: sus importes viven en
@@ -14305,7 +14310,6 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
                 finally { setGuardandoPdf(false); }
               }}
             >{guardandoPdf ? "Guardando…" : "PDF al expediente"}</Button>
-            <Button variant="ghost" onClick={onVolver}>Volver a la lista</Button>
           </div>
         }
       >
@@ -14412,9 +14416,6 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
           <Field label="Notas de revisión" style={{ flex: 1, minWidth: 260 }}>
             <TextInput value={notas} onChange={(e) => setNotas(e.target.value)} />
           </Field>
-          <Button onClick={guardar} disabled={!cambio || guardando} style={{ marginBottom: 1 }}>
-            {guardando ? "Guardando…" : "Guardar"}
-          </Button>
         </div>
 
         {solicitud.revisado_en && (
@@ -14424,6 +14425,19 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
         )}
         {error && <div style={{ marginTop: 12, fontSize: 12, color: T.red }}>No se pudo guardar: {error}</div>}
       </Panel>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", paddingTop: 4 }}>
+        <Button onClick={guardar} disabled={!cambio || guardando}>
+          {guardando ? "Guardando…" : "Guardar y cerrar"}
+        </Button>
+        <Button variant="ghost" onClick={onVolver}>Cancelar</Button>
+        {/* Los adjuntos y el PDF se guardan al momento: implican un archivo
+            que ya viajó. Decirlo evita que alguien cancele creyendo que
+            deshace también eso. */}
+        <span style={{ fontSize: 11, color: T.textFaint }}>
+          Cancelar descarta el estado y las notas. Los adjuntos ya quedaron guardados.
+        </span>
+      </div>
     </>
   );
 }
@@ -15076,12 +15090,14 @@ function TableroSolicitudes({ filas, onMover, onAbrir }) {
         return (
           <div
             key={col.value}
-            onDragOver={(e) => { e.preventDefault(); setEncima(col.value); }}
+            onDragOver={(e) => { if (col.soloSistema) return; e.preventDefault(); setEncima(col.value); }}
             onDragLeave={() => setEncima("")}
             onDrop={(e) => {
               e.preventDefault();
               setEncima("");
-              if (arrastrando && arrastrando.estado !== col.value) onMover(arrastrando, col.value);
+              if (!col.soloSistema && arrastrando && arrastrando.estado !== col.value) {
+                onMover(arrastrando, col.value);
+              }
               setArrastrando(null);
             }}
             style={{
@@ -15102,7 +15118,11 @@ function TableroSolicitudes({ filas, onMover, onAbrir }) {
             </div>
 
             {!dela.length ? (
-              <div style={{ fontSize: 11, color: T.textFaint, padding: "10px 2px" }}>Vacío</div>
+              <div style={{ fontSize: 11, color: T.textFaint, padding: "10px 2px", lineHeight: 1.5 }}>
+                {col.soloSistema
+                  ? "Aquí llegan solas al convertirse en transacción. Todavía no está esa parte."
+                  : "Vacío"}
+              </div>
             ) : dela.map((s) => (
               <div
                 key={s.id}
@@ -15245,7 +15265,17 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
         />
       )}
 
+      {/* El detalle va en diálogo y no reemplazando la vista: el tablero se
+          queda detrás, así que al cerrar no hay que volver a encontrar dónde
+          se estaba. */}
       {sub === "bandeja" && !editando && abierta && (
+        <Modal
+          title={abierta.folio}
+          subtitle={abierta.descripcion_general}
+          onClose={() => setAbierta(null)}
+          width={1040}
+          cerrarAlHacerClicFuera={false}
+        >
         <SolicitudDetallePanel
           solicitud={abierta}
           session={session}
@@ -15256,9 +15286,10 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
             setRecientes((r) => r.map((x) => (x.id === s.id ? s : x)));
           }}
         />
+        </Modal>
       )}
 
-      {sub === "bandeja" && !editando && !abierta && capturando && parametros && (
+      {sub === "bandeja" && !editando && capturando && parametros && (
         <NuevaSolicitudPanel
           unidad={unidad} session={session} parametros={parametros}
           correos={correos} proyectos={proyectos} zonas={zonas}
@@ -15267,7 +15298,7 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
         />
       )}
 
-      {sub === "bandeja" && !editando && !abierta && !capturando && (
+      {sub === "bandeja" && !editando && !capturando && (
         <Panel
           title={`Solicitudes de ${unidad}`}
           subtitle={`${visibles.length}${hayFiltro ? ` de ${recientes.length}` : ""} · $${numMx(sumaVisible)}`}

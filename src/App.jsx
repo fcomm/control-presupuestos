@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.36.0";
+const APP_VERSION = "2.37.0";
 const CHANGELOG = [
+  { v: "2.37.0", desc: "Formulario publico de solicitudes en /solicitud, sin cuenta ni sesion. Se atiende antes del login, que es el unico punto donde este modulo toca la raiz de la app y solo agrega una condicion. Quien entra teclea su correo y la base confirma si esta autorizado devolviendo su nombre y su compania -- asi no hay lista de correos que enumerar y la compania sale del correo en vez de preguntarla. Las tres opciones que se evaluaron para esto ultimo eran por URL, por desplegable o por correo; se eligio la tercera porque usa algo que ya existe y evita equivocarse de compania. Los archivos se acumulan en el navegador y se suben AL ENVIAR: subirlos antes dejaria archivos colgando de solicitudes abandonadas, y anon no puede borrarlos, asi que serian basura permanente. Si alguno falla despues de crear la solicitud, se avisa con nombre y folio en vez de perder lo capturado. El alta la hace solicitud_crear del lado del servidor, porque anon no puede leer parametros ni solicitudes para calcular el folio. Requiere 41, 42 y 43" },
   { v: "2.36.0", desc: "Se pueden adjuntar archivos ANTES de guardar la solicitud, tanto al capturarla como al editarla. Antes solo se podia desde el detalle, porque la ruta del bufer llevaba el folio y el folio se asigna al guardar; quien llena un formulario espera adjuntar la cotizacion antes de enviar, no despues. Ahora la carpeta del bufer es el ID de la solicitud, que se genera al abrir la pantalla, y ese mismo id es el que se inserta -- asi los archivos ya subidos quedan colgando de la solicitud correcta. Lo mismo con los conceptos: su id se genera al agregarlos, de modo que sus especificaciones se pueden cargar desde el alta. Cancelar un alta con archivos ya subidos los descarta previo aviso: quedarian colgando de una solicitud que nunca existio, invisibles para la app e inmovibles para el proceso de Drive. Y quitar un concepto se lleva sus especificaciones. Se pierde poder navegar el bucket a ojo, pero el bufer es de paso: en Drive la carpeta sigue llevando el folio, que es donde la gente busca" },
   { v: "2.35.0", desc: "Especificaciones por concepto: el campo Specs del formulario. Es UN archivo por linea, no una lista, asi que se presenta como ranura -- si no hay, un boton; si hay, el archivo con Abrir, Reemplazar y Quitar. Reemplazar borra el anterior antes de subir el nuevo, para que no queden dos versiones sin saber cual rige. Van a la subcarpeta specs del bufer y de ahi a Drive como cualquier otro adjunto. Las specs de todos los conceptos se traen en UNA consulta y no una por concepto: con doce lineas serian doce viajes para pintar una pantalla. De paso la logica de subir, borrar y abrir se saco a funciones compartidas, que ya usaban dos pantallas: copiada, acabaria manteniendo dos versiones de lo mismo. Borrar un adjunto que ya esta en Drive solo retira la referencia y deja el archivo alla -- borrarlo seria destruir el expediente" },
   { v: "2.34.2", desc: "Se aclara el parametro de carpeta de Drive: la que se captura es la de la COMPANIA -- Compras/OSB --, y el proceso crea dentro el nivel del ano y luego una carpeta por solicitud. Si el ano estuviera en el parametro habria que cambiarlo a mano cada enero, y el primero que capturara en enero dejaria su solicitud en la carpeta del ano anterior" },
@@ -14341,6 +14342,426 @@ function SolicitantesPanel({ unidad, unidades = [] }) {
   );
 }
 
+/* ----------------------------------------------------------------------
+   FORMULARIO PÚBLICO DE SOLICITUDES
+---------------------------------------------------------------------- */
+
+/**
+ * La pantalla que llena quien pide, sin cuenta ni sesión.
+ *
+ * `anon` solo puede insertar: no lee solicitudes, ni la lista de correos, ni
+ * los parámetros. Por eso todo lo que necesita saber viene de funciones de la
+ * base —identificar el correo, listar catálogos— y el alta la hace
+ * solicitud_crear, que calcula el folio del lado del servidor.
+ *
+ * Los archivos se acumulan en el navegador y se suben AL ENVIAR. Subirlos
+ * antes dejaría archivos colgando de solicitudes abandonadas, y `anon` no
+ * puede borrarlos: serían basura permanente en el búfer.
+ */
+function SolicitudPublicaPage() {
+  const [paso, setPaso] = useState("correo");
+  const [correo, setCorreo] = useState("");
+  const [ident, setIdent] = useState(null);
+  const [unidad, setUnidad] = useState("");
+  const [unidades, setUnidades] = useState([]);
+  const [catalogos, setCatalogos] = useState({ proyectos: [], zonas: [] });
+  const [buscando, setBuscando] = useState(false);
+  const [error, setError] = useState("");
+
+  const hoy = hoyISO();
+  const [f, setF] = useState({
+    zona: "", proyecto: "", tipo_solicitud: "productos_servicios",
+    vehiculo: "", kilometraje: "", folio_usuario: "",
+    descripcion_general: "", justificacion: "", proveedor_sugerido: "",
+    fecha_solicitud: hoy, divisa: "MXP", iva_tasa: 16, sin_impuesto: false,
+    ret_isr: "", ret_iva: "",
+  });
+  const [conceptos, setConceptos] = useState([conceptoBlank()]);
+  const [archivos, setArchivos] = useState([]);   // { _k, file, categoria }
+  const [enviando, setEnviando] = useState(false);
+  const [folioAsignado, setFolioAsignado] = useState("");
+  const refArchivos = useRef(null);
+
+  const vehicular = f.tipo_solicitud === "mantenimiento_vehicular";
+  const tot = totalesSolicitud(conceptos, f.iva_tasa, f.sin_impuesto, f.ret_isr, f.ret_iva);
+  const money = (n) => `$${numMx(n)} ${f.divisa === "USD" ? "USD" : "MXN"}`;
+
+  const cargarCatalogos = async (u) => {
+    const { data } = await supabase.rpc("solicitud_catalogos", { p_unidad: u });
+    setCatalogos({
+      proyectos: (data || []).filter((r) => r.tipo === "proyecto").map((r) => r.nombre),
+      zonas: (data || []).filter((r) => r.tipo === "zona").map((r) => r.nombre),
+    });
+  };
+
+  const identificar = async () => {
+    const c = correo.trim().toLowerCase();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(c)) { setError("El correo no tiene forma válida."); return; }
+    setBuscando(true);
+    setError("");
+    try {
+      const { data, error: e } = await supabase.rpc("solicitud_identificar", { p_correo: c });
+      if (e) throw e;
+      if (!data || !data.length) {
+        setError("Ese correo no está autorizado para levantar solicitudes. Pídele a administración que te dé de alta.");
+        return;
+      }
+      const yo = data[0];
+      setIdent(yo);
+      if (yo.unidad) {
+        setUnidad(yo.unidad);
+        await cargarCatalogos(yo.unidad);
+      } else {
+        /* Sin compañía asignada, puede solicitar en cualquiera: hay que
+           preguntarle en cuál. */
+        const { data: us } = await supabase.rpc("solicitud_unidades");
+        setUnidades((us || []).map((r) => r.unidad));
+      }
+      setPaso("forma");
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setBuscando(false);
+    }
+  };
+
+  const elegirUnidad = async (u) => { setUnidad(u); if (u) await cargarCatalogos(u); };
+
+  const agregarArchivos = (e) => {
+    const nuevos = [...(e.target.files || [])].map((file) => ({ _k: uid(), file, categoria: "cotizacion" }));
+    e.target.value = "";
+    const grandes = nuevos.filter((a) => a.file.size > 25 * 1024 * 1024);
+    if (grandes.length) {
+      alert(`Estos pasan de 25 MB y no se pueden subir:\n\n${grandes.map((a) => a.file.name).join("\n")}`);
+    }
+    setArchivos([...archivos, ...nuevos.filter((a) => a.file.size <= 25 * 1024 * 1024)]);
+  };
+
+  const enviar = async () => {
+    if (!unidad) { setError("Elige la compañía."); return; }
+    if (!String(f.descripcion_general).trim()) { setError("Falta la descripción general."); return; }
+    const conValor = conceptos.filter((c) => String(c.descripcion).trim());
+    if (!conValor.length) { setError("Captura al menos un concepto con descripción."); return; }
+
+    setEnviando(true);
+    setError("");
+    const idSolicitud = uid();
+    try {
+      const { data, error: e } = await supabase.rpc("solicitud_crear", {
+        p_id: idSolicitud,
+        p_correo: correo.trim().toLowerCase(),
+        p_cabecera: {
+          unidad,
+          nombre_solicitante: ident?.nombre || null,
+          zona: f.zona || null, proyecto: f.proyecto || null,
+          tipo_solicitud: f.tipo_solicitud,
+          vehiculo: vehicular ? f.vehiculo : null,
+          kilometraje: vehicular && f.kilometraje !== "" ? f.kilometraje : null,
+          folio_usuario: f.folio_usuario || null,
+          descripcion_general: String(f.descripcion_general).trim(),
+          justificacion: f.justificacion || null,
+          proveedor_sugerido: f.proveedor_sugerido || null,
+          fecha_solicitud: f.fecha_solicitud,
+          divisa: f.divisa, iva_tasa: f.iva_tasa, sin_impuesto: f.sin_impuesto,
+          ret_isr: Number(f.ret_isr) || 0, ret_iva: Number(f.ret_iva) || 0,
+        },
+        p_conceptos: conValor.map((c) => ({
+          id: c._k,
+          numero_parte: c.numero_parte, descripcion: String(c.descripcion).trim(),
+          notas: c.notas, enlace: c.enlace,
+          cantidad: Number(c.cantidad) || 0,
+          unidad_medida: c.unidad_medida,
+          precio_unitario: Number(c.precio_unitario) || 0,
+        })),
+      });
+      if (e) throw e;
+      const folio = data?.[0]?.folio || "";
+
+      /* Los archivos se suben DESPUÉS de que la solicitud existe. Si alguno
+         falla, la solicitud ya está registrada: se le dice a quien envió, en
+         vez de perder todo lo capturado. */
+      const fallidos = [];
+      for (const a of archivos) {
+        try {
+          await subirAdjunto({
+            archivo: a.file, entidad: "solicitud", entidadId: idSolicitud,
+            categoria: a.categoria, unidad, carpeta: idSolicitud,
+          });
+        } catch { fallidos.push(a.file.name); }
+      }
+      for (const c of conValor) {
+        if (!c._spec) continue;
+        try {
+          await subirAdjunto({
+            archivo: c._spec, entidad: "solicitud_concepto", entidadId: c._k,
+            categoria: "specs", unidad, carpeta: idSolicitud, subcarpeta: "specs",
+          });
+        } catch { fallidos.push(c._spec.name); }
+      }
+
+      setFolioAsignado(folio);
+      setPaso("listo");
+      if (fallidos.length) {
+        alert(`La solicitud ${folio} quedó registrada, pero estos archivos no se pudieron subir:\n\n${fallidos.join("\n")}\n\nAvísale a administración para adjuntarlos.`);
+      }
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setEnviando(false);
+    }
+  };
+
+  const marco = (hijos) => (
+    <div style={{ minHeight: "100vh", background: T.bg, fontFamily: T.fontUI, padding: "28px 18px" }}>
+      <div style={{ maxWidth: 940, margin: "0 auto" }}>
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 11, letterSpacing: "0.14em", color: T.textFaint, textTransform: "uppercase" }}>
+            Control de Presupuestos
+          </div>
+          <div style={{ fontSize: 24, fontWeight: 700, color: T.text, marginTop: 3 }}>
+            Solicitud de compra
+          </div>
+        </div>
+        {hijos}
+      </div>
+    </div>
+  );
+
+  if (paso === "correo") {
+    return marco(
+      <Panel title="¿Quién solicita?" subtitle="Escribe tu correo de la empresa para empezar.">
+        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", maxWidth: 520 }}>
+          <Field label="Correo" style={{ flex: 1, minWidth: 250 }}>
+            <TextInput value={correo} autoFocus
+              onChange={(e) => { setCorreo(e.target.value); setError(""); }}
+              onKeyDown={(e) => { if (e.key === "Enter") identificar(); }} />
+          </Field>
+          <Button onClick={identificar} disabled={buscando} style={{ marginBottom: 1 }}>
+            {buscando ? "Buscando…" : "Continuar"}
+          </Button>
+        </div>
+        {error && <div style={{ marginTop: 14, fontSize: 12.5, color: T.red, lineHeight: 1.5, maxWidth: 520 }}>{error}</div>}
+      </Panel>
+    );
+  }
+
+  if (paso === "listo") {
+    return marco(
+      <Panel title="Solicitud enviada">
+        <div style={{ fontSize: 13, color: T.textDim, lineHeight: 1.7 }}>
+          Quedó registrada con el folio
+        </div>
+        <div style={{ fontSize: 30, fontWeight: 700, color: T.accent, fontFamily: T.fontMono, margin: "8px 0 14px" }}>
+          {folioAsignado}
+        </div>
+        <div style={{ fontSize: 12.5, color: T.textDim, lineHeight: 1.7, maxWidth: 560 }}>
+          Anótalo: es con el que se le da seguimiento. Administración la revisará y te buscará si
+          hace falta algo más.
+        </div>
+        <div style={{ marginTop: 18 }}>
+          <Button onClick={() => window.location.reload()}>Levantar otra</Button>
+        </div>
+      </Panel>
+    );
+  }
+
+  return marco(
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <Panel title={ident?.nombre || correo} subtitle={correo}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14 }}>
+          {!ident?.unidad && (
+            <Field label="Compañía *">
+              <Select value={unidad} onChange={(e) => elegirUnidad(e.target.value)}>
+                <option value="">— elegir —</option>
+                {unidades.map((u) => <option key={u} value={u}>{u}</option>)}
+              </Select>
+            </Field>
+          )}
+          <Field label="Tipo">
+            <Select value={f.tipo_solicitud} onChange={(e) => setF({ ...f, tipo_solicitud: e.target.value })}>
+              {TIPOS_SOLICITUD.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </Select>
+          </Field>
+          <Field label="Zona">
+            <Select value={f.zona} onChange={(e) => setF({ ...f, zona: e.target.value })}>
+              <option value="">— sin zona —</option>
+              {catalogos.zonas.map((z) => <option key={z} value={z}>{z}</option>)}
+            </Select>
+          </Field>
+          <Field label="Proyecto">
+            <Select value={f.proyecto} onChange={(e) => setF({ ...f, proyecto: e.target.value })}>
+              <option value="">— sin proyecto —</option>
+              {catalogos.proyectos.map((p) => <option key={p} value={p}>{p}</option>)}
+            </Select>
+          </Field>
+          <Field label="Tu folio o referencia">
+            <TextInput value={f.folio_usuario} onChange={(e) => setF({ ...f, folio_usuario: e.target.value })} />
+          </Field>
+          {vehicular && (
+            <>
+              <Field label="Vehículo">
+                <TextInput value={f.vehiculo} onChange={(e) => setF({ ...f, vehiculo: e.target.value })} />
+              </Field>
+              <Field label="Kilometraje">
+                <TextInput type="number" value={f.kilometraje}
+                  onChange={(e) => setF({ ...f, kilometraje: e.target.value })} />
+              </Field>
+            </>
+          )}
+          <Field label="Posible proveedor">
+            <TextInput value={f.proveedor_sugerido}
+              onChange={(e) => setF({ ...f, proveedor_sugerido: e.target.value })} />
+          </Field>
+        </div>
+
+        <Field label="¿Qué necesitas? *" style={{ marginTop: 14 }}>
+          <TextInput value={f.descripcion_general}
+            onChange={(e) => setF({ ...f, descripcion_general: e.target.value })} />
+        </Field>
+        <Field label="¿Para qué?" style={{ marginTop: 14 }}>
+          <textarea value={f.justificacion} rows={3}
+            onChange={(e) => setF({ ...f, justificacion: e.target.value })}
+            style={{
+              width: "100%", padding: "9px 11px", border: `1px solid ${T.border}`, borderRadius: 6,
+              background: T.panel, color: T.text, fontSize: 12.5, fontFamily: T.fontUI,
+              lineHeight: 1.55, resize: "vertical", boxSizing: "border-box",
+            }} />
+        </Field>
+      </Panel>
+
+      <Panel
+        title="¿Qué se pide?"
+        right={<Button variant="ghost" onClick={() => setConceptos([...conceptos, conceptoBlank()])}>+ Agregar</Button>}
+      >
+        {conceptos.map((c, i) => (
+          <div key={c._k} style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 13, marginBottom: 10 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <span style={{ fontSize: 11.5, fontWeight: 700, color: T.textDim }}>#{i + 1}</span>
+              <span style={{ marginLeft: "auto", fontSize: 12.5, fontFamily: T.fontMono, color: T.text }}>
+                {money(subtotalConcepto(c))}
+              </span>
+              {conceptos.length > 1 && (
+                <Button variant="danger" style={{ padding: "4px 10px" }}
+                  onClick={() => setConceptos(conceptos.filter((x) => x._k !== c._k))}>Quitar</Button>
+              )}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 11 }}>
+              <Field label="Descripción *" style={{ gridColumn: "span 2" }}>
+                <TextInput value={c.descripcion}
+                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, descripcion: e.target.value } : x))} />
+              </Field>
+              <Field label="No. de parte">
+                <TextInput value={c.numero_parte}
+                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, numero_parte: e.target.value } : x))} />
+              </Field>
+              <Field label="Cantidad">
+                <TextInput type="number" step="0.001" value={c.cantidad}
+                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, cantidad: e.target.value } : x))} />
+              </Field>
+              <Field label="Unidad">
+                <TextInput value={c.unidad_medida}
+                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, unidad_medida: e.target.value } : x))} />
+              </Field>
+              <Field label="Precio estimado">
+                <TextInput type="number" step="0.0001" value={c.precio_unitario}
+                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, precio_unitario: e.target.value } : x))} />
+              </Field>
+              <Field label="Notas" style={{ gridColumn: "span 2" }}>
+                <TextInput value={c.notas}
+                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, notas: e.target.value } : x))} />
+              </Field>
+              <Field label="Enlace">
+                <TextInput value={c.enlace}
+                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, enlace: e.target.value } : x))} />
+              </Field>
+            </div>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8, flexWrap: "wrap" }}>
+              <span style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", color: T.textDim }}>
+                Especificaciones
+              </span>
+              {c._spec ? (
+                <>
+                  <span style={{ fontSize: 11.5, color: T.text }}>{c._spec.name}</span>
+                  <Button variant="danger" style={{ padding: "3px 9px" }}
+                    onClick={() => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, _spec: null } : x))}>Quitar</Button>
+                </>
+              ) : (
+                <label style={{ cursor: "pointer", fontSize: 11.5, color: T.accent }}>
+                  + Adjuntar archivo
+                  <input type="file" style={{ display: "none" }}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      e.target.value = "";
+                      if (file) setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, _spec: file } : x));
+                    }} />
+                </label>
+              )}
+            </div>
+          </div>
+        ))}
+      </Panel>
+
+      <Panel title="Cotizaciones y documentos" subtitle="Se suben al enviar la solicitud.">
+        <div style={{ marginBottom: 12 }}>
+          <Button variant="ghost" onClick={() => refArchivos.current?.click()}>+ Adjuntar archivos</Button>
+          <input ref={refArchivos} type="file" multiple onChange={agregarArchivos} style={{ display: "none" }} />
+          <span style={{ fontSize: 11, color: T.textFaint, marginLeft: 10 }}>Máximo 25 MB por archivo.</span>
+        </div>
+        {!archivos.length ? (
+          <div style={{ fontSize: 12, color: T.textFaint }}>Sin archivos.</div>
+        ) : archivos.map((a) => (
+          <div key={a._k} style={{ display: "flex", gap: 10, alignItems: "center", padding: "6px 0", borderTop: `1px solid ${T.borderSoft}` }}>
+            <span style={{ flex: 1, fontSize: 12.5, color: T.text, wordBreak: "break-word" }}>{a.file.name}</span>
+            <span style={{ fontSize: 11, color: T.textFaint }}>{pesoLegible(a.file.size)}</span>
+            <Select value={a.categoria} style={{ maxWidth: 180 }}
+              onChange={(e) => setArchivos(archivos.map((x) => x._k === a._k ? { ...x, categoria: e.target.value } : x))}>
+              {CATEGORIAS_ADJUNTO.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </Select>
+            <Button variant="danger" style={{ padding: "4px 10px" }}
+              onClick={() => setArchivos(archivos.filter((x) => x._k !== a._k))}>Quitar</Button>
+          </div>
+        ))}
+      </Panel>
+
+      <Panel title="Importe estimado" subtitle="Si no lo conoces, déjalo en cero: administración lo cotiza.">
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 14, maxWidth: 620 }}>
+          <Field label="Divisa">
+            <Select value={f.divisa} onChange={(e) => setF({ ...f, divisa: e.target.value })}>
+              <option value="MXP">MXN</option>
+              <option value="USD">USD</option>
+            </Select>
+          </Field>
+          <Field label="IVA">
+            <Select value={f.iva_tasa} disabled={f.sin_impuesto}
+              onChange={(e) => setF({ ...f, iva_tasa: Number(e.target.value) })}>
+              {TASAS_IVA_SOLICITUD.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </Select>
+          </Field>
+        </div>
+        <div style={{ marginTop: 14, maxWidth: 340, fontSize: 13, fontFamily: T.fontMono }}>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: T.textDim }}>
+            <span>Subtotal</span><span>{money(tot.subtotal)}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "3px 0", color: T.textDim }}>
+            <span>IVA</span><span>{money(tot.iva)}</span>
+          </div>
+          <div style={{ display: "flex", justifyContent: "space-between", padding: "8px 0 0", borderTop: `1px solid ${T.border}`, marginTop: 6, fontWeight: 700, color: T.text, fontSize: 15 }}>
+            <span>Total</span><span>{money(tot.total)}</span>
+          </div>
+        </div>
+
+        {error && <div style={{ marginTop: 14, fontSize: 12.5, color: T.red, lineHeight: 1.5 }}>{error}</div>}
+
+        <div style={{ display: "flex", gap: 10, marginTop: 20 }}>
+          <Button onClick={enviar} disabled={enviando}>
+            {enviando ? "Enviando…" : "Enviar solicitud"}
+          </Button>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
 function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas = [] }) {
   const [sub, setSub] = useSessionState("ss-solicitudes-sub", "bandeja");
   const [capturando, setCapturando] = useState(false);
@@ -16566,6 +16987,14 @@ export default function App() {
   if (recovery) {
     return <SetNewPasswordScreen onDone={clearRecovery} />;
   }
+  /* El formulario público va antes del login: quien entra a levantar una
+     solicitud no tiene cuenta, y pedirle una sería el problema que este
+     camino evita. Es el único punto donde este módulo toca la raíz de la
+     app, y solo agrega una condición. */
+  if (typeof window !== "undefined" && /^\/solicitud\/?$/i.test(window.location.pathname)) {
+    return <SolicitudPublicaPage />;
+  }
+
   if (!session) {
     return <LoginScreen />;
   }

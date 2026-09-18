@@ -1,0 +1,268 @@
+#!/usr/bin/env python3
+"""
+Mueve los adjuntos de solicitudes del búfer de Supabase a Google Drive.
+
+Es la pieza que reemplaza lo que Zoho hacía por detrás: el navegador entrega
+el archivo a Supabase, que sí acepta carga anónima, y este proceso lo lleva a
+Drive con credenciales que nunca tocan el navegador.
+
+Qué hace, por cada adjunto en tránsito:
+  1. Busca o crea Compras/<COMPAÑÍA>/<AÑO>/<FOLIO> en Drive. La raíz que se
+     configura en los parámetros es la de la compañía; el nivel del año lo
+     crea este proceso, para no tener que cambiar el parámetro cada enero.
+  2. Descarga el archivo del búfer.
+  3. Lo sube a Drive.
+  4. Marca el adjunto como en_drive con su fileId y su enlace.
+  5. Recién entonces borra el objeto del búfer.
+
+El orden de los pasos 4 y 5 no es casual. Si se borrara el búfer antes de
+grabar el fileId y algo fallara en medio, el archivo se perdería sin rastro.
+Al revés, lo peor que pasa es que quede un objeto huérfano en el búfer, que se
+recoge después sin haber perdido nada.
+
+Configuración por variables de entorno:
+  SUPABASE_URL          https://xxxx.supabase.co
+  SUPABASE_SERVICE_KEY  la llave service_role
+  GOOGLE_CREDENCIALES   ruta al client_secret.json de escritorio (opcional,
+                        por defecto ./credenciales.json)
+  GOOGLE_TOKEN          ruta donde se guarda el token (por defecto ./token.json)
+
+La llave service_role omite las políticas de seguridad a propósito: este
+proceso no actúa como ningún usuario. NUNCA debe llegar al navegador ni
+quedar en el repositorio.
+"""
+
+import os
+import sys
+import io as _io
+import mimetypes
+from datetime import datetime, timezone
+
+import requests
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SERVICE_KEY  = os.environ.get("SUPABASE_SERVICE_KEY", "")
+CREDENCIALES = os.environ.get("GOOGLE_CREDENCIALES", "credenciales.json")
+TOKEN        = os.environ.get("GOOGLE_TOKEN", "token.json")
+BUCKET       = "solicitudes-adjuntos"
+
+# Dos scopes, y la combinación importa:
+#
+#   drive.file             crear y escribir SOLO lo que esta aplicación crea.
+#   drive.metadata.readonly ver nombres y jerarquía del resto del Drive, sin
+#                          poder leer el contenido de ningún archivo.
+#
+# Con drive.file a secas, una carpeta creada por otro —Zoho, o tú a mano— es
+# invisible para el script: la busca, no la encuentra y crea una duplicada.
+# Fue exactamente lo que pasó con la carpeta 2026 que ya existía.
+#
+# metadata.readonly resuelve la búsqueda sin abrir el contenido de nada, y la
+# escritura sigue limitada a lo que este script produce.
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+]
+
+if not SUPABASE_URL or not SERVICE_KEY:
+    sys.exit("Faltan SUPABASE_URL o SUPABASE_SERVICE_KEY en el entorno.")
+
+CAB = {
+    "apikey": SERVICE_KEY,
+    "Authorization": f"Bearer {SERVICE_KEY}",
+    "Content-Type": "application/json",
+}
+
+
+# --------------------------------------------------------------------------
+# Supabase
+# --------------------------------------------------------------------------
+def rest(metodo, ruta, **kw):
+    r = requests.request(metodo, f"{SUPABASE_URL}/rest/v1/{ruta}", headers=CAB, timeout=60, **kw)
+    r.raise_for_status()
+    return r.json() if r.content and r.headers.get("content-type", "").startswith("application/json") else None
+
+
+def pendientes():
+    """Adjuntos que ya están en el búfer y todavía no en Drive."""
+    return rest("GET", "adjuntos",
+                params={"select": "*", "estado": "eq.en_transito",
+                        "storage_path": "not.is.null", "order": "subido_en.asc"})
+
+
+def solicitud_de(adj):
+    if adj["entidad"] != "solicitud":
+        return None
+    filas = rest("GET", "solicitudes",
+                 params={"select": "id,folio,unidad,anio,drive_folder_id", "id": f"eq.{adj['entidad_id']}"})
+    return filas[0] if filas else None
+
+
+def carpeta_raiz(unidad):
+    filas = rest("GET", "solicitudes_parametros",
+                 params={"select": "drive_carpeta_raiz", "unidad": f"eq.{unidad}"})
+    return (filas[0]["drive_carpeta_raiz"] if filas else None) or None
+
+
+def descargar_del_bufer(ruta):
+    url = f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{ruta}"
+    r = requests.get(url, headers={"apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}"}, timeout=120)
+    r.raise_for_status()
+    return r.content
+
+
+def borrar_del_bufer(ruta):
+    url = f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{ruta}"
+    r = requests.delete(url, headers={"apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}"}, timeout=60)
+    r.raise_for_status()
+
+
+def marcar(adj_id, campos):
+    requests.patch(f"{SUPABASE_URL}/rest/v1/adjuntos",
+                   headers={**CAB, "Prefer": "return=minimal"},
+                   params={"id": f"eq.{adj_id}"}, json=campos, timeout=60).raise_for_status()
+
+
+def fallo(adj, mensaje):
+    """Se guarda el error y se cuenta el intento. El archivo NO se borra del
+       búfer: si el problema fue de Drive, se vuelve a intentar en la
+       siguiente corrida sin haber perdido nada."""
+    marcar(adj["id"], {"estado": "error",
+                       "ultimo_error": str(mensaje)[:500],
+                       "intentos": (adj.get("intentos") or 0) + 1})
+    print(f"    ERROR: {mensaje}")
+
+
+# --------------------------------------------------------------------------
+# Drive
+# --------------------------------------------------------------------------
+def servicio_drive():
+    cred = None
+    if os.path.exists(TOKEN):
+        cred = Credentials.from_authorized_user_file(TOKEN, SCOPES)
+        # Un token emitido con menos scopes de los que ahora se piden no
+        # sirve: Google no los amplía solos. Se descarta y se vuelve a
+        # autorizar, que es lo que hay que hacer al agregar metadata.readonly.
+        if cred and set(SCOPES) - set(cred.scopes or []):
+            print("  El token no cubre los permisos actuales. Hay que autorizar otra vez.")
+            cred = None
+    if not cred or not cred.valid:
+        if cred and cred.expired and cred.refresh_token:
+            cred.refresh(Request())
+        else:
+            if not os.path.exists(CREDENCIALES):
+                sys.exit(f"No encuentro {CREDENCIALES}. Descarga el client_secret de una app de escritorio.")
+            cred = InstalledAppFlow.from_client_secrets_file(CREDENCIALES, SCOPES).run_local_server(port=0)
+        with open(TOKEN, "w", encoding="utf8") as fh:
+            fh.write(cred.to_json())
+    return build("drive", "v3", credentials=cred, cache_discovery=False)
+
+
+def subcarpeta(drive, padre, nombre):
+    """Busca una carpeta por nombre bajo `padre`; si no está, la crea.
+
+       Se busca antes de crear porque el proceso puede correr varias veces
+       sobre la misma solicitud —un adjunto nuevo, un reintento— y Drive
+       permite dos carpetas con el mismo nombre sin protestar: acabarías con
+       dos 'OSB-264-26' y los archivos repartidos entre ambas."""
+    seguro = str(nombre).replace("\\", "\\\\").replace("'", "\\'")
+    q = (f"name = '{seguro}' and mimeType = 'application/vnd.google-apps.folder' "
+         f"and '{padre}' in parents and trashed = false")
+    res = drive.files().list(q=q, fields="files(id)", pageSize=1,
+                             supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+    if res.get("files"):
+        return res["files"][0]["id"]
+    creada = drive.files().create(
+        body={"name": str(nombre), "mimeType": "application/vnd.google-apps.folder", "parents": [padre]},
+        fields="id", supportsAllDrives=True).execute()
+    return creada["id"]
+
+
+def carpeta_de_solicitud(drive, raiz, anio, folio):
+    """Compras/<COMPAÑÍA>/<AÑO>/<FOLIO>.
+
+       La raíz configurada en los parámetros es la de la compañía; el nivel
+       del año lo crea el proceso. Si el año estuviera en la raíz habría que
+       cambiar el parámetro a mano cada enero, y el primero que capturara en
+       enero dejaría su solicitud en la carpeta del año anterior."""
+    return subcarpeta(drive, subcarpeta(drive, raiz, anio), folio)
+
+
+def subir_a_drive(drive, carpeta, nombre, contenido, mime):
+    medio = MediaIoBaseUpload(_io.BytesIO(contenido),
+                              mimetype=mime or mimetypes.guess_type(nombre)[0] or "application/octet-stream",
+                              resumable=len(contenido) > 5 * 1024 * 1024)
+    f = drive.files().create(body={"name": nombre, "parents": [carpeta]},
+                             media_body=medio, fields="id,webViewLink",
+                             supportsAllDrives=True).execute()
+    return f["id"], f.get("webViewLink")
+
+
+# --------------------------------------------------------------------------
+def main():
+    lista = pendientes() or []
+    if not lista:
+        print("Nada pendiente.")
+        return
+
+    print(f"{len(lista)} adjunto(s) por mover.")
+    drive = servicio_drive()
+    movidos = fallidos = 0
+
+    for adj in lista:
+        print(f"  {adj['nombre']}")
+        try:
+            sol = solicitud_de(adj)
+            if not sol:
+                fallo(adj, "El adjunto no pertenece a una solicitud existente.")
+                fallidos += 1
+                continue
+
+            # La carpeta se resuelve una sola vez por solicitud y se guarda:
+            # a partir de ahí, los adjuntos siguientes no vuelven a buscarla.
+            carpeta = sol.get("drive_folder_id")
+            if not carpeta:
+                raiz = carpeta_raiz(sol["unidad"])
+                if not raiz:
+                    fallo(adj, f"{sol['unidad']} no tiene carpeta raíz de Drive en sus parámetros.")
+                    fallidos += 1
+                    continue
+                anio = sol.get("anio") or datetime.now().year
+                carpeta = carpeta_de_solicitud(drive, raiz, anio, sol["folio"])
+                requests.patch(f"{SUPABASE_URL}/rest/v1/solicitudes",
+                               headers={**CAB, "Prefer": "return=minimal"},
+                               params={"id": f"eq.{sol['id']}"},
+                               json={"drive_folder_id": carpeta}, timeout=60).raise_for_status()
+
+            contenido = descargar_del_bufer(adj["storage_path"])
+            file_id, enlace = subir_a_drive(drive, carpeta, adj["nombre"], contenido, adj.get("mime"))
+
+            # Primero se graba el destino; el búfer se vacía después.
+            # La fecha se calcula aquí: PostgREST manda el JSON tal cual y
+            # Postgres no puede convertir la cadena "now()" a timestamp.
+            marcar(adj["id"], {"drive_file_id": file_id, "drive_link": enlace,
+                               "estado": "en_drive", "ultimo_error": None,
+                               "verificado_en": datetime.now(timezone.utc).isoformat()})
+            try:
+                borrar_del_bufer(adj["storage_path"])
+                marcar(adj["id"], {"storage_path": None})
+            except Exception as e:
+                # El archivo ya está a salvo en Drive. El objeto huérfano se
+                # recoge en otra corrida.
+                print(f"    Aviso: quedó en el búfer ({e})")
+
+            print(f"    -> {file_id}")
+            movidos += 1
+        except Exception as e:
+            fallo(adj, e)
+            fallidos += 1
+
+    print(f"\nMovidos {movidos}, con error {fallidos}.")
+
+
+if __name__ == "__main__":
+    main()

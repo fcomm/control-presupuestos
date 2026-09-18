@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.34.1";
+const APP_VERSION = "2.35.0";
 const CHANGELOG = [
+  { v: "2.35.0", desc: "Especificaciones por concepto: el campo Specs del formulario. Es UN archivo por linea, no una lista, asi que se presenta como ranura -- si no hay, un boton; si hay, el archivo con Abrir, Reemplazar y Quitar. Reemplazar borra el anterior antes de subir el nuevo, para que no queden dos versiones sin saber cual rige. Van a la subcarpeta specs del bufer y de ahi a Drive como cualquier otro adjunto. Las specs de todos los conceptos se traen en UNA consulta y no una por concepto: con doce lineas serian doce viajes para pintar una pantalla. De paso la logica de subir, borrar y abrir se saco a funciones compartidas, que ya usaban dos pantallas: copiada, acabaria manteniendo dos versiones de lo mismo. Borrar un adjunto que ya esta en Drive solo retira la referencia y deja el archivo alla -- borrarlo seria destruir el expediente" },
+  { v: "2.34.2", desc: "Se aclara el parametro de carpeta de Drive: la que se captura es la de la COMPANIA -- Compras/OSB --, y el proceso crea dentro el nivel del ano y luego una carpeta por solicitud. Si el ano estuviera en el parametro habria que cambiarlo a mano cada enero, y el primero que capturara en enero dejaria su solicitud en la carpeta del ano anterior" },
   { v: "2.34.1", desc: "Arreglo: el boton de adjuntar no se veia. Estaba en el encabezado del panel, donde el bloque del titulo no tiene tope de ancho y con un subtitulo largo empuja los controles fuera de la vista. Se movieron al cuerpo, en una barra propia con la categoria, el boton y el recordatorio del limite de 25 MB" },
   { v: "2.34.0", desc: "Adjuntos en el detalle de la solicitud: subir varios a la vez con su categoria -- cotizacion, soporte, relacionado --, abrirlos y quitarlos. Van a un bufer en Supabase con ruta legible unidad/folio/archivo, de modo que quien abra el bucket entienda de que solicitud es cada uno sin consultar la tabla; el nombre se limpia de acentos y espacios para la clave de Storage y el original se conserva en la tabla, que es el que ve la gente. El bucket es privado, asi que abrir genera una URL firmada de un minuto en vez de exponer el archivo. Si la fila de la tabla falla despues de subir, el objeto se retira del bucket: quedaria huerfano y nadie sabria de donde salio. Cada adjunto muestra si esta En transito o En Drive, y mientras haya archivos en el bufer se avisa que siguen ocupando espacio de la base. Requiere 39-storage-adjuntos.sql" },
   { v: "2.33.0", desc: "Subpestana Solicitantes: administrar la lista blanca desde la app en vez de por SQL. Esa lista no es una comodidad de la interfaz -- la politica de la base rechaza un envio cuyo correo no este ahi y activo, aunque alguien llame a la API directo -- asi que desactivar a alguien lo deja fuera del formulario publico de inmediato, sin desplegar nada. El correo no se puede cambiar una vez creado: las solicitudes lo guardan como texto y quedarian huerfanas. Y borrar a alguien con solicitudes a su nombre se niega y sugiere desactivarlo, que cumple lo mismo y conserva de quien eran. Las subpestanas se reordenan: Bandeja primero, que es donde se trabaja, y Parametros al final, que se toca una vez" },
@@ -13164,7 +13166,7 @@ function SolicitudesParametrosPanel({ unidad, session }) {
 
       <Panel
         title="Carpeta en Drive"
-        subtitle="Dónde crea la app una carpeta por solicitud. El id se toma de la URL de Drive, después de /folders/."
+        subtitle="La carpeta de esta compañía. Dentro, el proceso crea el año y luego una por solicitud. El id se toma de la URL de Drive, después de /folders/."
       >
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14, maxWidth: 780 }}>
           <Field label="Id de la carpeta raíz">
@@ -13649,6 +13651,119 @@ const nombreParaRuta = (n) =>
 const BUCKET_ADJUNTOS = "solicitudes-adjuntos";
 
 /**
+ * Sube un archivo al búfer y registra su fila. Compartida entre los adjuntos
+ * de la solicitud y las especificaciones de cada concepto: si la copiara,
+ * acabaría manteniendo dos versiones de lo mismo y divergirían.
+ *
+ * Si la fila falla después de subir, el objeto se retira del bucket. Sin eso
+ * quedaría huérfano y nadie sabría de dónde salió.
+ */
+async function subirAdjunto({ archivo, entidad, entidadId, categoria, unidad, folio, subcarpeta }) {
+  const id = uid();
+  const ruta = [unidad, folio, subcarpeta, `${id}-${nombreParaRuta(archivo.name)}`]
+    .filter(Boolean).join("/");
+
+  const up = await supabase.storage.from(BUCKET_ADJUNTOS)
+    .upload(ruta, archivo, { contentType: archivo.type || undefined, upsert: false });
+  if (up.error) throw up.error;
+
+  const ins = await supabase.from("adjuntos").insert({
+    id, entidad, entidad_id: entidadId, categoria,
+    nombre: archivo.name, mime: archivo.type || null, tamano: archivo.size,
+    storage_path: ruta, estado: "en_transito",
+  });
+  if (ins.error) {
+    await supabase.storage.from(BUCKET_ADJUNTOS).remove([ruta]);
+    throw ins.error;
+  }
+  return id;
+}
+
+/* Borra el objeto del búfer y su fila. Si el archivo ya está en Drive no hay
+   objeto que borrar: solo se retira la referencia, y el archivo se queda allá.
+   Borrarlo de Drive desde aquí sería destruir el expediente. */
+async function borrarAdjunto(r) {
+  if (r.storage_path) {
+    const { error } = await supabase.storage.from(BUCKET_ADJUNTOS).remove([r.storage_path]);
+    if (error) throw error;
+  }
+  const { error: e2 } = await supabase.from("adjuntos").delete().eq("id", r.id);
+  if (e2) throw e2;
+}
+
+async function abrirAdjunto(r) {
+  if (r.drive_link) { window.open(r.drive_link, "_blank"); return; }
+  if (!r.storage_path) throw new Error("Este adjunto no tiene archivo ni enlace.");
+  const { data, error } = await supabase.storage.from(BUCKET_ADJUNTOS)
+    .createSignedUrl(r.storage_path, 60);
+  if (error) throw error;
+  window.open(data.signedUrl, "_blank");
+}
+
+/**
+ * Las especificaciones de un concepto: un solo archivo, no una lista.
+ * Reemplazar borra el anterior antes de subir el nuevo, para que no se
+ * acumulen dos versiones sin saber cuál rige.
+ */
+function SpecsConcepto({ concepto, unidad, folio, adjunto, onCambio }) {
+  const [trabajando, setTrabajando] = useState(false);
+  const ref = useRef(null);
+
+  const elegir = async (e) => {
+    const archivo = e.target.files?.[0];
+    e.target.value = "";
+    if (!archivo) return;
+    setTrabajando(true);
+    try {
+      if (adjunto) await borrarAdjunto(adjunto);
+      await subirAdjunto({
+        archivo, entidad: "solicitud_concepto", entidadId: concepto.id,
+        categoria: "specs", unidad, folio, subcarpeta: "specs",
+      });
+      await onCambio();
+    } catch (err) {
+      alert("No se pudo: " + (err.message || err));
+    } finally {
+      setTrabajando(false);
+    }
+  };
+
+  const quitar = async () => {
+    if (!confirm(`¿Quitar "${adjunto.nombre}"?`)) return;
+    setTrabajando(true);
+    try { await borrarAdjunto(adjunto); await onCambio(); }
+    catch (err) { alert("No se pudo: " + (err.message || err)); }
+    finally { setTrabajando(false); }
+  };
+
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 7, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", color: T.textDim }}>
+        Especificaciones
+      </span>
+      {adjunto ? (
+        <>
+          <span style={{ fontSize: 11.5, color: T.text, wordBreak: "break-word" }}>{adjunto.nombre}</span>
+          <Pill>{adjunto.estado === "en_drive" ? "En Drive" : "En tránsito"}</Pill>
+          <Button variant="ghost" style={{ padding: "3px 9px" }}
+            onClick={() => abrirAdjunto(adjunto).catch((e) => alert(e.message))}>Abrir</Button>
+          <Button variant="ghost" style={{ padding: "3px 9px" }} disabled={trabajando}
+            onClick={() => ref.current?.click()}>Reemplazar</Button>
+          <Button variant="danger" style={{ padding: "3px 9px" }} disabled={trabajando}
+            onClick={quitar}>Quitar</Button>
+        </>
+      ) : (
+        <Button variant="ghost" style={{ padding: "3px 9px" }} disabled={trabajando}
+          onClick={() => ref.current?.click()}>
+          {trabajando ? "Subiendo…" : "+ Adjuntar"}
+        </Button>
+      )}
+      <input ref={ref} type="file" onChange={elegir} style={{ display: "none" }} />
+    </div>
+  );
+}
+
+/**
  * Los archivos entran aquí, a un búfer en Supabase, y de aquí los recoge el
  * proceso que los lleva a Drive. Mientras `storage_path` tenga valor y
  * `drive_file_id` no, el archivo está en tránsito — y eso se ve en la lista,
@@ -13682,26 +13797,7 @@ function AdjuntosPanel({ entidad, entidadId, unidad, folio }) {
       for (let i = 0; i < archivos.length; i++) {
         const a = archivos[i];
         setProgreso(`${i + 1} de ${archivos.length}: ${a.name}`);
-        const id = uid();
-        /* Ruta legible a propósito: si alguien abre el bucket desde Supabase,
-           entiende de qué solicitud es cada archivo sin consultar la tabla. */
-        const ruta = `${unidad}/${folio}/${id}-${nombreParaRuta(a.name)}`;
-
-        const up = await supabase.storage.from(BUCKET_ADJUNTOS)
-          .upload(ruta, a, { contentType: a.type || undefined, upsert: false });
-        if (up.error) throw up.error;
-
-        const ins = await supabase.from("adjuntos").insert({
-          id, entidad, entidad_id: entidadId, categoria,
-          nombre: a.name, mime: a.type || null, tamano: a.size,
-          storage_path: ruta, estado: "en_transito",
-        });
-        if (ins.error) {
-          // Sin la fila, el objeto quedaría huérfano en el bucket y nadie
-          // sabría de dónde salió. Se retira.
-          await supabase.storage.from(BUCKET_ADJUNTOS).remove([ruta]);
-          throw ins.error;
-        }
+        await subirAdjunto({ archivo: a, entidad, entidadId, categoria, unidad, folio });
       }
       await cargar();
     } catch (err) {
@@ -13712,28 +13808,12 @@ function AdjuntosPanel({ entidad, entidadId, unidad, folio }) {
     }
   };
 
-  const abrir = async (r) => {
-    if (r.drive_link) { window.open(r.drive_link, "_blank"); return; }
-    if (!r.storage_path) { alert("Este adjunto no tiene archivo ni enlace."); return; }
-    const { data, error: e } = await supabase.storage.from(BUCKET_ADJUNTOS)
-      .createSignedUrl(r.storage_path, 60);
-    if (e) { setError(e.message); return; }
-    window.open(data.signedUrl, "_blank");
-  };
+  const abrir = (r) => abrirAdjunto(r).catch((e) => setError(e.message || String(e)));
 
   const eliminar = async (r) => {
     if (!confirm(`¿Quitar "${r.nombre}"?`)) return;
-    try {
-      if (r.storage_path) {
-        const { error: e } = await supabase.storage.from(BUCKET_ADJUNTOS).remove([r.storage_path]);
-        if (e) throw e;
-      }
-      const { error: e2 } = await supabase.from("adjuntos").delete().eq("id", r.id);
-      if (e2) throw e2;
-      await cargar();
-    } catch (err) {
-      setError(err.message || String(err));
-    }
+    try { await borrarAdjunto(r); await cargar(); }
+    catch (err) { setError(err.message || String(err)); }
   };
 
   const enTransito = (filas || []).filter((r) => r.estado === "en_transito").length;
@@ -13819,23 +13899,31 @@ const etiquetaEstado = (v) =>
 
 function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEditar }) {
   const [conceptos, setConceptos] = useState(null);
+  const [specs, setSpecs] = useState({});
   const [estado, setEstado] = useState(solicitud.estado);
   const [notas, setNotas] = useState(solicitud.notas_revision || "");
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState("");
 
-  useEffect(() => {
-    let vivo = true;
-    (async () => {
-      const { data, error: e } = await supabase
-        .from("solicitud_conceptos").select("*")
-        .eq("solicitud_id", solicitud.id).order("orden");
-      if (!vivo) return;
-      if (e) setError(e.message);
-      setConceptos(data || []);
-    })();
-    return () => { vivo = false; };
-  }, [solicitud.id]);
+  /* Las specs de todos los conceptos se traen en UNA consulta y no una por
+     concepto: con doce líneas serían doce viajes para mostrar una pantalla. */
+  const cargarSpecs = async (ids) => {
+    if (!ids.length) { setSpecs({}); return; }
+    const { data } = await supabase.from("adjuntos").select("*")
+      .eq("entidad", "solicitud_concepto").in("entidad_id", ids);
+    setSpecs(Object.fromEntries((data || []).map((a) => [a.entidad_id, a])));
+  };
+
+  const cargarConceptos = async () => {
+    const { data, error: e } = await supabase
+      .from("solicitud_conceptos").select("*")
+      .eq("solicitud_id", solicitud.id).order("orden");
+    if (e) { setError(e.message); return; }
+    setConceptos(data || []);
+    await cargarSpecs((data || []).map((c) => c.id));
+  };
+
+  useEffect(() => { cargarConceptos(); }, [solicitud.id]);
 
   const money = (n) => `$${numMx(n)} ${solicitud.divisa === "USD" ? "USD" : "MXN"}`;
   const cambio = estado !== solicitud.estado || notas !== (solicitud.notas_revision || "");
@@ -13936,6 +14024,13 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
                       <a href={c.enlace} target="_blank" rel="noreferrer"
                         style={{ fontSize: 11, color: T.accent, marginTop: 4, display: "inline-block" }}>{c.enlace}</a>
                     )}
+                    <SpecsConcepto
+                      concepto={c}
+                      unidad={solicitud.unidad}
+                      folio={solicitud.folio}
+                      adjunto={specs[c.id] || null}
+                      onCambio={() => cargarSpecs(conceptos.map((x) => x.id))}
+                    />
                   </div>
                   <span style={{ fontFamily: T.fontMono, fontSize: 12.5, color: T.text, whiteSpace: "nowrap" }}>
                     {money(c.subtotal)}

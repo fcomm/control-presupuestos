@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.48.0";
+const APP_VERSION = "2.48.1";
 const CHANGELOG = [
+  { v: "2.48.1", desc: "Arreglo: adjuntar un archivo a una transaccion cerraba la ventana de edicion y regresaba a la lista. Dentro de un formulario, un boton sin type es de ENVIO por omision, asi que Adjuntar guardaba y cerraba antes de que el dialogo de archivos terminara. Les pasaba a todos los botones del panel de adjuntos -- Abrir, Quitar, Reemplazar -- y no solo a ese. Ahora todos van marcados como botones de accion, asi que la ventana se queda abierta y se pueden subir varios archivos seguidos" },
   { v: "2.48.0", desc: "Adjuntos en la transaccion, dentro de su ventana de edicion: cotizaciones, comprobantes, facturas y la poliza que la app genera sola. Se puede adjuntar aun en borrador -- los archivos se guardan y pasan a Drive cuando la transaccion se registre -- y la ventana lo dice en vez de dejar a alguien preguntandose por que no llegan. Ademas avisa cuando la poliza quedo vieja: si la transaccion cambio despues de generarse, la que esta en Drive miente, y hay un boton para rehacerla. Esa comparacion es lo que da uso a la columna poliza_generada_en de la migracion 51, y es la alternativa barata a versionar cada transaccion. El boton del alta pasa a decir Crear transaccion: Registrar ya significa otra cosa en esta pantalla" },
   { v: "2.47.0", desc: "Poliza de la transaccion: al registrarse -- sea con el boton o al marcarse como reportada o enviada a Pagos -- se genera un PDF informativo con sus datos y queda en su expediente. Es lo que justifica que la carpeta exista; una transaccion oficial sin ningun papel es una carpeta vacia. Lleva folio interno, el SMI del solicitante como dato informativo para ligar nuestro id con el suyo, proveedor, concepto, importe, partida con su centro de costo, proyecto, zona, forma y metodo de pago, folios de SAE y factura. Sin firmas: no autoriza nada, describe. Al pie va la fecha y hora de generacion, que es lo que permite ordenar dos copias sin llevar historial de la transaccion. Reemplaza a la anterior en vez de acumular. Si la generacion falla, la transaccion queda registrada de todos modos: perder el registro por un PDF seria peor. Requiere 51" },
   { v: "2.46.0", desc: "Marcar transacciones como reportadas a Direccion o enviadas a Pagos las registra solas si seguian en borrador. Ese es el momento en que la transaccion se vuelve oficial: si entonces no tiene folio, es que faltaba darselo. Registrar deja de ser un paso que alguien recuerda y pasa a ser consecuencia de un acto que ya existia, que es lo que evita los reportes incompletos sin aviso. El boton Registrar sigue ahi para cuando se quiera comprometer una transaccion antes de reportarla. Quitar la marca NO des-registra: el folio ya existio y liberarlo dejaria un hueco en la numeracion que nadie sabria explicar" },
@@ -14172,7 +14173,7 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta }) {
             {CATEGORIAS_ADJUNTO.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
           </Select>
         </Field>
-        <Button onClick={() => refArchivo.current?.click()} disabled={subiendo}>
+        <Button type="button" onClick={() => refArchivo.current?.click()} disabled={subiendo}>
           {subiendo ? "Subiendo…" : "+ Adjuntar archivos"}
         </Button>
         <input ref={refArchivo} type="file" multiple onChange={subir} style={{ display: "none" }} />
@@ -14199,8 +14200,8 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta }) {
                 </div>
               </div>
               <Pill>{r.estado === "en_drive" ? "En Drive" : r.estado === "en_transito" ? "En tránsito" : r.estado}</Pill>
-              <Button variant="ghost" onClick={() => abrir(r)} style={{ padding: "4px 10px" }}>Abrir</Button>
-              <Button variant="danger" onClick={() => eliminar(r)} style={{ padding: "4px 10px" }}>Quitar</Button>
+              <Button type="button" variant="ghost" onClick={() => abrir(r)} style={{ padding: "4px 10px" }}>Abrir</Button>
+              <Button type="button" variant="danger" onClick={() => eliminar(r)} style={{ padding: "4px 10px" }}>Quitar</Button>
             </div>
           ))}
         </div>

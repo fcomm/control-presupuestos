@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.45.2";
+const APP_VERSION = "2.45.4";
 const CHANGELOG = [
+  { v: "2.45.4", desc: "Arreglo: la app se ponia en blanco al editar varias transacciones si se activaba el campo Proyecto o Zona. El selector esperaba nombres y recibia las filas completas del catalogo, y pintar un objeto donde va texto tumba el render entero (error 31 de React). Venia roto desde la 2.26.0, cuando se escribio la edicion masiva; solo se notaba al activar esos dos campos. Ahora los catalogos se normalizan: da lo mismo si llegan como filas o como nombres" },
+  { v: "2.45.3", desc: "Arreglo: el Reporte de Pagos aparecia vacio sin explicacion. Desde la 2.45.0 los reportes excluyen los borradores -- que era la intencion -- pero lo hacian en SILENCIO, asi que las transacciones creadas o importadas despues de la migracion 49 simplemente no estaban y nada decia por que. Ahora los dos reportes de pago avisan arriba cuantas transacciones en borrador dejaron fuera y por cuanto importe, con la instruccion de registrarlas. Un reporte que omite algo sin decirlo es peor que uno que lo incluye" },
   { v: "2.45.2", desc: "Diagnostico en el importador de Sheets: cada fila que se va a tratar como nueva deja en consola la celda exacta, el valor leido de Procesado, el valor crudo antes de limpiarlo y cuantas columnas trajo esa fila. Se reporto que ocho filas marcadas TRUE se siguen detectando como nuevas, y TRUE ya se reconocia desde antes, asi que la explicacion del idioma no cubre este caso. Sin ver que lee la app celda por celda, cualquier arreglo seria adivinar" },
   { v: "2.45.1", desc: "Arreglo: el importador de Sheets volvia a traer filas ya procesadas. Eran DOS problemas que se tapaban entre si. Al LEER, la hoja se lee con valores formateados y una casilla marcada en una hoja con idioma espanol devuelve VERDADERO, no TRUE -- palabra que la validacion no contemplaba, asi que toda fila marcada a mano se veia como nueva. Al ESCRIBIR, marcaba con el texto literal TRUE usando RAW, que en una columna de casillas guarda la palabra como texto y deja la casilla sin marcar; la app se entendia a si misma pero no escribia lo mismo que produce un clic humano. Ahora se acepta VERDADERO y las formas que alguien puede teclear -- si, ok, listo, procesado -- sin distinguir acentos, y se marca con un booleano usando USER_ENTERED. Ademas, una marca que no se reconoce se reporta en consola con hoja y numero de fila, en vez de reimportar en silencio" },
   { v: "2.45.0", desc: "Se cierra el circuito del registro: una transaccion nueva nace BORRADOR, sin folio, y los reportes de pago dejan de verla. Antes el folio se gastaba en cada intento, incluidos los que no llegaban a nada, y una transaccion a medio capturar podia irse a Pagos sin que nada lo detuviera. Las importadas de Sheets ya nacian sin folio, asi que quedan como borradores solas. Los borradores se marcan en la tabla y se registran en bloque desde la barra de seleccion. Duplicar ya no hereda el registro: el duplicado es una transaccion nueva y comprometerse con ella es una decision aparte -- sin eso habria nacido registrada pero sin folio. Todo lo que ya existia quedo registrado por la migracion 49, asi que ningun reporte cambia de contenido" },
@@ -7329,10 +7331,14 @@ function EditarMasivoModal({ filas, proveedores, proyectos, zonas, onCerrar, onA
     return filas.filter((t) => String(t[c.key] || "") !== String(nuevo)).length;
   };
 
+  /* Los catálogos llegan a veces como filas y a veces como nombres, según
+     quién los pase. Se normalizan aquí: pintar una fila donde va texto tumba
+     la pantalla entera, que es lo que pasaba al activar Proyecto o Zona. */
+  const nombreOpcion = (o) => (typeof o === "string" ? o : String(o?.nombre ?? ""));
   const opcionesDe = (c) =>
-    c.key === "proyecto" ? proyectos
-    : c.key === "zona" ? zonas
-    : c.opciones || [];
+    (c.key === "proyecto" ? proyectos
+     : c.key === "zona" ? zonas
+     : c.opciones || []).map(nombreOpcion).filter(Boolean);
 
   const pagadasSinFecha = activos.has("status") && valores.status === "Pagado"
     && !(activos.has("fecha_pago") && valores.fecha_pago)
@@ -8884,6 +8890,13 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     (t) => (partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad)
       && t.registrada_en
   );
+  /* Los borradores se cuentan aparte para AVISAR que se dejaron fuera. Un
+     reporte que los omite en silencio parece vacío sin explicación, que es
+     peor que incluirlos. */
+  const borradoresFuera = transacciones.filter(
+    (t) => (partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad)
+      && !t.registrada_en
+  );
 
   const filas = transUnidad.map((t) => {
     const partida = partidasUnidad.find((p) => p.id === t.partida_id);
@@ -9294,6 +9307,17 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, paddingBottom: hayAvisos ? 70 : 0 }}>
+      {borradoresFuera.length > 0 && (
+        <div style={{
+          background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 8,
+          padding: "11px 14px", fontSize: 12.5, color: T.amberDim, lineHeight: 1.55,
+        }}>
+          <b>{borradoresFuera.length} transacción(es) en borrador no aparecen en este reporte</b>
+          {" "}(${numMx(borradoresFuera.reduce((a, t) => a + (Number(t.importe) || 0), 0))}).
+          {" "}Un borrador todavía no tiene folio ni nadie se comprometió con él. Para incluirlas,
+          ve a Transacciones, selecciónalas y usa <b>Registrar</b>.
+        </div>
+      )}
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <KpiCard label="Transacciones" value={String(filasOrdenadas.length)} />
         <KpiCard label="Total MXP (filtrado)" value={money(totalMXN, "MXP")} />
@@ -9520,6 +9544,13 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
     (t) => (partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad)
       && t.registrada_en
   );
+  /* Los borradores se cuentan aparte para AVISAR que se dejaron fuera. Un
+     reporte que los omite en silencio parece vacío sin explicación, que es
+     peor que incluirlos. */
+  const borradoresFuera = transacciones.filter(
+    (t) => (partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad)
+      && !t.registrada_en
+  );
 
   const filas = transUnidad.map((t) => {
     const partida = partidasUnidad.find((p) => p.id === t.partida_id);
@@ -9738,6 +9769,17 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {borradoresFuera.length > 0 && (
+        <div style={{
+          background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 8,
+          padding: "11px 14px", fontSize: 12.5, color: T.amberDim, lineHeight: 1.55,
+        }}>
+          <b>{borradoresFuera.length} transacción(es) en borrador no aparecen en este reporte</b>
+          {" "}(${numMx(borradoresFuera.reduce((a, t) => a + (Number(t.importe) || 0), 0))}).
+          {" "}Un borrador todavía no tiene folio ni nadie se comprometió con él. Para incluirlas,
+          ve a Transacciones, selecciónalas y usa <b>Registrar</b>.
+        </div>
+      )}
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
         <KpiCard label="Transacciones" value={String(filasOrdenadas.length)} />
         <KpiCard label="Total MXP (filtrado)" value={money(totalMXN, "MXP")} />

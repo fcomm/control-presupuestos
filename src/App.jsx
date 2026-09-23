@@ -322,8 +322,11 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.49.0";
+const APP_VERSION = "2.50.0";
 const CHANGELOG = [
+  { v: "2.50.0", desc: "Transacciones gana la columna Adjuntos: marcas cortas por tipo -- REG, FAC, CP, COT y otros -- para ver de un vistazo que tiene cada una y que le falta, con los nombres de los archivos al pasar el mouse. Una pagada sin comprobante se marca Sin CP, y una que viene de una SMI lleva la marca SMI porque sus cotizaciones viven en el expediente de la solicitud. Nuevo filtro Adjuntos: sin factura, sin comprobante, sin ninguno. Las transacciones estrenan categorias propias -- Factura, Comprobante de pago, Cotizacion, Otro, mas el REG que genera la app -- en vez de las de las SMI, donde factura y cotizacion compartian categoria y no existia comprobante. La categoria de un adjunto de transaccion se puede cambiar en la lista, para reclasificar lo que se subio como Cotizacion o factura. El resumen sale de una vista en Supabase y se lee por paginas, asi que no topa con el limite de 1000 renglones. Requiere 54-adjuntos-transacciones.sql" },
+  { v: "2.49.2", desc: "La poliza de la transaccion pasa a llamarse REG: el archivo es REG CTM-SEP26-059.pdf y el encabezado del documento dice REGISTRO DE TRANSACCION. Poliza es un termino contable que confunde a quien no es de la casa, y el documento no es una poliza contable sino el registro de la transaccion. Cambian tambien los textos de la app que la mencionaban. Los archivos ya en Drive conservan su nombre anterior" },
+  { v: "2.49.1", desc: "Los archivos de Enviar a Pagos cambian de nombre a Programacion Pagos-ISE-240926-R0, con la fecha como DDMMAA. Aplica al PDF y al Excel, y a lo que dicen la confirmacion y la tarjeta" },
   { v: "2.49.0", desc: "Boton Enviar a Pagos en el Reporte de Pagos, que reemplaza a Generar PDF. Sobre las transacciones del filtro -- que debe ser UNA fecha de pago -- registra los borradores, genera las polizas que falten o hayan quedado viejas, marca todo como enviado, guarda el envio en envios_pagos y descarga el PDF y el Excel como OSB_2026-09-25_R0. La revision sale de ahi: R0 el primer envio de esa fecha, R1 el primer reenvio. El envio se guarda AL FINAL, cuando todo lo demas salio bien, para que un intento fallido no consuma una revision que nunca llego a Pagos; los archivos se arman ANTES de tocar nada, asi que si fallan no queda nada a medias. El reporte deja de excluir los borradores: aparecen marcados en la tabla, porque enviarlos ya los registra. La exclusion existia para que un borrador no llegara a Pagos sin folio, y eso ahora lo garantiza el propio envio. La deteccion de poliza vieja gana un minuto de margen: guardar la poliza toca la transaccion, y sin margen podia marcarse vieja a si misma. Requiere 52-envios-pagos.sql" },
   { v: "2.48.1", desc: "Arreglo: adjuntar un archivo a una transaccion cerraba la ventana de edicion y regresaba a la lista. Dentro de un formulario, un boton sin type es de ENVIO por omision, asi que Adjuntar guardaba y cerraba antes de que el dialogo de archivos terminara. Les pasaba a todos los botones del panel de adjuntos -- Abrir, Quitar, Reemplazar -- y no solo a ese. Ahora todos van marcados como botones de accion, asi que la ventana se queda abierta y se pueden subir varios archivos seguidos" },
   { v: "2.48.0", desc: "Adjuntos en la transaccion, dentro de su ventana de edicion: cotizaciones, comprobantes, facturas y la poliza que la app genera sola. Se puede adjuntar aun en borrador -- los archivos se guardan y pasan a Drive cuando la transaccion se registre -- y la ventana lo dice en vez de dejar a alguien preguntandose por que no llegan. Ademas avisa cuando la poliza quedo vieja: si la transaccion cambio despues de generarse, la que esta en Drive miente, y hay un boton para rehacerla. Esa comparacion es lo que da uso a la columna poliza_generada_en de la migracion 51, y es la alternativa barata a versionar cada transaccion. El boton del alta pasa a decir Crear transaccion: Registrar ya significa otra cosa en esta pantalla" },
@@ -7489,6 +7492,32 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [marcandoReportado, setMarcandoReportado] = useState(false);
   const [marcandoEnviado, setMarcandoEnviado] = useState(false);
 
+  /* Resumen de adjuntos por transacción, de la vista de la migración 54.
+     Por páginas: Supabase entrega 1000 renglones por consulta, y cortar ahí
+     en silencio haría que transacciones con archivos aparecieran sin ellos.
+     Se recarga cuando cambian las transacciones —generar un REG actualiza
+     la transacción— con una pausa, para que marcar veinte de golpe no
+     dispare veinte consultas; y cuando el panel de adjuntos avisa. */
+  const [resumenAdj, setResumenAdj] = useState(new Map());
+  const [errorResumenAdj, setErrorResumenAdj] = useState("");
+  const cargarResumenAdj = async () => {
+    const mapa = new Map();
+    for (let desde = 0; ; desde += 1000) {
+      const { data, error } = await supabase.from("adjuntos_resumen_transaccion")
+        .select("*").range(desde, desde + 999);
+      if (error) { setErrorResumenAdj(error.message); return; }
+      (data || []).forEach((r) => mapa.set(r.transaccion_id, r));
+      if (!data || data.length < 1000) break;
+    }
+    setErrorResumenAdj("");
+    setResumenAdj(mapa);
+  };
+  useEffect(() => {
+    const t = setTimeout(cargarResumenAdj, 800);
+    return () => clearTimeout(t);
+  }, [transacciones]);
+  const adjDe = (t) => resumenAdj.get(t.id) || null;
+
   const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
   // MXP primero, como en el resto de la app — no alfabético, que pondría USD antes.
   const monedasDisponibles = [...new Set(transUnidad.map((t) => t.moneda || "MXP"))]
@@ -7501,6 +7530,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     if (filtros.reportado === "No reportado" && t.reportado_at) return false;
     if (filtros.enviadoPagos === "Enviado" && !t.enviado_pagos_at) return false;
     if (filtros.enviadoPagos === "No enviado" && t.enviado_pagos_at) return false;
+    // Filtro nuevo: en sesiones guardadas antes no existe, y vale "Todos".
+    if (filtros.adjuntos === "Sin factura" && adjDe(t)?.factura) return false;
+    if (filtros.adjuntos === "Sin comprobante" && adjDe(t)?.comprobante) return false;
+    if (filtros.adjuntos === "Sin ningún adjunto" && adjDe(t)) return false;
     // Coincidencia exacta con el marcador guardado en la transacción — el
     // mismo texto que se eligió al capturarla (incluye "Todos" y los "<X>
     // Gral" de grupo como opciones propias, no como comodín de "sin filtro").
@@ -7515,8 +7548,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtros.proyecto || filtros.moneda;
-  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", proyecto: "", moneda: "" });
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || (filtros.adjuntos || "Todos") !== "Todos" || filtros.proyecto || filtros.moneda;
+  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", adjuntos: "Todos", proyecto: "", moneda: "" });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
@@ -7711,6 +7744,27 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       render: (t) => t.enviado_pagos_at
         ? <Pill tone="teal">{formatFechaCorta(t.enviado_pagos_at)}</Pill>
         : <Pill tone="amber">No enviado</Pill>,
+    },
+    {
+      /* Solo lo que SÍ tiene, para que la columna no se llene de ruido. La
+         excepción es el comprobante de una pagada: ahí la ausencia es lo que
+         hay que ver. */
+      key: "adjuntos", label: "Adjuntos",
+      render: (t) => {
+        const a = adjDe(t);
+        const marcas = [];
+        if (a?.reg) marcas.push(<Pill key="reg" tone="dim">REG</Pill>);
+        if (a?.factura) marcas.push(<Pill key="fac" tone="teal">FAC</Pill>);
+        if (a?.comprobante) marcas.push(<Pill key="cp" tone="teal">CP</Pill>);
+        else if (t.status === "Pagado") marcas.push(<Pill key="sincp" tone="amber">Sin CP</Pill>);
+        if (a?.cotizacion) marcas.push(<Pill key="cot" tone="dim">COT</Pill>);
+        if (a?.otros) marcas.push(<Pill key="otr" tone="dim">+{a.otros}</Pill>);
+        if (t.solicitud_id) marcas.push(<Pill key="smi" tone="accent">SMI</Pill>);
+        if (!marcas.length) return "—";
+        const titulo = [a?.nombres, t.solicitud_id ? "SMI: sus cotizaciones y soporte están en el expediente de la solicitud" : ""]
+          .filter(Boolean).join("\n\n");
+        return <span title={titulo} style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>{marcas}</span>;
+      },
     },
     { key: "updated_at", label: "Última actualización", render: (t) => <span style={{ fontSize: 11, color: T.textFaint }}>{formatFechaHora(t.updated_at) || "—"}</span> },
   ];
@@ -8121,7 +8175,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     try {
       await generarPolizaTransaccion(transaccionesApi, t, unidad, partidas);
     } catch (err) {
-      console.warn(`No se pudo generar la póliza de ${t.folio_transaccion || t.id}:`, err);
+      console.warn(`No se pudo generar el REG de ${t.folio_transaccion || t.id}:`, err);
     }
   };
 
@@ -8218,7 +8272,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       {subTx === "general" && (<>
       <Panel
         title={`Transacciones de ${unidad}`}
-        subtitle={filtrosActivos ? `${transFiltradas.length} de ${transUnidad.length} registradas` : `${transUnidad.length} registradas`}
+        subtitle={(filtrosActivos ? `${transFiltradas.length} de ${transUnidad.length} registradas` : `${transUnidad.length} registradas`)
+          /* Sin la vista de la migración 54 la columna Adjuntos saldría vacía
+             como si nada tuviera archivos: se dice en vez de callarlo. */
+          + (errorResumenAdj ? ` · La columna Adjuntos no pudo cargarse: ${errorResumenAdj}` : "")}
         right={
           <Button onClick={openNew}>+ Nueva transacción</Button>
         }
@@ -8255,6 +8312,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 <option>Todos</option>
                 <option>Enviado</option>
                 <option>No enviado</option>
+              </Select>
+            </Field>
+            <Field label="Adjuntos">
+              <Select value={filtros.adjuntos || "Todos"} onChange={(e) => setFiltros({ ...filtros, adjuntos: e.target.value })} style={{ width: 170 }}>
+                <option>Todos</option>
+                <option>Sin factura</option>
+                <option>Sin comprobante</option>
+                <option>Sin ningún adjunto</option>
               </Select>
             </Field>
             <Field label="Proyecto">
@@ -8779,7 +8844,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                                 background: T.panelAlt, border: `1px solid ${T.border}`,
                                 borderRadius: 8, padding: "11px 13px", lineHeight: 1.5 }}>
                     Esta transacción está en borrador. Su expediente se crea al registrarla, junto con
-                    su póliza. Puedes adjuntar archivos desde ahora: se quedan guardados y pasan a Drive
+                    su REG. Puedes adjuntar archivos desde ahora: se quedan guardados y pasan a Drive
                     cuando la registres.
                   </div>
                 );
@@ -8796,12 +8861,12 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                                   padding: "10px 13px", marginBottom: 12, fontSize: 12, color: T.amberDim }}>
                       <span style={{ flex: 1, minWidth: 220, lineHeight: 1.5 }}>
                         {t.poliza_generada_en
-                          ? "La transacción cambió después de generarse la póliza, así que la del expediente ya no coincide."
-                          : "Esta transacción todavía no tiene póliza en su expediente."}
+                          ? "La transacción cambió después de generarse el REG, así que el del expediente ya no coincide."
+                          : "Esta transacción todavía no tiene REG en su expediente."}
                       </span>
                       <Button type="button" variant="ghost" disabled={regenerando}
                         onClick={async () => { setRegenerando(true); await polizaDe(t); setRegenerando(false); }}>
-                        {regenerando ? "Generando…" : "Generar póliza"}
+                        {regenerando ? "Generando…" : "Generar REG"}
                       </Button>
                     </div>
                   )}
@@ -8810,6 +8875,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     entidadId={t.id}
                     unidad={t.unidad_detectada || unidad}
                     carpeta={t.solicitud_id || t.id}
+                    onCambio={cargarResumenAdj}
                   />
                 </div>
               );
@@ -9347,7 +9413,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
    * registra los borradores (folio y expediente), genera las pólizas que
    * falten o hayan quedado viejas, marca todo como enviado, guarda el envío en
    * envios_pagos —de donde sale la revisión— y descarga PDF y Excel como
-   * OSB_2026-09-25_R0.
+   * Programacion Pagos-OSB-250926-R0.
    *
    * Los archivos se arman PRIMERO: si algo en ellos falla, todavía no se tocó
    * nada. El envío se guarda AL FINAL: la revisión se ve en el nombre de los
@@ -9420,13 +9486,13 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       `Enviar a Pagos — ${unidad}, ${fecha}\n\n` +
       `  ${trans.length} transacción(es):  ${totalesTxt}\n` +
       (aRegistrar.length ? `  ${aRegistrar.length} en borrador: se registran (folio y expediente)\n` : "") +
-      (aPoliza.length ? `  ${aPoliza.length} póliza(s) por generar o rehacer\n` : "") +
+      (aPoliza.length ? `  ${aPoliza.length} REG por generar o rehacer\n` : "") +
       (previo
         ? `\nEsta fecha ya se envió: R${previo.revision}, ${formatFechaHora(previo.enviado_en)}. ` +
           `Este será un REENVÍO, R${revPrevista}` +
           (yaEnviadas ? ` (${yaEnviadas} de las transacciones ya iban en un envío anterior).` : ".")
         : `\nPrimer envío de esta fecha: R0.`) +
-      `\n\nSe descargan ${unidad}_${fecha}_R${revPrevista}.pdf y .xlsx. ¿Continuar?${aviso}`
+      `\n\nSe descargan ${nombreEnvioPagos(unidad, fecha, revPrevista)}.pdf y .xlsx. ¿Continuar?${aviso}`
     );
     if (!confirmado) return;
 
@@ -9448,12 +9514,12 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       /* Una póliza que falla NO detiene el envío: el pago sigue siendo
          correcto y la póliza se rehace desde el detalle. Detener el envío por
          un PDF de expediente sería peor. Se avisa al final cuáles fueron. */
-      paso = "generar las pólizas";
+      paso = "generar los REG";
       for (const t of [...conPoliza, ...aPoliza]) {
         try {
           await generarPolizaTransaccion(transaccionesApi, t, unidad, partidas);
         } catch (err) {
-          console.warn(`Póliza de ${t.folio_transaccion || t.id}:`, err);
+          console.warn(`REG de ${t.folio_transaccion || t.id}:`, err);
           polizasFallidas.push(t.folio_transaccion || t.id);
         }
       }
@@ -9488,7 +9554,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         pdfBlob = construirPDF(revision).output("blob");
         xlsBlob = (await construirExcel(revision)).blob;
       }
-      const base = `${unidad}_${fecha}_R${revision}`;
+      const base = nombreEnvioPagos(unidad, fecha, revision);
       descargarBlob(pdfBlob, `${base}.pdf`);
       descargarBlob(xlsBlob, `${base}.xlsx`);
       cerrarPreviewPDF();
@@ -9498,8 +9564,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         `  ${trans.length} transacción(es) marcadas como enviadas\n` +
         (aRegistrar.length ? `  ${aRegistrar.length} registradas\n` : "") +
         (polizasFallidas.length
-          ? `\nNo se pudo generar la póliza de: ${polizasFallidas.join(", ")}. El envío es válido; ` +
-            `rehazlas desde el detalle de cada transacción.`
+          ? `\nNo se pudo generar el REG de: ${polizasFallidas.join(", ")}. El envío es válido; ` +
+            `rehazlos desde el detalle de cada transacción.`
           : "")
       );
     } catch (err) {
@@ -9535,7 +9601,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           padding: "11px 14px", fontSize: 12.5, color: T.textDim, lineHeight: 1.55,
         }}>
           <b>{filasOrdenadas.filter((f) => f._borrador).length} transacción(es) del filtro siguen en borrador</b>
-          {" "}— están marcadas en la tabla. Al <b>Enviar a Pagos</b> se registran solas, con su folio y su póliza.
+          {" "}— están marcadas en la tabla. Al <b>Enviar a Pagos</b> se registran solas, con su folio y su REG.
         </div>
       )}
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
@@ -9610,8 +9676,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
                             display: "flex", flexDirection: "column" }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700 }}>Enviar a Pagos</div>
                 <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
-                  Para UNA fecha de pago: registra los borradores, genera las pólizas que falten,
-                  marca como enviadas y descarga PDF y Excel como {unidad}_fecha_R0.
+                  Para UNA fecha de pago: registra los borradores, genera los REG que falten,
+                  marca como enviadas y descarga PDF y Excel como Programacion Pagos-{unidad}-DDMMAA-R0.
                   Reenviar la misma fecha da R1, R2…
                 </div>
                 <div style={{ marginBottom: 10 }}>
@@ -14095,8 +14161,22 @@ const CATEGORIAS_ADJUNTO = [
   { value: "smi",         label: "PDF de la solicitud" },
   { value: "otro",        label: "Otro" },
 ];
-const etiquetaCategoria = (v) =>
-  (CATEGORIAS_ADJUNTO.find((c) => c.value === v) || { label: v || "Sin categoría" }).label;
+/* Las transacciones tienen sus propias categorías: las de las SMI mezclaban
+   factura con cotización y no tenían comprobante de pago, que es lo que más
+   importa saber de una transacción pagada. El REG no se ofrece al subir: lo
+   genera la app. */
+const CATEGORIAS_ADJUNTO_TRANSACCION = [
+  { value: "factura",     label: "Factura (PDF o XML)" },
+  { value: "comprobante", label: "Comprobante de pago" },
+  { value: "cotizacion",  label: "Cotización" },
+  { value: "otro",        label: "Otro" },
+];
+const etiquetaCategoria = (v, entidad) => {
+  if (v === "reg") return "REG";
+  const lista = entidad === "transaccion" ? CATEGORIAS_ADJUNTO_TRANSACCION : CATEGORIAS_ADJUNTO;
+  return (lista.find((c) => c.value === v) || CATEGORIAS_ADJUNTO.find((c) => c.value === v)
+          || { label: v || "Sin categoría" }).label;
+};
 
 const pesoLegible = (b) => {
   const n = Number(b) || 0;
@@ -14240,9 +14320,11 @@ function SpecsConcepto({ concepto, unidad, carpeta, adjunto, onCambio }) {
  * `drive_file_id` no, el archivo está en tránsito — y eso se ve en la lista,
  * para que nadie suponga que ya está archivado donde debe.
  */
-function AdjuntosPanel({ entidad, entidadId, unidad, carpeta }) {
+function AdjuntosPanel({ entidad, entidadId, unidad, carpeta, onCambio }) {
+  const esTransaccion = entidad === "transaccion";
+  const categorias = esTransaccion ? CATEGORIAS_ADJUNTO_TRANSACCION : CATEGORIAS_ADJUNTO;
   const [filas, setFilas] = useState(null);
-  const [categoria, setCategoria] = useState("cotizacion");
+  const [categoria, setCategoria] = useState(esTransaccion ? "factura" : "cotizacion");
   const [subiendo, setSubiendo] = useState(false);
   const [progreso, setProgreso] = useState("");
   const [error, setError] = useState("");
@@ -14271,6 +14353,7 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta }) {
         await subirAdjunto({ archivo: a, entidad, entidadId, categoria, unidad, carpeta });
       }
       await cargar();
+      onCambio?.();
     } catch (err) {
       setError(err.message || String(err));
     } finally {
@@ -14283,8 +14366,18 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta }) {
 
   const eliminar = async (r) => {
     if (!confirm(`¿Quitar "${r.nombre}"?`)) return;
-    try { await borrarAdjunto(r); await cargar(); }
+    try { await borrarAdjunto(r); await cargar(); onCambio?.(); }
     catch (err) { setError(err.message || String(err)); }
+  };
+
+  /* Reclasificar sin volver a subir: lo que entró como "Cotización o
+     factura" antes de que las transacciones tuvieran categorías propias
+     puede ser una factura. Solo cambia la etiqueta; el archivo no se mueve. */
+  const cambiarCategoria = async (r, nueva) => {
+    const { error: e } = await supabase.from("adjuntos").update({ categoria: nueva }).eq("id", r.id);
+    if (e) { setError(e.message); return; }
+    await cargar();
+    onCambio?.();
   };
 
   const enTransito = (filas || []).filter((r) => r.estado === "en_transito").length;
@@ -14304,7 +14397,7 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta }) {
       }}>
         <Field label="Categoría" style={{ maxWidth: 230, flex: "0 0 230px" }}>
           <Select value={categoria} onChange={(e) => setCategoria(e.target.value)}>
-            {CATEGORIAS_ADJUNTO.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            {categorias.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
           </Select>
         </Field>
         <Button type="button" onClick={() => refArchivo.current?.click()} disabled={subiendo}>
@@ -14321,7 +14414,9 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta }) {
       {filas === null ? (
         <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
       ) : !filas.length ? (
-        <EmptyState title="Sin adjuntos" body="Cotizaciones, soporte o cualquier archivo que acompañe a la solicitud." />
+        <EmptyState title="Sin adjuntos" body={esTransaccion
+          ? "Factura, comprobante de pago o cualquier archivo que acompañe a la transacción."
+          : "Cotizaciones, soporte o cualquier archivo que acompañe a la solicitud."} />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
           {filas.map((r) => (
@@ -14329,10 +14424,22 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta }) {
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12.5, color: T.text, wordBreak: "break-word" }}>{r.nombre}</div>
                 <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>
-                  {[etiquetaCategoria(r.categoria), pesoLegible(r.tamano), formatFechaHora(r.subido_en)]
+                  {[esTransaccion && r.categoria !== "reg" ? "" : etiquetaCategoria(r.categoria, entidad),
+                    pesoLegible(r.tamano), formatFechaHora(r.subido_en)]
                     .filter(Boolean).join("  ·  ")}
                 </div>
               </div>
+              {esTransaccion && r.categoria !== "reg" && (
+                <Select value={r.categoria} onChange={(e) => cambiarCategoria(r, e.target.value)}
+                  style={{ width: 190, fontSize: 12 }} title="Categoría del archivo">
+                  {/* Si trae una categoría de las SMI, se conserva como opción
+                      para no mostrar un valor que el control no tiene. */}
+                  {!categorias.some((c) => c.value === r.categoria) && (
+                    <option value={r.categoria}>{etiquetaCategoria(r.categoria)}</option>
+                  )}
+                  {categorias.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </Select>
+              )}
               <Pill>{r.estado === "en_drive" ? "En Drive" : r.estado === "en_transito" ? "En tránsito" : r.estado}</Pill>
               <Button type="button" variant="ghost" onClick={() => abrir(r)} style={{ padding: "4px 10px" }}>Abrir</Button>
               <Button type="button" variant="danger" onClick={() => eliminar(r)} style={{ padding: "4px 10px" }}>Quitar</Button>
@@ -14343,8 +14450,8 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta }) {
 
       {enTransito > 0 && (
         <div style={{ marginTop: 12, fontSize: 11.5, color: T.textFaint, lineHeight: 1.5 }}>
-          {enTransito} archivo(s) siguen en Supabase. Pasarán a Drive cuando exista el proceso que los mueve;
-          hasta entonces ocupan el espacio de la base.
+          {enTransito} archivo(s) siguen en Supabase. Pasan a Drive en la siguiente corrida del proceso,
+          que se ejecuta cada 15 minutos.
         </div>
       )}
       {error && <div style={{ marginTop: 12, fontSize: 12, color: T.red }}>{error}</div>}
@@ -14577,7 +14684,7 @@ function pdfPoliza(t, { partida, centroCosto, razonSocial } = {}) {
     styles: { fontSize: 8, cellPadding: 1.8, lineColor: [40, 40, 40], lineWidth: 0.2, valign: "middle" },
     body: [[
       { content: "", rowSpan: 2, styles: { halign: "center", valign: "middle", minCellHeight: 18, cellWidth: 40 } },
-      { content: "PÓLIZA DE TRANSACCIÓN", colSpan: 2, styles: { halign: "center", fontSize: 13, fontStyle: "bold" } },
+      { content: "REGISTRO DE TRANSACCIÓN", colSpan: 2, styles: { halign: "center", fontSize: 13, fontStyle: "bold" } },
     ], [
       { content: t.folio_transaccion || "SIN FOLIO",
         styles: { halign: "center", fontStyle: "bold", fontSize: 11, textColor: ROJO } },
@@ -14660,16 +14767,16 @@ function pdfPoliza(t, { partida, centroCosto, razonSocial } = {}) {
 async function guardarPolizaEnExpediente(transaccionesApi, t, datos) {
   const carpeta = t.solicitud_id || t.id;
   const previas = await supabase.from("adjuntos").select("*")
-    .eq("entidad", "transaccion").eq("entidad_id", t.id).eq("categoria", "smi");
+    .eq("entidad", "transaccion").eq("entidad_id", t.id).eq("categoria", "reg");
   for (const p of (previas.data || [])) {
     try { await borrarAdjunto(p); } catch { /* si ya estaba en Drive, se queda allá */ }
   }
 
   const blob = pdfPoliza(t, datos).output("blob");
-  const nombre = `Poliza ${t.folio_transaccion || t.id}.pdf`;
+  const nombre = `REG ${t.folio_transaccion || t.id}.pdf`;
   await subirAdjunto({
     archivo: new File([blob], nombre, { type: "application/pdf" }),
-    entidad: "transaccion", entidadId: t.id, categoria: "smi",
+    entidad: "transaccion", entidadId: t.id, categoria: "reg",
     unidad: t.unidad_detectada || "SIN-UNIDAD", carpeta,
   });
   await transaccionesApi.update(t.id, { poliza_generada_en: new Date().toISOString() });
@@ -14680,6 +14787,14 @@ async function guardarPolizaEnExpediente(transaccionesApi, t, datos) {
    que el Reporte de Pagos la use igual al enviar: dos armados distintos de la
    misma póliza terminarían diciendo cosas distintas. Lanza el error; quien la
    llama decide si es fatal. */
+/* Nombre de los archivos de un envío a Pagos: Programacion Pagos-ISE-240926-R0.
+   La fecha va como DDMMAA. Un solo lugar para armarlo: la confirmación dice
+   el nombre antes de enviar y tiene que ser el mismo que baja. */
+function nombreEnvioPagos(unidad, fecha, revision) {
+  const [a, m, d] = String(fecha).split("-");
+  return `Programacion Pagos-${unidad}-${d}${m}${a.slice(2)}-R${revision}`;
+}
+
 async function generarPolizaTransaccion(transaccionesApi, t, unidad, partidas) {
   const p = partidas.find((x) => x.id === t.partida_id) || null;
   let cc = "";

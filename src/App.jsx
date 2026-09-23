@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.50.0";
+const APP_VERSION = "2.51.0";
 const CHANGELOG = [
+  { v: "2.51.0", desc: "La factura se adjunta en dos entradas, PDF y XML, y la columna Adjuntos de Transacciones muestra SIEMPRE los seis tipos -- REG, PDF, XML, COT, CP, SOP -- lleno el que ya esta y tenue el que falta, para ver de un vistazo que falta adjuntar. El comprobante que falta en una transaccion pagada sale en ambar. El filtro Adjuntos gana una opcion por tipo. Los XML que se habian subido como factura se reclasifican solos por su extension. Requiere 55-adjuntos-xml-soporte.sql" },
+  { v: "2.50.1", desc: "En la edicion de una transaccion, un boton por tipo de archivo -- Adjuntar Factura, Adjuntar Cotizacion, Adjuntar Comprobante de Pago, Adjuntar Soporte -- en vez de elegir la categoria en una lista y luego un boton generico. Con la lista, lo que no se cambiaba se subia con la categoria que estuviera seleccionada, y asi se clasificaba mal sin que nadie lo notara. Soporte reemplaza a Otro. El selector por archivo se queda para corregir. Las solicitudes no cambian" },
   { v: "2.50.0", desc: "Transacciones gana la columna Adjuntos: marcas cortas por tipo -- REG, FAC, CP, COT y otros -- para ver de un vistazo que tiene cada una y que le falta, con los nombres de los archivos al pasar el mouse. Una pagada sin comprobante se marca Sin CP, y una que viene de una SMI lleva la marca SMI porque sus cotizaciones viven en el expediente de la solicitud. Nuevo filtro Adjuntos: sin factura, sin comprobante, sin ninguno. Las transacciones estrenan categorias propias -- Factura, Comprobante de pago, Cotizacion, Otro, mas el REG que genera la app -- en vez de las de las SMI, donde factura y cotizacion compartian categoria y no existia comprobante. La categoria de un adjunto de transaccion se puede cambiar en la lista, para reclasificar lo que se subio como Cotizacion o factura. El resumen sale de una vista en Supabase y se lee por paginas, asi que no topa con el limite de 1000 renglones. Requiere 54-adjuntos-transacciones.sql" },
   { v: "2.49.2", desc: "La poliza de la transaccion pasa a llamarse REG: el archivo es REG CTM-SEP26-059.pdf y el encabezado del documento dice REGISTRO DE TRANSACCION. Poliza es un termino contable que confunde a quien no es de la casa, y el documento no es una poliza contable sino el registro de la transaccion. Cambian tambien los textos de la app que la mencionaban. Los archivos ya en Drive conservan su nombre anterior" },
   { v: "2.49.1", desc: "Los archivos de Enviar a Pagos cambian de nombre a Programacion Pagos-ISE-240926-R0, con la fecha como DDMMAA. Aplica al PDF y al Excel, y a lo que dicen la confirmacion y la tarjeta" },
@@ -7523,6 +7525,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const monedasDisponibles = [...new Set(transUnidad.map((t) => t.moneda || "MXP"))]
     .sort((a, b) => (a === "MXP" ? -1 : b === "MXP" ? 1 : a.localeCompare(b)));
 
+  /* En sesiones guardadas antes no existe (vale "Todos"), y la 2.50 guardaba
+     el texto de la opción: se traduce para no dejar un filtro invisible. */
+  const filtroAdj = ({ "Sin factura": "sin:factura", "Sin comprobante": "sin:comprobante",
+                       "Sin ningún adjunto": "ninguno" })[filtros.adjuntos] || filtros.adjuntos || "Todos";
   const transFiltradas = transUnidad.filter((t) => {
     if (filtros.fechaDesde && (!t.dia || t.dia < filtros.fechaDesde)) return false;
     if (filtros.fechaHasta && (!t.dia || t.dia > filtros.fechaHasta)) return false;
@@ -7530,10 +7536,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     if (filtros.reportado === "No reportado" && t.reportado_at) return false;
     if (filtros.enviadoPagos === "Enviado" && !t.enviado_pagos_at) return false;
     if (filtros.enviadoPagos === "No enviado" && t.enviado_pagos_at) return false;
-    // Filtro nuevo: en sesiones guardadas antes no existe, y vale "Todos".
-    if (filtros.adjuntos === "Sin factura" && adjDe(t)?.factura) return false;
-    if (filtros.adjuntos === "Sin comprobante" && adjDe(t)?.comprobante) return false;
-    if (filtros.adjuntos === "Sin ningún adjunto" && adjDe(t)) return false;
+    if (filtroAdj === "ninguno" && adjDe(t)) return false;
+    if (filtroAdj.startsWith("sin:") && adjDe(t)?.[filtroAdj.slice(4)]) return false;
     // Coincidencia exacta con el marcador guardado en la transacción — el
     // mismo texto que se eligió al capturarla (incluye "Todos" y los "<X>
     // Gral" de grupo como opciones propias, no como comodín de "sin filtro").
@@ -7548,7 +7552,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || (filtros.adjuntos || "Todos") !== "Todos" || filtros.proyecto || filtros.moneda;
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtroAdj !== "Todos" || filtros.proyecto || filtros.moneda;
   const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", adjuntos: "Todos", proyecto: "", moneda: "" });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
@@ -7752,18 +7756,30 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       key: "adjuntos", label: "Adjuntos",
       render: (t) => {
         const a = adjDe(t);
-        const marcas = [];
-        if (a?.reg) marcas.push(<Pill key="reg" tone="dim">REG</Pill>);
-        if (a?.factura) marcas.push(<Pill key="fac" tone="teal">FAC</Pill>);
-        if (a?.comprobante) marcas.push(<Pill key="cp" tone="teal">CP</Pill>);
-        else if (t.status === "Pagado") marcas.push(<Pill key="sincp" tone="amber">Sin CP</Pill>);
-        if (a?.cotizacion) marcas.push(<Pill key="cot" tone="dim">COT</Pill>);
-        if (a?.otros) marcas.push(<Pill key="otr" tone="dim">+{a.otros}</Pill>);
-        if (t.solicitud_id) marcas.push(<Pill key="smi" tone="accent">SMI</Pill>);
-        if (!marcas.length) return "—";
-        const titulo = [a?.nombres, t.solicitud_id ? "SMI: sus cotizaciones y soporte están en el expediente de la solicitud" : ""]
-          .filter(Boolean).join("\n\n");
-        return <span title={titulo} style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>{marcas}</span>;
+        const faltan = MARCAS_ADJUNTO_TRANSACCION.filter((m) => !a?.[m.campo]).map((m) => m.largo.split(" (")[0]);
+        const titulo = [
+          a?.nombres ? `Adjuntos:\n${a.nombres}` : "Sin adjuntos",
+          faltan.length ? `Falta: ${faltan.join(", ")}` : "",
+          t.solicitud_id ? "SMI: sus cotizaciones y soporte pueden estar en el expediente de la solicitud" : "",
+        ].filter(Boolean).join("\n\n");
+        return (
+          <span title={titulo} style={{ display: "inline-flex", gap: 3, flexWrap: "wrap" }}>
+            {MARCAS_ADJUNTO_TRANSACCION.map((m) => {
+              const hay = !!a?.[m.campo];
+              // El comprobante que falta en una pagada es lo único urgente.
+              if (!hay && m.campo === "comprobante" && t.status === "Pagado") {
+                return <Pill key={m.campo} tone="amber">{m.corto}</Pill>;
+              }
+              return (
+                <span key={m.campo} style={hay ? undefined : { opacity: 0.35 }}>
+                  <Pill tone={hay ? "teal" : "dim"}>{m.corto}</Pill>
+                </span>
+              );
+            })}
+            {a?.otros > 0 && <Pill tone="dim">+{a.otros}</Pill>}
+            {t.solicitud_id && <Pill tone="accent">SMI</Pill>}
+          </span>
+        );
       },
     },
     { key: "updated_at", label: "Última actualización", render: (t) => <span style={{ fontSize: 11, color: T.textFaint }}>{formatFechaHora(t.updated_at) || "—"}</span> },
@@ -8315,11 +8331,12 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               </Select>
             </Field>
             <Field label="Adjuntos">
-              <Select value={filtros.adjuntos || "Todos"} onChange={(e) => setFiltros({ ...filtros, adjuntos: e.target.value })} style={{ width: 170 }}>
-                <option>Todos</option>
-                <option>Sin factura</option>
-                <option>Sin comprobante</option>
-                <option>Sin ningún adjunto</option>
+              <Select value={filtroAdj} onChange={(e) => setFiltros({ ...filtros, adjuntos: e.target.value })} style={{ width: 190 }}>
+                <option value="Todos">Todos</option>
+                {MARCAS_ADJUNTO_TRANSACCION.map((m) => (
+                  <option key={m.campo} value={`sin:${m.campo}`}>Sin {m.largo.split(" (")[0]}</option>
+                ))}
+                <option value="ninguno">Sin ningún adjunto</option>
               </Select>
             </Field>
             <Field label="Proyecto">
@@ -14166,11 +14183,24 @@ const CATEGORIAS_ADJUNTO = [
    importa saber de una transacción pagada. El REG no se ofrece al subir: lo
    genera la app. */
 const CATEGORIAS_ADJUNTO_TRANSACCION = [
-  { value: "factura",     label: "Factura (PDF o XML)" },
-  { value: "comprobante", label: "Comprobante de pago" },
-  { value: "cotizacion",  label: "Cotización" },
-  { value: "otro",        label: "Otro" },
+  { value: "factura",     label: "Factura PDF",         boton: "Adjuntar Factura PDF" },
+  { value: "xml",         label: "Factura XML",         boton: "Adjuntar Factura XML" },
+  { value: "cotizacion",  label: "Cotización",          boton: "Adjuntar Cotización" },
+  { value: "comprobante", label: "Comprobante de pago", boton: "Adjuntar Comprobante de Pago" },
+  { value: "soporte",     label: "Soporte",             boton: "Adjuntar Soporte" },
 ];
+/* Lo que la columna Adjuntos de Transacciones muestra SIEMPRE, lleno o
+   tenue: la ausencia es lo que se quiere ver. `campo` es la columna de la
+   vista adjuntos_resumen_transaccion. */
+const MARCAS_ADJUNTO_TRANSACCION = [
+  { campo: "reg",         corto: "REG", largo: "REG (lo genera la app al registrar)" },
+  { campo: "factura",     corto: "PDF", largo: "Factura PDF" },
+  { campo: "xml",         corto: "XML", largo: "Factura XML" },
+  { campo: "cotizacion",  corto: "COT", largo: "Cotización" },
+  { campo: "comprobante", corto: "CP",  largo: "Comprobante de pago" },
+  { campo: "soporte",     corto: "SOP", largo: "Soporte" },
+];
+
 const etiquetaCategoria = (v, entidad) => {
   if (v === "reg") return "REG";
   const lista = entidad === "transaccion" ? CATEGORIAS_ADJUNTO_TRANSACCION : CATEGORIAS_ADJUNTO;
@@ -14329,6 +14359,11 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta, onCambio }) {
   const [progreso, setProgreso] = useState("");
   const [error, setError] = useState("");
   const refArchivo = useRef(null);
+  /* Con un botón por tipo, la categoría se decide al hacer clic, antes de
+     abrir el selector de archivos. Va en un ref y no en el estado: el
+     onChange del input corre antes de que un setState se refleje. */
+  const catElegida = useRef(null);
+  const adjuntarComo = (cat) => { catElegida.current = cat; refArchivo.current?.click(); };
 
   const cargar = async () => {
     const { data, error: e } = await supabase
@@ -14350,7 +14385,7 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta, onCambio }) {
       for (let i = 0; i < archivos.length; i++) {
         const a = archivos[i];
         setProgreso(`${i + 1} de ${archivos.length}: ${a.name}`);
-        await subirAdjunto({ archivo: a, entidad, entidadId, categoria, unidad, carpeta });
+        await subirAdjunto({ archivo: a, entidad, entidadId, categoria: catElegida.current || categoria, unidad, carpeta });
       }
       await cargar();
       onCambio?.();
@@ -14359,6 +14394,7 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta, onCambio }) {
     } finally {
       setSubiendo(false);
       setProgreso("");
+      catElegida.current = null;
     }
   };
 
@@ -14395,14 +14431,26 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta, onCambio }) {
         background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8,
         padding: "12px 14px", marginBottom: 14,
       }}>
-        <Field label="Categoría" style={{ maxWidth: 230, flex: "0 0 230px" }}>
-          <Select value={categoria} onChange={(e) => setCategoria(e.target.value)}>
-            {categorias.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
-          </Select>
-        </Field>
-        <Button type="button" onClick={() => refArchivo.current?.click()} disabled={subiendo}>
-          {subiendo ? "Subiendo…" : "+ Adjuntar archivos"}
-        </Button>
+        {esTransaccion ? (
+          /* Un botón por tipo: con una lista previa, lo que no se cambiaba se
+             subía con la categoría que estuviera puesta y quedaba mal
+             clasificado sin que nadie lo notara. */
+          categorias.map((c) => (
+            <Button key={c.value} type="button" variant="ghost" disabled={subiendo}
+              onClick={() => adjuntarComo(c.value)}>
+              + {c.boton}
+            </Button>
+          ))
+        ) : (<>
+          <Field label="Categoría" style={{ maxWidth: 230, flex: "0 0 230px" }}>
+            <Select value={categoria} onChange={(e) => setCategoria(e.target.value)}>
+              {categorias.map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+            </Select>
+          </Field>
+          <Button type="button" onClick={() => refArchivo.current?.click()} disabled={subiendo}>
+            {subiendo ? "Subiendo…" : "+ Adjuntar archivos"}
+          </Button>
+        </>)}
         <input ref={refArchivo} type="file" multiple onChange={subir} style={{ display: "none" }} />
         <span style={{ fontSize: 11, color: T.textFaint, paddingBottom: 9 }}>
           Se pueden elegir varios a la vez. Máximo 25 MB por archivo.

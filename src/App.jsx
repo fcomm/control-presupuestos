@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.48.1";
+const APP_VERSION = "2.49.0";
 const CHANGELOG = [
+  { v: "2.49.0", desc: "Boton Enviar a Pagos en el Reporte de Pagos, que reemplaza a Generar PDF. Sobre las transacciones del filtro -- que debe ser UNA fecha de pago -- registra los borradores, genera las polizas que falten o hayan quedado viejas, marca todo como enviado, guarda el envio en envios_pagos y descarga el PDF y el Excel como OSB_2026-09-25_R0. La revision sale de ahi: R0 el primer envio de esa fecha, R1 el primer reenvio. El envio se guarda AL FINAL, cuando todo lo demas salio bien, para que un intento fallido no consuma una revision que nunca llego a Pagos; los archivos se arman ANTES de tocar nada, asi que si fallan no queda nada a medias. El reporte deja de excluir los borradores: aparecen marcados en la tabla, porque enviarlos ya los registra. La exclusion existia para que un borrador no llegara a Pagos sin folio, y eso ahora lo garantiza el propio envio. La deteccion de poliza vieja gana un minuto de margen: guardar la poliza toca la transaccion, y sin margen podia marcarse vieja a si misma. Requiere 52-envios-pagos.sql" },
   { v: "2.48.1", desc: "Arreglo: adjuntar un archivo a una transaccion cerraba la ventana de edicion y regresaba a la lista. Dentro de un formulario, un boton sin type es de ENVIO por omision, asi que Adjuntar guardaba y cerraba antes de que el dialogo de archivos terminara. Les pasaba a todos los botones del panel de adjuntos -- Abrir, Quitar, Reemplazar -- y no solo a ese. Ahora todos van marcados como botones de accion, asi que la ventana se queda abierta y se pueden subir varios archivos seguidos" },
   { v: "2.48.0", desc: "Adjuntos en la transaccion, dentro de su ventana de edicion: cotizaciones, comprobantes, facturas y la poliza que la app genera sola. Se puede adjuntar aun en borrador -- los archivos se guardan y pasan a Drive cuando la transaccion se registre -- y la ventana lo dice en vez de dejar a alguien preguntandose por que no llegan. Ademas avisa cuando la poliza quedo vieja: si la transaccion cambio despues de generarse, la que esta en Drive miente, y hay un boton para rehacerla. Esa comparacion es lo que da uso a la columna poliza_generada_en de la migracion 51, y es la alternativa barata a versionar cada transaccion. El boton del alta pasa a decir Crear transaccion: Registrar ya significa otra cosa en esta pantalla" },
   { v: "2.47.0", desc: "Poliza de la transaccion: al registrarse -- sea con el boton o al marcarse como reportada o enviada a Pagos -- se genera un PDF informativo con sus datos y queda en su expediente. Es lo que justifica que la carpeta exista; una transaccion oficial sin ningun papel es una carpeta vacia. Lleva folio interno, el SMI del solicitante como dato informativo para ligar nuestro id con el suyo, proveedor, concepto, importe, partida con su centro de costo, proyecto, zona, forma y metodo de pago, folios de SAE y factura. Sin firmas: no autoriza nada, describe. Al pie va la fecha y hora de generacion, que es lo que permite ordenar dos copias sin llevar historial de la transaccion. Reemplaza a la anterior en vez de acumular. Si la generacion falla, la transaccion queda registrada de todos modos: perder el registro por un PDF seria peor. Requiere 51" },
@@ -8118,16 +8119,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
      sería peor. */
   const polizaDe = async (t) => {
     try {
-      const p = partidas.find((x) => x.id === t.partida_id) || null;
-      let cc = "";
-      if (t.proyecto) {
-        const { data } = await supabase.from("proyectos").select("centro_costo")
-          .eq("unidad", unidad).eq("nombre", t.proyecto).maybeSingle();
-        cc = data?.centro_costo || "";
-      }
-      await guardarPolizaEnExpediente(transaccionesApi, t, {
-        partida: p, centroCosto: cc, razonSocial: SMI_RAZON_SOCIAL[unidad] || unidad,
-      });
+      await generarPolizaTransaccion(transaccionesApi, t, unidad, partidas);
     } catch (err) {
       console.warn(`No se pudo generar la póliza de ${t.folio_transaccion || t.id}:`, err);
     }
@@ -8795,8 +8787,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               /* La póliza dice el importe del momento en que se generó. Si la
                  transacción cambió después, el PDF que está en Drive miente y
                  hay que rehacerlo. */
-              const vieja = t.poliza_generada_en && t.updated_at
-                && new Date(t.updated_at) > new Date(t.poliza_generada_en);
+              const vieja = polizaVieja(t);
               return (
                 <div style={{ gridColumn: "span 4", marginTop: 8 }}>
                   {(vieja || !t.poliza_generada_en) && (
@@ -8976,20 +8967,12 @@ function anchosProporcionalesPDF(columnas, filas, disponible) {
 function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi, cuentasApi, gruposZona = {} }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
-  /* Un borrador no entra a un reporte de pago: todavía no tiene folio ni
-     nadie se comprometió con él. Es justamente lo que el registro separa —
-     antes, una transacción a medio capturar podía irse a Pagos sin que nada
-     lo detuviera. */
+  /* Los borradores SÍ entran, marcados. Se excluían para que uno sin folio no
+     llegara a Pagos, pero eso ahora lo garantiza Enviar a Pagos: registra los
+     que falten antes de enviar. Excluirlos obligaba a ir a Transacciones a
+     registrarlos a mano, que es el paso que se olvidaba. */
   const transUnidad = transacciones.filter(
-    (t) => (partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad)
-      && t.registrada_en
-  );
-  /* Los borradores se cuentan aparte para AVISAR que se dejaron fuera. Un
-     reporte que los omite en silencio parece vacío sin explicación, que es
-     peor que incluirlos. */
-  const borradoresFuera = transacciones.filter(
-    (t) => (partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad)
-      && !t.registrada_en
+    (t) => partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad
   );
 
   const filas = transUnidad.map((t) => {
@@ -9022,6 +9005,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       moneda: t.moneda || "MXP",
       _vinculadoProveedor: !!proveedor,
       _vinculadoCuenta: !!cuenta,
+      _borrador: !t.registrada_en,
     };
   });
 
@@ -9090,6 +9074,15 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     );
     if (!okExcel) return;
 
+    const { blob, inicio, fin } = await construirExcel();
+    descargarBlob(blob, `Reporte de Pagos - ${unidad} - ${(!inicio ? "Sin periodo" : (inicio === fin ? inicio : `${inicio} a ${fin}`))}.xlsx`);
+  };
+
+  /* Construye el Excel sin descargarlo, igual que construirPDF: la exportación
+     suelta y Enviar a Pagos salen del mismo armado. Con `revision`, el título
+     de cada bloque la lleva, para que la hoja impresa diga qué envío es. */
+  const construirExcel = async (revision = null) => {
+    const etqRev = revision === null ? "" : ` R${revision}`;
     const wbx = new ExcelJS.Workbook();
     const ws = wbx.addWorksheet("Reporte de pagos");
     ws.columns = columnasExcel.map((c) => ({ width: c.width }));
@@ -9146,7 +9139,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         const { grupo, moneda, filas: filasGrupo } = bq;
 
         const tituloCell = ws.getCell(`B${fila}`);
-        tituloCell.value = `Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad} - ${moneda}`;
+        tituloCell.value = `Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad}${etqRev} - ${moneda}`;
         tituloCell.font = { bold: true, size: 14, name: "Calibri" };
         fila += 1;
 
@@ -9210,14 +9203,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
     const buffer = await wbx.xlsx.writeBuffer();
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `Reporte de Pagos - ${unidad} - ${(!inicio ? "Sin periodo" : (inicio === fin ? inicio : `${inicio} a ${fin}`))}.xlsx`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    return { blob, inicio, fin };
   };
 
   const [generandoReporte, setGenerandoReporte] = useState(false);
@@ -9238,7 +9224,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
    * archivo final salen los dos de aquí: con dos generadores distintos, el
    * preview acabaría mostrando algo que no es lo que se descarga.
    */
-  const construirPDF = () => {
+  const construirPDF = (revision = null) => {
+      const etqRev = revision === null ? "" : ` R${revision}`;
       const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
       const inicio = fechaDesde || diasOrdenados[0] || "";
       const fin = fechaHasta || diasOrdenados[diasOrdenados.length - 1] || "";
@@ -9298,7 +9285,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
           doc.setFontSize(13);
           doc.setTextColor(0);
-          doc.text(`Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad} - ${moneda}`, 30, cursorY);
+          doc.text(`Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad}${etqRev} - ${moneda}`, 30, cursorY);
           doc.setFontSize(10);
           doc.setTextColor(120);
           doc.text(grupo, 30, cursorY + 16);
@@ -9353,32 +9340,173 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     setPreviewPDF(null);
   };
 
-  const generarReportePDF = async () => {
+  /**
+   * Enviar a Pagos: el acto que vuelve oficial el pago de una fecha.
+   *
+   * Sobre las transacciones del filtro, en este orden: arma los archivos,
+   * registra los borradores (folio y expediente), genera las pólizas que
+   * falten o hayan quedado viejas, marca todo como enviado, guarda el envío en
+   * envios_pagos —de donde sale la revisión— y descarga PDF y Excel como
+   * OSB_2026-09-25_R0.
+   *
+   * Los archivos se arman PRIMERO: si algo en ellos falla, todavía no se tocó
+   * nada. El envío se guarda AL FINAL: la revisión se ve en el nombre de los
+   * archivos, y consumirla en un intento que falló dejaría un R0 que nunca
+   * llegó a Pagos. Si algo falla en medio se puede volver a presionar:
+   * registrar y marcar repetidos no hacen daño.
+   *
+   * Es de UNA fecha porque así se identifica el envío (compañía + fecha de
+   * pago) y así lo nombra Pagos.
+   *
+   * Requiere 52-envios-pagos.sql
+   */
+  const enviarAPagos = async () => {
     if (!filasOrdenadas.length) {
-      alert("No hay transacciones en el filtro actual para generar el reporte.");
+      alert("No hay transacciones en el filtro actual para enviar.");
       return;
     }
+    const sinDia = filasOrdenadas.filter((f) => !f.dia).length;
+    if (sinDia) {
+      alert(`${sinDia} transacción(es) del filtro no tienen día de pago. Un envío a Pagos es de una fecha: ` +
+            `asígnales el día en Transacciones o déjalas fuera del filtro.`);
+      return;
+    }
+    const dias = [...new Set(filasOrdenadas.map((f) => f.dia))].sort();
+    if (dias.length !== 1) {
+      alert(`Un envío a Pagos es de UNA fecha de pago, y el filtro actual abarca ${dias.length}:\n\n` +
+            `  ${dias.join(", ")}\n\nPon la misma fecha en Desde y Hasta.`);
+      return;
+    }
+    const fecha = dias[0];
+
+    /* Se trabaja sobre las transacciones reales, no sobre las filas del
+       reporte: registrar y generar la póliza necesitan el registro completo. */
+    const ids = new Set(filasOrdenadas.map((f) => f.id));
+    const trans = transUnidad.filter((t) => ids.has(t.id));
+    const aRegistrar = trans.filter((t) => !t.registrada_en);
+    const aPoliza = trans.filter((t) => t.registrada_en && (!t.poliza_generada_en || polizaVieja(t)));
+    const yaEnviadas = trans.filter((t) => t.enviado_pagos_at).length;
+
+    const porMoneda = {};
+    filasOrdenadas.forEach((f) => {
+      const m = f.moneda === "USD" ? "USD" : "MXP";
+      porMoneda[m] = (porMoneda[m] || 0) + (Number(f.importe) || 0);
+    });
+    const totalesTxt = Object.entries(porMoneda).map(([m, v]) => `${m} $${numMx(v)}`).join("  ·  ");
+
+    const ultimaRevision = async () => {
+      const { data, error } = await supabase.from("envios_pagos")
+        .select("revision, enviado_en").eq("unidad", unidad).eq("fecha_pago", fecha)
+        .order("revision", { ascending: false }).limit(1);
+      if (error) throw error;
+      return data?.[0] || null;
+    };
+
+    let previo;
+    try {
+      previo = await ultimaRevision();
+    } catch (err) {
+      alert("No se pudo consultar los envíos anteriores: " + (err.message || err) +
+            "\n\n¿Ya corriste 52-envios-pagos.sql?");
+      return;
+    }
+    const revPrevista = previo ? previo.revision + 1 : 0;
+
     const ancho = anchoEstimadoPDF();
     const aviso = ancho.cabe ? "" :
-      `\n\nOJO: con ${columnasPDF.length} columnas la tabla se pasa del ancho de la hoja ` +
-      `(~${ancho.usado} pt contra ${ancho.disponible} disponibles). Las columnas se van a apretar ` +
-      `y el texto se va a partir. Considera quitar algunas en "Columnas del PDF".`;
+      `\n\nOJO: con ${columnasPDF.length} columnas la tabla del PDF se pasa del ancho de la hoja ` +
+      `(~${ancho.usado} pt contra ${ancho.disponible}). Considera quitar algunas en "Columnas".`;
     const confirmado = confirm(
-      `Esto va a generar un PDF con las ${filasOrdenadas.length} transacción(es) que tienes filtradas ahora, y las va a marcar como "Enviadas a Pagos". ¿Continuar?${aviso}`
+      `Enviar a Pagos — ${unidad}, ${fecha}\n\n` +
+      `  ${trans.length} transacción(es):  ${totalesTxt}\n` +
+      (aRegistrar.length ? `  ${aRegistrar.length} en borrador: se registran (folio y expediente)\n` : "") +
+      (aPoliza.length ? `  ${aPoliza.length} póliza(s) por generar o rehacer\n` : "") +
+      (previo
+        ? `\nEsta fecha ya se envió: R${previo.revision}, ${formatFechaHora(previo.enviado_en)}. ` +
+          `Este será un REENVÍO, R${revPrevista}` +
+          (yaEnviadas ? ` (${yaEnviadas} de las transacciones ya iban en un envío anterior).` : ".")
+        : `\nPrimer envío de esta fecha: R0.`) +
+      `\n\nSe descargan ${unidad}_${fecha}_R${revPrevista}.pdf y .xlsx. ¿Continuar?${aviso}`
     );
     if (!confirmado) return;
 
     setGenerandoReporte(true);
+    let paso = "armar los archivos";
+    let revision = revPrevista;
+    const polizasFallidas = [];
     try {
-      const doc = construirPDF();
-      doc.save(`reporte-pagos-${unidad}-${new Date().toISOString().slice(0, 10)}.pdf`);
+      let pdfBlob = construirPDF(revision).output("blob");
+      let xlsBlob = (await construirExcel(revision)).blob;
+
+      /* Una por una, igual que en Transacciones: cada folio se confirma
+         contra la base y se reintenta si choca. */
+      paso = "registrar los borradores";
+      const todasUnidad = transacciones.filter((t) => t.unidad_detectada === unidad);
+      const conPoliza = [];
+      for (const t of aRegistrar) conPoliza.push((await registrarTransaccion(transaccionesApi, t, unidad, todasUnidad)) || t);
+
+      /* Una póliza que falla NO detiene el envío: el pago sigue siendo
+         correcto y la póliza se rehace desde el detalle. Detener el envío por
+         un PDF de expediente sería peor. Se avisa al final cuáles fueron. */
+      paso = "generar las pólizas";
+      for (const t of [...conPoliza, ...aPoliza]) {
+        try {
+          await generarPolizaTransaccion(transaccionesApi, t, unidad, partidas);
+        } catch (err) {
+          console.warn(`Póliza de ${t.folio_transaccion || t.id}:`, err);
+          polizasFallidas.push(t.folio_transaccion || t.id);
+        }
+      }
+
+      paso = "marcar como enviadas";
+      const ahora = new Date().toISOString();
+      for (const t of trans) await transaccionesApi.update(t.id, { enviado_pagos_at: ahora });
+
+      /* max + 1 contra la base, con reintento si otro envío de la misma fecha
+         tomó el número entre la consulta y el insert (índice único). */
+      paso = "guardar el envío";
+      const { data: sesion } = await supabase.auth.getSession();
+      const monedas = Object.keys(porMoneda);
+      for (let intento = 0; intento < 5; intento++) {
+        const ult = await ultimaRevision();
+        revision = ult ? ult.revision + 1 : 0;
+        const { error } = await supabase.from("envios_pagos").insert({
+          id: uid(), unidad, fecha_pago: fecha, revision,
+          num_transacciones: trans.length,
+          // Un solo importe solo tiene sentido en una sola moneda; con las dos,
+          // el desglose va en notas en vez de sumar pesos con dólares.
+          importe_total: monedas.length === 1 ? Math.round(porMoneda[monedas[0]] * 100) / 100 : null,
+          notas: totalesTxt,
+          enviado_por: sesion?.session?.user?.id || null,
+        });
+        if (!error) break;
+        if (error.code !== "23505" || intento === 4) throw error;
+      }
+
+      // Si otro envío se adelantó, la revisión cambió y los archivos se rehacen.
+      if (revision !== revPrevista) {
+        pdfBlob = construirPDF(revision).output("blob");
+        xlsBlob = (await construirExcel(revision)).blob;
+      }
+      const base = `${unidad}_${fecha}_R${revision}`;
+      descargarBlob(pdfBlob, `${base}.pdf`);
+      descargarBlob(xlsBlob, `${base}.xlsx`);
       cerrarPreviewPDF();
 
-      for (const f of filasOrdenadas) {
-        await transaccionesApi.update(f.id, { enviado_pagos_at: new Date().toISOString() });
-      }
+      alert(
+        `Enviado: ${base}\n\n` +
+        `  ${trans.length} transacción(es) marcadas como enviadas\n` +
+        (aRegistrar.length ? `  ${aRegistrar.length} registradas\n` : "") +
+        (polizasFallidas.length
+          ? `\nNo se pudo generar la póliza de: ${polizasFallidas.join(", ")}. El envío es válido; ` +
+            `rehazlas desde el detalle de cada transacción.`
+          : "")
+      );
     } catch (err) {
-      alert("No se pudo generar el reporte: " + (err.message || err));
+      const guardado = paso === "guardar el envío" ? "" :
+        "\n\nEl envío NO quedó guardado y no se descargó nada. Puedes volver a intentarlo: " +
+        "lo que ya se registró o marcó no se repite.";
+      alert(`No se pudo ${paso}: ${err.message || err}${guardado || "\n\nLas transacciones ya quedaron marcadas, pero el envío no se guardó. Vuelve a intentarlo."}`);
     } finally {
       setGenerandoReporte(false);
     }
@@ -9392,7 +9520,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     return (
       <EmptyState
         title="Sin transacciones para reportar"
-        body={`Todavía no hay transacciones registradas para ${unidad}. Captúralas o impórtalas desde la pestaña Transacciones.`}
+        body={`Todavía no hay transacciones para ${unidad}. Captúralas o impórtalas desde la pestaña Transacciones.`}
       />
     );
   }
@@ -9401,15 +9529,13 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, paddingBottom: hayAvisos ? 70 : 0 }}>
-      {borradoresFuera.length > 0 && (
+      {filasOrdenadas.some((f) => f._borrador) && (
         <div style={{
-          background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 8,
-          padding: "11px 14px", fontSize: 12.5, color: T.amberDim, lineHeight: 1.55,
+          background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8,
+          padding: "11px 14px", fontSize: 12.5, color: T.textDim, lineHeight: 1.55,
         }}>
-          <b>{borradoresFuera.length} transacción(es) en borrador no aparecen en este reporte</b>
-          {" "}(${numMx(borradoresFuera.reduce((a, t) => a + (Number(t.importe) || 0), 0))}).
-          {" "}Un borrador todavía no tiene folio ni nadie se comprometió con él. Para incluirlas,
-          ve a Transacciones, selecciónalas y usa <b>Registrar</b>.
+          <b>{filasOrdenadas.filter((f) => f._borrador).length} transacción(es) del filtro siguen en borrador</b>
+          {" "}— están marcadas en la tabla. Al <b>Enviar a Pagos</b> se registran solas, con su folio y su póliza.
         </div>
       )}
       <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
@@ -9482,10 +9608,11 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
               <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
                             display: "flex", flexDirection: "column" }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Reporte de Pagos (PDF)</div>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Enviar a Pagos</div>
                 <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
-                  El documento que va al área de Pagos, en bloques por zona y moneda.
-                  Marca las transacciones como enviadas.
+                  Para UNA fecha de pago: registra los borradores, genera las pólizas que falten,
+                  marca como enviadas y descarga PDF y Excel como {unidad}_fecha_R0.
+                  Reenviar la misma fecha da R1, R2…
                 </div>
                 <div style={{ marginBottom: 10 }}>
                   <ColumnVisibilityControl
@@ -9501,8 +9628,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
                   <Button variant="ghost" onClick={vistaPreviaPDF} disabled={generandoReporte} style={{ flex: 1 }}>
                     Vista previa
                   </Button>
-                  <Button onClick={generarReportePDF} disabled={generandoReporte} style={{ flex: 1 }}>
-                    {generandoReporte ? "Generando…" : "Generar"}
+                  <Button onClick={enviarAPagos} disabled={generandoReporte} style={{ flex: 1 }}>
+                    {generandoReporte ? "Enviando…" : "Enviar a Pagos"}
                   </Button>
                 </div>
               </div>
@@ -9548,12 +9675,19 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
             <tbody>
               {filasOrdenadas.map((f) => (
                 <tr key={f.id}>
-                  {columnas.map((c) => (
+                  {columnas.map((c, ci) => (
                     <td
                       key={c.key}
                       style={c.key === "importe" ? { ...tdStyle, fontFamily: T.fontMono } : tdStyle}
                       title={c.key === "forma_pago" ? f.forma_pago_label : c.key === "metodo_pago" ? f.metodo_pago_label : undefined}
                     >
+                      {/* La marca va en la primera columna visible, sea cual sea:
+                          el orden de columnas lo decide cada quien. */}
+                      {ci === 0 && f._borrador && (
+                        <span title="Borrador: sin folio. Se registra al Enviar a Pagos" style={{ marginRight: 6 }}>
+                          <Pill tone="amber">Borrador</Pill>
+                        </span>
+                      )}
                       {c.key === "importe" ? money(f.importe, f.moneda) : (f[c.key] || "—")}
                     </td>
                   ))}
@@ -9579,8 +9713,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               </div>
               <div style={{ display: "flex", gap: 8 }}>
                 <Button variant="ghost" onClick={cerrarPreviewPDF}>Cerrar</Button>
-                <Button onClick={() => { cerrarPreviewPDF(); generarReportePDF(); }}>
-                  Generar y marcar como enviado
+                <Button onClick={() => { cerrarPreviewPDF(); enviarAPagos(); }} disabled={generandoReporte}>
+                  Enviar a Pagos
                 </Button>
               </div>
             </div>
@@ -14539,6 +14673,35 @@ async function guardarPolizaEnExpediente(transaccionesApi, t, datos) {
     unidad: t.unidad_detectada || "SIN-UNIDAD", carpeta,
   });
   await transaccionesApi.update(t.id, { poliza_generada_en: new Date().toISOString() });
+}
+
+/* Genera la póliza de una transacción con los datos que no viven en ella —la
+   partida y el centro de costo de su proyecto—. Sale de TransaccionesTab para
+   que el Reporte de Pagos la use igual al enviar: dos armados distintos de la
+   misma póliza terminarían diciendo cosas distintas. Lanza el error; quien la
+   llama decide si es fatal. */
+async function generarPolizaTransaccion(transaccionesApi, t, unidad, partidas) {
+  const p = partidas.find((x) => x.id === t.partida_id) || null;
+  let cc = "";
+  if (t.proyecto) {
+    const { data } = await supabase.from("proyectos").select("centro_costo")
+      .eq("unidad", unidad).eq("nombre", t.proyecto).maybeSingle();
+    cc = data?.centro_costo || "";
+  }
+  await guardarPolizaEnExpediente(transaccionesApi, t, {
+    partida: p, centroCosto: cc, razonSocial: SMI_RAZON_SOCIAL[unidad] || unidad,
+  });
+}
+
+/* La póliza quedó vieja si la transacción cambió DESPUÉS de generarla. Con un
+   minuto de margen: guardar la póliza actualiza la transacción, y el disparador
+   de updated_at le pone la hora del servidor, apenas posterior a la del
+   navegador que quedó en poliza_generada_en. Sin margen, una póliza recién
+   hecha podía declararse vieja a sí misma. Nadie edita un importe y vuelve a
+   generar en menos de un minuto sin darse cuenta. */
+function polizaVieja(t) {
+  if (!t.poliza_generada_en || !t.updated_at) return false;
+  return new Date(t.updated_at) - new Date(t.poliza_generada_en) > 60000;
 }
 
 /* ----------------------------------------------------------------------

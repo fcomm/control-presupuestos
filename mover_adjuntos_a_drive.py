@@ -150,26 +150,70 @@ def pendientes():
                         "order": "subido_en.asc"})
 
 
-def solicitud_de(adj):
-    """La solicitud a la que pertenece el adjunto.
+def expediente_de(adj):
+    """A qué expediente pertenece el adjunto.
 
-       Un adjunto puede colgar de la solicitud —cotizaciones, soporte— o de
-       uno de sus conceptos, que es el caso de las especificaciones. En el
-       segundo hay que dar un salto más para llegar a la solicitud."""
-    sol_id = adj["entidad_id"]
+       Devuelve un diccionario con la tabla, el id, el folio que nombra la
+       carpeta, la compañía, el año y la carpeta ya resuelta si la tiene.
 
-    if adj["entidad"] == "solicitud_concepto":
+       Tres orígenes:
+         * solicitud            — cotizaciones, soporte, el PDF de la SMI
+         * solicitud_concepto   — las especificaciones de una línea
+         * transaccion          — la póliza, comprobantes, facturas
+
+       La regla del expediente es una: se llama como el folio de lo que lo
+       originó. Una transacción que viene de una SMI comparte la carpeta de
+       esa SMI —el comprobante queda junto a la cotización que lo originó— y
+       una que no viene de ninguna usa su propio folio."""
+    ent, eid = adj["entidad"], adj["entidad_id"]
+
+    if ent == "solicitud_concepto":
         conc = rest("GET", "solicitud_conceptos",
-                    params={"select": "solicitud_id", "id": f"eq.{sol_id}"})
+                    params={"select": "solicitud_id", "id": f"eq.{eid}"})
         if not conc:
             return None
-        sol_id = conc[0]["solicitud_id"]
-    elif adj["entidad"] != "solicitud":
-        return None
+        ent, eid = "solicitud", conc[0]["solicitud_id"]
 
-    filas = rest("GET", "solicitudes",
-                 params={"select": "id,folio,unidad,anio,drive_folder_id", "id": f"eq.{sol_id}"})
-    return filas[0] if filas else None
+    if ent == "solicitud":
+        f = rest("GET", "solicitudes",
+                 params={"select": "id,folio,unidad,anio,drive_folder_id", "id": f"eq.{eid}"})
+        if not f:
+            return None
+        s = f[0]
+        return {"tabla": "solicitudes", "id": s["id"], "folio": s["folio"],
+                "unidad": s["unidad"], "anio": s.get("anio"),
+                "carpeta": s.get("drive_folder_id")}
+
+    if ent == "transaccion":
+        f = rest("GET", "transacciones",
+                 params={"select": "id,folio_transaccion,unidad_detectada,dia,"
+                                   "registrada_en,drive_folder_id,solicitud_id",
+                         "id": f"eq.{eid}"})
+        if not f:
+            return None
+        t = f[0]
+
+        # Sin registrar no hay folio, y sin folio no hay nombre de carpeta.
+        # Se deja en el búfer: no es un error, es que todavía no toca.
+        if not t.get("registrada_en") or not t.get("folio_transaccion"):
+            return "pendiente"
+
+        # Si vino de una SMI, va a la carpeta de esa SMI.
+        if t.get("solicitud_id"):
+            s = rest("GET", "solicitudes",
+                     params={"select": "id,folio,unidad,anio,drive_folder_id",
+                             "id": f"eq.{t['solicitud_id']}"})
+            if s:
+                return {"tabla": "solicitudes", "id": s[0]["id"], "folio": s[0]["folio"],
+                        "unidad": s[0]["unidad"], "anio": s[0].get("anio"),
+                        "carpeta": s[0].get("drive_folder_id")}
+
+        anio = int(str(t["dia"])[:4]) if t.get("dia") else datetime.now().year
+        return {"tabla": "transacciones", "id": t["id"], "folio": t["folio_transaccion"],
+                "unidad": t.get("unidad_detectada"), "anio": anio,
+                "carpeta": t.get("drive_folder_id")}
+
+    return None
 
 
 def carpeta_raiz(unidad):
@@ -375,7 +419,7 @@ def main():
     drive = build("drive", "v3", credentials=cred, cache_discovery=False)
     gmail = build("gmail", "v1", credentials=cred, cache_discovery=False)
 
-    movidos = fallidos = 0
+    movidos = fallidos = pospuestos = 0
     if lista:
         print(f"{len(lista)} adjunto(s) por mover.")
     else:
@@ -384,26 +428,41 @@ def main():
     for adj in lista:
         print(f"  {adj['nombre']}")
         try:
-            sol = solicitud_de(adj)
-            if not sol:
-                fallo(adj, "El adjunto no pertenece a una solicitud existente.")
+            exp = expediente_de(adj)
+
+            if exp == "pendiente":
+                # Una transacción sin registrar todavía no tiene folio. Se
+                # queda en el búfer sin contarse como error: no falló nada,
+                # simplemente aún no le toca.
+                print("    en espera: la transacción no está registrada")
+                pospuestos += 1
+                continue
+
+            if not exp:
+                fallo(adj, f"El adjunto no pertenece a ninguna {adj['entidad']} existente.")
                 fallidos += 1
                 continue
 
             # La carpeta se resuelve una sola vez por solicitud y se guarda:
             # a partir de ahí, los adjuntos siguientes no vuelven a buscarla.
-            carpeta = sol.get("drive_folder_id")
+            # La carpeta se resuelve una sola vez por expediente y se guarda:
+            # a partir de ahí, los adjuntos siguientes no vuelven a buscarla.
+            carpeta = exp.get("carpeta")
             if not carpeta:
-                raiz = carpeta_raiz(sol["unidad"])
-                if not raiz:
-                    fallo(adj, f"{sol['unidad']} no tiene carpeta raíz de Drive en sus parámetros.")
+                if not exp.get("unidad"):
+                    fallo(adj, "El expediente no tiene compañía: no se sabe bajo qué carpeta raíz va.")
                     fallidos += 1
                     continue
-                anio = sol.get("anio") or datetime.now().year
-                carpeta = carpeta_de_solicitud(drive, raiz, anio, sol["folio"])
-                requests.patch(f"{SUPABASE_URL}/rest/v1/solicitudes",
+                raiz = carpeta_raiz(exp["unidad"])
+                if not raiz:
+                    fallo(adj, f"{exp['unidad']} no tiene carpeta raíz de Drive en sus parámetros.")
+                    fallidos += 1
+                    continue
+                anio = exp.get("anio") or datetime.now().year
+                carpeta = carpeta_de_solicitud(drive, raiz, anio, exp["folio"])
+                requests.patch(f"{SUPABASE_URL}/rest/v1/{exp['tabla']}",
                                headers={**CAB, "Prefer": "return=minimal"},
-                               params={"id": f"eq.{sol['id']}"},
+                               params={"id": f"eq.{exp['id']}"},
                                json={"drive_folder_id": carpeta}, timeout=60).raise_for_status()
 
             contenido = descargar_del_bufer(adj["storage_path"])
@@ -432,7 +491,7 @@ def main():
     enviados = acuses(gmail)
     alertados = alertar_atorados(gmail)
 
-    print(f"Movidos {movidos}, con error {fallidos}, "
+    print(f"Movidos {movidos}, en espera {pospuestos}, con error {fallidos}, "
           f"acuses {enviados}, alertas {alertados}.")
 
 

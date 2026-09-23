@@ -322,8 +322,11 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.45.4";
+const APP_VERSION = "2.48.0";
 const CHANGELOG = [
+  { v: "2.48.0", desc: "Adjuntos en la transaccion, dentro de su ventana de edicion: cotizaciones, comprobantes, facturas y la poliza que la app genera sola. Se puede adjuntar aun en borrador -- los archivos se guardan y pasan a Drive cuando la transaccion se registre -- y la ventana lo dice en vez de dejar a alguien preguntandose por que no llegan. Ademas avisa cuando la poliza quedo vieja: si la transaccion cambio despues de generarse, la que esta en Drive miente, y hay un boton para rehacerla. Esa comparacion es lo que da uso a la columna poliza_generada_en de la migracion 51, y es la alternativa barata a versionar cada transaccion. El boton del alta pasa a decir Crear transaccion: Registrar ya significa otra cosa en esta pantalla" },
+  { v: "2.47.0", desc: "Poliza de la transaccion: al registrarse -- sea con el boton o al marcarse como reportada o enviada a Pagos -- se genera un PDF informativo con sus datos y queda en su expediente. Es lo que justifica que la carpeta exista; una transaccion oficial sin ningun papel es una carpeta vacia. Lleva folio interno, el SMI del solicitante como dato informativo para ligar nuestro id con el suyo, proveedor, concepto, importe, partida con su centro de costo, proyecto, zona, forma y metodo de pago, folios de SAE y factura. Sin firmas: no autoriza nada, describe. Al pie va la fecha y hora de generacion, que es lo que permite ordenar dos copias sin llevar historial de la transaccion. Reemplaza a la anterior en vez de acumular. Si la generacion falla, la transaccion queda registrada de todos modos: perder el registro por un PDF seria peor. Requiere 51" },
+  { v: "2.46.0", desc: "Marcar transacciones como reportadas a Direccion o enviadas a Pagos las registra solas si seguian en borrador. Ese es el momento en que la transaccion se vuelve oficial: si entonces no tiene folio, es que faltaba darselo. Registrar deja de ser un paso que alguien recuerda y pasa a ser consecuencia de un acto que ya existia, que es lo que evita los reportes incompletos sin aviso. El boton Registrar sigue ahi para cuando se quiera comprometer una transaccion antes de reportarla. Quitar la marca NO des-registra: el folio ya existio y liberarlo dejaria un hueco en la numeracion que nadie sabria explicar" },
   { v: "2.45.4", desc: "Arreglo: la app se ponia en blanco al editar varias transacciones si se activaba el campo Proyecto o Zona. El selector esperaba nombres y recibia las filas completas del catalogo, y pintar un objeto donde va texto tumba el render entero (error 31 de React). Venia roto desde la 2.26.0, cuando se escribio la edicion masiva; solo se notaba al activar esos dos campos. Ahora los catalogos se normalizan: da lo mismo si llegan como filas o como nombres" },
   { v: "2.45.3", desc: "Arreglo: el Reporte de Pagos aparecia vacio sin explicacion. Desde la 2.45.0 los reportes excluyen los borradores -- que era la intencion -- pero lo hacian en SILENCIO, asi que las transacciones creadas o importadas despues de la migracion 49 simplemente no estaban y nada decia por que. Ahora los dos reportes de pago avisan arriba cuantas transacciones en borrador dejaron fuera y por cuanto importe, con la instruccion de registrarlas. Un reporte que omite algo sin decirlo es peor que uno que lo incluye" },
   { v: "2.45.2", desc: "Diagnostico en el importador de Sheets: cada fila que se va a tratar como nueva deja en consola la celda exacta, el valor leido de Procesado, el valor crudo antes de limpiarlo y cuantas columnas trajo esa fila. Se reporto que ocho filas marcadas TRUE se siguen detectando como nuevas, y TRUE ya se reconocia desde antes, asi que la explicacion del idioma no cubre este caso. Sin ver que lee la app celda por celda, cualquier arreglo seria adivinar" },
@@ -8105,6 +8108,29 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   };
 
   const [registrando, setRegistrando] = useState(false);
+  const [regenerando, setRegenerando] = useState(false);
+
+  /* La póliza se arma con datos que no están en la transacción —la partida y
+     su centro de costo— así que se resuelven aquí y se pasan al generador.
+     Si falla, la transacción ya quedó registrada: el expediente se puede
+     completar después desde el detalle, y perder el registro por un PDF
+     sería peor. */
+  const polizaDe = async (t) => {
+    try {
+      const p = partidas.find((x) => x.id === t.partida_id) || null;
+      let cc = "";
+      if (t.proyecto) {
+        const { data } = await supabase.from("proyectos").select("centro_costo")
+          .eq("unidad", unidad).eq("nombre", t.proyecto).maybeSingle();
+        cc = data?.centro_costo || "";
+      }
+      await guardarPolizaEnExpediente(transaccionesApi, t, {
+        partida: p, centroCosto: cc, razonSocial: SMI_RAZON_SOCIAL[unidad] || unidad,
+      });
+    } catch (err) {
+      console.warn(`No se pudo generar la póliza de ${t.folio_transaccion || t.id}:`, err);
+    }
+  };
 
   const registrarSeleccionadas = async () => {
     const pend = [...seleccionadas]
@@ -8119,7 +8145,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
          reintenta si choca. Un insert masivo calcularía todos los números de
          golpe y el primer choque tumbaría el resto. */
       for (const t of pend) {
-        await registrarTransaccion(transaccionesApi, t, unidad, transUnidad);
+        const reg = await registrarTransaccion(transaccionesApi, t, unidad, transUnidad);
+        await polizaDe(reg || t);
       }
       setSeleccionadas(new Set());
     } catch (err) {
@@ -8129,9 +8156,26 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
   };
 
+  /* Reportar a Dirección o enviar a Pagos es el momento en que la transacción
+     se vuelve oficial. Si en ese instante sigue en borrador, es que faltaba
+     darle folio: se registra sola.
+     
+     Solo al MARCAR. Quitar la marca no des-registra: el folio ya existió y
+     liberarlo dejaría un hueco que nadie sabría explicar. */
+  const registrarSiHaceFalta = async (ids) => {
+    for (const id of ids) {
+      const t = transUnidad.find((x) => x.id === id);
+      if (t && !t.registrada_en) {
+        const reg = await registrarTransaccion(transaccionesApi, t, unidad, transUnidad);
+        await polizaDe(reg || t);
+      }
+    }
+  };
+
   const marcarReportadas = async (reportar) => {
     setMarcandoReportado(true);
     try {
+      if (reportar) await registrarSiHaceFalta([...seleccionadas]);
       for (const id of seleccionadas) {
         await transaccionesApi.update(id, { reportado_at: reportar ? new Date().toISOString() : null });
       }
@@ -8145,6 +8189,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const marcarEnviadasPagos = async (enviar) => {
     setMarcandoEnviado(true);
     try {
+      if (enviar) await registrarSiHaceFalta([...seleccionadas]);
       for (const id of seleccionadas) {
         await transaccionesApi.update(id, { enviado_pagos_at: enviar ? new Date().toISOString() : null });
       }
@@ -8726,9 +8771,57 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               <TextInput value={notaPrivada} onChange={(e) => setNotaPrivada(e.target.value)} placeholder="Recordatorios, pendientes, contexto — nadie más puede ver esto" />
             </Field>
             <div style={{ gridColumn: "span 4", display: "flex", gap: 10, marginTop: 4 }}>
-              <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Registrar transacción"}</Button>
+              <Button type="submit" disabled={saving}>{saving ? "Guardando…" : editId ? "Guardar cambios" : "Crear transacción"}</Button>
               <Button type="button" variant="ghost" onClick={closeModal}>Cancelar</Button>
             </div>
+
+            {/* El expediente solo existe para una transacción que ya se
+                guardó: antes no hay id del que colgar archivos. */}
+            {editId && (() => {
+              const t = transUnidad.find((x) => x.id === editId);
+              if (!t) return null;
+              if (!t.registrada_en) {
+                return (
+                  <div style={{ gridColumn: "span 4", marginTop: 8, fontSize: 12, color: T.textFaint,
+                                background: T.panelAlt, border: `1px solid ${T.border}`,
+                                borderRadius: 8, padding: "11px 13px", lineHeight: 1.5 }}>
+                    Esta transacción está en borrador. Su expediente se crea al registrarla, junto con
+                    su póliza. Puedes adjuntar archivos desde ahora: se quedan guardados y pasan a Drive
+                    cuando la registres.
+                  </div>
+                );
+              }
+              /* La póliza dice el importe del momento en que se generó. Si la
+                 transacción cambió después, el PDF que está en Drive miente y
+                 hay que rehacerlo. */
+              const vieja = t.poliza_generada_en && t.updated_at
+                && new Date(t.updated_at) > new Date(t.poliza_generada_en);
+              return (
+                <div style={{ gridColumn: "span 4", marginTop: 8 }}>
+                  {(vieja || !t.poliza_generada_en) && (
+                    <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap",
+                                  background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 8,
+                                  padding: "10px 13px", marginBottom: 12, fontSize: 12, color: T.amberDim }}>
+                      <span style={{ flex: 1, minWidth: 220, lineHeight: 1.5 }}>
+                        {t.poliza_generada_en
+                          ? "La transacción cambió después de generarse la póliza, así que la del expediente ya no coincide."
+                          : "Esta transacción todavía no tiene póliza en su expediente."}
+                      </span>
+                      <Button type="button" variant="ghost" disabled={regenerando}
+                        onClick={async () => { setRegenerando(true); await polizaDe(t); setRegenerando(false); }}>
+                        {regenerando ? "Generando…" : "Generar póliza"}
+                      </Button>
+                    </div>
+                  )}
+                  <AdjuntosPanel
+                    entidad="transaccion"
+                    entidadId={t.id}
+                    unidad={t.unidad_detectada || unidad}
+                    carpeta={t.solicitud_id || t.id}
+                  />
+                </div>
+              );
+            })()}
           </form>
         </Modal>
       )}
@@ -14325,6 +14418,129 @@ function pdfSolicitud(solicitud, conceptos, centroCosto) {
 }
 
 /* ----------------------------------------------------------------------
+   PÓLIZA DE LA TRANSACCIÓN
+---------------------------------------------------------------------- */
+
+/**
+ * El documento informativo de la transacción: lo que justifica que su
+ * expediente exista. Sin firmas — no autoriza nada, describe.
+ *
+ * Lleva impresa la fecha y hora de generación al pie. Es lo que permite
+ * ordenar dos copias sin llevar un historial de la transacción: la más
+ * reciente manda.
+ */
+function pdfPoliza(t, { partida, centroCosto, razonSocial } = {}) {
+  const doc = new jsPDF({ unit: "mm", format: "a4" });
+  const M = 14;
+  const ancho = doc.internal.pageSize.getWidth() - M * 2;
+  const money = (n) => `$ ${numMx(n)} ${t.moneda === "USD" ? "USD" : "MXN"}`;
+
+  autoTable(doc, {
+    startY: M,
+    margin: { left: M, right: M },
+    theme: "grid",
+    styles: { fontSize: 8, cellPadding: 1.8, lineColor: [40, 40, 40], lineWidth: 0.2, valign: "middle" },
+    body: [[
+      { content: "", rowSpan: 2, styles: { halign: "center", valign: "middle", minCellHeight: 18, cellWidth: 40 } },
+      { content: "PÓLIZA DE TRANSACCIÓN", colSpan: 2, styles: { halign: "center", fontSize: 13, fontStyle: "bold" } },
+    ], [
+      { content: t.folio_transaccion || "SIN FOLIO",
+        styles: { halign: "center", fontStyle: "bold", fontSize: 11, textColor: ROJO } },
+      { content: razonSocial || t.unidad_detectada || "", styles: { halign: "center", fontSize: 8 } },
+    ]],
+    didDrawCell: (d) => {
+      if (d.section === "body" && d.row.index === 0 && d.column.index === 0) {
+        const w = 32, h = w * 136 / 520;
+        doc.addImage(LOGO_OSBOG, "PNG",
+          d.cell.x + (d.cell.width - w) / 2, d.cell.y + (d.cell.height - h) / 2, w, h);
+      }
+    },
+  });
+
+  const et = { fontStyle: "bold", fillColor: [244, 244, 244], cellWidth: 34 };
+  const fila = (a, b, c, d) => [
+    { content: a, styles: et }, b || "—",
+    { content: c, styles: et }, d || "—",
+  ];
+
+  autoTable(doc, {
+    startY: doc.lastAutoTable.finalY + 4,
+    margin: { left: M, right: M },
+    theme: "grid",
+    styles: { fontSize: 8.5, cellPadding: 1.8, lineColor: [150, 150, 150], lineWidth: 0.1, valign: "middle" },
+    body: [
+      fila("Fecha", t.dia, "Compañía", t.unidad_detectada),
+      /* El SMI es el folio del usuario: informativo, para ligar nuestro id
+         con el suyo. El que manda es el folio de arriba. */
+      fila("SMI del solicitante", t.smi, "Solicitante", t.solicitante),
+      fila("Proveedor", t.proveedor, "Status", t.status),
+      fila("Proyecto", t.proyecto, "Zona", t.zona),
+      fila("Área", t.area, "Categoría", t.categoria),
+      fila("Partida", partida ? `${partida.folio || ""} ${partida.concepto || ""}`.trim() : "",
+           "Centro de costo", centroCosto),
+      fila("Forma de pago", t.forma_pago, "Método de pago", t.metodo_pago),
+      fila("Folio compra SAE", t.folio_compra_sae, "Folio factura", t.folio_factura),
+      fila("Fecha de pago", t.fecha_pago, "Referencia", t.referencia_pago),
+    ],
+  });
+
+  autoTable(doc, {
+    startY: doc.lastAutoTable.finalY + 5,
+    margin: { left: M, right: M },
+    theme: "plain",
+    styles: { fontSize: 9, cellPadding: 2, valign: "top" },
+    body: [
+      [{ content: "Concepto", styles: { fontStyle: "bold", fontSize: 10 } }],
+      [t.concepto_detallado || "—"],
+    ],
+  });
+
+  const y = doc.lastAutoTable.finalY + 6;
+  autoTable(doc, {
+    startY: y,
+    margin: { left: M + ancho - 82, right: M },
+    theme: "grid",
+    styles: { fontSize: 11, cellPadding: 2.4, lineColor: [40, 40, 40], lineWidth: 0.2 },
+    body: [[
+      { content: "Importe", styles: { fontStyle: "bold", cellWidth: 30 } },
+      { content: money(t.importe), styles: { halign: "right", fontStyle: "bold" } },
+    ]],
+  });
+
+  const alto = doc.internal.pageSize.getHeight();
+  doc.setFontSize(7); doc.setTextColor(120, 120, 120);
+  doc.text("Documento informativo. No constituye autorización de pago.", M, alto - 14);
+  doc.text(`Generada el ${formatFechaHora(new Date().toISOString())}`, M, alto - 10);
+  doc.text(razonSocial || "", M + ancho, alto - 10, { align: "right" });
+
+  return doc;
+}
+
+/**
+ * Deja la póliza en el búfer, dentro del expediente de la transacción.
+ *
+ * Reemplaza la anterior en vez de acumular: una póliza vieja al lado de la
+ * nueva solo sirve para que alguien imprima el importe equivocado.
+ */
+async function guardarPolizaEnExpediente(transaccionesApi, t, datos) {
+  const carpeta = t.solicitud_id || t.id;
+  const previas = await supabase.from("adjuntos").select("*")
+    .eq("entidad", "transaccion").eq("entidad_id", t.id).eq("categoria", "smi");
+  for (const p of (previas.data || [])) {
+    try { await borrarAdjunto(p); } catch { /* si ya estaba en Drive, se queda allá */ }
+  }
+
+  const blob = pdfPoliza(t, datos).output("blob");
+  const nombre = `Poliza ${t.folio_transaccion || t.id}.pdf`;
+  await subirAdjunto({
+    archivo: new File([blob], nombre, { type: "application/pdf" }),
+    entidad: "transaccion", entidadId: t.id, categoria: "smi",
+    unidad: t.unidad_detectada || "SIN-UNIDAD", carpeta,
+  });
+  await transaccionesApi.update(t.id, { poliza_generada_en: new Date().toISOString() });
+}
+
+/* ----------------------------------------------------------------------
    SOLICITUDES — DETALLE
 ---------------------------------------------------------------------- */
 
@@ -17786,5 +18002,3 @@ export default function App() {
     </div>
   );
 }
-
-

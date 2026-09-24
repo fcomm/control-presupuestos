@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.51.0";
+const APP_VERSION = "2.51.1";
 const CHANGELOG = [
+  { v: "2.51.1", desc: "Cada transaccion tiene su propio expediente, con su folio, venga o no de una SMI. Antes, la de una SMI guardaba sus archivos en la carpeta de la solicitud, y si una SMI tenia varios pagos sus facturas y comprobantes quedaban revueltos sin saber de cual eran. La SMI queda como dato informativo. La edicion de la transaccion muestra su expediente: el folio y la carpeta de Drive con enlace, o que todavia no existe. Los archivos que ya estan en la carpeta de una SMI no se mueven. Del lado del script: mover_adjuntos_a_drive.py debe dejar de mandar a la carpeta de la solicitud los archivos de una transaccion" },
   { v: "2.51.0", desc: "La factura se adjunta en dos entradas, PDF y XML, y la columna Adjuntos de Transacciones muestra SIEMPRE los seis tipos -- REG, PDF, XML, COT, CP, SOP -- lleno el que ya esta y tenue el que falta, para ver de un vistazo que falta adjuntar. El comprobante que falta en una transaccion pagada sale en ambar. El filtro Adjuntos gana una opcion por tipo. Los XML que se habian subido como factura se reclasifican solos por su extension. Requiere 55-adjuntos-xml-soporte.sql" },
   { v: "2.50.1", desc: "En la edicion de una transaccion, un boton por tipo de archivo -- Adjuntar Factura, Adjuntar Cotizacion, Adjuntar Comprobante de Pago, Adjuntar Soporte -- en vez de elegir la categoria en una lista y luego un boton generico. Con la lista, lo que no se cambiaba se subia con la categoria que estuviera seleccionada, y asi se clasificaba mal sin que nadie lo notara. Soporte reemplaza a Otro. El selector por archivo se queda para corregir. Las solicitudes no cambian" },
   { v: "2.50.0", desc: "Transacciones gana la columna Adjuntos: marcas cortas por tipo -- REG, FAC, CP, COT y otros -- para ver de un vistazo que tiene cada una y que le falta, con los nombres de los archivos al pasar el mouse. Una pagada sin comprobante se marca Sin CP, y una que viene de una SMI lleva la marca SMI porque sus cotizaciones viven en el expediente de la solicitud. Nuevo filtro Adjuntos: sin factura, sin comprobante, sin ninguno. Las transacciones estrenan categorias propias -- Factura, Comprobante de pago, Cotizacion, Otro, mas el REG que genera la app -- en vez de las de las SMI, donde factura y cotizacion compartian categoria y no existia comprobante. La categoria de un adjunto de transaccion se puede cambiar en la lista, para reclasificar lo que se subio como Cotizacion o factura. El resumen sale de una vista en Supabase y se lee por paginas, asi que no topa con el limite de 1000 renglones. Requiere 54-adjuntos-transacciones.sql" },
@@ -7760,7 +7761,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         const titulo = [
           a?.nombres ? `Adjuntos:\n${a.nombres}` : "Sin adjuntos",
           faltan.length ? `Falta: ${faltan.join(", ")}` : "",
-          t.solicitud_id ? "SMI: sus cotizaciones y soporte pueden estar en el expediente de la solicitud" : "",
+          t.solicitud_id ? `Viene de la SMI ${t.smi || ""} (informativo)`.replace("  ", " ") : "",
         ].filter(Boolean).join("\n\n");
         return (
           <span title={titulo} style={{ display: "inline-flex", gap: 3, flexWrap: "wrap" }}>
@@ -8872,6 +8873,32 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               const vieja = polizaVieja(t);
               return (
                 <div style={{ gridColumn: "span 4", marginTop: 8 }}>
+                  {/* De qué expediente se habla. Cada transacción tiene el
+                      suyo, con su folio, aunque venga de una SMI: la SMI es un
+                      dato informativo, no decide dónde viven los archivos. */}
+                  <div style={{ display: "flex", gap: 14, alignItems: "baseline", flexWrap: "wrap",
+                                fontSize: 12, color: T.textDim, marginBottom: 10 }}>
+                    <span>
+                      Expediente{" "}
+                      <b style={{ fontFamily: T.fontMono, color: T.accent }}>{t.folio_transaccion || "sin folio"}</b>
+                    </span>
+                    <span>
+                      {t.drive_folder_id ? (
+                        <a href={`https://drive.google.com/drive/folders/${t.drive_folder_id}`}
+                           target="_blank" rel="noreferrer" title={`ID de carpeta: ${t.drive_folder_id}`}>
+                          Abrir carpeta en Drive ↗
+                        </a>
+                      ) : t.folio_transaccion
+                        ? "La carpeta en Drive se crea cuando se mueva el primer archivo."
+                        : "Sin folio todavía: la carpeta se crea después de registrarla."}
+                    </span>
+                    {t.drive_folder_id && (
+                      <span style={{ fontFamily: T.fontMono, fontSize: 11 }}>ID {t.drive_folder_id}</span>
+                    )}
+                    {(t.smi || t.solicitud_id) && (
+                      <span>SMI {t.smi || "vinculada"} <i>(informativo)</i></span>
+                    )}
+                  </div>
                   {(vieja || !t.poliza_generada_en) && (
                     <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap",
                                   background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 8,
@@ -8891,7 +8918,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     entidad="transaccion"
                     entidadId={t.id}
                     unidad={t.unidad_detectada || unidad}
-                    carpeta={t.solicitud_id || t.id}
+                    carpeta={t.id}
                     onCambio={cargarResumenAdj}
                   />
                 </div>
@@ -14813,7 +14840,8 @@ function pdfPoliza(t, { partida, centroCosto, razonSocial } = {}) {
  * nueva solo sirve para que alguien imprima el importe equivocado.
  */
 async function guardarPolizaEnExpediente(transaccionesApi, t, datos) {
-  const carpeta = t.solicitud_id || t.id;
+  // Su propio expediente, venga o no de una SMI: ver 2.51.1.
+  const carpeta = t.id;
   const previas = await supabase.from("adjuntos").select("*")
     .eq("entidad", "transaccion").eq("entidad_id", t.id).eq("categoria", "reg");
   for (const p of (previas.data || [])) {

@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.51.1";
+const APP_VERSION = "2.52.0";
 const CHANGELOG = [
+  { v: "2.52.0", desc: "Quitar un archivo que ya esta en Drive lo borra tambien de Drive. La app no puede tocar Drive, asi que lo marca por_borrar y el script lo manda a la papelera de Drive en su siguiente corrida (recuperable 30 dias); antes se borraba el renglon y la copia se quedaba en el expediente sin que la app lo supiera. Lo mismo al regenerar un REG o el PDF de una SMI: el viejo ya no se queda junto al nuevo. Los archivos por borrar dejan de mostrarse y de contarse en la columna Adjuntos. Requiere 56-adjuntos-por-borrar.sql y la version nueva de mover_adjuntos_a_drive.py" },
+  { v: "2.51.2", desc: "El ID de la tabla de Transacciones usa la misma tipografia y tamano que el resto de las columnas; conserva el color para distinguirse" },
   { v: "2.51.1", desc: "Cada transaccion tiene su propio expediente, con su folio, venga o no de una SMI. Antes, la de una SMI guardaba sus archivos en la carpeta de la solicitud, y si una SMI tenia varios pagos sus facturas y comprobantes quedaban revueltos sin saber de cual eran. La SMI queda como dato informativo. La edicion de la transaccion muestra su expediente: el folio y la carpeta de Drive con enlace, o que todavia no existe. Los archivos que ya estan en la carpeta de una SMI no se mueven. Del lado del script: mover_adjuntos_a_drive.py debe dejar de mandar a la carpeta de la solicitud los archivos de una transaccion" },
   { v: "2.51.0", desc: "La factura se adjunta en dos entradas, PDF y XML, y la columna Adjuntos de Transacciones muestra SIEMPRE los seis tipos -- REG, PDF, XML, COT, CP, SOP -- lleno el que ya esta y tenue el que falta, para ver de un vistazo que falta adjuntar. El comprobante que falta en una transaccion pagada sale en ambar. El filtro Adjuntos gana una opcion por tipo. Los XML que se habian subido como factura se reclasifican solos por su extension. Requiere 55-adjuntos-xml-soporte.sql" },
   { v: "2.50.1", desc: "En la edicion de una transaccion, un boton por tipo de archivo -- Adjuntar Factura, Adjuntar Cotizacion, Adjuntar Comprobante de Pago, Adjuntar Soporte -- en vez de elegir la categoria en una lista y luego un boton generico. Con la lista, lo que no se cambiaba se subia con la categoria que estuviera seleccionada, y asi se clasificaba mal sin que nadie lo notara. Soporte reemplaza a Otro. El selector por archivo se queda para corregir. Las solicitudes no cambian" },
@@ -7676,7 +7678,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const COLUMNAS_TRANS = [
     {
       key: "folio_transaccion", label: "ID",
-      render: (t) => <span style={{ fontFamily: T.fontMono, color: T.accent, fontSize: 11 }}>{t.folio_transaccion || "—"}</span>,
+      render: (t) => <span style={{ color: T.accent, fontWeight: 600 }}>{t.folio_transaccion || "—"}</span>,
     },
     { key: "dia", label: "Día de Pago Programado", render: (t) => t.dia || "—" },
     { key: "smi", label: "SMI", render: (t) => t.smi || "—" },
@@ -13797,7 +13799,7 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
     const ids = conceptos.map((c) => c._k);
     if (!ids.length) { setSpecs({}); return; }
     const { data } = await supabase.from("adjuntos").select("*")
-      .eq("entidad", "solicitud_concepto").in("entidad_id", ids);
+      .eq("entidad", "solicitud_concepto").in("entidad_id", ids).neq("estado", "por_borrar");
     setSpecs(Object.fromEntries((data || []).map((a) => [a.entidad_id, a])));
   };
   useEffect(() => { if (editando) cargarSpecs(); }, []);
@@ -14185,9 +14187,11 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
  */
 async function guardarPdfEnDrive(solicitud, conceptos, centroCosto) {
   const previos = await supabase.from("adjuntos").select("*")
-    .eq("entidad", "solicitud").eq("entidad_id", solicitud.id).eq("categoria", "smi");
+    .eq("entidad", "solicitud").eq("entidad_id", solicitud.id).eq("categoria", "smi")
+    .neq("estado", "por_borrar");
+  // Si el anterior ya estaba en Drive, queda por_borrar y el script lo manda a la papelera.
   for (const p of (previos.data || [])) {
-    try { await borrarAdjunto(p); } catch { /* si ya estaba en Drive, se queda el viejo allá */ }
+    try { await borrarAdjunto(p); } catch (err) { console.warn("No se pudo retirar el PDF anterior:", err); }
   }
 
   const blob = pdfSolicitud(solicitud, conceptos, centroCosto).output("blob");
@@ -14291,6 +14295,21 @@ async function subirAdjunto({ archivo, entidad, entidadId, categoria, unidad, ca
    objeto que borrar: solo se retira la referencia, y el archivo se queda allá.
    Borrarlo de Drive desde aquí sería destruir el expediente. */
 async function borrarAdjunto(r) {
+  /* Si ya está en Drive, la app no puede borrarlo allá: solo el script tiene
+     credenciales de Drive. Se marca por_borrar y el script lo manda a la
+     papelera en su siguiente corrida; hasta entonces no se muestra ni se
+     cuenta. Borrar el renglón aquí dejaba la copia en el expediente sin que
+     nada la recordara. */
+  if (r.drive_file_id) {
+    if (r.storage_path) {
+      await supabase.storage.from(BUCKET_ADJUNTOS).remove([r.storage_path]);
+    }
+    const { error } = await supabase.from("adjuntos")
+      .update({ estado: "por_borrar", storage_path: null, intentos: 0, ultimo_error: null })
+      .eq("id", r.id);
+    if (error) throw error;
+    return;
+  }
   if (r.storage_path) {
     const { error } = await supabase.storage.from(BUCKET_ADJUNTOS).remove([r.storage_path]);
     if (error) throw error;
@@ -14396,6 +14415,7 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta, onCambio }) {
     const { data, error: e } = await supabase
       .from("adjuntos").select("*")
       .eq("entidad", entidad).eq("entidad_id", entidadId)
+      .neq("estado", "por_borrar")
       .order("subido_en");
     if (e) setError(e.message); else setFilas(data || []);
   };
@@ -14428,7 +14448,9 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta, onCambio }) {
   const abrir = (r) => abrirAdjunto(r).catch((e) => setError(e.message || String(e)));
 
   const eliminar = async (r) => {
-    if (!confirm(`¿Quitar "${r.nombre}"?`)) return;
+    if (!confirm(r.drive_file_id
+      ? `¿Quitar "${r.nombre}"?\n\nYa está en Drive: se mandará a la papelera de Drive en la siguiente corrida del proceso (se puede recuperar durante 30 días).`
+      : `¿Quitar "${r.nombre}"?`)) return;
     try { await borrarAdjunto(r); await cargar(); onCambio?.(); }
     catch (err) { setError(err.message || String(err)); }
   };
@@ -14843,9 +14865,11 @@ async function guardarPolizaEnExpediente(transaccionesApi, t, datos) {
   // Su propio expediente, venga o no de una SMI: ver 2.51.1.
   const carpeta = t.id;
   const previas = await supabase.from("adjuntos").select("*")
-    .eq("entidad", "transaccion").eq("entidad_id", t.id).eq("categoria", "reg");
+    .eq("entidad", "transaccion").eq("entidad_id", t.id).eq("categoria", "reg")
+    .neq("estado", "por_borrar");
+  // Si el anterior ya estaba en Drive, queda por_borrar y el script lo manda a la papelera.
   for (const p of (previas.data || [])) {
-    try { await borrarAdjunto(p); } catch { /* si ya estaba en Drive, se queda allá */ }
+    try { await borrarAdjunto(p); } catch (err) { console.warn("No se pudo retirar el REG anterior:", err); }
   }
 
   const blob = pdfPoliza(t, datos).output("blob");
@@ -14938,7 +14962,7 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
   const cargarSpecs = async (ids) => {
     if (!ids.length) { setSpecs({}); return; }
     const { data } = await supabase.from("adjuntos").select("*")
-      .eq("entidad", "solicitud_concepto").in("entidad_id", ids);
+      .eq("entidad", "solicitud_concepto").in("entidad_id", ids).neq("estado", "por_borrar");
     setSpecs(Object.fromEntries((data || []).map((a) => [a.entidad_id, a])));
   };
 

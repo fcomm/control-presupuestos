@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.52.1";
+const APP_VERSION = "2.53.0";
 const CHANGELOG = [
+  { v: "2.53.0", desc: "Validacion de proveedores contra las listas del SAT: el 69-B (EFOS) y los supuestos del 69 (no localizados, creditos firmes y exigibles, cancelados, sentencias, CSD sin efectos). El catalogo de proveedores gana la columna SAT, y el proveedor de cada transaccion y del Reporte de Pagos lleva la marca si esta listado: roja para el 69-B, ambar para el 69. Al registrar, marcar como enviada o reportada, o Enviar a Pagos una transaccion cuyo proveedor aparece en una lista, la confirmacion lo dice con el detalle; no se bloquea, la decision es de quien paga. En el 69-B solo cuentan Presunto y Definitivo: Desvirtuado y Sentencia favorable ya demostraron sus operaciones. La consulta se hace por RFC contra la vista de la migracion 57, solo con los RFC de los catalogos. Requiere 57-listas-sat.sql y que actualizar_listas_sat.py haya corrido" },
   { v: "2.52.1", desc: "Boton Registrar en la fila de cada transaccion en borrador, junto a Editar, Duplicar y Eliminar: registra esa transaccion -- folio y REG -- sin abrir el detalle ni seleccionarla. Reemplaza a la etiqueta Borrador, que solo avisaba; el boton ambar dice lo mismo y ademas lo resuelve. En las ya registradas no aparece" },
   { v: "2.52.0", desc: "Quitar un archivo que ya esta en Drive lo borra tambien de Drive. La app no puede tocar Drive, asi que lo marca por_borrar y el script lo manda a la papelera de Drive en su siguiente corrida (recuperable 30 dias); antes se borraba el renglon y la copia se quedaba en el expediente sin que la app lo supiera. Lo mismo al regenerar un REG o el PDF de una SMI: el viejo ya no se queda junto al nuevo. Los archivos por borrar dejan de mostrarse y de contarse en la columna Adjuntos. Requiere 56-adjuntos-por-borrar.sql y la version nueva de mover_adjuntos_a_drive.py" },
   { v: "2.51.2", desc: "El ID de la tabla de Transacciones usa la misma tipografia y tamano que el resto de las columnas; conserva el color para distinguirse" },
@@ -782,6 +783,56 @@ const money = (n, moneda = "MXP") =>
 const fmtTotalesPorMoneda = (t) => Object.entries(t)
   .map(([m, v]) => `$${(Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${m}`)
   .join("   ·   ");
+
+/* ----------------------------------------------------------------------
+   LISTAS DEL SAT (69-B y 69)
+---------------------------------------------------------------------- */
+/* El RFC comparable: los catálogos traen espacios y guiones que el SAT no. */
+const rfcSat = (v) => String(v || "").toUpperCase().replace(/[\s-]/g, "");
+
+/* Solo lo que es alerta: en el 69-B, Presunto y Definitivo. Un desvirtuado o
+   con sentencia favorable ya demostró que sus operaciones existen. */
+function hallazgosSat(listasSat, rfc) {
+  const r = rfcSat(rfc);
+  if (!r || !listasSat?.mapa) return [];
+  return (listasSat.mapa.get(r) || []).filter((h) => h.alerta);
+}
+
+const etiquetaSat = (h) => (h.lista === "69-B" ? `69-B ${h.situacion || ""}`.trim() : `69 · ${h.situacion || ""}`);
+
+/* Rojo el 69-B (operaciones simuladas: afecta la deducción), ámbar el 69
+   (incumplimientos del proveedor, que no invalidan la factura pero importan). */
+function PillsSat({ hallazgos }) {
+  if (!hallazgos || !hallazgos.length) return null;
+  const titulo = hallazgos.map((h) => {
+    const d = h.detalle ? Object.entries(h.detalle).map(([k, v]) => `  ${k}: ${v}`).join("\n") : "";
+    return `${etiquetaSat(h)}${h.nombre ? ` — ${h.nombre}` : ""}${d ? "\n" + d : ""}`;
+  }).join("\n\n") + "\n\nFuente: listas del SAT (datos abiertos)";
+  const grave = hallazgos.some((h) => h.lista === "69-B");
+  return (
+    <span title={titulo} style={{ display: "inline-flex", gap: 3, flexWrap: "wrap" }}>
+      <Pill tone={grave ? "red" : "amber"}>
+        SAT {grave ? "69-B" : "69"}{hallazgos.length > 1 ? ` +${hallazgos.length - 1}` : ""}
+      </Pill>
+    </span>
+  );
+}
+
+/* Texto para las confirmaciones: qué proveedores de estas transacciones
+   aparecen en una lista. Vacío si ninguno. No bloquea: la decisión de pagar
+   es de quien paga, pero tiene que tomarla sabiéndolo. */
+function avisoSatTransacciones(trans, proveedores, listasSat) {
+  const vistos = new Map();
+  (trans || []).forEach((t) => {
+    const p = t.proveedor_id ? proveedores.find((x) => x.id === t.proveedor_id) : null;
+    if (!p) return;
+    const hs = hallazgosSat(listasSat, p.rfc);
+    if (hs.length && !vistos.has(p.id)) vistos.set(p.id, `  ${p.nombre} (${p.rfc}): ${hs.map(etiquetaSat).join("; ")}`);
+  });
+  if (!vistos.size) return "";
+  return `\n\nATENCIÓN — proveedor(es) en listas del SAT:\n${[...vistos.values()].join("\n")}\n` +
+    `El 69-B pone en riesgo la deducción y el acreditamiento del IVA. Verifícalo antes de continuar.`;
+}
 
 /* ----------------------------------------------------------------------
    PRORRATEO
@@ -7459,7 +7510,7 @@ const SUBS_TRANSACCIONES = [
   { id: "io",      label: "Importar / Exportar" },
 ];
 
-function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO, gruposZona = {}, seedTransaccion, onSeedConsumido }) {
+function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO, gruposZona = {}, seedTransaccion, onSeedConsumido, listasSat }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
@@ -7597,6 +7648,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         <span>{t.proveedor || "—"}</span>
         <Pill tone={tone}>{texto}</Pill>
+        <PillsSat hallazgos={hallazgosSat(listasSat,
+          (proveedoresApi.rows.find((p) => p.id === t.proveedor_id) || {}).rfc)} />
       </div>
     );
   };
@@ -8205,7 +8258,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [registrandoFila, setRegistrandoFila] = useState(null);
   const registrarFila = async (t) => {
     if (t.registrada_en) return;
-    if (!confirm(`¿Registrar "${t.concepto_detallado || t.proveedor || "esta transacción"}" (${money(t.importe, t.moneda)})?\n\nRecibe su folio definitivo y su REG. El folio ya no se libera.`)) return;
+    if (!confirm(`¿Registrar "${t.concepto_detallado || t.proveedor || "esta transacción"}" (${money(t.importe, t.moneda)})?\n\nRecibe su folio definitivo y su REG. El folio ya no se libera.`
+      + avisoSatTransacciones([t], proveedoresApi.rows, listasSat))) return;
     setRegistrandoFila(t.id);
     try {
       const reg = await registrarTransaccion(transaccionesApi, t, unidad, transUnidad);
@@ -8222,7 +8276,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       .map((id) => transUnidad.find((t) => t.id === id))
       .filter((t) => t && !t.registrada_en);
     if (!pend.length) { alert("Las seleccionadas ya están registradas."); return; }
-    if (!confirm(`Se van a registrar ${pend.length} transacción(es).\n\nCada una recibe su folio definitivo y su carpeta de expediente. El folio ya no se libera: si después no se concreta, hay que cancelarla.\n\n¿Continuar?`)) return;
+    if (!confirm(`Se van a registrar ${pend.length} transacción(es).\n\nCada una recibe su folio definitivo y su carpeta de expediente. El folio ya no se libera: si después no se concreta, hay que cancelarla.\n\n¿Continuar?`
+      + avisoSatTransacciones(pend, proveedoresApi.rows, listasSat))) return;
 
     setRegistrando(true);
     try {
@@ -8257,7 +8312,17 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
   };
 
+  /* Al marcar (no al quitar la marca), si algún proveedor está en una lista
+     se pregunta. Sin hallazgos no se interrumpe nada. */
+  const confirmarSat = (ids) => {
+    const aviso = avisoSatTransacciones(
+      [...ids].map((id) => transUnidad.find((x) => x.id === id)).filter(Boolean),
+      proveedoresApi.rows, listasSat);
+    return !aviso || confirm(`¿Continuar?${aviso}`);
+  };
+
   const marcarReportadas = async (reportar) => {
+    if (reportar && !confirmarSat(seleccionadas)) return;
     setMarcandoReportado(true);
     try {
       if (reportar) await registrarSiHaceFalta([...seleccionadas]);
@@ -8272,6 +8337,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
   };
   const marcarEnviadasPagos = async (enviar) => {
+    if (enviar && !confirmarSat(seleccionadas)) return;
     setMarcandoEnviado(true);
     try {
       if (enviar) await registrarSiHaceFalta([...seleccionadas]);
@@ -9095,7 +9161,7 @@ function anchosProporcionalesPDF(columnas, filas, disponible) {
   return natural.map((w) => Math.round(w * factor));
 }
 
-function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi, cuentasApi, gruposZona = {} }) {
+function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi, cuentasApi, gruposZona = {}, listasSat }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   /* Los borradores SÍ entran, marcados. Se excluían para que uno sin folio no
@@ -9137,6 +9203,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       _vinculadoProveedor: !!proveedor,
       _vinculadoCuenta: !!cuenta,
       _borrador: !t.registrada_en,
+      _sat: hallazgosSat(listasSat, proveedor?.rfc),
     };
   });
 
@@ -9558,6 +9625,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           (yaEnviadas ? ` (${yaEnviadas} de las transacciones ya iban en un envío anterior).` : ".")
         : `\nPrimer envío de esta fecha: R0.`) +
       `\n\nSe descargan ${nombreEnvioPagos(unidad, fecha, revPrevista)}.pdf y .xlsx. ¿Continuar?${aviso}`
+      + avisoSatTransacciones(trans, proveedoresApi.rows, listasSat)
     );
     if (!confirmado) return;
 
@@ -9820,6 +9888,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
                         </span>
                       )}
                       {c.key === "importe" ? money(f.importe, f.moneda) : (f[c.key] || "—")}
+                      {c.key === "proveedor" && f._sat.length > 0 && (
+                        <span style={{ marginLeft: 6 }}><PillsSat hallazgos={f._sat} /></span>
+                      )}
                     </td>
                   ))}
                 </tr>
@@ -16183,7 +16254,7 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
   );
 }
 
-function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi }) {
+function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi, listasSat }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [sub, setSub] = useSessionState("ss-catalogo-sub", "proyectos");
   const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "", centro_costo: "" });
@@ -16316,7 +16387,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
       )}
       {sub === "zonas" && <ZonasPanel zonasApi={zonasApi} transacciones={transacciones} unidad={unidad} />}
       {sub === "proveedores" && (
-        <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />
+        <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} listasSat={listasSat} />
       )}
       {sub === "solicitudes" && <ConfigCompaniaPanel unidad={unidad} />}
     </div>
@@ -16663,7 +16734,7 @@ function EliminarProveedorModal({ proveedor, alternativos, cuentas, uso, onCerra
   );
 }
 
-function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
+function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi, listasSat }) {
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const blank = { nombre: "", rfc: "", id_sae: "", referencia: "", notas: "" };
   const [form, setForm] = useState(blank);
@@ -16820,7 +16891,10 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
     <Panel
       title={`Catálogo de proveedores — ${unidad}`}
-      subtitle={`${proveedoresUnidad.length} registrados — cada compañía tiene el suyo. Un proveedor puede tener varias cuentas bancarias`}
+      subtitle={`${proveedoresUnidad.length} registrados — cada compañía tiene el suyo. Un proveedor puede tener varias cuentas bancarias`
+        + (listasSat?.error ? ` · Las listas del SAT no se pudieron consultar: ${listasSat.error}` : "")
+        + (listasSat?.cargado && !listasSat.error
+            ? ` · ${proveedoresUnidad.filter((p) => hallazgosSat(listasSat, p.rfc).length).length} en listas del SAT` : "")}
       right={
         <div style={{ display: "flex", gap: 8 }}>
           <Button variant="ghost" onClick={exportarProveedores} title="Las tres compañías con sus cuentas bancarias, para el preparador de transacciones">Exportar las 3</Button>
@@ -16836,13 +16910,20 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
       <div style={{ overflowX: "auto" }}>
         <table style={tableStyle}>
           <thead>
-            <tr>{["Nombre","RFC","Id SAE","Referencia","Notas","Cuentas",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
+            <tr>{["Nombre","RFC","SAT","Id SAE","Referencia","Notas","Cuentas",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
           </thead>
           <tbody>
             {filtrados.map((p) => (
               <tr key={p.id}>
                 <td style={tdStyle}>{p.nombre}</td>
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.rfc || "—"}</td>
+                <td style={tdStyle}>
+                  {/* Sin RFC no hay con qué cruzar: se dice en vez de dar por limpio. */}
+                  {!p.rfc ? <span style={{ color: T.textFaint, fontSize: 11 }}>sin RFC</span>
+                    : hallazgosSat(listasSat, p.rfc).length ? <PillsSat hallazgos={hallazgosSat(listasSat, p.rfc)} />
+                    : listasSat?.cargado && !listasSat.error ? <span style={{ color: T.teal, fontSize: 11 }}>sin hallazgos</span>
+                    : "—"}
+                </td>
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.id_sae || "—"}</td>
                 <td style={tdStyle}>{p.referencia || "—"}</td>
                 <td style={{ ...tdStyle, color: T.textDim }}>{p.notas || "—"}</td>
@@ -16858,10 +16939,10 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi }) {
               </tr>
             ))}
             {!proveedoresUnidad.length && (
-              <tr><td colSpan={7} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin proveedores aún</td></tr>
+              <tr><td colSpan={8} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin proveedores aún</td></tr>
             )}
             {proveedoresUnidad.length > 0 && !filtrados.length && (
-              <tr><td colSpan={7} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ningún proveedor coincide con la búsqueda</td></tr>
+              <tr><td colSpan={8} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ningún proveedor coincide con la búsqueda</td></tr>
             )}
           </tbody>
         </table>
@@ -18194,6 +18275,31 @@ export default function App() {
   const vehUbicacionesApi = useCollection("vehiculo_ubicaciones", "nombre");
   const contratosParametrosApi = useCollection("contratos_parametros", "vigente_desde");
   const contratosProvLegalApi = useCollection("contratos_proveedor_legal", "razon_social");
+  /* Hallazgos en listas del SAT de los RFC de los catálogos. Se consulta
+     solo por esos RFC y no la tabla entera, que tiene más de medio millón de
+     filas: la app necesita saber de sus proveedores, no del país. Por
+     páginas de RFC para no pasarse del largo de URL. */
+  const [listasSat, setListasSat] = useState({ mapa: new Map(), error: "", cargado: false });
+  const rfcsCatalogos = [...new Set(
+    [...proveedoresApi.rows, ...contratosProvLegalApi.rows].map((p) => rfcSat(p.rfc)).filter((r) => r.length >= 12)
+  )].sort().join(",");
+  useEffect(() => {
+    if (!session || !rfcsCatalogos) return;
+    let vivo = true;
+    (async () => {
+      const lista = rfcsCatalogos.split(",");
+      const mapa = new Map();
+      for (let i = 0; i < lista.length; i += 150) {
+        const { data, error } = await supabase.from("sat_listas_vigente")
+          .select("rfc,lista,situacion,alerta,nombre,detalle,actualizado_en")
+          .in("rfc", lista.slice(i, i + 150));
+        if (error) { if (vivo) setListasSat({ mapa: new Map(), error: error.message, cargado: true }); return; }
+        (data || []).forEach((h) => { if (!mapa.has(h.rfc)) mapa.set(h.rfc, []); mapa.get(h.rfc).push(h); });
+      }
+      if (vivo) setListasSat({ mapa, error: "", cargado: true });
+    })();
+    return () => { vivo = false; };
+  }, [rfcsCatalogos, !!session]);
   const contratosProvUnidadApi = useCollection("contratos_proveedor_unidad", "rfc");
   const contratosInstrumentosApi = useCollection("contratos_instrumentos", "folio");
   const contratosClausulasApi = useCollection("contratos_clausulas", "orden");
@@ -18377,8 +18483,8 @@ export default function App() {
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
           {tab === "partidas" && <PartidasTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} onCrearTransaccion={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} />}
-          {tab === "transacciones" && <TransaccionesTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} seedTransaccion={seedTransaccion} onSeedConsumido={() => setSeedTransaccion(null)} />}
-          {tab === "reporte" && <ReportePagosTab gruposZona={gruposZona} unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "transacciones" && <TransaccionesTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} listasSat={listasSat} seedTransaccion={seedTransaccion} onSeedConsumido={() => setSeedTransaccion(null)} />}
+          {tab === "reporte" && <ReportePagosTab listasSat={listasSat} gruposZona={gruposZona} unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
           {tab === "reportes-direccion" && <ReportesDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} session={session} gruposZona={gruposZona} />}
           {tab === "vehiculos" && (
@@ -18394,7 +18500,7 @@ export default function App() {
           )}
           {tab === "solicitudes" && <SolicitudesTab unidad={unidad} session={session} unidades={unidades} proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} zonas={zonas.map((z) => (typeof z === "string" ? z : z.nombre))} />}
           {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} clausulasApi={contratosClausulasApi} session={session} />}
-          {tab === "catalogo" && <CatalogoTab key={catalogoVersion} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
+          {tab === "catalogo" && <CatalogoTab key={catalogoVersion} listasSat={listasSat} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>
       )}
     </div>

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.52.0";
+const APP_VERSION = "2.52.1";
 const CHANGELOG = [
+  { v: "2.52.1", desc: "Boton Registrar en la fila de cada transaccion en borrador, junto a Editar, Duplicar y Eliminar: registra esa transaccion -- folio y REG -- sin abrir el detalle ni seleccionarla. Reemplaza a la etiqueta Borrador, que solo avisaba; el boton ambar dice lo mismo y ademas lo resuelve. En las ya registradas no aparece" },
   { v: "2.52.0", desc: "Quitar un archivo que ya esta en Drive lo borra tambien de Drive. La app no puede tocar Drive, asi que lo marca por_borrar y el script lo manda a la papelera de Drive en su siguiente corrida (recuperable 30 dias); antes se borraba el renglon y la copia se quedaba en el expediente sin que la app lo supiera. Lo mismo al regenerar un REG o el PDF de una SMI: el viejo ya no se queda junto al nuevo. Los archivos por borrar dejan de mostrarse y de contarse en la columna Adjuntos. Requiere 56-adjuntos-por-borrar.sql y la version nueva de mover_adjuntos_a_drive.py" },
   { v: "2.51.2", desc: "El ID de la tabla de Transacciones usa la misma tipografia y tamano que el resto de las columnas; conserva el color para distinguirse" },
   { v: "2.51.1", desc: "Cada transaccion tiene su propio expediente, con su folio, venga o no de una SMI. Antes, la de una SMI guardaba sus archivos en la carpeta de la solicitud, y si una SMI tenia varios pagos sus facturas y comprobantes quedaban revueltos sin saber de cual eran. La SMI queda como dato informativo. La edicion de la transaccion muestra su expediente: el folio y la carpeta de Drive con enlace, o que todavia no existe. Los archivos que ya estan en la carpeta de una SMI no se mueven. Del lado del script: mover_adjuntos_a_drive.py debe dejar de mandar a la carpeta de la solicitud los archivos de una transaccion" },
@@ -8043,12 +8044,12 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <IconButton icon="§" label="Generar Solicitud de Pago" tone={T.teal} onClick={() => setSppDe(t)} />
           )}
           <IconButton icon="✎" label="Editar" tone={T.accent} onClick={() => startEdit(t)} />
+          {/* El botón ocupa el lugar de la etiqueta "Borrador": en ámbar dice
+              lo mismo, y además lo resuelve sin abrir el detalle. */}
           {!t.registrada_en && (
-            <span title="Borrador: sin folio, fuera de los reportes de pago"
-              style={{ fontSize: 10, color: T.amberDim, border: `1px solid ${T.amber}`,
-                       borderRadius: 4, padding: "1px 5px", marginRight: 4, whiteSpace: "nowrap" }}>
-              Borrador
-            </span>
+            <IconButton icon={registrandoFila === t.id ? "…" : "✓"}
+              label="Borrador: registrar (folio y REG)" tone={T.amber}
+              disabled={!!registrandoFila} onClick={() => registrarFila(t)} />
           )}
           <IconButton icon="⧉" label="Duplicar" tone={T.textDim} onClick={() => duplicar(t)} />
           <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => remove(t.id)} />
@@ -8195,6 +8196,24 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       await generarPolizaTransaccion(transaccionesApi, t, unidad, partidas);
     } catch (err) {
       console.warn(`No se pudo generar el REG de ${t.folio_transaccion || t.id}:`, err);
+    }
+  };
+
+  /* Registrar una sola desde su fila. Mismo camino que el registro en
+     bloque —folio confirmado contra la base y su REG— para que no haya dos
+     formas de registrar que terminen distinto. */
+  const [registrandoFila, setRegistrandoFila] = useState(null);
+  const registrarFila = async (t) => {
+    if (t.registrada_en) return;
+    if (!confirm(`¿Registrar "${t.concepto_detallado || t.proveedor || "esta transacción"}" (${money(t.importe, t.moneda)})?\n\nRecibe su folio definitivo y su REG. El folio ya no se libera.`)) return;
+    setRegistrandoFila(t.id);
+    try {
+      const reg = await registrarTransaccion(transaccionesApi, t, unidad, transUnidad);
+      await polizaDe(reg || t);
+    } catch (err) {
+      alert("No se pudo registrar: " + (err.message || err));
+    } finally {
+      setRegistrandoFila(null);
     }
   };
 
@@ -8418,7 +8437,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               <col style={{ width: 36 }} />
               <col style={{ width: 28 }} />
               {columnasVisibles.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
-              <col style={{ width: 140 }} />
+              <col style={{ width: 168 }} />
             </colgroup>
             <thead>
               <tr>

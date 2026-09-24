@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.53.0";
+const APP_VERSION = "2.53.1";
 const CHANGELOG = [
+  { v: "2.53.1", desc: "Cada transaccion dice si su proveedor esta OK o no frente a las listas del SAT: SAT OK en verde si se reviso y no aparece, la marca roja o ambar si aparece, y SAT sin RFC si el proveedor no tiene RFC capturado, que es distinto de estar limpio. El Dashboard abre con un recuadro de los proveedores de la compania que estan en listas, con cuantas transacciones sin pagar tiene cada uno y por cuanto: es lo que hay que revisar antes del siguiente pago. Si ninguno esta listado, lo dice en una linea" },
   { v: "2.53.0", desc: "Validacion de proveedores contra las listas del SAT: el 69-B (EFOS) y los supuestos del 69 (no localizados, creditos firmes y exigibles, cancelados, sentencias, CSD sin efectos). El catalogo de proveedores gana la columna SAT, y el proveedor de cada transaccion y del Reporte de Pagos lleva la marca si esta listado: roja para el 69-B, ambar para el 69. Al registrar, marcar como enviada o reportada, o Enviar a Pagos una transaccion cuyo proveedor aparece en una lista, la confirmacion lo dice con el detalle; no se bloquea, la decision es de quien paga. En el 69-B solo cuentan Presunto y Definitivo: Desvirtuado y Sentencia favorable ya demostraron sus operaciones. La consulta se hace por RFC contra la vista de la migracion 57, solo con los RFC de los catalogos. Requiere 57-listas-sat.sql y que actualizar_listas_sat.py haya corrido" },
   { v: "2.52.1", desc: "Boton Registrar en la fila de cada transaccion en borrador, junto a Editar, Duplicar y Eliminar: registra esa transaccion -- folio y REG -- sin abrir el detalle ni seleccionarla. Reemplaza a la etiqueta Borrador, que solo avisaba; el boton ambar dice lo mismo y ademas lo resuelve. En las ya registradas no aparece" },
   { v: "2.52.0", desc: "Quitar un archivo que ya esta en Drive lo borra tambien de Drive. La app no puede tocar Drive, asi que lo marca por_borrar y el script lo manda a la papelera de Drive en su siguiente corrida (recuperable 30 dias); antes se borraba el renglon y la copia se quedaba en el expediente sin que la app lo supiera. Lo mismo al regenerar un REG o el PDF de una SMI: el viejo ya no se queda junto al nuevo. Los archivos por borrar dejan de mostrarse y de contarse en la columna Adjuntos. Requiere 56-adjuntos-por-borrar.sql y la version nueva de mover_adjuntos_a_drive.py" },
@@ -815,6 +816,77 @@ function PillsSat({ hallazgos }) {
         SAT {grave ? "69-B" : "69"}{hallazgos.length > 1 ? ` +${hallazgos.length - 1}` : ""}
       </Pill>
     </span>
+  );
+}
+
+/* OK / No OK de un proveedor frente a las listas. Tres estados distintos que
+   no hay que confundir: listado, revisado y limpio, y sin forma de revisar
+   (sin RFC). Sin RFC NO es limpio: solo significa que no hay con qué cruzar.
+   Si el proveedor no está en el catálogo, ya lo dice la otra marca. */
+function EstadoSat({ listasSat, rfc, conCatalogo = true }) {
+  if (!conCatalogo || !listasSat?.cargado || listasSat.error) return null;
+  if (!rfcSat(rfc)) {
+    return <span title="El proveedor no tiene RFC capturado: no se puede revisar contra las listas del SAT">
+      <Pill tone="dim">SAT sin RFC</Pill></span>;
+  }
+  const hs = hallazgosSat(listasSat, rfc);
+  if (hs.length) return <PillsSat hallazgos={hs} />;
+  return <span title="Revisado contra las listas del SAT (69-B y 69): sin hallazgos">
+    <Pill tone="teal">SAT OK</Pill></span>;
+}
+
+/* Recuadro del Dashboard: los proveedores de la compañía que están en una
+   lista, con lo que falta pagarles. Es lo que hay que revisar antes del
+   siguiente pago, y aquí se ve sin ir a buscarlo. */
+function AlertaSatDashboard({ unidad, proveedores, transacciones, listasSat }) {
+  if (!listasSat?.cargado || listasSat.error) return null;
+  const listados = proveedores
+    .filter((p) => p.unidad === unidad)
+    .map((p) => ({ p, hs: hallazgosSat(listasSat, p.rfc) }))
+    .filter((x) => x.hs.length)
+    .map((x) => {
+      const pend = transacciones.filter((t) => t.proveedor_id === x.p.id && t.status !== "Pagado");
+      const porMoneda = {};
+      pend.forEach((t) => { const m = t.moneda === "USD" ? "USD" : "MXP"; porMoneda[m] = (porMoneda[m] || 0) + (Number(t.importe) || 0); });
+      return { ...x, pend, porMoneda, grave: x.hs.some((h) => h.lista === "69-B") };
+    })
+    /* Primero lo grave y lo que tiene pagos pendientes. */
+    .sort((a, b) => (b.grave - a.grave) || (b.pend.length - a.pend.length) || String(a.p.nombre).localeCompare(String(b.p.nombre)));
+
+  if (!listados.length) {
+    return (
+      <div style={{ fontSize: 12, color: T.teal }}>
+        Ningún proveedor de {unidad} aparece en las listas del SAT (69-B y 69).
+      </div>
+    );
+  }
+  const conPendientes = listados.filter((x) => x.pend.length).length;
+  return (
+    <Panel
+      title={`Proveedores en listas del SAT — ${unidad}`}
+      subtitle={`${listados.length} proveedor(es) listados · ${conPendientes} con transacciones sin pagar`}
+    >
+      <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
+        {listados.map(({ p, hs, pend, porMoneda }) => (
+          <div key={p.id} style={{ display: "flex", gap: 12, alignItems: "center", background: T.panel, padding: "9px 12px", flexWrap: "wrap" }}>
+            <div style={{ flex: 1, minWidth: 220 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: T.text }}>{p.nombre}</div>
+              <div style={{ fontSize: 11, color: T.textFaint, fontFamily: T.fontMono, marginTop: 2 }}>{p.rfc}</div>
+            </div>
+            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+              {hs.map((h, i) => (
+                <Pill key={i} tone={h.lista === "69-B" ? "red" : "amber"}>{etiquetaSat(h)}</Pill>
+              ))}
+            </div>
+            <div style={{ fontSize: 12, color: pend.length ? T.red : T.textFaint, minWidth: 190, textAlign: "right" }}>
+              {pend.length
+                ? `${pend.length} sin pagar · ${Object.entries(porMoneda).map(([m, v]) => money(v, m)).join(" · ")}`
+                : "sin transacciones pendientes"}
+            </div>
+          </div>
+        ))}
+      </div>
+    </Panel>
   );
 }
 
@@ -2929,7 +3001,7 @@ function Gauge({ pct, size = 92 }) {
 /* ----------------------------------------------------------------------
    TABS: DASHBOARD
 ---------------------------------------------------------------------- */
-function Dashboard({ unidad, unidades, partidas, transacciones }) {
+function Dashboard({ unidad, unidades, partidas, transacciones, proveedores = [], listasSat }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const idsPartidas = new Set(partidasUnidad.map((p) => p.id));
@@ -3172,6 +3244,8 @@ function Dashboard({ unidad, unidades, partidas, transacciones }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      <AlertaSatDashboard unidad={unidad} proveedores={proveedores}
+        transacciones={transacciones.filter((t) => t.unidad_detectada === unidad)} listasSat={listasSat} />
       <ResumenComparativoPanel
         partidasRango={partidasRango}
         idsRango={idsRango}
@@ -7648,8 +7722,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
         <span>{t.proveedor || "—"}</span>
         <Pill tone={tone}>{texto}</Pill>
-        <PillsSat hallazgos={hallazgosSat(listasSat,
-          (proveedoresApi.rows.find((p) => p.id === t.proveedor_id) || {}).rfc)} />
+        <EstadoSat listasSat={listasSat}
+          rfc={t.proveedor_id ? (proveedoresApi.rows.find((p) => p.id === t.proveedor_id) || {}).rfc : undefined}
+          conCatalogo={!!t.proveedor_id} />
       </div>
     );
   };
@@ -18481,7 +18556,7 @@ export default function App() {
         <div style={{ color: T.textDim, fontSize: 13 }}>Cargando datos compartidos…</div>
       ) : (
         <>
-          {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} />}
+          {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} proveedores={proveedoresApi.rows} listasSat={listasSat} />}
           {tab === "partidas" && <PartidasTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} onCrearTransaccion={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} />}
           {tab === "transacciones" && <TransaccionesTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} listasSat={listasSat} seedTransaccion={seedTransaccion} onSeedConsumido={() => setSeedTransaccion(null)} />}
           {tab === "reporte" && <ReportePagosTab listasSat={listasSat} gruposZona={gruposZona} unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}

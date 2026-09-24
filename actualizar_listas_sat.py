@@ -18,6 +18,13 @@ CSV en datos abiertos. Este proceso:
 Si una carga falla a medias, se borra lo que alcanzó a entrar del lote nuevo y
 el anterior sigue vigente.
 
+Aviso por correo: al cargar una lista nueva, compara contra la anterior solo
+los RFC de tus catálogos (proveedores y datos legales de contratos). Si alguno
+ENTRÓ a una lista, cambió de situación (Presunto -> Definitivo) o SALIÓ, manda
+un correo a ALERTA_CORREO con el mismo permiso de Gmail del script de Drive.
+`--probar-correo` manda el estado actual aunque no haya cambios, para probar
+que el correo llega.
+
 Configuración: la misma de mover_adjuntos_a_drive.py, en
 %USERPROFILE%\\.smi\\config.env (SUPABASE_URL y SUPABASE_SERVICE_KEY).
 
@@ -70,6 +77,19 @@ CAB = {
     "Content-Type": "application/json",
 }
 
+# Mismo token y mismos permisos que mover_adjuntos_a_drive.py: si se pidieran
+# otros, Google exigiría autorizar de nuevo y la tarea programada se quedaría
+# esperando un navegador que nadie va a abrir.
+TOKEN = os.environ.get("GOOGLE_TOKEN") or os.path.join(CARPETA_CONF, "token.json")
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+]
+ALERTA_CORREO = os.environ.get("ALERTA_CORREO", "")
+REMITENTE = os.environ.get("REMITENTE", "me")
+PROBAR_CORREO = "--probar-correo" in sys.argv
+
 BASE = "https://wu1agsprosta001.blob.core.windows.net/agsc-publicaciones/Datos_abiertos"
 
 # Los archivos que importan para validar a un proveedor. Del 69 se dejan
@@ -102,6 +122,7 @@ FORZAR = "--forzar" in sys.argv
 # Los renglones descartados se guardan aquí para poder revisarlos.
 ARCHIVO_DESCARTES = os.path.join(CARPETA_CONF, "sat_descartados.txt")
 DESCARTES = []
+SUPRIMIDOS = {}
 
 
 # --------------------------------------------------------------------------
@@ -113,6 +134,110 @@ def rest(metodo, ruta, **kw):
     if not r.ok:
         raise requests.HTTPError(f"{r.status_code} en {ruta}: {r.text[:300]}", response=r)
     return r.json() if r.content and r.headers.get("content-type", "").startswith("application/json") else None
+
+
+def es_alerta(lista, situacion):
+    """Misma regla que la vista sat_listas_vigente: en el 69-B solo cuentan
+       Presunto y Definitivo; en el 69, cualquier supuesto."""
+    if lista != "69-B":
+        return True
+    s = str(situacion or "").strip().lower()
+    return s.startswith("presun") or s.startswith("definitiv")
+
+
+def rfcs_de_catalogos():
+    """RFC -> nombre, de los catálogos propios. Por páginas: PostgREST entrega
+       1000 filas por consulta y un catálogo más grande se cortaría en silencio."""
+    catalogo = {}
+    for tabla, campo_nombre, extra in (("proveedores", "nombre", ",unidad"),
+                                       ("contratos_proveedor_legal", "razon_social", "")):
+        desde = 0
+        while True:
+            filas = rest("GET", tabla, params={"select": f"rfc,{campo_nombre}{extra}"},
+                         headers={"Range": f"{desde}-{desde + 999}"}) or []
+            for f in filas:
+                r = "".join(str(f.get("rfc") or "").split()).replace("-", "").upper()
+                if rfc_valido(r):
+                    etiqueta = f.get(campo_nombre) or r
+                    if f.get("unidad"):
+                        etiqueta = f"{etiqueta} ({f['unidad']})"
+                    catalogo.setdefault(r, set()).add(etiqueta)
+            if len(filas) < 1000:
+                break
+            desde += 1000
+    return {r: " / ".join(sorted(n)) for r, n in catalogo.items()}
+
+
+def hits_lote(fuente, lote, rfcs):
+    """Situación de cada RFC del catálogo en un lote ya cargado."""
+    res = {}
+    lista = sorted(rfcs)
+    for i in range(0, len(lista), 150):
+        filas = rest("GET", "sat_listas", params={
+            "select": "rfc,situacion", "fuente": f"eq.{fuente}", "lote": f"eq.{lote}",
+            "rfc": f"in.({','.join(lista[i:i + 150])})"}) or []
+        for f in filas:
+            res[f["rfc"]] = f.get("situacion")
+    return res
+
+
+def comparar(f, antes, despues, catalogo):
+    """Novedades de los RFC del catálogo entre dos cargas de una fuente."""
+    nov = []
+    for rfc, nombre in catalogo.items():
+        a_en, d_en = rfc in antes, rfc in despues
+        a_al = a_en and es_alerta(f["lista"], antes[rfc])
+        d_al = d_en and es_alerta(f["lista"], despues[rfc])
+        etq = f["lista"] if f["lista"] == "69-B" else f"69 · {f['supuesto']}"
+        if d_al and not a_al:
+            nov.append(("ENTRÓ", nombre, rfc, f"{etq}{' — ' + despues[rfc] if f['lista'] == '69-B' else ''}"))
+        elif d_al and a_al and antes[rfc] != despues[rfc]:
+            nov.append(("CAMBIÓ", nombre, rfc, f"{etq}: {antes[rfc]} -> {despues[rfc]}"))
+        elif a_al and not d_al:
+            motivo = f"ahora {despues[rfc]}" if d_en else "ya no aparece"
+            nov.append(("SALIÓ", nombre, rfc, f"{etq} ({motivo})"))
+    return nov
+
+
+def enviar_correo(asunto, cuerpo):
+    """Con el token del script de Drive. Si el token no sirve y habría que
+       autorizar con el navegador, no se intenta: una tarea programada se
+       quedaría esperando para siempre. Se avisa en la bitácora."""
+    if not ALERTA_CORREO:
+        print("  Aviso: sin ALERTA_CORREO en config.env, no se manda el correo.")
+        return False
+    try:
+        import base64
+        from email.message import EmailMessage
+        from google.oauth2.credentials import Credentials
+        from google.auth.transport.requests import Request
+        from googleapiclient.discovery import build
+    except ImportError as e:
+        print(f"  Aviso: faltan las librerías de Google ({e}); no se manda el correo.")
+        return False
+    if not os.path.exists(TOKEN):
+        print(f"  Aviso: no encuentro {TOKEN}; corre primero mover_adjuntos_a_drive.py para autorizar.")
+        return False
+    cred = Credentials.from_authorized_user_file(TOKEN, SCOPES)
+    if not cred.valid:
+        if cred.expired and cred.refresh_token:
+            cred.refresh(Request())
+            with open(TOKEN, "w", encoding="utf8") as fh:
+                fh.write(cred.to_json())
+        else:
+            print("  Aviso: el token de Google ya no es válido; corre mover_adjuntos_a_drive.py para renovarlo.")
+            return False
+    msg = EmailMessage()
+    msg["To"] = ALERTA_CORREO
+    msg["Subject"] = asunto
+    if REMITENTE and REMITENTE != "me":
+        msg["From"] = REMITENTE
+    msg.set_content(cuerpo)
+    gmail = build("gmail", "v1", credentials=cred, cache_discovery=False)
+    gmail.users().messages().send(
+        userId="me", body={"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}).execute()
+    print(f"  correo -> {ALERTA_CORREO}")
+    return True
 
 
 # --------------------------------------------------------------------------
@@ -175,14 +300,26 @@ def leer_csv(texto, fuente):
         if c_rfc >= len(r):
             continue
         rfc = "".join(r[c_rfc].split()).replace("-", "").upper()
+        # El SAT tacha con X los RFC que un tribunal ordenó suprimir: es
+        # información que legalmente ya no está en la lista, así que se omite
+        # sin contarla como descarte. Contarla ocultaría los descartes que sí
+        # indican un problema de formato.
+        if rfc and set(rfc) == {"X"}:
+            SUPRIMIDOS[fuente["fuente"]] = SUPRIMIDOS.get(fuente["fuente"], 0) + 1
+            continue
         if not rfc_valido(rfc):
             descartadas += 1
             if any(c.strip() for c in r):
                 DESCARTES.append(f"{fuente['fuente']}\t{r[c_rfc]!r}\t{' | '.join(c.strip() for c in r)[:200]}")
             continue
+        # El nombre solo se guarda en el 69-B, que es chico. En el 69 son
+        # cientos de miles de renglones, se valida por RFC y el nombre ya está
+        # en el catálogo propio: guardarlo era casi la mitad del espacio.
+        con_nombre = fuente["lista"] == "69-B"
         fila = {
             "rfc": rfc,
-            "nombre": (r[c_nombre].strip()[:300] if c_nombre is not None and c_nombre < len(r) else None) or None,
+            "nombre": (r[c_nombre].strip()[:300] if con_nombre and c_nombre is not None
+                       and c_nombre < len(r) else None) or None,
             "situacion": fuente["supuesto"],
             "detalle": None,
         }
@@ -204,7 +341,7 @@ def leer_csv(texto, fuente):
 # --------------------------------------------------------------------------
 # Carga
 # --------------------------------------------------------------------------
-def cargar_fuente(f):
+def cargar_fuente(f, catalogo):
     ahora = datetime.now(timezone.utc).isoformat()
     print(f"  {f['fuente']}")
 
@@ -219,7 +356,7 @@ def cargar_fuente(f):
         rest("PATCH", "sat_listas_fuentes", params={"fuente": f"eq.{f['fuente']}"},
              json={"revisado_en": ahora}, headers={"Prefer": "return=minimal"})
         print("    sin cambios")
-        return "sin_cambios", 0
+        return "sin_cambios", []
 
     filas, descartadas = leer_csv(decodificar(contenido), f)
     if not filas:
@@ -232,6 +369,16 @@ def cargar_fuente(f):
     if not previa:
         rest("POST", "sat_listas_fuentes", headers={"Prefer": "return=minimal"},
              json={"fuente": f["fuente"], "lista": f["lista"], "supuesto": f["supuesto"], "url": f["url"]})
+
+    # Cómo estaban los RFC del catálogo en la carga anterior, para avisar de
+    # lo que cambió. En la primera carga de una fuente no hay contra qué
+    # comparar: todo parecería nuevo, así que no se avisa.
+    antes = None
+    if previa and previa.get("lote_vigente") and catalogo:
+        try:
+            antes = hits_lote(f["fuente"], previa["lote_vigente"], catalogo.keys())
+        except Exception as e:
+            print(f"    Aviso: no se pudo leer la carga anterior para comparar ({e})")
 
     lote = str(uuid.uuid4())
     try:
@@ -260,17 +407,34 @@ def cargar_fuente(f):
     except Exception as e:
         print(f"    Aviso: quedó el lote anterior sin borrar ({e})")
 
+    novedades = []
+    if antes is not None:
+        despues = {x["rfc"]: x["situacion"] for x in filas if x["rfc"] in catalogo}
+        novedades = comparar(f, antes, despues, catalogo)
+
     extra = f", {descartadas} renglón(es) sin RFC válido" if descartadas else ""
+    if SUPRIMIDOS.get(f["fuente"]):
+        extra += f", {SUPRIMIDOS[f['fuente']]} suprimido(s) por resolución judicial"
     print(f"    cargadas {len(filas)} RFC{extra}")
-    return "actualizada", len(filas)
+    for n in novedades:
+        print(f"    {n[0]}: {n[1]} ({n[2]}) — {n[3]}")
+    return "actualizada", novedades
 
 
 def main():
     print(f"--- {datetime.now():%Y-%m-%d %H:%M:%S} ---")
     actualizadas = sin_cambios = fallidas = 0
+    try:
+        catalogo = rfcs_de_catalogos()
+        print(f"  {len(catalogo)} RFC en tus catálogos")
+    except Exception as e:
+        print(f"  Aviso: no se pudieron leer los catálogos; se carga sin avisos ({e})")
+        catalogo = {}
+    novedades = []
     for f in FUENTES:
         try:
-            estado, _ = cargar_fuente(f)
+            estado, nov = cargar_fuente(f, catalogo)
+            novedades += nov
             if estado == "actualizada":
                 actualizadas += 1
             else:
@@ -283,6 +447,39 @@ def main():
         with open(ARCHIVO_DESCARTES, "w", encoding="utf8") as fh:
             fh.write("\n".join(DESCARTES))
         print(f"Renglones descartados guardados en {ARCHIVO_DESCARTES}")
+    if novedades:
+        graves = [n for n in novedades if n[0] != "SALIÓ"]
+        lineas = [f"{n[0]}  {n[1]}\n        RFC {n[2]} — {n[3]}" for n in novedades]
+        cuerpo = (
+            f"Cambios en las listas del SAT que afectan a tus proveedores "
+            f"({datetime.now():%d/%m/%Y}):\n\n" + "\n\n".join(lineas) +
+            "\n\nENTRÓ o CAMBIÓ: revisa sus transacciones pendientes antes del siguiente pago. "
+            "En el 69-B, la publicación como presunto abre el plazo para que el proveedor "
+            "desvirtúe; como definitivo pone en riesgo la deducción y el IVA acreditable.\n"
+            "SALIÓ: dejó de estar en la lista, o en el 69-B fue desvirtuado o ganó sentencia.\n\n"
+            "Fuente: datos abiertos del SAT. En la app, Catálogo > Proveedores, columna SAT.\n")
+        asunto = (f"SAT: {len(graves)} proveedor(es) entraron o cambiaron en listas" if graves
+                  else f"SAT: {len(novedades)} proveedor(es) salieron de listas")
+        try:
+            enviar_correo(asunto, cuerpo)
+        except Exception as e:
+            print(f"  No se pudo mandar el correo: {e}")
+    elif PROBAR_CORREO:
+        try:
+            actuales = []
+            lista = sorted(catalogo)
+            for i in range(0, len(lista), 150):
+                actuales += rest("GET", "sat_listas_vigente", params={
+                    "select": "rfc,lista,situacion", "alerta": "eq.true",
+                    "rfc": f"in.({','.join(lista[i:i + 150])})"}) or []
+            lineas = [f"{catalogo.get(a['rfc'], a['rfc'])}\n        RFC {a['rfc']} — {a['lista']} {a['situacion'] or ''}"
+                      for a in sorted(actuales, key=lambda a: (a["lista"] != "69-B", a["rfc"]))]
+            enviar_correo(
+                "SAT: prueba del aviso de listas",
+                "Prueba del aviso. No hubo cambios; este es el estado actual de tus proveedores "
+                f"en listas del SAT ({len(actuales)}):\n\n" + ("\n\n".join(lineas) or "Ninguno.") + "\n")
+        except Exception as e:
+            print(f"  No se pudo mandar el correo de prueba: {e}")
     print(f"Actualizadas {actualizadas}, sin cambios {sin_cambios}, con error {fallidas}.")
     sys.exit(1 if fallidas else 0)
 

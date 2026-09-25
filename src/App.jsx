@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.53.1";
+const APP_VERSION = "2.53.2";
 const CHANGELOG = [
+  { v: "2.53.2", desc: "Arreglo: Guardar cambios en una transaccion borraba lo que el sistema habia marcado mientras la ventana estaba abierta. El formulario copiaba todos los campos al abrirse -- tambien los que maneja la app: la marca del REG, el folio, el registro, las marcas de enviado y reportado -- y al guardar mandaba esa copia vieja. Por eso Generar REG y luego Guardar dejaba la transaccion como si no tuviera REG, aunque el archivo si estaba; y del mismo modo podia borrar un folio o una marca de enviado a Pagos. Ahora Guardar manda solo los campos del formulario" },
   { v: "2.53.1", desc: "Cada transaccion dice si su proveedor esta OK o no frente a las listas del SAT: SAT OK en verde si se reviso y no aparece, la marca roja o ambar si aparece, y SAT sin RFC si el proveedor no tiene RFC capturado, que es distinto de estar limpio. El Dashboard abre con un recuadro de los proveedores de la compania que estan en listas, con cuantas transacciones sin pagar tiene cada uno y por cuanto: es lo que hay que revisar antes del siguiente pago. Si ninguno esta listado, lo dice en una linea" },
   { v: "2.53.0", desc: "Validacion de proveedores contra las listas del SAT: el 69-B (EFOS) y los supuestos del 69 (no localizados, creditos firmes y exigibles, cancelados, sentencias, CSD sin efectos). El catalogo de proveedores gana la columna SAT, y el proveedor de cada transaccion y del Reporte de Pagos lleva la marca si esta listado: roja para el 69-B, ambar para el 69. Al registrar, marcar como enviada o reportada, o Enviar a Pagos una transaccion cuyo proveedor aparece en una lista, la confirmacion lo dice con el detalle; no se bloquea, la decision es de quien paga. En el 69-B solo cuentan Presunto y Definitivo: Desvirtuado y Sentencia favorable ya demostraron sus operaciones. La consulta se hace por RFC contra la vista de la migracion 57, solo con los RFC de los catalogos. Requiere 57-listas-sat.sql y que actualizar_listas_sat.py haya corrido" },
   { v: "2.52.1", desc: "Boton Registrar en la fila de cada transaccion en borrador, junto a Editar, Duplicar y Eliminar: registra esa transaccion -- folio y REG -- sin abrir el detalle ni seleccionarla. Reemplaza a la etiqueta Borrador, que solo avisaba; el boton ambar dice lo mismo y ademas lo resuelve. En las ya registradas no aparece" },
@@ -747,6 +748,19 @@ async function registrarTransaccion(transaccionesApi, t, unidad, transUnidad) {
 /* Una transacción nueva nace BORRADOR: sin folio y sin registrar. El folio se
    asigna al registrarla, que es cuando alguien se compromete con ella. Antes
    se gastaba un número en cada intento, incluidos los que no llegaban a nada. */
+/* Campos que maneja la app, no el formulario. Guardar una edición NUNCA los
+   manda: el formulario copia la transacción al abrirse, y si mientras está
+   abierto se genera el REG, se registra o se marca como enviada, mandar esa
+   copia vieja borraría lo que acaba de pasar. Fue lo que dejaba transacciones
+   con su REG en el expediente pero marcadas como sin REG. */
+const CAMPOS_SISTEMA_TRANSACCION = new Set([
+  "id", "folio_transaccion", "registrada_en", "poliza_generada_en",
+  "enviado_pagos_at", "reportado_at", "drive_folder_id",
+  "created_at", "updated_at", "created_by", "updated_by",
+]);
+const camposEditablesTransaccion = (obj) => Object.fromEntries(
+  Object.entries(obj).filter(([k]) => !k.startsWith("_") && !CAMPOS_SISTEMA_TRANSACCION.has(k)));
+
 async function insertTransaccionBorrador(transaccionesApi, rest) {
   return await transaccionesApi.insert({ ...rest, id: uid(), folio_transaccion: null, registrada_en: null });
 }
@@ -5433,7 +5447,7 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
     setSaving(true);
     try {
       const { id, ...restRaw } = form;
-      const rest = Object.fromEntries(Object.entries(restRaw).filter(([k]) => !k.startsWith("_")));
+      const rest = camposEditablesTransaccion(restRaw);
       rest.proveedor_id = rest.proveedor_id || null;
       rest.cuenta_id = rest.cuenta_id || null;
       rest.fecha_pago = rest.fecha_pago || null;
@@ -8216,7 +8230,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     if (!validarMonedaContraPartida(form, partidasUnidad)) return;
     const { id, ...restRaw } = form;
-    const rest = Object.fromEntries(Object.entries(restRaw).filter(([k]) => !k.startsWith("_")));
+    const rest = camposEditablesTransaccion(restRaw);
     rest.proveedor_id = rest.proveedor_id || null;
     rest.cuenta_id = rest.cuenta_id || null;
     rest.fecha_pago = rest.fecha_pago || null;

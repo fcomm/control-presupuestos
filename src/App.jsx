@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.53.3";
+const APP_VERSION = "2.54.0";
 const CHANGELOG = [
+  { v: "2.54.0", desc: "Cancelar transacciones registradas. Una registrada ya no se elimina: su folio existio y borrarla dejaria un hueco en la numeracion. Se cancela con motivo obligatorio: conserva folio y expediente, queda dicho quien, cuando y por que, y sale del Reporte de Pagos, de Enviar a Pagos, de los totales, del presupuesto usado de su partida y del Dashboard. No se puede marcar como pagada, reportar ni enviar. Su REG se rehace con la leyenda CANCELADA. Si ya se habia enviado a Pagos, la confirmacion avisa que hay que decirselo a Pagos, porque el PDF que tienen la incluye. Se puede reactivar, tambien con motivo, y cada cancelacion y reactivacion queda en un historial. Una pagada no se cancela: primero se regresa a No Pagado. Eliminar queda solo para borradores sin folio. Filtro nuevo Canceladas: ocultarlas, mostrarlas o ver solo esas. Requiere 58-cancelar-transacciones.sql" },
   { v: "2.53.3", desc: "Las transacciones marcadas como registradas pero sin folio se pueden registrar. Eran las importadas de Sheets antes de la migracion 49: esa migracion marco como registrado todo lo que ya existia, pero las importadas nunca tuvieron folio, asi que quedaron atoradas -- la app las daba por registradas y ni el boton ni Registrar les asignaban numero, su REG salia con el id largo y podian irse a Pagos sin folio. Ahora pendiente de registro significa sin registrar O sin folio: el boton de la fila, Registrar N de la seleccion y Enviar a Pagos les asignan folio, conservan su fecha de registro original y rehacen su REG con el folio. Se verifico contra los reportes oficiales que ninguna habia tenido folio antes" },
   { v: "2.53.2", desc: "Arreglo: Guardar cambios en una transaccion borraba lo que el sistema habia marcado mientras la ventana estaba abierta. El formulario copiaba todos los campos al abrirse -- tambien los que maneja la app: la marca del REG, el folio, el registro, las marcas de enviado y reportado -- y al guardar mandaba esa copia vieja. Por eso Generar REG y luego Guardar dejaba la transaccion como si no tuviera REG, aunque el archivo si estaba; y del mismo modo podia borrar un folio o una marca de enviado a Pagos. Ahora Guardar manda solo los campos del formulario" },
   { v: "2.53.1", desc: "Cada transaccion dice si su proveedor esta OK o no frente a las listas del SAT: SAT OK en verde si se reviso y no aparece, la marca roja o ambar si aparece, y SAT sin RFC si el proveedor no tiene RFC capturado, que es distinto de estar limpio. El Dashboard abre con un recuadro de los proveedores de la compania que estan en listas, con cuantas transacciones sin pagar tiene cada uno y por cuanto: es lo que hay que revisar antes del siguiente pago. Si ninguno esta listado, lo dice en una linea" },
@@ -766,7 +767,10 @@ const CAMPOS_SISTEMA_TRANSACCION = new Set([
   "id", "folio_transaccion", "registrada_en", "poliza_generada_en",
   "enviado_pagos_at", "reportado_at", "drive_folder_id",
   "created_at", "updated_at", "created_by", "updated_by",
+  "cancelada_en", "cancelada_por", "motivo_cancelacion", "historial_cancelacion",
 ]);
+
+const estaCancelada = (t) => !!t?.cancelada_en;
 const camposEditablesTransaccion = (obj) => Object.fromEntries(
   Object.entries(obj).filter(([k]) => !k.startsWith("_") && !CAMPOS_SISTEMA_TRANSACCION.has(k)));
 
@@ -3273,7 +3277,7 @@ function Dashboard({ unidad, unidades, partidas, transacciones, proveedores = []
         partidasRango={partidasRango}
         idsRango={idsRango}
         controlesFiltro={controlesFiltro}
-        transacciones={transUnidad}
+        transacciones={transUnidad.filter((x) => !estaCancelada(x))}
         proyectosUnidad={proyectosUnidad}
         proyectoKpi={proyectoKpi}
         setProyectoKpi={setProyectoKpi}
@@ -7688,6 +7692,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     if (filtros.reportado === "No reportado" && t.reportado_at) return false;
     if (filtros.enviadoPagos === "Enviado" && !t.enviado_pagos_at) return false;
     if (filtros.enviadoPagos === "No enviado" && t.enviado_pagos_at) return false;
+    // Ocultas por omisión: una cancelada no es trabajo pendiente.
+    const verCanc = filtros.canceladas || "ocultar";
+    if (verCanc === "ocultar" && estaCancelada(t)) return false;
+    if (verCanc === "solo" && !estaCancelada(t)) return false;
     if (filtroAdj === "ninguno" && adjDe(t)) return false;
     if (filtroAdj.startsWith("sin:") && adjDe(t)?.[filtroAdj.slice(4)]) return false;
     // Coincidencia exacta con el marcador guardado en la transacción — el
@@ -7704,8 +7712,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtroAdj !== "Todos" || filtros.proyecto || filtros.moneda;
-  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", adjuntos: "Todos", proyecto: "", moneda: "" });
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtroAdj !== "Todos" || (filtros.canceladas || "ocultar") !== "ocultar" || filtros.proyecto || filtros.moneda;
+  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", adjuntos: "Todos", canceladas: "ocultar", proyecto: "", moneda: "" });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
@@ -7803,7 +7811,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           origenTransaccion={t}
           abrirEnCrear={filaCreandoPartida === t.id}
           onAbierto={() => setFilaCreandoPartida(null)}
-          transacciones={transUnidad}
+          transacciones={transUnidad.filter((x) => !estaCancelada(x))}
           partidasApi={partidasApi}
           unidad={unidad}
           proyectosOpciones={marcadoresProyecto}
@@ -7851,7 +7859,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, t.moneda)).length}
           moneda={t.moneda}
           origenTransaccion={t}
-          transacciones={transUnidad}
+          transacciones={transUnidad.filter((x) => !estaCancelada(x))}
           partidasApi={partidasApi}
           unidad={unidad}
           proyectosOpciones={marcadoresProyecto}
@@ -7957,7 +7965,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
    * el borrado de una fila.
    */
   const eliminarSeleccionadas = async () => {
-    const todas = [...transUnidad, ...sinVincular].filter((t) => seleccionadas.has(t.id));
+    const todasSel = [...transUnidad, ...sinVincular].filter((t) => seleccionadas.has(t.id));
+    /* Las registradas no se borran: se cancelan. Se conservan y se dice. */
+    const registradas = todasSel.filter((t) => !pendienteDeRegistro(t));
+    const todas = todasSel.filter((t) => pendienteDeRegistro(t));
+    if (registradas.length && !todas.length) {
+      alert(`Las ${registradas.length} seleccionadas están registradas y no se eliminan: tienen folio. Cancélalas una por una con el botón ⊘.`);
+      return;
+    }
     const pagadas = todas.filter((t) => t.status === "Pagado");
     const borrables = todas.filter((t) => t.status !== "Pagado");
     if (!borrables.length) {
@@ -7965,8 +7980,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       return;
     }
     const total = borrables.reduce((sum, t) => sum + (Number(t.importe) || 0), 0);
-    const aviso = pagadas.length ? `\n\nSe van a CONSERVAR ${pagadas.length} marcadas como Pagadas.` : "";
-    if (!confirm(`¿Eliminar ${borrables.length} transacción(es) por ${money(total)}? Esto no se puede deshacer.${aviso}`)) return;
+    const aviso = (pagadas.length ? `\n\nSe van a CONSERVAR ${pagadas.length} marcadas como Pagadas.` : "")
+      + (registradas.length ? `\n\nSe van a CONSERVAR ${registradas.length} registradas: esas se cancelan, no se borran.` : "");
+    if (!confirm(`¿Eliminar ${borrables.length} borrador(es) por ${money(total)}? Esto no se puede deshacer.${aviso}`)) return;
     setEliminando(true);
     try {
       for (const t of borrables) {
@@ -8030,7 +8046,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   }, [unidad, periodoSem, recargaSem]);
 
   // Todas las de la semana, sin filtros.
-  const transDeLaSemana = transUnidad.filter((t) => t.dia && t.dia >= semanaOf && t.dia <= finSemanaOf);
+  const transDeLaSemana = transUnidad.filter((t) => !estaCancelada(t) && t.dia && t.dia >= semanaOf && t.dia <= finSemanaOf);
 
   const enviarSemanalADireccion = async () => {
     if (!transDeLaSemana.length) { alert(`No hay transacciones del ${semanaOf} al ${finSemanaOf}.`); return; }
@@ -8178,7 +8194,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   };
 
   const renderRowTr = (t, depth = 0, n) => (
-    <tr key={t.id}>
+    <tr key={t.id} style={estaCancelada(t) ? { opacity: 0.5 } : undefined}
+      title={estaCancelada(t) ? `Cancelada: ${t.motivo_cancelacion || ""}` : undefined}>
       <td style={{ ...tdStyle, width: 36, textAlign: "right", color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{n}</td>
       <td style={{ ...tdStyle, textAlign: "center" }}>
         <input type="checkbox" checked={seleccionadas.has(t.id)} onChange={() => toggleSeleccion(t.id)} />
@@ -8203,7 +8220,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               disabled={!!registrandoFila} onClick={() => registrarFila(t)} />
           )}
           <IconButton icon="⧉" label="Duplicar" tone={T.textDim} onClick={() => duplicar(t)} />
-          <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => remove(t.id)} />
+          {/* Registrada: se cancela, no se borra. Borrador: se puede borrar,
+              porque no tiene folio que dejar hueco. */}
+          {estaCancelada(t) ? (
+            <IconButton icon="↺" label="Reactivar (cancelada)" tone={T.accent} onClick={() => reactivar(t)} />
+          ) : pendienteDeRegistro(t) ? (
+            <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => remove(t.id)} />
+          ) : (
+            <IconButton icon="⊘" label="Cancelar transacción" tone={T.red} onClick={() => cancelar(t)} />
+          )}
         </div>
       </td>
     </tr>
@@ -8233,6 +8258,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const submit = async (e) => {
     e.preventDefault();
     if (!form.partida_id || !form.importe) return;
+    if (form.status === "Pagado" && estaCancelada(form)) {
+      alert("Esta transacción está cancelada: no se puede marcar como Pagada. Reactívala primero si el pago sí ocurrió.");
+      return;
+    }
     if (form.status === "Pagado" && !form.fecha_pago) {
       alert("Para marcar esta transacción como Pagada, primero indica la Fecha de Pago.");
       return;
@@ -8302,6 +8331,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   };
   const remove = (id) => {
     const t = transUnidad.find((x) => x.id === id) || sinVincular.find((x) => x.id === id);
+    if (t && !pendienteDeRegistro(t)) {
+      alert(`${t.folio_transaccion} ya está registrada: su folio existe y borrarla dejaría un hueco en la numeración. Cancélala con el botón ⊘.`);
+      return;
+    }
     if (!puedeBorrarTransaccion(t)) return;
     if (!confirm(`¿Eliminar la transacción "${t?.concepto_detallado || id}" (${money(t?.importe, t?.moneda)})? Esto no se puede deshacer.`)) return;
     transaccionesApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
@@ -8316,10 +8349,66 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [editandoMasivo, setEditandoMasivo] = useState(false);
   const [aplicandoMasivo, setAplicandoMasivo] = useState(false);
 
+  /* Cancelar: la transacción conserva su folio y su expediente, pero sale de
+     todo lo que implica pagar. El motivo es obligatorio: un folio cancelado
+     sin explicación es casi tan malo como un hueco. */
+  const cancelar = async (t) => {
+    if (t.status === "Pagado") {
+      alert(`${t.folio_transaccion} está marcada como Pagada: el dinero ya salió. Si de verdad no ocurrió, cambia primero su status a No Pagado.`);
+      return;
+    }
+    const aviso = t.enviado_pagos_at
+      ? `\n\nOJO: ya se envió a Pagos el ${formatFechaHora(t.enviado_pagos_at)}. El PDF que tienen la incluye y la app no puede retirarlo: avísales que no la paguen.`
+      : "";
+    const motivo = (prompt(`Cancelar ${t.folio_transaccion} — ${t.concepto_detallado || t.proveedor || ""} (${money(t.importe, t.moneda)}).${aviso}\n\nMotivo de la cancelación (obligatorio):`) || "").trim();
+    if (!motivo) return;
+    try {
+      const ahora = new Date().toISOString();
+      const quien = session?.user?.id || null;
+      const actualizada = await transaccionesApi.update(t.id, {
+        cancelada_en: ahora, cancelada_por: quien, motivo_cancelacion: motivo,
+        historial_cancelacion: [...(t.historial_cancelacion || []), { accion: "cancelada", fecha: ahora, usuario: quien, motivo }],
+      });
+      await polizaDe(actualizada || { ...t, cancelada_en: ahora, motivo_cancelacion: motivo });
+      if (t.enviado_pagos_at) alert(`${t.folio_transaccion} quedó cancelada. Recuerda avisar a Pagos: ya la tenían en un envío.`);
+    } catch (err) {
+      alert("No se pudo cancelar: " + (err.message || err) + "\n\n¿Ya corriste 58-cancelar-transacciones.sql?");
+    }
+  };
+
+  const reactivar = async (t) => {
+    const motivo = (prompt(`Reactivar ${t.folio_transaccion}.\n\nSe canceló el ${formatFechaHora(t.cancelada_en)}: ${t.motivo_cancelacion || "—"}\n\nMotivo de la reactivación (obligatorio):`) || "").trim();
+    if (!motivo) return;
+    try {
+      const ahora = new Date().toISOString();
+      const quien = session?.user?.id || null;
+      const actualizada = await transaccionesApi.update(t.id, {
+        cancelada_en: null, cancelada_por: null, motivo_cancelacion: null,
+        historial_cancelacion: [...(t.historial_cancelacion || []), { accion: "reactivada", fecha: ahora, usuario: quien, motivo }],
+      });
+      await polizaDe(actualizada || { ...t, cancelada_en: null });
+    } catch (err) {
+      alert("No se pudo reactivar: " + (err.message || err));
+    }
+  };
+
+  /* Las canceladas no se marcan ni se pagan: se retiran de la selección
+     diciéndolo, en vez de fallar a medias. */
+  const sinCanceladas = (ids, accion) => {
+    const canc = [...ids].map((id) => transUnidad.find((x) => x.id === id)).filter(estaCancelada);
+    if (canc.length) alert(`${canc.length} seleccionada(s) están canceladas y no se van a ${accion}: ${canc.map((t) => t.folio_transaccion).join(", ")}`);
+    return new Set([...ids].filter((id) => !canc.some((t) => t.id === id)));
+  };
+
   /* Se actualiza de una en una, igual que las otras acciones masivas de esta
      pantalla: transaccionesApi.update es lo que mantiene el caché local en
      sincronía, y un update por lote contra Supabase lo dejaría desfasado. */
   const aplicarMasivo = async (parche) => {
+    if (parche.status === "Pagado"
+        && [...seleccionadas].some((id) => estaCancelada(transUnidad.find((x) => x.id === id)))) {
+      alert("Hay transacciones canceladas en la selección: una cancelada no se puede marcar como Pagada. Quítalas de la selección.");
+      return;
+    }
     setAplicandoMasivo(true);
     try {
       for (const id of seleccionadas) {
@@ -8420,11 +8509,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   };
 
   const marcarReportadas = async (reportar) => {
-    if (reportar && !confirmarSat(seleccionadas)) return;
+    const ids = reportar ? sinCanceladas(seleccionadas, "reportar") : seleccionadas;
+    if (!ids.size) return;
+    if (reportar && !confirmarSat(ids)) return;
     setMarcandoReportado(true);
     try {
-      if (reportar) await registrarSiHaceFalta([...seleccionadas]);
-      for (const id of seleccionadas) {
+      if (reportar) await registrarSiHaceFalta([...ids]);
+      for (const id of ids) {
         await transaccionesApi.update(id, { reportado_at: reportar ? new Date().toISOString() : null });
       }
       setSeleccionadas(new Set());
@@ -8435,11 +8526,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
   };
   const marcarEnviadasPagos = async (enviar) => {
-    if (enviar && !confirmarSat(seleccionadas)) return;
+    const ids = enviar ? sinCanceladas(seleccionadas, "enviar") : seleccionadas;
+    if (!ids.size) return;
+    if (enviar && !confirmarSat(ids)) return;
     setMarcandoEnviado(true);
     try {
-      if (enviar) await registrarSiHaceFalta([...seleccionadas]);
-      for (const id of seleccionadas) {
+      if (enviar) await registrarSiHaceFalta([...ids]);
+      for (const id of ids) {
         await transaccionesApi.update(id, { enviado_pagos_at: enviar ? new Date().toISOString() : null });
       }
       setSeleccionadas(new Set());
@@ -8514,6 +8607,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 <option>Todos</option>
                 <option>Enviado</option>
                 <option>No enviado</option>
+              </Select>
+            </Field>
+            <Field label="Canceladas">
+              <Select value={filtros.canceladas || "ocultar"} onChange={(e) => setFiltros({ ...filtros, canceladas: e.target.value })} style={{ width: 140 }}>
+                <option value="ocultar">Ocultarlas</option>
+                <option value="mostrar">Mostrarlas</option>
+                <option value="solo">Solo canceladas</option>
               </Select>
             </Field>
             <Field label="Adjuntos">
@@ -8644,9 +8744,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               variant="danger"
               onClick={() => {
                 const pagadas = sinVincular.filter((t) => t.status === "Pagado");
-                const borrables = sinVincular.filter((t) => t.status !== "Pagado");
+                const borrables = sinVincular.filter((t) => t.status !== "Pagado" && pendienteDeRegistro(t));
                 if (!borrables.length) {
-                  alert(`Las ${pagadas.length} transacciones sin vincular están marcadas como Pagadas y no se pueden borrar.`);
+                  alert("Ninguna de las transacciones sin vincular se puede borrar: son Pagadas o están registradas (esas se cancelan, no se borran).");
                   return;
                 }
                 setConfirmandoEliminarSV({ borrables, pagadas });
@@ -8850,7 +8950,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, form.moneda)).length}
                 moneda={form.moneda}
                 origenTransaccion={form}
-                transacciones={transUnidad}
+                transacciones={transUnidad.filter((x) => !estaCancelada(x))}
                 partidasApi={partidasApi}
                 unidad={unidad}
                 proyectosOpciones={marcadoresProyecto}
@@ -9058,6 +9158,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               const vieja = polizaVieja(t);
               return (
                 <div style={{ gridColumn: "span 4", marginTop: 8 }}>
+                  {estaCancelada(t) && (
+                    <div style={{ background: T.panelAlt, border: `1px solid ${T.red}`, borderRadius: 8,
+                                  padding: "10px 13px", marginBottom: 12, fontSize: 12, color: T.red, lineHeight: 1.5 }}>
+                      <b>Cancelada</b> el {formatFechaHora(t.cancelada_en)}. Motivo: {t.motivo_cancelacion || "—"}.
+                      {" "}No cuenta en reportes ni pagos. Para reactivarla, usa ↺ en su fila.
+                    </div>
+                  )}
                   {/* De qué expediente se habla. Cada transacción tiene el
                       suyo, con su folio, aunque venga de una SMI: la SMI es un
                       dato informativo, no decide dónde viven los archivos. */}
@@ -15040,6 +15147,19 @@ function pdfPoliza(t, { partida, centroCosto, razonSocial } = {}) {
   doc.text(`Generada el ${formatFechaHora(new Date().toISOString())}`, M, alto - 10);
   doc.text(razonSocial || "", M + ancho, alto - 10, { align: "right" });
 
+  /* Una cancelada conserva su REG, pero que diga lo que pasó: sin la leyenda,
+     el expediente mostraría un registro vigente de algo que no ocurrió. */
+  if (t.cancelada_en) {
+    const anchoPag = doc.internal.pageSize.getWidth();
+    doc.setTextColor(200, 30, 30);
+    doc.setFont(undefined, "bold").setFontSize(72);
+    doc.text("CANCELADA", anchoPag / 2, alto / 2, { align: "center", angle: 30 });
+    doc.setFontSize(10);
+    doc.text(`CANCELADA el ${formatFechaHora(t.cancelada_en)}`, M, alto - 26);
+    doc.setFont(undefined, "normal").setFontSize(9);
+    doc.text(doc.splitTextToSize(`Motivo: ${t.motivo_cancelacion || "—"}`, ancho), M, alto - 21);
+  }
+
   return doc;
 }
 
@@ -18452,6 +18572,10 @@ export default function App() {
         .map((z) => z.nombre)
     : ZONAS_RESPALDO;
   const transacciones = transaccionesApi.rows;
+  /* Las canceladas conservan su folio pero no cuentan: fuera de reportes,
+     totales, presupuesto usado y Dashboard. Solo Transacciones las ve todas,
+     porque ahí se consultan y se reactivan. */
+  const transaccionesVigentes = useMemo(() => transacciones.filter((t) => !t.cancelada_en), [transacciones]);
   const ready = proyectosApi.ready && partidasApi.ready && transaccionesApi.ready;
 
   const TABS = [
@@ -18579,12 +18703,12 @@ export default function App() {
         <div style={{ color: T.textDim, fontSize: 13 }}>Cargando datos compartidos…</div>
       ) : (
         <>
-          {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transacciones} proveedores={proveedoresApi.rows} listasSat={listasSat} />}
-          {tab === "partidas" && <PartidasTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} onCrearTransaccion={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} />}
+          {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transaccionesVigentes} proveedores={proveedoresApi.rows} listasSat={listasSat} />}
+          {tab === "partidas" && <PartidasTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transaccionesVigentes} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} onCrearTransaccion={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} />}
           {tab === "transacciones" && <TransaccionesTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} listasSat={listasSat} seedTransaccion={seedTransaccion} onSeedConsumido={() => setSeedTransaccion(null)} />}
-          {tab === "reporte" && <ReportePagosTab listasSat={listasSat} gruposZona={gruposZona} unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
-          {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
-          {tab === "reportes-direccion" && <ReportesDireccionTab unidad={unidad} partidas={partidas} transacciones={transacciones} session={session} gruposZona={gruposZona} />}
+          {tab === "reporte" && <ReportePagosTab listasSat={listasSat} gruposZona={gruposZona} unidad={unidad} partidas={partidas} transacciones={transaccionesVigentes} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
+          {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transaccionesVigentes} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
+          {tab === "reportes-direccion" && <ReportesDireccionTab unidad={unidad} partidas={partidas} transacciones={transaccionesVigentes} session={session} gruposZona={gruposZona} />}
           {tab === "vehiculos" && (
             <VehiculosTab
               vehiculos={vehiculosApi.rows}

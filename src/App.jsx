@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.53.2";
+const APP_VERSION = "2.53.3";
 const CHANGELOG = [
+  { v: "2.53.3", desc: "Las transacciones marcadas como registradas pero sin folio se pueden registrar. Eran las importadas de Sheets antes de la migracion 49: esa migracion marco como registrado todo lo que ya existia, pero las importadas nunca tuvieron folio, asi que quedaron atoradas -- la app las daba por registradas y ni el boton ni Registrar les asignaban numero, su REG salia con el id largo y podian irse a Pagos sin folio. Ahora pendiente de registro significa sin registrar O sin folio: el boton de la fila, Registrar N de la seleccion y Enviar a Pagos les asignan folio, conservan su fecha de registro original y rehacen su REG con el folio. Se verifico contra los reportes oficiales que ninguna habia tenido folio antes" },
   { v: "2.53.2", desc: "Arreglo: Guardar cambios en una transaccion borraba lo que el sistema habia marcado mientras la ventana estaba abierta. El formulario copiaba todos los campos al abrirse -- tambien los que maneja la app: la marca del REG, el folio, el registro, las marcas de enviado y reportado -- y al guardar mandaba esa copia vieja. Por eso Generar REG y luego Guardar dejaba la transaccion como si no tuviera REG, aunque el archivo si estaba; y del mismo modo podia borrar un folio o una marca de enviado a Pagos. Ahora Guardar manda solo los campos del formulario" },
   { v: "2.53.1", desc: "Cada transaccion dice si su proveedor esta OK o no frente a las listas del SAT: SAT OK en verde si se reviso y no aparece, la marca roja o ambar si aparece, y SAT sin RFC si el proveedor no tiene RFC capturado, que es distinto de estar limpio. El Dashboard abre con un recuadro de los proveedores de la compania que estan en listas, con cuantas transacciones sin pagar tiene cada uno y por cuanto: es lo que hay que revisar antes del siguiente pago. Si ninguno esta listado, lo dice en una linea" },
   { v: "2.53.0", desc: "Validacion de proveedores contra las listas del SAT: el 69-B (EFOS) y los supuestos del 69 (no localizados, creditos firmes y exigibles, cancelados, sentencias, CSD sin efectos). El catalogo de proveedores gana la columna SAT, y el proveedor de cada transaccion y del Reporte de Pagos lleva la marca si esta listado: roja para el 69-B, ambar para el 69. Al registrar, marcar como enviada o reportada, o Enviar a Pagos una transaccion cuyo proveedor aparece en una lista, la confirmacion lo dice con el detalle; no se bloquea, la decision es de quien paga. En el 69-B solo cuentan Presunto y Definitivo: Desvirtuado y Sentencia favorable ya demostraron sus operaciones. La consulta se hace por RFC contra la vista de la migracion 57, solo con los RFC de los catalogos. Requiere 57-listas-sat.sql y que actualizar_listas_sat.py haya corrido" },
@@ -715,10 +716,18 @@ async function maxFolioTransaccionReal(prefix) {
  * insertar: el índice único de folio_transaccion es global, así que dos
  * registros casi simultáneos pueden calcular el mismo número.
  */
-async function registrarTransaccion(transaccionesApi, t, unidad, transUnidad) {
-  if (t.registrada_en) return t;
+/* Pendiente de registro: sin registrar, O registrada sin folio. El segundo
+   caso son las importadas de Sheets que la migración 49 dio por registradas
+   sin que nunca tuvieran número. Sin esto quedaban atoradas: ningún camino
+   les asignaba folio porque todos preguntaban solo por registrada_en. */
+const pendienteDeRegistro = (t) => !!t && (!t.registrada_en || !t.folio_transaccion);
 
-  const ahora = new Date().toISOString();
+async function registrarTransaccion(transaccionesApi, t, unidad, transUnidad) {
+  if (!pendienteDeRegistro(t)) return t;
+
+  // Si ya tenía fecha de registro se conserva: el compromiso existió desde
+  // entonces, solo le faltaba el número.
+  const ahora = t.registrada_en || new Date().toISOString();
   if (t.folio_transaccion) {
     return await transaccionesApi.update(t.id, { registrada_en: ahora });
   }
@@ -8188,9 +8197,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           <IconButton icon="✎" label="Editar" tone={T.accent} onClick={() => startEdit(t)} />
           {/* El botón ocupa el lugar de la etiqueta "Borrador": en ámbar dice
               lo mismo, y además lo resuelve sin abrir el detalle. */}
-          {!t.registrada_en && (
+          {pendienteDeRegistro(t) && (
             <IconButton icon={registrandoFila === t.id ? "…" : "✓"}
-              label="Borrador: registrar (folio y REG)" tone={T.amber}
+              label={t.registrada_en ? "Registrada sin folio: asignarle folio y REG" : "Borrador: registrar (folio y REG)"} tone={T.amber}
               disabled={!!registrandoFila} onClick={() => registrarFila(t)} />
           )}
           <IconButton icon="⧉" label="Duplicar" tone={T.textDim} onClick={() => duplicar(t)} />
@@ -8346,7 +8355,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
      formas de registrar que terminen distinto. */
   const [registrandoFila, setRegistrandoFila] = useState(null);
   const registrarFila = async (t) => {
-    if (t.registrada_en) return;
+    if (!pendienteDeRegistro(t)) return;
     if (!confirm(`¿Registrar "${t.concepto_detallado || t.proveedor || "esta transacción"}" (${money(t.importe, t.moneda)})?\n\nRecibe su folio definitivo y su REG. El folio ya no se libera.`
       + avisoSatTransacciones([t], proveedoresApi.rows, listasSat))) return;
     setRegistrandoFila(t.id);
@@ -8363,7 +8372,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const registrarSeleccionadas = async () => {
     const pend = [...seleccionadas]
       .map((id) => transUnidad.find((t) => t.id === id))
-      .filter((t) => t && !t.registrada_en);
+      .filter((t) => pendienteDeRegistro(t));
     if (!pend.length) { alert("Las seleccionadas ya están registradas."); return; }
     if (!confirm(`Se van a registrar ${pend.length} transacción(es).\n\nCada una recibe su folio definitivo y su carpeta de expediente. El folio ya no se libera: si después no se concreta, hay que cancelarla.\n\n¿Continuar?`
       + avisoSatTransacciones(pend, proveedoresApi.rows, listasSat))) return;
@@ -8394,7 +8403,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const registrarSiHaceFalta = async (ids) => {
     for (const id of ids) {
       const t = transUnidad.find((x) => x.id === id);
-      if (t && !t.registrada_en) {
+      if (pendienteDeRegistro(t)) {
         const reg = await registrarTransaccion(transaccionesApi, t, unidad, transUnidad);
         await polizaDe(reg || t);
       }
@@ -8567,7 +8576,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             {(() => {
               const sinRegistrar = [...seleccionadas]
                 .map((id) => transUnidad.find((t) => t.id === id))
-                .filter((t) => t && !t.registrada_en).length;
+                .filter((t) => pendienteDeRegistro(t)).length;
               return sinRegistrar > 0 ? (
                 <Button onClick={registrarSeleccionadas} disabled={registrando}>
                   {registrando ? "Registrando…" : `Registrar ${sinRegistrar}`}
@@ -9291,7 +9300,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       moneda: t.moneda || "MXP",
       _vinculadoProveedor: !!proveedor,
       _vinculadoCuenta: !!cuenta,
-      _borrador: !t.registrada_en,
+      _borrador: pendienteDeRegistro(t),
       _sat: hallazgosSat(listasSat, proveedor?.rfc),
     };
   });
@@ -9670,8 +9679,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
        reporte: registrar y generar la póliza necesitan el registro completo. */
     const ids = new Set(filasOrdenadas.map((f) => f.id));
     const trans = transUnidad.filter((t) => ids.has(t.id));
-    const aRegistrar = trans.filter((t) => !t.registrada_en);
-    const aPoliza = trans.filter((t) => t.registrada_en && (!t.poliza_generada_en || polizaVieja(t)));
+    const aRegistrar = trans.filter((t) => pendienteDeRegistro(t));
+    const aPoliza = trans.filter((t) => !pendienteDeRegistro(t) && (!t.poliza_generada_en || polizaVieja(t)));
     const yaEnviadas = trans.filter((t) => t.enviado_pagos_at).length;
 
     const porMoneda = {};

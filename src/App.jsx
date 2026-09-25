@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.54.0";
+const APP_VERSION = "2.54.1";
 const CHANGELOG = [
+  { v: "2.54.1", desc: "Los avisos de listas del SAT dicen de cuando son los datos: cuando se revisaron por ultima vez y cuando cambio por ultima vez lo publicado. Sin fecha, \"ningun proveedor aparece\" no decia nada: podia venir de una carga de hace un mes. Si las listas llevan mas de tres dias sin revisarse, el aviso sale en ambar: casi seguro la tarea programada dejo de correr. Aparece en el Dashboard y en Catalogo > Proveedores" },
   { v: "2.54.0", desc: "Cancelar transacciones registradas. Una registrada ya no se elimina: su folio existio y borrarla dejaria un hueco en la numeracion. Se cancela con motivo obligatorio: conserva folio y expediente, queda dicho quien, cuando y por que, y sale del Reporte de Pagos, de Enviar a Pagos, de los totales, del presupuesto usado de su partida y del Dashboard. No se puede marcar como pagada, reportar ni enviar. Su REG se rehace con la leyenda CANCELADA. Si ya se habia enviado a Pagos, la confirmacion avisa que hay que decirselo a Pagos, porque el PDF que tienen la incluye. Se puede reactivar, tambien con motivo, y cada cancelacion y reactivacion queda en un historial. Una pagada no se cancela: primero se regresa a No Pagado. Eliminar queda solo para borradores sin folio. Filtro nuevo Canceladas: ocultarlas, mostrarlas o ver solo esas. Requiere 58-cancelar-transacciones.sql" },
   { v: "2.53.3", desc: "Las transacciones marcadas como registradas pero sin folio se pueden registrar. Eran las importadas de Sheets antes de la migracion 49: esa migracion marco como registrado todo lo que ya existia, pero las importadas nunca tuvieron folio, asi que quedaron atoradas -- la app las daba por registradas y ni el boton ni Registrar les asignaban numero, su REG salia con el id largo y podian irse a Pagos sin folio. Ahora pendiente de registro significa sin registrar O sin folio: el boton de la fila, Registrar N de la seleccion y Enviar a Pagos les asignan folio, conservan su fecha de registro original y rehacen su REG con el folio. Se verifico contra los reportes oficiales que ninguna habia tenido folio antes" },
   { v: "2.53.2", desc: "Arreglo: Guardar cambios en una transaccion borraba lo que el sistema habia marcado mientras la ventana estaba abierta. El formulario copiaba todos los campos al abrirse -- tambien los que maneja la app: la marca del REG, el folio, el registro, las marcas de enviado y reportado -- y al guardar mandaba esa copia vieja. Por eso Generar REG y luego Guardar dejaba la transaccion como si no tuviera REG, aunque el archivo si estaba; y del mismo modo podia borrar un folio o una marca de enviado a Pagos. Ahora Guardar manda solo los campos del formulario" },
@@ -846,6 +847,33 @@ function PillsSat({ hallazgos }) {
   );
 }
 
+/* De cuándo son las listas. Se toma la revisión MÁS VIEJA de las fuentes:
+   si una dejó de revisarse, esa es la que manda, no la más reciente. Y la
+   publicación más reciente que se cargó, que es lo que cambió por última vez. */
+function fechasSat(listasSat) {
+  const fs = listasSat?.fuentes || [];
+  if (!fs.length) return null;
+  const revs = fs.map((f) => f.revisado_en).filter(Boolean).sort();
+  const acts = fs.map((f) => f.actualizado_en).filter(Boolean).sort();
+  const revisado = revs[0] || null;
+  const dias = revisado ? (Date.now() - new Date(revisado).getTime()) / 86400000 : Infinity;
+  return { revisado, actualizado: acts[acts.length - 1] || null, vieja: dias > 3 };
+}
+
+function LeyendaFechasSat({ listasSat }) {
+  const f = fechasSat(listasSat);
+  if (!f) return null;
+  return (
+    <span style={{ color: f.vieja ? T.amberDim : T.textFaint }}
+      title={(listasSat.fuentes || []).map((x) =>
+        `${x.lista}${x.supuesto ? " · " + x.supuesto : ""}: ${x.filas ?? "?"} RFC, revisada ${formatFechaHora(x.revisado_en)}, cambió ${formatFechaHora(x.actualizado_en)}`).join("\n")}>
+      {f.vieja
+        ? `Ojo: las listas no se revisan desde el ${formatFechaHora(f.revisado)}; revisa la tarea programada.`
+        : `Listas revisadas el ${formatFechaHora(f.revisado)} · última publicación cargada: ${formatFechaHora(f.actualizado)}.`}
+    </span>
+  );
+}
+
 /* OK / No OK de un proveedor frente a las listas. Tres estados distintos que
    no hay que confundir: listado, revisado y limpio, y sin forma de revisar
    (sin RFC). Sin RFC NO es limpio: solo significa que no hay con qué cruzar.
@@ -883,7 +911,8 @@ function AlertaSatDashboard({ unidad, proveedores, transacciones, listasSat }) {
   if (!listados.length) {
     return (
       <div style={{ fontSize: 12, color: T.teal }}>
-        Ningún proveedor de {unidad} aparece en las listas del SAT (69-B y 69).
+        Ningún proveedor de {unidad} aparece en las listas del SAT (69-B y 69).{" "}
+        <LeyendaFechasSat listasSat={listasSat} />
       </div>
     );
   }
@@ -891,7 +920,8 @@ function AlertaSatDashboard({ unidad, proveedores, transacciones, listasSat }) {
   return (
     <Panel
       title={`Proveedores en listas del SAT — ${unidad}`}
-      subtitle={`${listados.length} proveedor(es) listados · ${conPendientes} con transacciones sin pagar`}
+      subtitle={<>{`${listados.length} proveedor(es) listados · ${conPendientes} con transacciones sin pagar · `}
+        <LeyendaFechasSat listasSat={listasSat} /></>}
     >
       <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
         {listados.map(({ p, hs, pend, porMoneda }) => (
@@ -17112,7 +17142,8 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi, lis
       subtitle={`${proveedoresUnidad.length} registrados — cada compañía tiene el suyo. Un proveedor puede tener varias cuentas bancarias`
         + (listasSat?.error ? ` · Las listas del SAT no se pudieron consultar: ${listasSat.error}` : "")
         + (listasSat?.cargado && !listasSat.error
-            ? ` · ${proveedoresUnidad.filter((p) => hallazgosSat(listasSat, p.rfc).length).length} en listas del SAT` : "")}
+            ? ` · ${proveedoresUnidad.filter((p) => hallazgosSat(listasSat, p.rfc).length).length} en listas del SAT`
+              + (fechasSat(listasSat) ? ` (revisadas el ${formatFechaHora(fechasSat(listasSat).revisado)})` : "") : "")}
       right={
         <div style={{ display: "flex", gap: 8 }}>
           <Button variant="ghost" onClick={exportarProveedores} title="Las tres compañías con sus cuentas bancarias, para el preparador de transacciones">Exportar las 3</Button>
@@ -18497,7 +18528,7 @@ export default function App() {
      solo por esos RFC y no la tabla entera, que tiene más de medio millón de
      filas: la app necesita saber de sus proveedores, no del país. Por
      páginas de RFC para no pasarse del largo de URL. */
-  const [listasSat, setListasSat] = useState({ mapa: new Map(), error: "", cargado: false });
+  const [listasSat, setListasSat] = useState({ mapa: new Map(), error: "", cargado: false, fuentes: [] });
   const rfcsCatalogos = [...new Set(
     [...proveedoresApi.rows, ...contratosProvLegalApi.rows].map((p) => rfcSat(p.rfc)).filter((r) => r.length >= 12)
   )].sort().join(",");
@@ -18507,14 +18538,19 @@ export default function App() {
     (async () => {
       const lista = rfcsCatalogos.split(",");
       const mapa = new Map();
+      /* De cuándo son los datos: sin fecha, "ningún proveedor aparece" no
+         dice nada, porque podría venir de una carga de hace un mes. */
+      const { data: fuentes, error: errF } = await supabase.from("sat_listas_fuentes")
+        .select("fuente,lista,supuesto,filas,actualizado_en,revisado_en");
+      if (errF) { if (vivo) setListasSat({ mapa: new Map(), error: errF.message, cargado: true, fuentes: [] }); return; }
       for (let i = 0; i < lista.length; i += 150) {
         const { data, error } = await supabase.from("sat_listas_vigente")
           .select("rfc,lista,situacion,alerta,nombre,detalle,actualizado_en")
           .in("rfc", lista.slice(i, i + 150));
-        if (error) { if (vivo) setListasSat({ mapa: new Map(), error: error.message, cargado: true }); return; }
+        if (error) { if (vivo) setListasSat({ mapa: new Map(), error: error.message, cargado: true, fuentes: [] }); return; }
         (data || []).forEach((h) => { if (!mapa.has(h.rfc)) mapa.set(h.rfc, []); mapa.get(h.rfc).push(h); });
       }
-      if (vivo) setListasSat({ mapa, error: "", cargado: true });
+      if (vivo) setListasSat({ mapa, error: "", cargado: true, fuentes: fuentes || [] });
     })();
     return () => { vivo = false; };
   }, [rfcsCatalogos, !!session]);

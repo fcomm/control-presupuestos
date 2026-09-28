@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.54.4";
+const APP_VERSION = "2.55.0";
 const CHANGELOG = [
+  { v: "2.55.0", desc: "Seguimiento de pagos del reporte semanal a Direccion, en Reportes a Direccion > Transacciones semanales. Toma una version enviada y compara cada transaccion que llevaba contra su estado de hoy: pagada, sin pagar, cancelada o eliminada, con totales por moneda. Marca cuando el importe cambio despues de enviarse, porque entonces lo pagado no es lo que se reporto. Agrega aparte lo que se pago en esa semana sin haberse reportado, que es la otra mitad de la pregunta. Descarga a Excel con las dos hojas. Funciona con cualquier version ya enviada, porque el reporte congelo que transacciones llevaba" },
   { v: "2.54.4", desc: "La edicion masiva de transacciones permite cambiar el Dia de Pago Programado: reprogramar un grupo de pagos a otra fecha es un caso real y hacerlo una por una no tiene sentido. Si alguna de las seleccionadas ya se envio a Pagos, la confirmacion lo dice, porque Pagos la tiene programada con la fecha anterior. El folio no cambia aunque cambie el mes: se asigno al registrar y es la identidad de la transaccion" },
   { v: "2.54.3", desc: "El REG lleva el Id del proveedor en ASPEL-SAE, junto al nombre: es con el que Contabilidad lo busca, y el nombre en texto puede no coincidir con el del catalogo. Se toma del proveedor vinculado; si la transaccion no tiene proveedor del catalogo, sale vacio. Los REG ya generados no cambian hasta que se rehagan" },
   { v: "2.54.2", desc: "La leyenda de fechas de las listas del SAT distingue revisar de cambiar: dice que se revisaron y que no hubo publicaciones nuevas desde tal fecha, en vez de dos fechas juntas que se leian como si la descarga no corriera. Y se quita el punto doble al final" },
@@ -11148,6 +11149,221 @@ const SUBS_CATALOGO = [
   { id: "solicitudes", label: "Solicitudes de Pago" },
 ];
 
+/* Estado de hoy de una transacción que se reportó. Eliminada es la que ya no
+   existe: se reportó y alguien la borró después, que es justo lo que hay
+   que poder ver. */
+function estadoSeguimiento(t) {
+  if (!t) return "Eliminada";
+  if (t.cancelada_en) return "Cancelada";
+  return t.status === "Pagado" ? "Pagada" : "Sin pagar";
+}
+const TONO_SEGUIMIENTO = { "Pagada": "teal", "Sin pagar": "amber", "Cancelada": "dim", "Eliminada": "red" };
+
+/**
+ * Qué se pagó de lo que se le reportó a Dirección en una semana.
+ *
+ * Parte del detalle CONGELADO de la versión enviada —qué transacciones llevaba
+ * y con qué importe— y lo cruza contra su estado actual. Por eso funciona con
+ * cualquier versión ya enviada: el reporte guardó sus renglones.
+ *
+ * La otra mitad de la pregunta va aparte: lo que se pagó en esa semana sin
+ * haberse reportado. Sin eso, un reporte "todo pagado" puede esconder pagos
+ * que Dirección nunca vio.
+ */
+function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
+  const ordenadas = [...versiones].sort((a, b) => b.version - a.version);
+  const [repId, setRepId] = useState("");
+  const rep = ordenadas.find((r) => r.id === repId) || ordenadas[0] || null;
+  const [detalle, setDetalle] = useState(null);
+  const [error, setError] = useState("");
+  const [filtro, setFiltro] = useState("Todas");
+
+  useEffect(() => {
+    if (!rep) { setDetalle(null); return; }
+    let vivo = true;
+    setDetalle(null); setError("");
+    supabase.from("reportes_oficiales_detalle").select("*").eq("reporte_id", rep.id)
+      .then(({ data, error: e }) => {
+        if (!vivo) return;
+        if (e) setError(e.message); else setDetalle(data || []);
+      });
+    return () => { vivo = false; };
+  }, [rep?.id]);
+
+  if (!rep) return null;
+
+  const porId = new Map(transacciones.map((t) => [String(t.id), t]));
+  const filas = (detalle || []).map((d) => {
+    const t = porId.get(String(d.origen_id)) || null;
+    const importeHoy = t ? Number(t.importe) || 0 : null;
+    return {
+      d, t, estado: estadoSeguimiento(t),
+      moneda: (d.moneda || "MXP") === "USD" ? "USD" : "MXP",
+      importeRep: Number(d.importe) || 0, importeHoy,
+      // Si el importe cambió, lo pagado no es lo que se reportó.
+      cambioImporte: t && Math.abs(importeHoy - (Number(d.importe) || 0)) > 0.01,
+    };
+  });
+  const reportadas = new Set(filas.map((f) => String(f.d.origen_id)));
+  const noReportadas = transacciones.filter((t) =>
+    t.unidad_detectada === unidad && !t.cancelada_en && t.status === "Pagado"
+    && t.dia && rep.periodo_ini && t.dia >= rep.periodo_ini && t.dia <= rep.periodo_fin
+    && !reportadas.has(String(t.id)));
+
+  const suma = (lista, campo) => {
+    const r = {};
+    lista.forEach((f) => { r[f.moneda] = (r[f.moneda] || 0) + (Number(f[campo]) || 0); });
+    return r;
+  };
+  const fmt = (o) => Object.entries(o).filter(([, v]) => v).map(([m, v]) => money(v, m)).join(" · ") || "—";
+  const por = (e) => filas.filter((f) => f.estado === e);
+  const visibles = filtro === "Todas" ? filas : por(filtro);
+
+  const exportar = async () => {
+    const wbx = new ExcelJS.Workbook();
+    const ws = wbx.addWorksheet("Seguimiento");
+    const COLS = [
+      ["Día", 12, (f) => f.d.dia], ["Folio", 16, (f) => f.d.folio], ["Proveedor", 34, (f) => f.d.proveedor],
+      ["Concepto", 44, (f) => f.d.concepto], ["Área", 18, (f) => f.d.area],
+      ["Importe reportado", 16, (f) => f.importeRep, 1], ["Importe hoy", 14, (f) => f.importeHoy, 1],
+      ["Moneda", 9, (f) => f.moneda], ["Estado", 12, (f) => f.estado],
+      ["Fecha de pago", 13, (f) => f.t?.fecha_pago || ""],
+      ["Nota", 40, (f) => f.estado === "Cancelada" ? `Cancelada: ${f.t.motivo_cancelacion || ""}`
+        : f.cambioImporte ? "El importe cambió después de reportarse" : ""],
+    ];
+    ws.columns = COLS.map((c) => ({ width: c[1] }));
+    const t1 = ws.addRow([`Seguimiento de pagos — ${unidad} — ${rangoSemana(rep.periodo_ini, rep.periodo_fin)} — versión ${rep.version}`]);
+    t1.font = { bold: true, size: 13 };
+    ws.addRow([`Pagado ${fmt(suma(por("Pagada"), "importeRep"))}   ·   Sin pagar ${fmt(suma(por("Sin pagar"), "importeRep"))}   ·   ${por("Cancelada").length} cancelada(s), ${por("Eliminada").length} eliminada(s)`]);
+    ws.addRow([]);
+    const hr = ws.addRow(COLS.map((c) => c[0]));
+    formatearHojaDatos(ws, hr, COLS.length);
+    filas.forEach((f) => {
+      const row = ws.addRow(COLS.map((c) => c[2](f)));
+      COLS.forEach((c, i) => { if (c[3]) row.getCell(i + 1).numFmt = '"$"#,##0.00'; });
+    });
+    if (noReportadas.length) {
+      const w2 = wbx.addWorksheet("Pagadas no reportadas");
+      const C2 = [["Día", 12, (t) => t.dia], ["Folio", 16, (t) => t.folio_transaccion || ""],
+        ["Proveedor", 34, (t) => t.proveedor], ["Concepto", 44, (t) => t.concepto_detallado],
+        ["Área", 18, (t) => t.area], ["Importe", 14, (t) => Number(t.importe) || 0, 1],
+        ["Moneda", 9, (t) => t.moneda || "MXP"], ["Fecha de pago", 13, (t) => t.fecha_pago || ""]];
+      w2.columns = C2.map((c) => ({ width: c[1] }));
+      const h2 = w2.addRow(C2.map((c) => c[0]));
+      formatearHojaDatos(w2, h2, C2.length);
+      noReportadas.forEach((t) => {
+        const row = w2.addRow(C2.map((c) => c[2](t)));
+        C2.forEach((c, i) => { if (c[3]) row.getCell(i + 1).numFmt = '"$"#,##0.00'; });
+      });
+    }
+    const buf = await wbx.xlsx.writeBuffer();
+    descargarBlob(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+      `Seguimiento pagos ${unidad} ${rangoSemana(rep.periodo_ini, rep.periodo_fin)} v${rep.version}.xlsx`);
+  };
+
+  return (
+    <Panel
+      title="Seguimiento de pagos"
+      subtitle="Qué se pagó de lo que se reportó a Dirección, según el estado de hoy de cada transacción"
+      right={
+        <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
+          {ordenadas.length > 1 && (
+            <Field label="Versión">
+              <Select value={rep.id} onChange={(e) => setRepId(e.target.value)}>
+                {ordenadas.map((r) => <option key={r.id} value={r.id}>v{r.version} — {new Date(r.enviado_en).toLocaleDateString("es-MX")}</option>)}
+              </Select>
+            </Field>
+          )}
+          <Button variant="ghost" onClick={exportar} disabled={!detalle}>Descargar Excel</Button>
+        </div>
+      }
+    >
+      {error ? <div style={{ fontSize: 12, color: T.red }}>No se pudo leer el reporte: {error}</div>
+      : !detalle ? <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
+      : (
+        <>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+            {["Pagada", "Sin pagar", "Cancelada", "Eliminada"].map((e) => {
+              const l = por(e);
+              if (!l.length && (e === "Cancelada" || e === "Eliminada")) return null;
+              return (
+                <button key={e} type="button" onClick={() => setFiltro(filtro === e ? "Todas" : e)}
+                  style={{ ...panelStyle, padding: "10px 16px", minWidth: 170, textAlign: "left", cursor: "pointer",
+                           borderColor: filtro === e ? T.accent : T.border }}>
+                  <div style={{ fontSize: 10.5, color: T.textDim, textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                    {e} · {l.length} de {filas.length}
+                  </div>
+                  <div style={{ fontSize: 14, fontFamily: T.fontMono, fontWeight: 600, marginTop: 4,
+                                color: e === "Pagada" ? T.teal : e === "Sin pagar" ? T.amberDim : T.textDim }}>
+                    {fmt(suma(l, "importeRep"))}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+          {filas.some((f) => f.cambioImporte) && (
+            <div style={{ fontSize: 12, color: T.amberDim, marginBottom: 10 }}>
+              {filas.filter((f) => f.cambioImporte).length} transacción(es) cambiaron de importe después de reportarse: los totales usan el importe reportado.
+            </div>
+          )}
+          <div style={{ overflowX: "auto" }}>
+            <table style={tableStyle}>
+              <thead><tr>{["Día", "Folio", "Proveedor", "Concepto", "Reportado", "Hoy", "Estado", "Fecha de pago"]
+                .map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+              <tbody>
+                {visibles.map((f) => (
+                  <tr key={f.d.id || f.d.origen_id}>
+                    <td style={tdStyle}>{f.d.dia || "—"}</td>
+                    <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{f.d.folio || "—"}</td>
+                    <td style={tdStyle}>{f.d.proveedor || "—"}</td>
+                    <td style={{ ...tdStyle, color: T.textDim }}>{f.d.concepto || "—"}</td>
+                    <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right" }}>{money(f.importeRep, f.moneda)}</td>
+                    <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", color: f.cambioImporte ? T.amberDim : T.textFaint }}>
+                      {f.importeHoy === null ? "—" : f.cambioImporte ? money(f.importeHoy, f.moneda) : "igual"}
+                    </td>
+                    <td style={tdStyle} title={f.estado === "Cancelada" ? `Motivo: ${f.t.motivo_cancelacion || "—"}` : undefined}>
+                      <Pill tone={TONO_SEGUIMIENTO[f.estado]}>{f.estado}</Pill>
+                    </td>
+                    <td style={tdStyle}>{f.t?.fecha_pago || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {noReportadas.length > 0 && (
+            <div style={{ marginTop: 18 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 4 }}>
+                Pagadas en esa semana sin haberse reportado · {noReportadas.length}
+              </div>
+              <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 8 }}>
+                Tienen día de pago en la semana y están pagadas, pero no iban en la versión {rep.version}.
+                Total: {fmt(suma(noReportadas.map((t) => ({ moneda: t.moneda === "USD" ? "USD" : "MXP", importe: t.importe })), "importe"))}
+              </div>
+              <table style={tableStyle}>
+                <thead><tr>{["Día", "Folio", "Proveedor", "Concepto", "Importe", "Fecha de pago"]
+                  .map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+                <tbody>
+                  {noReportadas.map((t) => (
+                    <tr key={t.id}>
+                      <td style={tdStyle}>{t.dia}</td>
+                      <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{t.folio_transaccion || "—"}</td>
+                      <td style={tdStyle}>{t.proveedor || "—"}</td>
+                      <td style={{ ...tdStyle, color: T.textDim }}>{t.concepto_detallado || "—"}</td>
+                      <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right" }}>{money(t.importe, t.moneda)}</td>
+                      <td style={tdStyle}>{t.fecha_pago || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
+    </Panel>
+  );
+}
+
 /**
  * Reportes oficiales a Dirección y bitácora de desviaciones.
  *
@@ -11156,7 +11372,7 @@ const SUBS_CATALOGO = [
  * botones de exportar invitaría a generarlo por costumbre y a versionar
  * envíos que nunca salieron.
  */
-function ReportesDireccionTab({ unidad, partidas, transacciones, gruposZona = {} }) {
+function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTodas = [], gruposZona = {} }) {
   const [sub, setSub] = useSessionState("ss-repdir-sub", "presupuesto");
   const [reportes, setReportes] = useState([]);
   const [reportado, setReportado] = useState([]);
@@ -11346,6 +11562,12 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, gruposZona = {}
           </div>
         )}
       </Panel>
+
+      {/* Necesita todas, incluidas las canceladas: una cancelada que se
+          reportó tiene que verse como cancelada, no como desaparecida. */}
+      {!esPresupuesto && yaEnviados.length > 0 && (
+        <SeguimientoPagosSemanal unidad={unidad} versiones={yaEnviados} transacciones={transaccionesTodas} />
+      )}
 
       <Panel
         title="Gasto imprevisto"
@@ -18772,7 +18994,7 @@ export default function App() {
           {tab === "transacciones" && <TransaccionesTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} listasSat={listasSat} seedTransaccion={seedTransaccion} onSeedConsumido={() => setSeedTransaccion(null)} />}
           {tab === "reporte" && <ReportePagosTab listasSat={listasSat} gruposZona={gruposZona} unidad={unidad} partidas={partidas} transacciones={transaccionesVigentes} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transaccionesVigentes} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
-          {tab === "reportes-direccion" && <ReportesDireccionTab unidad={unidad} partidas={partidas} transacciones={transaccionesVigentes} session={session} gruposZona={gruposZona} />}
+          {tab === "reportes-direccion" && <ReportesDireccionTab unidad={unidad} partidas={partidas} transacciones={transaccionesVigentes} transaccionesTodas={transacciones} session={session} gruposZona={gruposZona} />}
           {tab === "vehiculos" && (
             <VehiculosTab
               vehiculos={vehiculosApi.rows}

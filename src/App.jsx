@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.54.2";
+const APP_VERSION = "2.54.4";
 const CHANGELOG = [
+  { v: "2.54.4", desc: "La edicion masiva de transacciones permite cambiar el Dia de Pago Programado: reprogramar un grupo de pagos a otra fecha es un caso real y hacerlo una por una no tiene sentido. Si alguna de las seleccionadas ya se envio a Pagos, la confirmacion lo dice, porque Pagos la tiene programada con la fecha anterior. El folio no cambia aunque cambie el mes: se asigno al registrar y es la identidad de la transaccion" },
+  { v: "2.54.3", desc: "El REG lleva el Id del proveedor en ASPEL-SAE, junto al nombre: es con el que Contabilidad lo busca, y el nombre en texto puede no coincidir con el del catalogo. Se toma del proveedor vinculado; si la transaccion no tiene proveedor del catalogo, sale vacio. Los REG ya generados no cambian hasta que se rehagan" },
   { v: "2.54.2", desc: "La leyenda de fechas de las listas del SAT distingue revisar de cambiar: dice que se revisaron y que no hubo publicaciones nuevas desde tal fecha, en vez de dos fechas juntas que se leian como si la descarga no corriera. Y se quita el punto doble al final" },
   { v: "2.54.1", desc: "Los avisos de listas del SAT dicen de cuando son los datos: cuando se revisaron por ultima vez y cuando cambio por ultima vez lo publicado. Sin fecha, \"ningun proveedor aparece\" no decia nada: podia venir de una carga de hace un mes. Si las listas llevan mas de tres dias sin revisarse, el aviso sale en ambar: casi seguro la tarea programada dejo de correr. Aparece en el Dashboard y en Catalogo > Proveedores" },
   { v: "2.54.0", desc: "Cancelar transacciones registradas. Una registrada ya no se elimina: su folio existio y borrarla dejaria un hueco en la numeracion. Se cancela con motivo obligatorio: conserva folio y expediente, queda dicho quien, cuando y por que, y sale del Reporte de Pagos, de Enviar a Pagos, de los totales, del presupuesto usado de su partida y del Dashboard. No se puede marcar como pagada, reportar ni enviar. Su REG se rehace con la leyenda CANCELADA. Si ya se habia enviado a Pagos, la confirmacion avisa que hay que decirselo a Pagos, porque el PDF que tienen la incluye. Se puede reactivar, tambien con motivo, y cada cancelacion y reactivacion queda en un historial. Una pagada no se cancela: primero se regresa a No Pagado. Eliminar queda solo para borradores sin folio. Filtro nuevo Canceladas: ocultarlas, mostrarlas o ver solo esas. Requiere 58-cancelar-transacciones.sql" },
@@ -7487,9 +7489,10 @@ function ConfirmarBorradoTextoModal({ titulo, mensaje, frase = "ELIMINAR", onCon
 /**
  * Los campos que se pueden cambiar en bloque.
  *
- * Quedan fuera importe, día, folios y concepto a propósito: son propios de
- * cada registro, y ponerles el mismo valor a veinte transacciones no arregla
- * nada — destruye la información que las distinguía.
+ * Quedan fuera importe, folios y concepto a propósito: son propios de cada
+ * registro, y ponerles el mismo valor a veinte transacciones no arregla nada
+ * — destruye la información que las distinguía. El día de pago sí entra:
+ * reprogramar un grupo de pagos a otra fecha es un caso real.
  *
  * `proveedor` es especial: no basta con el texto. La transacción guarda el
  * nombre en `proveedor` y el vínculo en `proveedor_id`, y hay que mover los
@@ -7501,6 +7504,7 @@ const CAMPOS_MASIVOS = [
   { key: "zona",      label: "Zona",      tipo: "lista" },
   { key: "area",      label: "Área",      tipo: "texto" },
   { key: "categoria", label: "Categoría", tipo: "texto" },
+  { key: "dia",       label: "Día de Pago Programado", tipo: "fecha" },
   { key: "status",    label: "Status",    tipo: "lista", opciones: ["Pagado", "No Pagado"] },
   { key: "fecha_pago", label: "Fecha de pago", tipo: "fecha" },
 ];
@@ -7543,6 +7547,10 @@ function EditarMasivoModal({ filas, proveedores, proyectos, zonas, onCerrar, onA
 
   const aplicar = async () => {
     if (!campos.length) { alert("Marca al menos un campo para cambiar."); return; }
+    if (activos.has("dia") && !valores.dia) {
+      alert("Elige el nuevo Día de Pago Programado, o desmarca ese campo.");
+      return;
+    }
     if (pagadasSinFecha) {
       alert("Marcar como Pagado exige fecha de pago, igual que al capturar una transacción. Activa también el campo Fecha de pago.");
       return;
@@ -7554,6 +7562,9 @@ function EditarMasivoModal({ filas, proveedores, proyectos, zonas, onCerrar, onA
         if (!p) return;
         parche.proveedor = p.nombre;
         parche.proveedor_id = p.id;
+      } else if (c.tipo === "fecha") {
+        // Una fecha vacía va como null: Postgres rechaza "" en una columna date.
+        parche[c.key] = valores[c.key] || null;
       } else {
         parche[c.key] = valores[c.key] ?? "";
       }
@@ -7563,7 +7574,13 @@ function EditarMasivoModal({ filas, proveedores, proyectos, zonas, onCerrar, onA
     const resumen = campos
       .map((c) => `  ${c.label}: ${cuantasCambian(c)} de ${filas.length} cambian`)
       .join("\n");
-    if (!confirm(`Se van a modificar ${filas.length} transacción(es):\n\n${resumen}\n\n¿Continuar?`)) return;
+    /* Reprogramar lo que ya está en manos de Pagos no les cambia nada a
+       ellos: tienen el PDF con la fecha anterior. Se dice. */
+    const enviadas = activos.has("dia") ? filas.filter((t) => t.enviado_pagos_at && t.dia !== valores.dia).length : 0;
+    const avisoDia = enviadas
+      ? `\n\nOJO: ${enviadas} ya se enviaron a Pagos con la fecha anterior. Avísales del cambio, o vuelve a enviar esa fecha.`
+      : "";
+    if (!confirm(`Se van a modificar ${filas.length} transacción(es):\n\n${resumen}${avisoDia}\n\n¿Continuar?`)) return;
 
     setTrabajando(true);
     try {
@@ -15094,7 +15111,7 @@ function pdfSolicitud(solicitud, conceptos, centroCosto) {
  * ordenar dos copias sin llevar un historial de la transacción: la más
  * reciente manda.
  */
-function pdfPoliza(t, { partida, centroCosto, razonSocial } = {}) {
+function pdfPoliza(t, { partida, centroCosto, razonSocial, idSae } = {}) {
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const M = 14;
   const ancho = doc.internal.pageSize.getWidth() - M * 2;
@@ -15138,14 +15155,17 @@ function pdfPoliza(t, { partida, centroCosto, razonSocial } = {}) {
       /* El SMI es el folio del usuario: informativo, para ligar nuestro id
          con el suyo. El que manda es el folio de arriba. */
       fila("SMI del solicitante", t.smi, "Solicitante", t.solicitante),
-      fila("Proveedor", t.proveedor, "Status", t.status),
+      /* El Id de ASPEL-SAE va junto al nombre: es con el que Contabilidad
+         busca al proveedor, y el nombre en texto no siempre coincide. */
+      fila("Proveedor", t.proveedor, "Id proveedor SAE", idSae),
       fila("Proyecto", t.proyecto, "Zona", t.zona),
       fila("Área", t.area, "Categoría", t.categoria),
       fila("Partida", partida ? `${partida.folio || ""} ${partida.concepto || ""}`.trim() : "",
            "Centro de costo", centroCosto),
       fila("Forma de pago", t.forma_pago, "Método de pago", t.metodo_pago),
       fila("Folio compra SAE", t.folio_compra_sae, "Folio factura", t.folio_factura),
-      fila("Fecha de pago", t.fecha_pago, "Referencia", t.referencia_pago),
+      fila("Status", t.status, "Fecha de pago", t.fecha_pago),
+      [{ content: "Referencia", styles: et }, { content: t.referencia_pago || "—", colSpan: 3 }],
     ],
   });
 
@@ -15242,8 +15262,15 @@ async function generarPolizaTransaccion(transaccionesApi, t, unidad, partidas) {
       .eq("unidad", unidad).eq("nombre", t.proyecto).maybeSingle();
     cc = data?.centro_costo || "";
   }
+  /* El Id de SAE vive en el catálogo de proveedores, no en la transacción. */
+  let idSae = "";
+  if (t.proveedor_id) {
+    const { data } = await supabase.from("proveedores").select("id_sae")
+      .eq("id", t.proveedor_id).maybeSingle();
+    idSae = data?.id_sae || "";
+  }
   await guardarPolizaEnExpediente(transaccionesApi, t, {
-    partida: p, centroCosto: cc, razonSocial: SMI_RAZON_SOCIAL[unidad] || unidad,
+    partida: p, centroCosto: cc, razonSocial: SMI_RAZON_SOCIAL[unidad] || unidad, idSae,
   });
 }
 

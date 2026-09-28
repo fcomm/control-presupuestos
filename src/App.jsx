@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.54.1";
+const APP_VERSION = "2.54.2";
 const CHANGELOG = [
+  { v: "2.54.2", desc: "La leyenda de fechas de las listas del SAT distingue revisar de cambiar: dice que se revisaron y que no hubo publicaciones nuevas desde tal fecha, en vez de dos fechas juntas que se leian como si la descarga no corriera. Y se quita el punto doble al final" },
   { v: "2.54.1", desc: "Los avisos de listas del SAT dicen de cuando son los datos: cuando se revisaron por ultima vez y cuando cambio por ultima vez lo publicado. Sin fecha, \"ningun proveedor aparece\" no decia nada: podia venir de una carga de hace un mes. Si las listas llevan mas de tres dias sin revisarse, el aviso sale en ambar: casi seguro la tarea programada dejo de correr. Aparece en el Dashboard y en Catalogo > Proveedores" },
   { v: "2.54.0", desc: "Cancelar transacciones registradas. Una registrada ya no se elimina: su folio existio y borrarla dejaria un hueco en la numeracion. Se cancela con motivo obligatorio: conserva folio y expediente, queda dicho quien, cuando y por que, y sale del Reporte de Pagos, de Enviar a Pagos, de los totales, del presupuesto usado de su partida y del Dashboard. No se puede marcar como pagada, reportar ni enviar. Su REG se rehace con la leyenda CANCELADA. Si ya se habia enviado a Pagos, la confirmacion avisa que hay que decirselo a Pagos, porque el PDF que tienen la incluye. Se puede reactivar, tambien con motivo, y cada cancelacion y reactivacion queda en un historial. Una pagada no se cancela: primero se regresa a No Pagado. Eliminar queda solo para borradores sin folio. Filtro nuevo Canceladas: ocultarlas, mostrarlas o ver solo esas. Requiere 58-cancelar-transacciones.sql" },
   { v: "2.53.3", desc: "Las transacciones marcadas como registradas pero sin folio se pueden registrar. Eran las importadas de Sheets antes de la migracion 49: esa migracion marco como registrado todo lo que ya existia, pero las importadas nunca tuvieron folio, asi que quedaron atoradas -- la app las daba por registradas y ni el boton ni Registrar les asignaban numero, su REG salia con el id largo y podian irse a Pagos sin folio. Ahora pendiente de registro significa sin registrar O sin folio: el boton de la fila, Registrar N de la seleccion y Enviar a Pagos les asignan folio, conservan su fecha de registro original y rehacen su REG con el folio. Se verifico contra los reportes oficiales que ninguna habia tenido folio antes" },
@@ -869,7 +870,7 @@ function LeyendaFechasSat({ listasSat }) {
         `${x.lista}${x.supuesto ? " · " + x.supuesto : ""}: ${x.filas ?? "?"} RFC, revisada ${formatFechaHora(x.revisado_en)}, cambió ${formatFechaHora(x.actualizado_en)}`).join("\n")}>
       {f.vieja
         ? `Ojo: las listas no se revisan desde el ${formatFechaHora(f.revisado)}; revisa la tarea programada.`
-        : `Listas revisadas el ${formatFechaHora(f.revisado)} · última publicación cargada: ${formatFechaHora(f.actualizado)}.`}
+        : `Listas revisadas el ${formatFechaHora(f.revisado)}; el SAT no ha publicado cambios desde el ${formatFechaHora(f.actualizado)}`}
     </span>
   );
 }

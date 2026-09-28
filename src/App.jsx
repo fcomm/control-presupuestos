@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.56.0";
+const APP_VERSION = "2.56.1";
 const CHANGELOG = [
+  { v: "2.56.1", desc: "Presupuesto vs. ejercido se simplifica a una sola tabla, un renglon por partida, con las columnas Estimada, Partida Presupuestal, Real, Desviacion $ y Desviacion %, y renglon de total. Filtro por area para la platica con cada una, ordenada de mayor a menor desviacion, rojo lo gastado de mas y verde lo que sobro. Se quitan las barras, el semaforo y las tarjetas. PDF y Excel con el mismo formato" },
   { v: "2.56.0", desc: "Tab nuevo en Reportes a Direccion: Presupuesto vs. ejercido. Compara el presupuesto mensual que se envio a Direccion -- la version congelada, no las partidas de hoy, para que un monto subido despues no esconda la desviacion -- contra lo ejercido: transacciones vinculadas sin canceladas, o solo lo pagado con la casilla. Totales arriba; barras por area ordenadas por desviacion, donde el marco es lo presupuestado, verde lo ejercido y rojo lo que se paso; y la tabla de partidas con semaforo: excedida (mas de 110 %), subejercida (menos de 50 %), sin ejercer, en rango, y no presupuestado, que es gasto del mes en partidas que no iban en la version enviada o sin partida. Filtro por area para la platica con cada una, y PDF de lo que se ve. Avisa si el mes aun no termina" },
   { v: "2.55.1", desc: "El seguimiento del reporte semanal habla de lo ejercido: Sin pagar pasa a No ejercido, que es la pregunta que responde. Boton Generar PDF, para entregarlo: totales por estado arriba, el detalle con el estado de cada transaccion en su color, lo pagado sin reportar al final, y la fecha y hora en que se genero, porque el estado cambia conforme se paga y una copia sin fecha diria otra cosa sin que nadie lo note" },
   { v: "2.55.0", desc: "Seguimiento de pagos del reporte semanal a Direccion, en Reportes a Direccion > Transacciones semanales. Toma una version enviada y compara cada transaccion que llevaba contra su estado de hoy: pagada, sin pagar, cancelada o eliminada, con totales por moneda. Marca cuando el importe cambio despues de enviarse, porque entonces lo pagado no es lo que se reporto. Agrega aparte lo que se pago en esa semana sin haberse reportado, que es la otra mitad de la pregunta. Descarga a Excel con las dos hojas. Funciona con cualquier version ya enviada, porque el reporte congelo que transacciones llevaba" },
@@ -11444,54 +11445,17 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
    PRESUPUESTO REPORTADO VS. EJERCIDO
 ---------------------------------------------------------------------- */
 
-/* Semáforo de una partida. Los cortes están pensados para la plática con el
-   área: rojo es lo que hay que explicar (se gastó más de lo planeado), ámbar
-   lo que se planeó y casi no se usó (dinero apartado que no se necesitaba), y
-   gris lo que ni se tocó. Dentro de ±10 % se considera en rango. */
-function estadoPartidaComparativo(pres, ejer) {
-  if (!pres) return ejer ? "No presupuestado" : "En rango";
-  const pct = (ejer / pres) * 100;
-  if (pct > 110) return "Excedida";
-  if (ejer === 0) return "Sin ejercer";
-  if (pct < 50) return "Subejercida";
-  return "En rango";
-}
-const COLOR_COMPARATIVO = {
-  "Excedida": T.red, "No presupuestado": T.red, "Subejercida": T.amber,
-  "Sin ejercer": T.textFaint, "En rango": T.teal,
-};
-const RGB_COMPARATIVO = {
-  "Excedida": [192, 72, 63], "No presupuestado": [192, 72, 63], "Subejercida": [184, 121, 28],
-  "Sin ejercer": [139, 153, 166], "En rango": [30, 143, 115],
-};
-const ORDEN_COMPARATIVO = ["Excedida", "No presupuestado", "Subejercida", "Sin ejercer", "En rango"];
-
-/* Barra horizontal: lo presupuestado es el 100 %; lo ejercido llena y, si se
-   pasa, el excedente se ve en rojo más allá de la marca. Se lee de un vistazo
-   sin comparar dos cifras. */
-function BarraEjercido({ pres, ejer }) {
-  const escala = Math.max(pres, ejer) || 1;
-  const wPres = (pres / escala) * 100, wEjer = (Math.min(ejer, pres) / escala) * 100;
-  const wExc = ejer > pres ? ((ejer - pres) / escala) * 100 : 0;
-  return (
-    <div style={{ position: "relative", height: 10, background: T.panelAlt, borderRadius: 5, minWidth: 120 }}>
-      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${wPres}%`, border: `1px solid ${T.border}`, borderRadius: 5, boxSizing: "border-box" }} />
-      <div style={{ position: "absolute", left: 0, top: 0, bottom: 0, width: `${wEjer}%`, background: T.teal, borderRadius: 5 }} />
-      {wExc > 0 && <div style={{ position: "absolute", left: `${wPres}%`, top: 0, bottom: 0, width: `${wExc}%`, background: T.red, borderRadius: "0 5px 5px 0" }} />}
-    </div>
-  );
-}
-
 /**
  * Lo que se le reportó a Dirección como presupuesto del mes contra cómo
- * terminó el gasto, para platicar con cada área dónde se quedó mal.
+ * terminó el gasto: una tabla simple, un renglón por partida, para platicar
+ * con cada área dónde se quedó mal.
  *
- * El presupuesto sale de la versión ENVIADA —congelada—, no de las partidas
- * de hoy: si alguien subió el monto de una partida después, compararla contra
- * el monto nuevo escondería justo la desviación que se quiere ver.
+ * La Estimada sale de la versión ENVIADA —congelada—, no de las partidas de
+ * hoy: si alguien subió el monto de una partida después, compararla contra el
+ * monto nuevo escondería justo la desviación que se quiere ver.
  *
- * Ejercido = transacciones vinculadas a la partida, sin canceladas. Con
- * "Solo pagado" se cuentan únicamente las marcadas como Pagado.
+ * Real = transacciones vinculadas a la partida, sin canceladas. Con "Solo lo
+ * pagado" se cuentan únicamente las marcadas como Pagado.
  */
 function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   const versionesPres = reportes.filter((r) => r.tipo === "presupuesto");
@@ -11509,7 +11473,6 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   const [moneda, setMoneda] = useState("MXP");
   const [soloPagado, setSoloPagado] = useState(false);
   const [area, setArea] = useState("");
-  const [estadoFiltro, setEstadoFiltro] = useState("");
 
   useEffect(() => {
     if (!rep) { setDetalle(null); return; }
@@ -11528,224 +11491,193 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   const [mesPer, anioPer] = per.split(" ");
   const cuenta = (t) => !t.cancelada_en && (!soloPagado || t.status === "Pagado");
   const monedaDe = (x) => ((x || "MXP") === "USD" ? "USD" : "MXP");
-  const txDePartida = (id) => transacciones.filter((t) => String(t.partida_id) === String(id) && cuenta(t));
-
-  // Partidas reportadas, con su ejercido de hoy.
-  const reportadas = (detalle || []).map((d) => {
-    const txs = txDePartida(d.origen_id);
-    const ejer = txs.reduce((a, t) => a + (Number(t.importe) || 0), 0);
-    const pres = Number(d.importe) || 0;
+  const txDe = (id) => transacciones.filter((t) => String(t.partida_id) === String(id) && cuenta(t));
+  const areaDe = (congelada, txs) => {
     /* El área se congeló al enviar, cuando la partida casi nunca tenía
-       transacciones todavía: muchas quedaron "Sin área". En ese caso se toma
-       la más frecuente entre sus transacciones de hoy, que es quién la ejerció. */
-    let areaP = d.area && d.area !== "Sin área" ? d.area : "";
-    if (!areaP) {
-      const c = {};
-      txs.forEach((t) => { if (t.area) c[t.area] = (c[t.area] || 0) + 1; });
-      areaP = Object.entries(c).sort((a, b) => b[1] - a[1])[0]?.[0] || "Sin área";
-    }
-    return { clave: `r-${d.id || d.origen_id}`, area: areaP, folio: d.folio, concepto: d.concepto,
-             categoria: d.categoria, moneda: monedaDe(d.moneda), pres, ejer, txs,
-             estado: estadoPartidaComparativo(pres, ejer) };
-  });
-  const idsReportados = new Set((detalle || []).map((d) => String(d.origen_id)));
-
-  /* Lo que se gastó en el mes fuera de lo reportado: partidas del mes creadas
-     o no incluidas en la versión enviada, y transacciones del mes sin
-     partida. Es gasto que Dirección no vio planeado. */
-  const partidasFuera = partidas.filter((p) => p.unidad === unidad && p.mes === mesPer
-    && String(p.anio) === String(anioPer) && !idsReportados.has(String(p.id)));
-  const noPres = partidasFuera.map((p) => {
-    const txs = txDePartida(p.id);
-    return { clave: `p-${p.id}`, area: txs.find((t) => t.area)?.area || "Sin área", folio: p.folio, concepto: p.concepto,
-             categoria: p.categoria, moneda: monedaDe(p.moneda), pres: 0,
-             ejer: txs.reduce((a, t) => a + (Number(t.importe) || 0), 0), txs, estado: "No presupuestado" };
-  }).filter((x) => x.ejer > 0);
-  const idxMes = MESES.indexOf(mesPer) + 1;
-  const prefijoMes = `${anioPer}-${String(idxMes).padStart(2, "0")}`;
-  const sinPartida = transacciones.filter((t) => t.unidad_detectada === unidad && !t.partida_id && cuenta(t)
-    && String(t.dia || "").startsWith(prefijoMes));
-  sinPartida.forEach((t) => noPres.push({
-    clave: `t-${t.id}`, area: t.area || "Sin área", folio: t.folio_transaccion || "", concepto: `${t.concepto_detallado || t.proveedor || "—"} (sin partida)`,
-    categoria: t.categoria, moneda: monedaDe(t.moneda), pres: 0, ejer: Number(t.importe) || 0, txs: [t], estado: "No presupuestado",
-  }));
-
-  const todas = [...reportadas, ...noPres].filter((x) => x.moneda === moneda);
-  const areas = [...new Set(todas.map((x) => x.area))].sort();
-  const enArea = todas.filter((x) => !area || x.area === area);
-  const visibles = enArea.filter((x) => !estadoFiltro || x.estado === estadoFiltro)
-    .sort((a, b) => ORDEN_COMPARATIVO.indexOf(a.estado) - ORDEN_COMPARATIVO.indexOf(b.estado)
-      || Math.abs(b.ejer - b.pres) - Math.abs(a.ejer - a.pres));
-
-  const tot = (l) => ({ pres: l.reduce((a, x) => a + x.pres, 0), ejer: l.reduce((a, x) => a + x.ejer, 0) });
-  const T0 = tot(enArea);
-  const pct = (e, p) => (p ? `${Math.round((e / p) * 100)}%` : "—");
-  const m = (v) => money(v, moneda);
-
-  // Por área: dónde se concentra la desviación. Primero la mayor.
-  const porArea = areas.map((a) => {
-    const l = todas.filter((x) => x.area === a);
-    const t = tot(l);
-    return { area: a, ...t, dif: t.ejer - t.pres,
-             malas: l.filter((x) => x.estado === "Excedida" || x.estado === "No presupuestado").length };
-  }).sort((a, b) => Math.abs(b.dif) - Math.abs(a.dif));
-
-  const hoy = new Date();
-  const finMes = new Date(Number(anioPer), idxMes, 0, 23, 59);
-  const mesAbierto = hoy < finMes;
-
-  const exportarPDF = () => {
-    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
-    const M = 32;
-    doc.setFontSize(15).setFont(undefined, "bold").setTextColor(35, 42, 49);
-    doc.text(`Presupuesto vs. ejercido — ${unidad} ${per}${area ? ` — ${area}` : ""}`, M, 38);
-    doc.setFontSize(9.5).setFont(undefined, "normal").setTextColor(107, 119, 133);
-    doc.text(`Presupuesto: versión ${rep.version} enviada el ${new Date(rep.enviado_en).toLocaleDateString("es-MX")}   ·   `
-      + `ejercido ${soloPagado ? "(solo pagado)" : "(transacciones vinculadas, sin canceladas)"} al ${formatFechaHora(new Date().toISOString())}   ·   ${moneda}`, M, 54);
-    doc.setFontSize(12).setFont(undefined, "bold").setTextColor(35, 42, 49);
-    doc.text(`Presupuestado ${m(T0.pres)}    Ejercido ${m(T0.ejer)} (${pct(T0.ejer, T0.pres)})    Diferencia ${m(T0.ejer - T0.pres)}`, M, 76);
-    doc.setFont(undefined, "normal");
-    if (!area) {
-      autoTable(doc, {
-        startY: 88,
-        head: [["Área", "Presupuestado", "Ejercido", "%", "Diferencia", "Partidas excedidas o no presupuestadas"]],
-        body: porArea.map((a) => [a.area, m(a.pres), m(a.ejer), pct(a.ejer, a.pres), m(a.dif), String(a.malas || "")]),
-        styles: { fontSize: 8, cellPadding: 3.5 }, headStyles: { fillColor: [62, 92, 118], textColor: 255 },
-        columnStyles: { 1: { halign: "right" }, 2: { halign: "right" }, 3: { halign: "right" }, 4: { halign: "right" }, 5: { halign: "center" } },
-        margin: { left: M, right: M },
-      });
-    }
-    autoTable(doc, {
-      startY: area ? 88 : doc.lastAutoTable.finalY + 16,
-      head: [["Estado", "Área", "Folio", "Concepto", "Presupuestado", "Ejercido", "%", "Diferencia"]],
-      body: visibles.map((x) => [x.estado, x.area, x.folio || "", x.concepto || "", m(x.pres), m(x.ejer), pct(x.ejer, x.pres), m(x.ejer - x.pres)]),
-      styles: { fontSize: 7.5, cellPadding: 3 }, headStyles: { fillColor: [62, 92, 118], textColor: 255 },
-      columnStyles: { 0: { cellWidth: 78 }, 3: { halign: "left" }, 4: { halign: "right" }, 5: { halign: "right" }, 6: { halign: "right" }, 7: { halign: "right" } },
-      didParseCell: (d) => { if (d.section === "body" && d.column.index === 0) d.cell.styles.textColor = RGB_COMPARATIVO[visibles[d.row.index]?.estado]; },
-      margin: { left: M, right: M },
-    });
-    doc.save(`Presupuesto vs ejercido ${unidad} ${per}${area ? " " + area : ""}.pdf`);
+       transacciones: muchas quedaron "Sin área". Entonces se toma la más
+       frecuente entre sus transacciones de hoy, que es quién la ejerció. */
+    if (congelada && congelada !== "Sin área") return congelada;
+    const c = {};
+    txs.forEach((t) => { if (t.area) c[t.area] = (c[t.area] || 0) + 1; });
+    return Object.entries(c).sort((a, b) => b[1] - a[1])[0]?.[0] || "Sin área";
   };
 
+  const renglones = (detalle || []).map((d) => {
+    const txs = txDe(d.origen_id);
+    return { clave: `r-${d.id || d.origen_id}`, area: areaDe(d.area, txs), folio: d.folio,
+             partida: d.concepto || "—", moneda: monedaDe(d.moneda),
+             estimada: Number(d.importe) || 0, real: txs.reduce((a, t) => a + (Number(t.importe) || 0), 0), txs };
+  });
+
+  /* Gasto del mes que no iba en la versión enviada: partidas agregadas
+     después y transacciones sin partida. Entra con Estimada en cero, que es
+     exactamente lo que fue: no estaba planeado. */
+  const ids = new Set((detalle || []).map((d) => String(d.origen_id)));
+  partidas.filter((p) => p.unidad === unidad && p.mes === mesPer && String(p.anio) === String(anioPer) && !ids.has(String(p.id)))
+    .forEach((p) => {
+      const txs = txDe(p.id);
+      const real = txs.reduce((a, t) => a + (Number(t.importe) || 0), 0);
+      if (real) renglones.push({ clave: `p-${p.id}`, area: areaDe("", txs), folio: p.folio,
+        partida: `${p.concepto || "—"} (no presupuestada)`, moneda: monedaDe(p.moneda), estimada: 0, real, txs });
+    });
+  const prefijoMes = `${anioPer}-${String(MESES.indexOf(mesPer) + 1).padStart(2, "0")}`;
+  transacciones.filter((t) => t.unidad_detectada === unidad && !t.partida_id && cuenta(t) && String(t.dia || "").startsWith(prefijoMes))
+    .forEach((t) => renglones.push({ clave: `t-${t.id}`, area: t.area || "Sin área", folio: t.folio_transaccion || "",
+      partida: `${t.concepto_detallado || t.proveedor || "—"} (sin partida)`, moneda: monedaDe(t.moneda),
+      estimada: 0, real: Number(t.importe) || 0, txs: [t] }));
+
+  const deMoneda = renglones.filter((r) => r.moneda === moneda);
+  const areas = [...new Set(deMoneda.map((r) => r.area))].sort();
+  // Primero la desviación más grande: es lo que hay que platicar.
+  const filas = deMoneda.filter((r) => !area || r.area === area)
+    .map((r) => ({ ...r, dif: r.real - r.estimada }))
+    .sort((a, b) => b.dif - a.dif);
+  const tot = filas.reduce((a, r) => ({ estimada: a.estimada + r.estimada, real: a.real + r.real }), { estimada: 0, real: 0 });
+  const pct = (dif, est) => (est ? `${((dif / est) * 100).toFixed(1)}%` : "—");
+  const m = (v) => money(v, moneda);
+  const colorDif = (d) => (d > 0.005 ? T.red : d < -0.005 ? T.teal : T.textDim);
+  const titulo = `Presupuesto vs. real — ${unidad} ${per}${area ? ` — ${area}` : ""}`;
+  const mesAbierto = new Date() < new Date(Number(anioPer), MESES.indexOf(mesPer) + 1, 0, 23, 59);
+
+  const encabezado = ["Estimada", "Partida Presupuestal", "Real", "Desviación $", "Desviación %"];
+  const valores = (r) => [r.estimada, r.partida, r.real, r.dif, r.estimada ? r.dif / r.estimada : null];
+
+  const exportarPDF = () => {
+    const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
+    const M = 36;
+    doc.setFontSize(14).setFont(undefined, "bold").setTextColor(35, 42, 49);
+    doc.text(titulo, M, 40);
+    doc.setFontSize(9).setFont(undefined, "normal").setTextColor(107, 119, 133);
+    doc.text(`Estimada: versión ${rep.version} enviada el ${new Date(rep.enviado_en).toLocaleDateString("es-MX")}   ·   `
+      + `Real ${soloPagado ? "(solo pagado)" : "(transacciones vinculadas, sin canceladas)"} al ${formatFechaHora(new Date().toISOString())}   ·   ${moneda}`, M, 56);
+    autoTable(doc, {
+      startY: 70,
+      head: [encabezado],
+      body: filas.map((r) => [m(r.estimada), `${r.partida}${area ? "" : `\n${r.area}`}`, m(r.real), m(r.dif), pct(r.dif, r.estimada)]),
+      foot: [[m(tot.estimada), "TOTAL", m(tot.real), m(tot.real - tot.estimada), pct(tot.real - tot.estimada, tot.estimada)]],
+      styles: { fontSize: 8.5, cellPadding: 4, valign: "middle" },
+      headStyles: { fillColor: [210, 214, 219], textColor: [35, 42, 49], halign: "center" },
+      footStyles: { fillColor: [236, 238, 241], textColor: [35, 42, 49], fontStyle: "bold" },
+      columnStyles: { 0: { halign: "right", cellWidth: 88 }, 1: { halign: "center" }, 2: { halign: "right", cellWidth: 88 },
+                      3: { halign: "right", cellWidth: 88 }, 4: { halign: "right", cellWidth: 64 } },
+      didParseCell: (d) => {
+        if (d.section === "body" && (d.column.index === 3 || d.column.index === 4)) {
+          const dif = filas[d.row.index]?.dif || 0;
+          if (dif > 0.005) d.cell.styles.textColor = [192, 72, 63];
+          else if (dif < -0.005) d.cell.styles.textColor = [30, 143, 115];
+        }
+      },
+      margin: { left: M, right: M },
+    });
+    doc.save(`${titulo}.pdf`.replace(/[\\/:*?"<>|]/g, "-"));
+  };
+
+  const exportarExcel = async () => {
+    const wbx = new ExcelJS.Workbook();
+    const ws = wbx.addWorksheet("Presupuesto vs real");
+    ws.columns = [{ width: 16 }, { width: 50 }, { width: 16 }, { width: 16 }, { width: 14 }, { width: 22 }];
+    const t = ws.addRow([titulo]); t.font = { bold: true, size: 13 };
+    ws.addRow([`Estimada: versión ${rep.version} enviada el ${new Date(rep.enviado_en).toLocaleDateString("es-MX")} · Real al ${formatFechaHora(new Date().toISOString())} · ${moneda}`]);
+    ws.addRow([]);
+    const hr = ws.addRow([...encabezado, "Área"]);
+    formatearHojaDatos(ws, hr, 6);
+    const fmtNum = '"$"#,##0.00';
+    filas.forEach((r) => {
+      const row = ws.addRow([...valores(r), r.area]);
+      [1, 3, 4].forEach((i) => { row.getCell(i).numFmt = fmtNum; });
+      row.getCell(5).numFmt = "0.0%";
+      row.getCell(2).alignment = { horizontal: "center", wrapText: true };
+    });
+    const tr = ws.addRow([tot.estimada, "TOTAL", tot.real, tot.real - tot.estimada, tot.estimada ? (tot.real - tot.estimada) / tot.estimada : null]);
+    tr.font = { bold: true };
+    [1, 3, 4].forEach((i) => { tr.getCell(i).numFmt = fmtNum; });
+    tr.getCell(5).numFmt = "0.0%";
+    const buf = await wbx.xlsx.writeBuffer();
+    descargarBlob(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
+      `${titulo}.xlsx`.replace(/[\\/:*?"<>|]/g, "-"));
+  };
+
+  const th = { ...thStyle, textAlign: "center", background: "#D2D6DB", color: T.text, fontSize: 12, textTransform: "none", letterSpacing: 0, padding: "10px" };
+  const td = { ...tdStyle, fontSize: 13, background: "#EEF0F2" };
+  const num = { ...td, fontFamily: T.fontMono, textAlign: "right", whiteSpace: "nowrap" };
+
   return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <Panel
-        title={`Presupuesto vs. ejercido — ${unidad}`}
-        subtitle="Lo que se reportó a Dirección como presupuesto del mes contra cómo terminó el gasto. El presupuesto es el de la versión enviada, no el de hoy."
-        right={<Button variant="ghost" onClick={exportarPDF} disabled={!detalle}>Generar PDF</Button>}
-      >
-        <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
-          <Field label="Mes"><Select value={per} onChange={(e) => { setPeriodo(e.target.value); setRepId(""); }}>
-            {periodos.map((p) => <option key={p}>{p}</option>)}</Select></Field>
-          {versiones.length > 1 && (
-            <Field label="Versión"><Select value={rep?.id || ""} onChange={(e) => setRepId(e.target.value)}>
-              {versiones.map((r) => <option key={r.id} value={r.id}>v{r.version} — {new Date(r.enviado_en).toLocaleDateString("es-MX")}</option>)}
-            </Select></Field>
-          )}
-          <Field label="Moneda"><Select value={moneda} onChange={(e) => setMoneda(e.target.value)}>
-            <option>MXP</option><option>USD</option></Select></Field>
-          <Field label="Área"><Select value={area} onChange={(e) => setArea(e.target.value)} style={{ minWidth: 180 }}>
-            <option value="">Todas las áreas</option>{areas.map((a) => <option key={a}>{a}</option>)}</Select></Field>
-          <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: T.textDim, paddingBottom: 9, cursor: "pointer" }}>
-            <input type="checkbox" checked={soloPagado} onChange={(e) => setSoloPagado(e.target.checked)} />
-            Contar solo lo pagado
-          </label>
+    <Panel
+      title={titulo}
+      subtitle="La Estimada es la de la versión enviada a Dirección, no la de hoy. Real: transacciones vinculadas, sin canceladas."
+      right={
+        <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="ghost" onClick={exportarPDF} disabled={!detalle}>Generar PDF</Button>
+          <Button variant="ghost" onClick={exportarExcel} disabled={!detalle}>Excel</Button>
         </div>
-
-        {mesAbierto && (
-          <div style={{ fontSize: 12, color: T.amberDim, marginBottom: 12 }}>
-            {per} todavía no termina: lo subejercido puede ser solo gasto que aún no llega.
-          </div>
+      }
+    >
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
+        <Field label="Mes"><Select value={per} onChange={(e) => { setPeriodo(e.target.value); setRepId(""); }}>
+          {periodos.map((p) => <option key={p}>{p}</option>)}</Select></Field>
+        {versiones.length > 1 && (
+          <Field label="Versión"><Select value={rep?.id || ""} onChange={(e) => setRepId(e.target.value)}>
+            {versiones.map((r) => <option key={r.id} value={r.id}>v{r.version} — {new Date(r.enviado_en).toLocaleDateString("es-MX")}</option>)}
+          </Select></Field>
         )}
-        {error && <div style={{ fontSize: 12, color: T.red }}>No se pudo leer el presupuesto enviado: {error}</div>}
-        {!detalle && !error && <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>}
+        <Field label="Área"><Select value={area} onChange={(e) => setArea(e.target.value)} style={{ minWidth: 200 }}>
+          <option value="">Todas las áreas</option>{areas.map((a) => <option key={a}>{a}</option>)}</Select></Field>
+        <Field label="Moneda"><Select value={moneda} onChange={(e) => setMoneda(e.target.value)}>
+          <option>MXP</option><option>USD</option></Select></Field>
+        <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: T.textDim, paddingBottom: 9, cursor: "pointer" }}>
+          <input type="checkbox" checked={soloPagado} onChange={(e) => setSoloPagado(e.target.checked)} />
+          Solo lo pagado
+        </label>
+      </div>
 
-        {detalle && (
-          <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-            <KpiCard label={`Presupuestado${area ? " · " + area : ""}`} value={m(T0.pres)} />
-            <KpiCard label="Ejercido" value={m(T0.ejer)} accent={T0.ejer > T0.pres ? T.red : T.teal} />
-            <KpiCard label="Diferencia" value={m(T0.ejer - T0.pres)} accent={T0.ejer > T0.pres ? T.red : T.textDim} />
-            <KpiCard label="% ejercido" value={pct(T0.ejer, T0.pres)} accent={T0.ejer > T0.pres * 1.1 ? T.red : T.accent} />
-          </div>
-        )}
-      </Panel>
-
-      {detalle && !area && porArea.length > 0 && (
-        <Panel title="Por área" subtitle="Ordenadas por desviación. Haz clic en un área para ver solo sus partidas.">
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {porArea.map((a) => (
-              <div key={a.area} onClick={() => setArea(a.area)} style={{ display: "grid", gridTemplateColumns: "190px 1fr 250px", gap: 14, alignItems: "center", cursor: "pointer", padding: "4px 0" }}>
-                <div style={{ fontSize: 12.5, fontWeight: 600 }}>
-                  {a.area}
-                  {a.malas > 0 && <span style={{ marginLeft: 6 }}><Pill tone="red">{a.malas}</Pill></span>}
-                </div>
-                <BarraEjercido pres={a.pres} ejer={a.ejer} />
-                <div style={{ fontSize: 11.5, fontFamily: T.fontMono, textAlign: "right", color: a.dif > 0.01 ? T.red : T.textDim }}>
-                  {m(a.ejer)} de {m(a.pres)} · {pct(a.ejer, a.pres)}
-                </div>
-              </div>
-            ))}
-          </div>
-          <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10 }}>
-            El marco es lo presupuestado; verde lo ejercido dentro de él; rojo lo que lo rebasa.
-          </div>
-        </Panel>
+      {mesAbierto && (
+        <div style={{ fontSize: 12, color: T.amberDim, marginBottom: 12 }}>
+          {per} todavía no termina: lo que va por debajo puede ser gasto que aún no llega.
+        </div>
       )}
+      {error && <div style={{ fontSize: 12, color: T.red }}>No se pudo leer el presupuesto enviado: {error}</div>}
+      {!detalle && !error && <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>}
 
       {detalle && (
-        <Panel title={area ? `Partidas de ${area}` : "Partidas"}
-          subtitle="Primero lo que hay que platicar: excedidas y gasto no presupuestado."
-          right={area ? <Button variant="ghost" onClick={() => setArea("")}>Ver todas las áreas</Button> : null}>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-            {ORDEN_COMPARATIVO.map((e) => {
-              const n = enArea.filter((x) => x.estado === e).length;
-              if (!n) return null;
-              const on = estadoFiltro === e;
-              return (
-                <button key={e} type="button" onClick={() => setEstadoFiltro(on ? "" : e)}
-                  style={{ padding: "5px 12px", borderRadius: 14, cursor: "pointer", fontFamily: T.fontUI, fontSize: 12, fontWeight: 600,
-                           border: `1px solid ${COLOR_COMPARATIVO[e]}`, background: on ? COLOR_COMPARATIVO[e] : T.panel,
-                           color: on ? "#FFFFFF" : COLOR_COMPARATIVO[e] }}>
-                  {e} {n}
-                </button>
-              );
-            })}
-          </div>
-          <div style={{ overflowX: "auto" }}>
-            <table style={tableStyle}>
-              <thead><tr>{["", "Área", "Partida", "Presupuestado", "Ejercido", "", "Diferencia"].map((h, i) => <th key={i} style={thStyle}>{h}</th>)}</tr></thead>
-              <tbody>
-                {visibles.map((x) => (
-                  <tr key={x.clave} title={x.txs.map((t) => `${t.dia || ""} ${t.proveedor || ""} ${money(t.importe, t.moneda)}${t.status === "Pagado" ? "" : " (sin pagar)"}`).join("\n") || "Sin transacciones"}>
-                    <td style={{ ...tdStyle, width: 110 }}><span style={{ color: COLOR_COMPARATIVO[x.estado], fontWeight: 700, fontSize: 11.5 }}>● {x.estado}</span></td>
-                    <td style={tdStyle}>{x.area}</td>
-                    <td style={tdStyle}>
-                      <div>{x.concepto || "—"}</div>
-                      <div style={{ fontSize: 10.5, color: T.textFaint, fontFamily: T.fontMono }}>{x.folio}{x.categoria ? ` · ${x.categoria}` : ""}</div>
-                    </td>
-                    <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right" }}>{x.pres ? m(x.pres) : "—"}</td>
-                    <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right" }}>{m(x.ejer)}</td>
-                    <td style={{ ...tdStyle, width: 170 }}>
-                      <BarraEjercido pres={x.pres} ejer={x.ejer} />
-                      <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 2 }}>{pct(x.ejer, x.pres)}</div>
-                    </td>
-                    <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right", color: x.ejer - x.pres > 0.01 ? T.red : T.textDim }}>
-                      {x.ejer - x.pres > 0 ? "+" : ""}{m(x.ejer - x.pres)}
-                    </td>
-                  </tr>
-                ))}
-                {!visibles.length && <tr><td colSpan={7} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Nada en {moneda} con estos filtros</td></tr>}
-              </tbody>
-            </table>
-          </div>
-          <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10, lineHeight: 1.5 }}>
-            Excedida: más de 110 % de lo presupuestado. Subejercida: menos de 50 %. En rango: entre una y otra.
-            No presupuestado: gasto del mes en partidas que no iban en la versión enviada, o sin partida.
-            Al pasar el mouse sobre una partida se ven sus transacciones.
-          </div>
-        </Panel>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ ...tableStyle, border: `1px solid ${T.border}` }}>
+            <thead><tr>{encabezado.map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+            <tbody>
+              {filas.map((r) => (
+                <tr key={r.clave} title={r.txs.map((t) => `${t.dia || ""}  ${t.proveedor || ""}  ${money(t.importe, t.moneda)}${t.status === "Pagado" ? "" : " (sin pagar)"}`).join("\n") || "Sin transacciones"}>
+                  <td style={num}>{m(r.estimada)}</td>
+                  <td style={{ ...td, textAlign: "center" }}>
+                    {r.partida}
+                    <div style={{ fontSize: 10.5, color: T.textFaint, fontFamily: T.fontMono }}>
+                      {[r.folio, area ? "" : r.area].filter(Boolean).join(" · ")}
+                    </div>
+                  </td>
+                  <td style={num}>{m(r.real)}</td>
+                  <td style={{ ...num, color: colorDif(r.dif) }}>{m(r.dif)}</td>
+                  <td style={{ ...num, color: colorDif(r.dif) }}>{pct(r.dif, r.estimada)}</td>
+                </tr>
+              ))}
+              {!filas.length && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: T.textFaint }}>Nada en {moneda} con estos filtros</td></tr>}
+            </tbody>
+            {filas.length > 0 && (
+              <tfoot>
+                <tr>
+                  <td style={{ ...num, fontWeight: 700, background: "#D2D6DB" }}>{m(tot.estimada)}</td>
+                  <td style={{ ...td, textAlign: "center", fontWeight: 700, background: "#D2D6DB" }}>TOTAL</td>
+                  <td style={{ ...num, fontWeight: 700, background: "#D2D6DB" }}>{m(tot.real)}</td>
+                  <td style={{ ...num, fontWeight: 700, background: "#D2D6DB", color: colorDif(tot.real - tot.estimada) }}>{m(tot.real - tot.estimada)}</td>
+                  <td style={{ ...num, fontWeight: 700, background: "#D2D6DB", color: colorDif(tot.real - tot.estimada) }}>{pct(tot.real - tot.estimada, tot.estimada)}</td>
+                </tr>
+              </tfoot>
+            )}
+          </table>
+        </div>
       )}
-    </div>
+      <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10, lineHeight: 1.5 }}>
+        Desviación = Real − Estimada: en rojo lo que se gastó de más, en verde lo que sobró. Ordenadas de mayor a menor desviación.
+        Las no presupuestadas entran con Estimada en cero. Al pasar el mouse sobre una partida se ven sus transacciones.
+      </div>
+    </Panel>
   );
 }
 

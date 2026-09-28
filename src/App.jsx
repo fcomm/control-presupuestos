@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.55.0";
+const APP_VERSION = "2.55.1";
 const CHANGELOG = [
+  { v: "2.55.1", desc: "El seguimiento del reporte semanal habla de lo ejercido: Sin pagar pasa a No ejercido, que es la pregunta que responde. Boton Generar PDF, para entregarlo: totales por estado arriba, el detalle con el estado de cada transaccion en su color, lo pagado sin reportar al final, y la fecha y hora en que se genero, porque el estado cambia conforme se paga y una copia sin fecha diria otra cosa sin que nadie lo note" },
   { v: "2.55.0", desc: "Seguimiento de pagos del reporte semanal a Direccion, en Reportes a Direccion > Transacciones semanales. Toma una version enviada y compara cada transaccion que llevaba contra su estado de hoy: pagada, sin pagar, cancelada o eliminada, con totales por moneda. Marca cuando el importe cambio despues de enviarse, porque entonces lo pagado no es lo que se reporto. Agrega aparte lo que se pago en esa semana sin haberse reportado, que es la otra mitad de la pregunta. Descarga a Excel con las dos hojas. Funciona con cualquier version ya enviada, porque el reporte congelo que transacciones llevaba" },
   { v: "2.54.4", desc: "La edicion masiva de transacciones permite cambiar el Dia de Pago Programado: reprogramar un grupo de pagos a otra fecha es un caso real y hacerlo una por una no tiene sentido. Si alguna de las seleccionadas ya se envio a Pagos, la confirmacion lo dice, porque Pagos la tiene programada con la fecha anterior. El folio no cambia aunque cambie el mes: se asigno al registrar y es la identidad de la transaccion" },
   { v: "2.54.3", desc: "El REG lleva el Id del proveedor en ASPEL-SAE, junto al nombre: es con el que Contabilidad lo busca, y el nombre en texto puede no coincidir con el del catalogo. Se toma del proveedor vinculado; si la transaccion no tiene proveedor del catalogo, sale vacio. Los REG ya generados no cambian hasta que se rehagan" },
@@ -11155,9 +11156,9 @@ const SUBS_CATALOGO = [
 function estadoSeguimiento(t) {
   if (!t) return "Eliminada";
   if (t.cancelada_en) return "Cancelada";
-  return t.status === "Pagado" ? "Pagada" : "Sin pagar";
+  return t.status === "Pagado" ? "Pagada" : "No ejercido";
 }
-const TONO_SEGUIMIENTO = { "Pagada": "teal", "Sin pagar": "amber", "Cancelada": "dim", "Eliminada": "red" };
+const TONO_SEGUIMIENTO = { "Pagada": "teal", "No ejercido": "amber", "Cancelada": "dim", "Eliminada": "red" };
 
 /**
  * Qué se pagó de lo que se le reportó a Dirección en una semana.
@@ -11234,7 +11235,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
     ws.columns = COLS.map((c) => ({ width: c[1] }));
     const t1 = ws.addRow([`Seguimiento de pagos — ${unidad} — ${rangoSemana(rep.periodo_ini, rep.periodo_fin)} — versión ${rep.version}`]);
     t1.font = { bold: true, size: 13 };
-    ws.addRow([`Pagado ${fmt(suma(por("Pagada"), "importeRep"))}   ·   Sin pagar ${fmt(suma(por("Sin pagar"), "importeRep"))}   ·   ${por("Cancelada").length} cancelada(s), ${por("Eliminada").length} eliminada(s)`]);
+    ws.addRow([`Pagado ${fmt(suma(por("Pagada"), "importeRep"))}   ·   No ejercido ${fmt(suma(por("No ejercido"), "importeRep"))}   ·   ${por("Cancelada").length} cancelada(s), ${por("Eliminada").length} eliminada(s)`]);
     ws.addRow([]);
     const hr = ws.addRow(COLS.map((c) => c[0]));
     formatearHojaDatos(ws, hr, COLS.length);
@@ -11261,6 +11262,79 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
       `Seguimiento pagos ${unidad} ${rangoSemana(rep.periodo_ini, rep.periodo_fin)} v${rep.version}.xlsx`);
   };
 
+  /* El PDF es para entregarse: totales arriba, detalle abajo, y la fecha en
+     que se generó, porque el estado cambia conforme se paga y una copia vieja
+     sin fecha diría algo distinto sin que nadie lo note. */
+  const exportarPDF = () => {
+    const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+    const M = 32, A = 792 - M * 2;
+    const rango = rangoSemana(rep.periodo_ini, rep.periodo_fin);
+    doc.setFontSize(15).setFont(undefined, "bold").setTextColor(35, 42, 49);
+    doc.text(`Seguimiento del ejercido — ${unidad} ${rango}`, M, 38);
+    doc.setFontSize(9.5).setFont(undefined, "normal").setTextColor(107, 119, 133);
+    doc.text(`Reporte semanal a Dirección, versión ${rep.version} enviada el ${new Date(rep.enviado_en).toLocaleDateString("es-MX")}`
+      + `   ·   estado al ${formatFechaHora(new Date().toISOString())}`, M, 54);
+
+    const estados = ["Pagada", "No ejercido", "Cancelada", "Eliminada"].filter((e) => por(e).length || e === "Pagada" || e === "No ejercido");
+    const anchoTar = (A - (estados.length - 1) * 10) / estados.length;
+    const color = { "Pagada": [30, 143, 115], "No ejercido": [184, 121, 28], "Cancelada": [107, 119, 133], "Eliminada": [192, 72, 63] };
+    estados.forEach((e, i) => {
+      const x = M + i * (anchoTar + 10), l = por(e);
+      doc.setFillColor(246, 247, 249).rect(x, 66, anchoTar, 46, "F");
+      doc.setFillColor(...color[e]).rect(x, 66, 3, 46, "F");
+      doc.setFontSize(8).setTextColor(107, 119, 133);
+      doc.text(`${e.toUpperCase()} · ${l.length} de ${filas.length}`, x + 10, 80);
+      doc.setFontSize(11).setFont(undefined, "bold").setTextColor(...color[e]);
+      doc.text(doc.splitTextToSize(fmt(suma(l, "importeRep")), anchoTar - 16), x + 10, 97);
+      doc.setFont(undefined, "normal");
+    });
+
+    autoTable(doc, {
+      startY: 126,
+      head: [["Día", "Folio", "Proveedor", "Concepto", "Reportado", "Hoy", "Estado", "Fecha pago"]],
+      body: filas.map((f) => [f.d.dia || "", f.d.folio || "", f.d.proveedor || "", f.d.concepto || "",
+        money(f.importeRep, f.moneda), f.importeHoy === null ? "—" : f.cambioImporte ? money(f.importeHoy, f.moneda) : "igual",
+        f.estado + (f.estado === "Cancelada" && f.t?.motivo_cancelacion ? `\n${f.t.motivo_cancelacion}` : ""),
+        f.t?.fecha_pago || ""]),
+      styles: { fontSize: 7.5, cellPadding: 3.5 },
+      headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
+      columnStyles: { 0: { cellWidth: 52 }, 1: { cellWidth: 70 }, 2: { halign: "left" }, 3: { halign: "left" },
+                      4: { halign: "right", cellWidth: 72 }, 5: { halign: "right", cellWidth: 62 },
+                      6: { cellWidth: 70 }, 7: { cellWidth: 56 } },
+      didParseCell: (d) => {
+        if (d.section === "body" && d.column.index === 6) {
+          const e = filas[d.row.index]?.estado;
+          if (color[e]) d.cell.styles.textColor = color[e];
+        }
+      },
+      margin: { left: M, right: M },
+    });
+
+    if (noReportadas.length) {
+      doc.setFontSize(11).setFont(undefined, "bold").setTextColor(35, 42, 49);
+      doc.text(`Pagadas en la semana sin haberse reportado · ${noReportadas.length}`, M, doc.lastAutoTable.finalY + 26);
+      doc.setFont(undefined, "normal");
+      autoTable(doc, {
+        startY: doc.lastAutoTable.finalY + 34,
+        head: [["Día", "Folio", "Proveedor", "Concepto", "Importe", "Fecha pago"]],
+        body: noReportadas.map((t) => [t.dia, t.folio_transaccion || "", t.proveedor || "", t.concepto_detallado || "",
+          money(t.importe, t.moneda), t.fecha_pago || ""]),
+        styles: { fontSize: 7.5, cellPadding: 3.5 },
+        headStyles: { fillColor: [107, 119, 133], textColor: 255, halign: "center" },
+        columnStyles: { 2: { halign: "left" }, 3: { halign: "left" }, 4: { halign: "right" } },
+        margin: { left: M, right: M },
+      });
+    }
+
+    const paginas = doc.internal.getNumberOfPages();
+    for (let p = 1; p <= paginas; p++) {
+      doc.setPage(p);
+      doc.setFontSize(7.5).setTextColor(139, 153, 166);
+      doc.text(`Página ${p} de ${paginas}`, 792 - M, 600, { align: "right" });
+    }
+    doc.save(`Seguimiento ejercido ${unidad} ${rango} v${rep.version}.pdf`);
+  };
+
   return (
     <Panel
       title="Seguimiento de pagos"
@@ -11274,6 +11348,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
               </Select>
             </Field>
           )}
+          <Button variant="ghost" onClick={exportarPDF} disabled={!detalle}>Generar PDF</Button>
           <Button variant="ghost" onClick={exportar} disabled={!detalle}>Descargar Excel</Button>
         </div>
       }
@@ -11283,7 +11358,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
       : (
         <>
           <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
-            {["Pagada", "Sin pagar", "Cancelada", "Eliminada"].map((e) => {
+            {["Pagada", "No ejercido", "Cancelada", "Eliminada"].map((e) => {
               const l = por(e);
               if (!l.length && (e === "Cancelada" || e === "Eliminada")) return null;
               return (
@@ -11294,7 +11369,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
                     {e} · {l.length} de {filas.length}
                   </div>
                   <div style={{ fontSize: 14, fontFamily: T.fontMono, fontWeight: 600, marginTop: 4,
-                                color: e === "Pagada" ? T.teal : e === "Sin pagar" ? T.amberDim : T.textDim }}>
+                                color: e === "Pagada" ? T.teal : e === "No ejercido" ? T.amberDim : T.textDim }}>
                     {fmt(suma(l, "importeRep"))}
                   </div>
                 </button>

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.57.1";
+const APP_VERSION = "2.57.2";
 const CHANGELOG = [
+  { v: "2.57.2", desc: "El selector de partida gana filtro de Ano y abre en el mes y ano en curso, en vez de mostrar todas las partidas de todos los periodos. Si la transaccion ya tiene partida de otro periodo, abre en el periodo de esa partida, para que la seleccion actual se vea. Con Todos en el ano, los meses se separan por ano: Septiembre 2025 y Septiembre 2026 ya no se mezclan. Si el periodo no tiene partidas, lo dice y ofrece ver todas" },
   { v: "2.57.1", desc: "Presupuesto vs. ejercido: los grupos se contraen y expanden con clic en su titulo, y hay boton Contraer grupos / Expandir grupos. Un grupo contraido conserva su subtotal, asi que se ve cuanto suma sin ver sus partidas. El boton de las transacciones pasa a llamarse Ver / Ocultar transacciones para no confundirse con el de los grupos. PDF y Excel salen tal como se ve" },
   { v: "2.57.0", desc: "Presupuesto vs. ejercido agrupa en niveles, como las otras tablas: hasta tres entre Resultado (sobreejercicio / subejercicio / sin desviacion), Origen, Area y Categoria, cada nivel con su subtotal y cuantas partidas tiene. El agrupamiento se recuerda entre sesiones. Las columnas Estimada, Real y Desviacion $ se ordenan con clic en el encabezado; el orden aplica dentro de cada grupo. PDF y Excel salen con los mismos niveles" },
   { v: "2.56.4", desc: "Presupuesto vs. ejercido gana el cuadro de busqueda, como las otras tablas. Busca en la partida -- concepto, folio, area -- y en sus transacciones: proveedor, concepto, folio y solicitante, porque a una partida se llega tambien por lo que se le cargo. Los totales, el PDF y el Excel respetan la busqueda, y el PDF la menciona" },
@@ -1016,13 +1017,29 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
   const [busqueda, setBusqueda] = useState("");
   const [filtroRubro, setFiltroRubro] = useState("Todos");
   const [filtroMes, setFiltroMes] = useState("Todos");
+  const [filtroAnio, setFiltroAnio] = useState("Todos");
   const seleccionada = partidas.find((p) => p.id === value);
 
+  /* Abre en el mes y año en curso: casi siempre se captura lo de este mes, y
+     con todas las partidas de todos los periodos la correcta se pierde. Si la
+     transacción ya tiene partida de otro periodo, abre en el de esa partida,
+     para que la selección actual se vea. */
+  const abrir = () => {
+    const hoy = new Date();
+    setFiltroAnio(String(seleccionada?.anio || hoy.getFullYear()));
+    setFiltroMes(seleccionada?.mes || MESES[hoy.getMonth()]);
+    setOpen(true);
+  };
+
   const rubrosDisponibles = [...new Set(partidas.map((p) => p.rubro).filter(Boolean))].sort();
-  const mesesDisponibles = MESES.filter((m) => partidas.some((p) => p.mes === m));
+  const aniosDisponibles = [...new Set([...partidas.map((p) => String(p.anio || "")).filter(Boolean),
+    String(new Date().getFullYear())])].sort().reverse();
+  const mesesDisponibles = MESES.filter((m) => partidas.some((p) => p.mes === m
+    && (filtroAnio === "Todos" || String(p.anio) === filtroAnio)));
 
   const filtradas = partidas.filter((p) => {
     if (filtroRubro !== "Todos" && p.rubro !== filtroRubro) return false;
+    if (filtroAnio !== "Todos" && String(p.anio) !== filtroAnio) return false;
     if (filtroMes !== "Todos" && p.mes !== filtroMes) return false;
     if (!busqueda.trim()) return true;
     const q = busqueda.trim().toLowerCase();
@@ -1031,11 +1048,16 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
     return [p.concepto, p.folio, p.proyecto, p.rubro, p.categoria, p.zona]
       .some((v) => (v || "").toLowerCase().includes(q));
   });
-  const meses = MESES.filter((m) => filtradas.some((p) => p.mes === m));
+  /* Grupos por mes Y año: con el año en Todos, septiembre de 2025 y de 2026
+     son grupos distintos. Del más reciente al más antiguo. */
+  const periodos = [...new Set(filtradas.filter((p) => p.mes).map((p) => `${p.anio || ""}|${p.mes}`))]
+    .map((k) => { const [anio, mes] = k.split("|"); return { k, anio, mes }; })
+    .sort((a, b) => (Number(b.anio) - Number(a.anio)) || (MESES.indexOf(a.mes) - MESES.indexOf(b.mes)));
   const sinMes = filtradas.filter((p) => !p.mes);
+  const filtroPeriodoActivo = filtroMes !== "Todos" || filtroAnio !== "Todos";
 
   const elegir = (id) => {
-    setOpen(false); setBusqueda(""); setFiltroRubro("Todos"); setFiltroMes("Todos"); setCreando(false);
+    setOpen(false); setBusqueda(""); setFiltroRubro("Todos"); setCreando(false);
     try { onChange(id); } catch (err) { console.error("Error al elegir partida:", err); }
   };
 
@@ -1130,7 +1152,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
     <>
       <button
         type="button"
-        onClick={() => setOpen(true)}
+        onClick={abrir}
         style={{
           ...inputStyle, width: "100%", textAlign: "left", cursor: "pointer",
           display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8,
@@ -1204,9 +1226,16 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
                   <option>Todos</option>
                   {rubrosDisponibles.map((r) => <option key={r}>{r}</option>)}
                 </Select>
-                <Select value={filtroMes} onChange={(e) => setFiltroMes(e.target.value)} style={{ width: 140 }}>
+                <Select value={filtroMes} onChange={(e) => setFiltroMes(e.target.value)} style={{ width: 130 }} title="Mes">
                   <option>Todos</option>
+                  {/* Si el mes elegido no tiene partidas en el año, se conserva
+                      como opción para no mostrar un valor que el control no tiene. */}
+                  {filtroMes !== "Todos" && !mesesDisponibles.includes(filtroMes) && <option>{filtroMes}</option>}
                   {mesesDisponibles.map((m) => <option key={m}>{m}</option>)}
+                </Select>
+                <Select value={filtroAnio} onChange={(e) => setFiltroAnio(e.target.value)} style={{ width: 90 }} title="Año">
+                  <option>Todos</option>
+                  {aniosDisponibles.map((a) => <option key={a}>{a}</option>)}
                 </Select>
                 <span style={{ fontSize: 11.5, color: T.textFaint, fontFamily: T.fontMono, whiteSpace: "nowrap" }}>
                   {filtradas.length} de {partidas.length}
@@ -1231,17 +1260,28 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
                     — Sin vincular —
                   </button>
                 )}
-                {meses.map((mes) => (
-                  <div key={mes}>
+                {periodos.map(({ k, anio, mes }) => (
+                  <div key={k}>
                     <div style={{ padding: "6px 12px", fontSize: 10.5, fontWeight: 700, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.05em", background: T.panelAlt }}>
-                      {mes}
+                      {mes} {anio}
                     </div>
-                    {filtradas.filter((p) => p.mes === mes).map((p) => FilaPartida(p))}
+                    {filtradas.filter((p) => p.mes === mes && String(p.anio || "") === anio).map((p) => FilaPartida(p))}
                   </div>
                 ))}
                 {sinMes.map((p) => FilaPartida(p))}
                 {!filtradas.length && (
-                  <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>Sin resultados</div>
+                  <div style={{ padding: 16, textAlign: "center", fontSize: 12, color: T.textFaint }}>
+                    {filtroPeriodoActivo ? (
+                      <>
+                        No hay partidas en {filtroMes === "Todos" ? "" : filtroMes + " "}{filtroAnio === "Todos" ? "" : filtroAnio}
+                        {busqueda.trim() ? " con esa búsqueda" : ""}.{" "}
+                        <button type="button" onClick={() => { setFiltroMes("Todos"); setFiltroAnio("Todos"); }}
+                          style={{ background: "none", border: "none", color: T.accent, cursor: "pointer", fontSize: 12, padding: 0 }}>
+                          Ver todos los periodos
+                        </button>
+                      </>
+                    ) : "Sin resultados"}
+                  </div>
                 )}
               </div>
             </>

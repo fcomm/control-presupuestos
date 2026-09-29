@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.56.4";
+const APP_VERSION = "2.57.0";
 const CHANGELOG = [
+  { v: "2.57.0", desc: "Presupuesto vs. ejercido agrupa en niveles, como las otras tablas: hasta tres entre Resultado (sobreejercicio / subejercicio / sin desviacion), Origen, Area y Categoria, cada nivel con su subtotal y cuantas partidas tiene. El agrupamiento se recuerda entre sesiones. Las columnas Estimada, Real y Desviacion $ se ordenan con clic en el encabezado; el orden aplica dentro de cada grupo. PDF y Excel salen con los mismos niveles" },
   { v: "2.56.4", desc: "Presupuesto vs. ejercido gana el cuadro de busqueda, como las otras tablas. Busca en la partida -- concepto, folio, area -- y en sus transacciones: proveedor, concepto, folio y solicitante, porque a una partida se llega tambien por lo que se le cargo. Los totales, el PDF y el Excel respetan la busqueda, y el PDF la menciona" },
   { v: "2.56.3", desc: "En Presupuesto vs. ejercido cada partida con gasto se despliega para ver sus transacciones: dia, folio, proveedor, concepto, importe en la columna Real y si esta pagada. Boton Expandir todo / Contraer todo. El PDF y el Excel incluyen el desglose de las partidas que esten desplegadas, asi se decide en pantalla cuanto detalle llevar a la platica" },
   { v: "2.56.2", desc: "Presupuesto vs. ejercido gana Agrupar por: sin agrupar, origen o area, con subtotal por bloque. Por origen separa el plan enviado de las partidas agregadas en el mes y del gasto sin partida, porque no estaba planeado y se planeo mal son dos platicas distintas. Por area revisa todas las areas de corrido, ordenadas por desviacion. Las partidas agregadas muestran, como referencia, lo que se estimo al crearlas; la desviacion se sigue midiendo contra el plan enviado, en el que no estaban. PDF y Excel salen con el mismo agrupamiento" },
@@ -11447,6 +11448,12 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
 /* ----------------------------------------------------------------------
    PRESUPUESTO REPORTADO VS. EJERCIDO
 ---------------------------------------------------------------------- */
+const GROUP_OPCIONES_COMPARATIVO = [
+  { value: "resultado", label: "Resultado (sobre / subejercicio)" },
+  { value: "origen", label: "Origen (plan / agregadas)" },
+  { value: "area", label: "Área" },
+  { value: "categoria", label: "Categoría" },
+];
 
 /**
  * Lo que se le reportó a Dirección como presupuesto del mes contra cómo
@@ -11476,7 +11483,10 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   const [moneda, setMoneda] = useState("MXP");
   const [soloPagado, setSoloPagado] = useState(false);
   const [area, setArea] = useState("");
-  const [agrupar, setAgrupar] = useSessionState("ss-comparativo-agrupar", "ninguno");
+  /* Niveles de agrupamiento como en las otras tablas. Se recuerdan entre
+     sesiones, igual que los de Partidas y Transacciones. */
+  const [groupBys, setGroupBys] = usePrefState("pref-comparativo-groupbys", [], sanearGroupBys(GROUP_OPCIONES_COMPARATIVO));
+  const [orden, setOrden] = useSessionState("ss-comparativo-orden", { key: "dif", dir: "desc" });
   const [abiertas, setAbiertas] = useState(() => new Set());
   const [buscar, setBuscar] = useSessionState("ss-comparativo-buscar", "");
   const alternar = (clave) => setAbiertas((prev) => alternarEnSet(prev, clave));
@@ -11511,7 +11521,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
 
   const renglones = (detalle || []).map((d) => {
     const txs = txDe(d.origen_id);
-    return { clave: `r-${d.id || d.origen_id}`, area: areaDe(d.area, txs), folio: d.folio, origen: "plan",
+    return { clave: `r-${d.id || d.origen_id}`, area: areaDe(d.area, txs), folio: d.folio, origen: "plan", categoria: d.categoria || "",
              partida: d.concepto || "—", moneda: monedaDe(d.moneda),
              estimada: Number(d.importe) || 0, real: txs.reduce((a, t) => a + (Number(t.importe) || 0), 0), txs };
   });
@@ -11526,13 +11536,13 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
       const real = txs.reduce((a, t) => a + (Number(t.importe) || 0), 0);
       /* Lo que se estimó al crearla va como referencia, no como Estimada: la
          desviación se mide contra el plan enviado, y en él no estaba. */
-      if (real) renglones.push({ clave: `p-${p.id}`, area: areaDe("", txs), folio: p.folio, origen: "agregada",
+      if (real) renglones.push({ clave: `p-${p.id}`, area: areaDe("", txs), folio: p.folio, origen: "agregada", categoria: p.categoria || "",
         partida: `${p.concepto || "—"} (no presupuestada)`, moneda: monedaDe(p.moneda), estimada: 0, real, txs,
         refCreacion: Number(p.monto_estimado) || 0 });
     });
   const prefijoMes = `${anioPer}-${String(MESES.indexOf(mesPer) + 1).padStart(2, "0")}`;
   transacciones.filter((t) => t.unidad_detectada === unidad && !t.partida_id && cuenta(t) && String(t.dia || "").startsWith(prefijoMes))
-    .forEach((t) => renglones.push({ clave: `t-${t.id}`, area: t.area || "Sin área", folio: t.folio_transaccion || "", origen: "sinpartida",
+    .forEach((t) => renglones.push({ clave: `t-${t.id}`, area: t.area || "Sin área", folio: t.folio_transaccion || "", origen: "sinpartida", categoria: t.categoria || "",
       partida: `${t.concepto_detallado || t.proveedor || "—"} (sin partida)`, moneda: monedaDe(t.moneda),
       estimada: 0, real: Number(t.importe) || 0, txs: [t] }));
 
@@ -11547,22 +11557,26 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     ...r.txs.flatMap((t) => [t.proveedor, t.concepto_detallado, t.folio_transaccion, t.solicitante])]
     .some((v) => String(v || "").toLowerCase().includes(q));
   const filas = deMoneda.filter((r) => (!area || r.area === area) && coincide(r))
-    .map((r) => ({ ...r, dif: r.real - r.estimada }))
-    .sort((a, b) => b.dif - a.dif);
+    .map((r) => {
+      const dif = r.real - r.estimada;
+      /* Sobreejercicio: se gastó más de lo estimado. Subejercicio: menos.
+         Las no presupuestadas son sobreejercicio por definición. */
+      return { ...r, dif, resultado: dif > 0.005 ? "Sobreejercicio" : dif < -0.005 ? "Subejercicio" : "Sin desviación" };
+    })
+    .sort((x, y) => (orden.dir === "asc" ? 1 : -1) * ((x[orden.key] || 0) - (y[orden.key] || 0)));
   const sumar = (l) => l.reduce((a, r) => ({ estimada: a.estimada + r.estimada, real: a.real + r.real }), { estimada: 0, real: 0 });
   const tot = sumar(filas);
 
-  /* Bloques según el agrupamiento. Sin agrupar es un solo bloque sin título.
-     Por origen se separa el plan de lo que se agregó: "no estaba planeado" y
-     "se planeó mal" son dos pláticas distintas. */
-  const ORIGENES = [["plan", `Plan enviado (versión ${rep?.version ?? ""})`], ["agregada", "Agregadas en el mes"], ["sinpartida", "Sin partida"]];
-  const bloques = agrupar === "origen"
-    ? ORIGENES.map(([k, t]) => ({ titulo: t, filas: filas.filter((r) => r.origen === k) })).filter((b) => b.filas.length)
-    : agrupar === "area"
-      ? [...new Set(filas.map((r) => r.area))].sort().map((a) => ({ titulo: a, filas: filas.filter((r) => r.area === a) }))
-          .sort((x, y) => (sumar(y.filas).real - sumar(y.filas).estimada) - (sumar(x.filas).real - sumar(x.filas).estimada))
-      : [{ titulo: null, filas }];
-  const etiquetaPartida = (r) => [r.folio, agrupar === "area" || area ? "" : r.area,
+  const ORIGEN_ETQ = { plan: `Plan enviado (versión ${rep?.version ?? ""})`, agregada: "Agregadas en el mes", sinpartida: "Sin partida" };
+  /* Resultado y origen tienen un orden con sentido; lo demás, alfabético. */
+  const ORDEN_FIJO = {
+    resultado: ["Sobreejercicio", "Subejercicio", "Sin desviación"],
+    origen: [ORIGEN_ETQ.plan, ORIGEN_ETQ.agregada, ORIGEN_ETQ.sinpartida],
+  };
+  const valorGrupo = (r, campo) => campo === "origen" ? ORIGEN_ETQ[r.origen]
+    : campo === "resultado" ? r.resultado : (String(r[campo] || "").trim() || "Sin dato");
+  const etqCampo = (c) => (GROUP_OPCIONES_COMPARATIVO.find((o) => o.value === c) || {}).label || c;
+  const etiquetaPartida = (r) => [r.folio, groupBys.some((g) => g.field === "area") || area ? "" : r.area,
     r.refCreacion ? `estimada al crearla: ${money(r.refCreacion, r.moneda)}` : ""].filter(Boolean).join(" · ");
   const pct = (dif, est) => (est ? `${((dif / est) * 100).toFixed(1)}%` : "—");
   const m = (v) => money(v, moneda);
@@ -11575,17 +11589,29 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
 
   /* Una lista plana de lo que se pinta —títulos de bloque, filas y
      subtotales— para que la pantalla, el PDF y el Excel salgan iguales. */
-  const cuerpoTabla = bloques.flatMap((b) => [
-    ...(b.titulo ? [{ tipo: "titulo", texto: b.titulo }] : []),
-    /* Las transacciones de una partida abierta van debajo de ella, con su
-       importe en la columna Real: así se ve de qué se compone el Real sin
-       cambiar de pantalla. Se ordenan por día. */
-    ...b.filas.flatMap((r) => [{ tipo: "fila", r },
-      ...(abiertas.has(r.clave)
-        ? [...r.txs].sort((x, y) => String(x.dia || "").localeCompare(String(y.dia || ""))).map((t) => ({ tipo: "tx", t, r }))
-        : [])]),
-    ...(b.titulo ? [{ tipo: "subtotal", texto: b.titulo, t: sumar(b.filas) }] : []),
-  ]);
+  /* Las transacciones de una partida abierta van debajo de ella, con su
+     importe en la columna Real. Se ordenan por día. */
+  const conDesglose = (r, depth) => [{ tipo: "fila", r, depth },
+    ...(abiertas.has(r.clave)
+      ? [...r.txs].sort((x, y) => String(x.dia || "").localeCompare(String(y.dia || ""))).map((t) => ({ tipo: "tx", t, r, depth }))
+      : [])];
+  const armar = (lista, niveles, depth) => {
+    if (!niveles.length) return lista.flatMap((r) => conDesglose(r, depth));
+    const [{ field, dir = "asc" }, ...resto] = niveles;
+    const vals = [...new Set(lista.map((r) => valorGrupo(r, field)))];
+    const fijo = ORDEN_FIJO[field];
+    vals.sort((x, y) => fijo ? fijo.indexOf(x) - fijo.indexOf(y) : String(x).localeCompare(String(y)));
+    if (dir === "desc") vals.reverse();
+    return vals.flatMap((v) => {
+      const sub = lista.filter((r) => valorGrupo(r, field) === v);
+      return [{ tipo: "titulo", texto: `${etqCampo(field)}: ${v}`, n: sub.length, depth },
+        ...armar(sub, resto, depth + 1),
+        { tipo: "subtotal", texto: v, t: sumar(sub), depth }];
+    });
+  };
+  /* Lista plana de lo que se pinta —títulos, filas, transacciones y
+     subtotales— para que la pantalla, el PDF y el Excel salgan iguales. */
+  const cuerpoTabla = armar(filas, groupBys, 0);
 
   const textoTx = (t) => [t.dia, t.folio_transaccion, t.proveedor, t.concepto_detallado].filter(Boolean).join(" · ")
     + (t.status === "Pagado" ? "" : " (sin pagar)");
@@ -11608,9 +11634,9 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
         ? ["", { content: `    ${textoTx(x.t)}`, styles: { halign: "left", fontSize: 7.5, textColor: [91, 107, 121] } },
            { content: money(x.t.importe, x.t.moneda), styles: { fontSize: 7.5, textColor: [91, 107, 121] } }, "", ""]
         : x.tipo === "titulo"
-        ? [{ content: x.texto, colSpan: 5, styles: { fontStyle: "bold", fillColor: [236, 238, 241], halign: "left" } }]
+        ? [{ content: `${"    ".repeat(x.depth)}${x.texto}  (${x.n})`, colSpan: 5, styles: { fontStyle: "bold", fillColor: [[220, 225, 230], [230, 234, 238], [238, 241, 244]][Math.min(x.depth, 2)], halign: "left" } }]
         : x.tipo === "subtotal"
-          ? [m(x.t.estimada), `Subtotal ${x.texto}`, m(x.t.real), m(x.t.real - x.t.estimada), pct(x.t.real - x.t.estimada, x.t.estimada)]
+          ? [m(x.t.estimada), `${"  ".repeat(x.depth)}Subtotal ${x.texto}`, m(x.t.real), m(x.t.real - x.t.estimada), pct(x.t.real - x.t.estimada, x.t.estimada)]
           : [m(x.r.estimada), `${x.r.partida}${etiquetaPartida(x.r) ? `\n${etiquetaPartida(x.r)}` : ""}`, m(x.r.real), m(x.r.dif), pct(x.r.dif, x.r.estimada)]),
       foot: [[m(tot.estimada), "TOTAL", m(tot.real), m(tot.real - tot.estimada), pct(tot.real - tot.estimada, tot.estimada)]],
       styles: { fontSize: 8.5, cellPadding: 4, valign: "middle" },
@@ -11644,7 +11670,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     const fmtNum = '"$"#,##0.00';
     cuerpoTabla.forEach((x) => {
       if (x.tipo === "titulo") {
-        const row = ws.addRow([x.texto]);
+        const row = ws.addRow([`${"    ".repeat(x.depth)}${x.texto}  (${x.n})`]);
         row.font = { bold: true };
         row.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECEEF1" } };
         ws.mergeCells(row.number, 1, row.number, 6);
@@ -11706,11 +11732,8 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
         )}
         <Field label="Área"><Select value={area} onChange={(e) => setArea(e.target.value)} style={{ minWidth: 200 }}>
           <option value="">Todas las áreas</option>{areas.map((a) => <option key={a}>{a}</option>)}</Select></Field>
-        <Field label="Agrupar por"><Select value={agrupar} onChange={(e) => setAgrupar(e.target.value)}>
-          <option value="ninguno">Sin agrupar</option>
-          <option value="origen">Origen (plan / agregadas)</option>
-          <option value="area">Área</option>
-        </Select></Field>
+        <GroupByControl options={GROUP_OPCIONES_COMPARATIVO} value={groupBys}
+          onChange={setGroupBys} maxLevels={3} />
         <Field label="Moneda"><Select value={moneda} onChange={(e) => setMoneda(e.target.value)}>
           <option>MXP</option><option>USD</option></Select></Field>
         <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: T.textDim, paddingBottom: 9, cursor: "pointer" }}>
@@ -11730,7 +11753,20 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
       {detalle && (
         <div style={{ overflowX: "auto" }}>
           <table style={{ ...tableStyle, border: `1px solid ${T.border}` }}>
-            <thead><tr>{encabezado.map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
+            <thead><tr>{encabezado.map((h, i) => {
+              /* Se ordenan Estimada, Real y Desviación $; el orden aplica
+                 dentro de cada grupo. */
+              const clave = ["estimada", null, "real", "dif", null][i];
+              if (!clave) return <th key={h} style={th}>{h}</th>;
+              const activo = orden.key === clave;
+              return (
+                <th key={h} style={{ ...th, cursor: "pointer", userSelect: "none", color: activo ? T.accent : th.color }}
+                  title="Ordenar"
+                  onClick={() => setOrden(activo ? { key: clave, dir: orden.dir === "asc" ? "desc" : "asc" } : { key: clave, dir: "desc" })}>
+                  {h}{activo ? (orden.dir === "asc" ? " ▲" : " ▼") : ""}
+                </th>
+              );
+            })}</tr></thead>
             <tbody>
               {cuerpoTabla.map((x, i) => x.tipo === "tx" ? (
                 <tr key={`x${i}`}>
@@ -11745,11 +11781,13 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
                   </td>
                 </tr>
               ) : x.tipo === "titulo" ? (
-                <tr key={`t${i}`}><td colSpan={5} style={{ ...td, background: "#DCE1E6", fontWeight: 700, fontSize: 12.5 }}>{x.texto}</td></tr>
+                <tr key={`t${i}`}><td colSpan={5} style={{ ...td, background: ["#DCE1E6", "#E6EAEE", "#EEF1F4"][Math.min(x.depth, 2)],
+                  fontWeight: 700, fontSize: [12.5, 12, 11.5][Math.min(x.depth, 2)], paddingLeft: 10 + x.depth * 22 }}>
+                  {x.texto} <span style={{ fontWeight: 400, color: T.textFaint }}>({x.n})</span></td></tr>
               ) : x.tipo === "subtotal" ? (
                 <tr key={`s${i}`}>
                   <td style={{ ...num, fontWeight: 700 }}>{m(x.t.estimada)}</td>
-                  <td style={{ ...td, textAlign: "center", fontWeight: 700 }}>Subtotal {x.texto}</td>
+                  <td style={{ ...td, textAlign: "center", fontWeight: 700, paddingLeft: 10 + x.depth * 22 }}>Subtotal {x.texto}</td>
                   <td style={{ ...num, fontWeight: 700 }}>{m(x.t.real)}</td>
                   <td style={{ ...num, fontWeight: 700, color: colorDif(x.t.real - x.t.estimada) }}>{m(x.t.real - x.t.estimada)}</td>
                   <td style={{ ...num, fontWeight: 700, color: colorDif(x.t.real - x.t.estimada) }}>{pct(x.t.real - x.t.estimada, x.t.estimada)}</td>

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.56.1";
+const APP_VERSION = "2.56.2";
 const CHANGELOG = [
+  { v: "2.56.2", desc: "Presupuesto vs. ejercido gana Agrupar por: sin agrupar, origen o area, con subtotal por bloque. Por origen separa el plan enviado de las partidas agregadas en el mes y del gasto sin partida, porque no estaba planeado y se planeo mal son dos platicas distintas. Por area revisa todas las areas de corrido, ordenadas por desviacion. Las partidas agregadas muestran, como referencia, lo que se estimo al crearlas; la desviacion se sigue midiendo contra el plan enviado, en el que no estaban. PDF y Excel salen con el mismo agrupamiento" },
   { v: "2.56.1", desc: "Presupuesto vs. ejercido se simplifica a una sola tabla, un renglon por partida, con las columnas Estimada, Partida Presupuestal, Real, Desviacion $ y Desviacion %, y renglon de total. Filtro por area para la platica con cada una, ordenada de mayor a menor desviacion, rojo lo gastado de mas y verde lo que sobro. Se quitan las barras, el semaforo y las tarjetas. PDF y Excel con el mismo formato" },
   { v: "2.56.0", desc: "Tab nuevo en Reportes a Direccion: Presupuesto vs. ejercido. Compara el presupuesto mensual que se envio a Direccion -- la version congelada, no las partidas de hoy, para que un monto subido despues no esconda la desviacion -- contra lo ejercido: transacciones vinculadas sin canceladas, o solo lo pagado con la casilla. Totales arriba; barras por area ordenadas por desviacion, donde el marco es lo presupuestado, verde lo ejercido y rojo lo que se paso; y la tabla de partidas con semaforo: excedida (mas de 110 %), subejercida (menos de 50 %), sin ejercer, en rango, y no presupuestado, que es gasto del mes en partidas que no iban en la version enviada o sin partida. Filtro por area para la platica con cada una, y PDF de lo que se ve. Avisa si el mes aun no termina" },
   { v: "2.55.1", desc: "El seguimiento del reporte semanal habla de lo ejercido: Sin pagar pasa a No ejercido, que es la pregunta que responde. Boton Generar PDF, para entregarlo: totales por estado arriba, el detalle con el estado de cada transaccion en su color, lo pagado sin reportar al final, y la fecha y hora en que se genero, porque el estado cambia conforme se paga y una copia sin fecha diria otra cosa sin que nadie lo note" },
@@ -11473,6 +11474,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   const [moneda, setMoneda] = useState("MXP");
   const [soloPagado, setSoloPagado] = useState(false);
   const [area, setArea] = useState("");
+  const [agrupar, setAgrupar] = useSessionState("ss-comparativo-agrupar", "ninguno");
 
   useEffect(() => {
     if (!rep) { setDetalle(null); return; }
@@ -11504,7 +11506,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
 
   const renglones = (detalle || []).map((d) => {
     const txs = txDe(d.origen_id);
-    return { clave: `r-${d.id || d.origen_id}`, area: areaDe(d.area, txs), folio: d.folio,
+    return { clave: `r-${d.id || d.origen_id}`, area: areaDe(d.area, txs), folio: d.folio, origen: "plan",
              partida: d.concepto || "—", moneda: monedaDe(d.moneda),
              estimada: Number(d.importe) || 0, real: txs.reduce((a, t) => a + (Number(t.importe) || 0), 0), txs };
   });
@@ -11517,12 +11519,15 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     .forEach((p) => {
       const txs = txDe(p.id);
       const real = txs.reduce((a, t) => a + (Number(t.importe) || 0), 0);
-      if (real) renglones.push({ clave: `p-${p.id}`, area: areaDe("", txs), folio: p.folio,
-        partida: `${p.concepto || "—"} (no presupuestada)`, moneda: monedaDe(p.moneda), estimada: 0, real, txs });
+      /* Lo que se estimó al crearla va como referencia, no como Estimada: la
+         desviación se mide contra el plan enviado, y en él no estaba. */
+      if (real) renglones.push({ clave: `p-${p.id}`, area: areaDe("", txs), folio: p.folio, origen: "agregada",
+        partida: `${p.concepto || "—"} (no presupuestada)`, moneda: monedaDe(p.moneda), estimada: 0, real, txs,
+        refCreacion: Number(p.monto_estimado) || 0 });
     });
   const prefijoMes = `${anioPer}-${String(MESES.indexOf(mesPer) + 1).padStart(2, "0")}`;
   transacciones.filter((t) => t.unidad_detectada === unidad && !t.partida_id && cuenta(t) && String(t.dia || "").startsWith(prefijoMes))
-    .forEach((t) => renglones.push({ clave: `t-${t.id}`, area: t.area || "Sin área", folio: t.folio_transaccion || "",
+    .forEach((t) => renglones.push({ clave: `t-${t.id}`, area: t.area || "Sin área", folio: t.folio_transaccion || "", origen: "sinpartida",
       partida: `${t.concepto_detallado || t.proveedor || "—"} (sin partida)`, moneda: monedaDe(t.moneda),
       estimada: 0, real: Number(t.importe) || 0, txs: [t] }));
 
@@ -11532,7 +11537,21 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   const filas = deMoneda.filter((r) => !area || r.area === area)
     .map((r) => ({ ...r, dif: r.real - r.estimada }))
     .sort((a, b) => b.dif - a.dif);
-  const tot = filas.reduce((a, r) => ({ estimada: a.estimada + r.estimada, real: a.real + r.real }), { estimada: 0, real: 0 });
+  const sumar = (l) => l.reduce((a, r) => ({ estimada: a.estimada + r.estimada, real: a.real + r.real }), { estimada: 0, real: 0 });
+  const tot = sumar(filas);
+
+  /* Bloques según el agrupamiento. Sin agrupar es un solo bloque sin título.
+     Por origen se separa el plan de lo que se agregó: "no estaba planeado" y
+     "se planeó mal" son dos pláticas distintas. */
+  const ORIGENES = [["plan", `Plan enviado (versión ${rep?.version ?? ""})`], ["agregada", "Agregadas en el mes"], ["sinpartida", "Sin partida"]];
+  const bloques = agrupar === "origen"
+    ? ORIGENES.map(([k, t]) => ({ titulo: t, filas: filas.filter((r) => r.origen === k) })).filter((b) => b.filas.length)
+    : agrupar === "area"
+      ? [...new Set(filas.map((r) => r.area))].sort().map((a) => ({ titulo: a, filas: filas.filter((r) => r.area === a) }))
+          .sort((x, y) => (sumar(y.filas).real - sumar(y.filas).estimada) - (sumar(x.filas).real - sumar(x.filas).estimada))
+      : [{ titulo: null, filas }];
+  const etiquetaPartida = (r) => [r.folio, agrupar === "area" || area ? "" : r.area,
+    r.refCreacion ? `estimada al crearla: ${money(r.refCreacion, r.moneda)}` : ""].filter(Boolean).join(" · ");
   const pct = (dif, est) => (est ? `${((dif / est) * 100).toFixed(1)}%` : "—");
   const m = (v) => money(v, moneda);
   const colorDif = (d) => (d > 0.005 ? T.red : d < -0.005 ? T.teal : T.textDim);
@@ -11541,6 +11560,14 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
 
   const encabezado = ["Estimada", "Partida Presupuestal", "Real", "Desviación $", "Desviación %"];
   const valores = (r) => [r.estimada, r.partida, r.real, r.dif, r.estimada ? r.dif / r.estimada : null];
+
+  /* Una lista plana de lo que se pinta —títulos de bloque, filas y
+     subtotales— para que la pantalla, el PDF y el Excel salgan iguales. */
+  const cuerpoTabla = bloques.flatMap((b) => [
+    ...(b.titulo ? [{ tipo: "titulo", texto: b.titulo }] : []),
+    ...b.filas.map((r) => ({ tipo: "fila", r })),
+    ...(b.titulo ? [{ tipo: "subtotal", texto: b.titulo, t: sumar(b.filas) }] : []),
+  ]);
 
   const exportarPDF = () => {
     const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
@@ -11553,7 +11580,11 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     autoTable(doc, {
       startY: 70,
       head: [encabezado],
-      body: filas.map((r) => [m(r.estimada), `${r.partida}${area ? "" : `\n${r.area}`}`, m(r.real), m(r.dif), pct(r.dif, r.estimada)]),
+      body: cuerpoTabla.map((x) => x.tipo === "titulo"
+        ? [{ content: x.texto, colSpan: 5, styles: { fontStyle: "bold", fillColor: [236, 238, 241], halign: "left" } }]
+        : x.tipo === "subtotal"
+          ? [m(x.t.estimada), `Subtotal ${x.texto}`, m(x.t.real), m(x.t.real - x.t.estimada), pct(x.t.real - x.t.estimada, x.t.estimada)]
+          : [m(x.r.estimada), `${x.r.partida}${etiquetaPartida(x.r) ? `\n${etiquetaPartida(x.r)}` : ""}`, m(x.r.real), m(x.r.dif), pct(x.r.dif, x.r.estimada)]),
       foot: [[m(tot.estimada), "TOTAL", m(tot.real), m(tot.real - tot.estimada), pct(tot.real - tot.estimada, tot.estimada)]],
       styles: { fontSize: 8.5, cellPadding: 4, valign: "middle" },
       headStyles: { fillColor: [210, 214, 219], textColor: [35, 42, 49], halign: "center" },
@@ -11561,8 +11592,10 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
       columnStyles: { 0: { halign: "right", cellWidth: 88 }, 1: { halign: "center" }, 2: { halign: "right", cellWidth: 88 },
                       3: { halign: "right", cellWidth: 88 }, 4: { halign: "right", cellWidth: 64 } },
       didParseCell: (d) => {
-        if (d.section === "body" && (d.column.index === 3 || d.column.index === 4)) {
-          const dif = filas[d.row.index]?.dif || 0;
+        const x = cuerpoTabla[d.row.index];
+        if (d.section === "body" && x?.tipo === "subtotal") d.cell.styles.fontStyle = "bold";
+        if (d.section === "body" && (d.column.index === 3 || d.column.index === 4) && x && x.tipo !== "titulo") {
+          const dif = x.tipo === "fila" ? x.r.dif : x.t.real - x.t.estimada;
           if (dif > 0.005) d.cell.styles.textColor = [192, 72, 63];
           else if (dif < -0.005) d.cell.styles.textColor = [30, 143, 115];
         }
@@ -11582,8 +11615,18 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     const hr = ws.addRow([...encabezado, "Área"]);
     formatearHojaDatos(ws, hr, 6);
     const fmtNum = '"$"#,##0.00';
-    filas.forEach((r) => {
-      const row = ws.addRow([...valores(r), r.area]);
+    cuerpoTabla.forEach((x) => {
+      if (x.tipo === "titulo") {
+        const row = ws.addRow([x.texto]);
+        row.font = { bold: true };
+        row.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECEEF1" } };
+        ws.mergeCells(row.number, 1, row.number, 6);
+        return;
+      }
+      const row = x.tipo === "fila"
+        ? ws.addRow([...valores(x.r), x.r.area])
+        : ws.addRow([x.t.estimada, `Subtotal ${x.texto}`, x.t.real, x.t.real - x.t.estimada, x.t.estimada ? (x.t.real - x.t.estimada) / x.t.estimada : null]);
+      if (x.tipo === "subtotal") row.font = { bold: true };
       [1, 3, 4].forEach((i) => { row.getCell(i).numFmt = fmtNum; });
       row.getCell(5).numFmt = "0.0%";
       row.getCell(2).alignment = { horizontal: "center", wrapText: true };
@@ -11622,6 +11665,11 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
         )}
         <Field label="Área"><Select value={area} onChange={(e) => setArea(e.target.value)} style={{ minWidth: 200 }}>
           <option value="">Todas las áreas</option>{areas.map((a) => <option key={a}>{a}</option>)}</Select></Field>
+        <Field label="Agrupar por"><Select value={agrupar} onChange={(e) => setAgrupar(e.target.value)}>
+          <option value="ninguno">Sin agrupar</option>
+          <option value="origen">Origen (plan / agregadas)</option>
+          <option value="area">Área</option>
+        </Select></Field>
         <Field label="Moneda"><Select value={moneda} onChange={(e) => setMoneda(e.target.value)}>
           <option>MXP</option><option>USD</option></Select></Field>
         <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: T.textDim, paddingBottom: 9, cursor: "pointer" }}>
@@ -11643,20 +11691,30 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
           <table style={{ ...tableStyle, border: `1px solid ${T.border}` }}>
             <thead><tr>{encabezado.map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
             <tbody>
-              {filas.map((r) => (
+              {cuerpoTabla.map((x, i) => x.tipo === "titulo" ? (
+                <tr key={`t${i}`}><td colSpan={5} style={{ ...td, background: "#DCE1E6", fontWeight: 700, fontSize: 12.5 }}>{x.texto}</td></tr>
+              ) : x.tipo === "subtotal" ? (
+                <tr key={`s${i}`}>
+                  <td style={{ ...num, fontWeight: 700 }}>{m(x.t.estimada)}</td>
+                  <td style={{ ...td, textAlign: "center", fontWeight: 700 }}>Subtotal {x.texto}</td>
+                  <td style={{ ...num, fontWeight: 700 }}>{m(x.t.real)}</td>
+                  <td style={{ ...num, fontWeight: 700, color: colorDif(x.t.real - x.t.estimada) }}>{m(x.t.real - x.t.estimada)}</td>
+                  <td style={{ ...num, fontWeight: 700, color: colorDif(x.t.real - x.t.estimada) }}>{pct(x.t.real - x.t.estimada, x.t.estimada)}</td>
+                </tr>
+              ) : ((r) => (
                 <tr key={r.clave} title={r.txs.map((t) => `${t.dia || ""}  ${t.proveedor || ""}  ${money(t.importe, t.moneda)}${t.status === "Pagado" ? "" : " (sin pagar)"}`).join("\n") || "Sin transacciones"}>
                   <td style={num}>{m(r.estimada)}</td>
                   <td style={{ ...td, textAlign: "center" }}>
                     {r.partida}
                     <div style={{ fontSize: 10.5, color: T.textFaint, fontFamily: T.fontMono }}>
-                      {[r.folio, area ? "" : r.area].filter(Boolean).join(" · ")}
+                      {etiquetaPartida(r)}
                     </div>
                   </td>
                   <td style={num}>{m(r.real)}</td>
                   <td style={{ ...num, color: colorDif(r.dif) }}>{m(r.dif)}</td>
                   <td style={{ ...num, color: colorDif(r.dif) }}>{pct(r.dif, r.estimada)}</td>
                 </tr>
-              ))}
+              ))(x.r))}
               {!filas.length && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: T.textFaint }}>Nada en {moneda} con estos filtros</td></tr>}
             </tbody>
             {filas.length > 0 && (

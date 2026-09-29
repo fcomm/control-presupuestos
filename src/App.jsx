@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.57.2";
+const APP_VERSION = "2.58.0";
 const CHANGELOG = [
+  { v: "2.58.0", desc: "Atajo Duplicar al mes siguiente en la fila de cada transaccion. Crea una copia con el mismo dia de pago del mes siguiente -- ajustado al ultimo dia si ese dia no existe, del 31 de octubre al 30 de noviembre -- que nace como borrador: sin folio, No Pagado, sin fecha de pago, sin folios de SAE ni factura, sin referencia, sin marcas de enviada o reportada y sin adjuntos. Si la original tiene partida, la liga a la equivalente del mes siguiente -- mismo concepto, rubro, proyecto y moneda -- y si no existe la crea copiando la original con su folio del mes nuevo. La confirmacion dice la fecha nueva y si la partida se liga o se crea, antes de tocar nada" },
   { v: "2.57.2", desc: "El selector de partida gana filtro de Ano y abre en el mes y ano en curso, en vez de mostrar todas las partidas de todos los periodos. Si la transaccion ya tiene partida de otro periodo, abre en el periodo de esa partida, para que la seleccion actual se vea. Con Todos en el ano, los meses se separan por ano: Septiembre 2025 y Septiembre 2026 ya no se mezclan. Si el periodo no tiene partidas, lo dice y ofrece ver todas" },
   { v: "2.57.1", desc: "Presupuesto vs. ejercido: los grupos se contraen y expanden con clic en su titulo, y hay boton Contraer grupos / Expandir grupos. Un grupo contraido conserva su subtotal, asi que se ve cuanto suma sin ver sus partidas. El boton de las transacciones pasa a llamarse Ver / Ocultar transacciones para no confundirse con el de los grupos. PDF y Excel salen tal como se ve" },
   { v: "2.57.0", desc: "Presupuesto vs. ejercido agrupa en niveles, como las otras tablas: hasta tres entre Resultado (sobreejercicio / subejercicio / sin desviacion), Origen, Area y Categoria, cada nivel con su subtotal y cuantas partidas tiene. El agrupamiento se recuerda entre sesiones. Las columnas Estimada, Real y Desviacion $ se ordenan con clic en el encabezado; el orden aplica dentro de cada grupo. PDF y Excel salen con los mismos niveles" },
@@ -8317,6 +8318,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               disabled={!!registrandoFila} onClick={() => registrarFila(t)} />
           )}
           <IconButton icon="⧉" label="Duplicar" tone={T.textDim} onClick={() => duplicar(t)} />
+          <IconButton icon={duplicandoSig === t.id ? "…" : "»"} label="Duplicar al mes siguiente" tone={T.accent}
+            disabled={!!duplicandoSig} onClick={() => duplicarMesSiguiente(t)} />
           {/* Registrada: se cancela, no se borra. Borrador: se puede borrar,
               porque no tiene folio que dejar hueco. */}
           {estaCancelada(t) ? (
@@ -8413,6 +8416,83 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     setModalOpen(true);
   };
   const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" }); setNotaPrivada(""); };
+  /* Mismo día del mes siguiente. Si ese día no existe (31 de octubre →
+     noviembre), el último día del mes: saltar al 1 de diciembre movería el
+     pago de mes, que es justo lo que no se quiere. */
+  const mismoDiaMesSiguiente = (iso) => {
+    const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+    const ny = m === 12 ? y + 1 : y, nm = m === 12 ? 1 : m + 1;
+    const ultimo = new Date(ny, nm, 0).getDate();
+    return `${ny}-${String(nm).padStart(2, "0")}-${String(Math.min(d, ultimo)).padStart(2, "0")}`;
+  };
+  const [duplicandoSig, setDuplicandoSig] = useState(null);
+
+  /* Atajo para los pagos que se repiten: la misma transacción, un mes
+     después, ligada a la partida equivalente de ese mes —o a una nueva, si no
+     existe—. Nace como borrador, igual que Duplicar: lo que es propio de cada
+     pago (folios, fecha de pago, referencia, adjuntos) no se copia. */
+  const duplicarMesSiguiente = async (t) => {
+    if (!t.dia) {
+      alert("Esta transacción no tiene Día de Pago Programado: no hay de dónde calcular el mes siguiente.");
+      return;
+    }
+    const nuevoDia = mismoDiaMesSiguiente(t.dia);
+    const [ny, nm] = nuevoDia.split("-").map(Number);
+    const mesSig = MESES[nm - 1];
+
+    const original = t.partida_id ? partidas.find((p) => p.id === t.partida_id) : null;
+    const norm = (v) => String(v || "").trim().toLowerCase();
+    // Equivalente: mismo concepto, rubro, proyecto y moneda, en el mes siguiente.
+    const equivalente = original ? partidas.find((p) => p.unidad === original.unidad
+      && p.mes === mesSig && Number(p.anio) === ny
+      && norm(p.concepto) === norm(original.concepto) && norm(p.rubro) === norm(original.rubro)
+      && norm(p.proyecto) === norm(original.proyecto) && monedaNorm(p.moneda) === monedaNorm(original.moneda)) : null;
+
+    const textoPartida = !original
+      ? "Sin partida (la original tampoco tiene)."
+      : equivalente
+        ? `Se liga a la partida existente ${equivalente.folio || ""} — ${equivalente.concepto}.`
+        : `Se CREA la partida "${original.concepto}" en ${mesSig} ${ny}, por ${money(original.monto_estimado, original.moneda)} (copia de ${original.folio || "la original"}).`;
+    if (!confirm(
+      `Duplicar al mes siguiente:\n\n` +
+      `  ${t.concepto_detallado || t.proveedor || "Transacción"} — ${money(t.importe, t.moneda)}\n` +
+      `  Día de pago programado: ${t.dia} → ${nuevoDia}\n` +
+      `  ${textoPartida}\n\n` +
+      `La copia nace como borrador: sin folio, No Pagado, sin fecha de pago, sin folios de SAE ni factura, sin referencia y sin adjuntos.\n\n¿Continuar?`
+    )) return;
+
+    setDuplicandoSig(t.id);
+    try {
+      let partidaId = equivalente?.id || null;
+      if (original && !equivalente) {
+        const folio = autoFolio(original.unidad, mesSig, ny,
+          partidas.filter((p) => p.unidad === original.unidad).map((p) => p.folio));
+        const creada = await partidasApi.insert({
+          id: uid(), unidad: original.unidad, mes: mesSig, anio: ny, smi: "",
+          concepto: original.concepto, rubro: original.rubro, categoria: original.categoria,
+          proyecto: original.proyecto, zona: original.zona || "",
+          monto_estimado: original.monto_estimado, moneda: original.moneda, folio,
+        });
+        partidaId = creada.id;
+      }
+      // Lo del sistema (folio, registro, marcas, auditoría, cancelación) ya
+      // lo quita camposEditablesTransaccion; aquí se limpia lo propio del pago.
+      const base = camposEditablesTransaccion(t);
+      await insertTransaccionBorrador(transaccionesApi, {
+        ...base,
+        dia: nuevoDia, partida_id: partidaId,
+        status: "No Pagado", fecha_pago: null,
+        folio_compra_sae: "", folio_factura: "", referencia_pago: "",
+      });
+      alert(`Listo: transacción creada para el ${nuevoDia}` +
+        (original && !equivalente ? `, con su partida nueva en ${mesSig} ${ny}.` : "."));
+    } catch (err) {
+      alert("No se pudo duplicar: " + (err.message || err));
+    } finally {
+      setDuplicandoSig(null);
+    }
+  };
+
   const duplicar = (t) => {
     // Copia los datos de la transacción, pero como registro NUEVO: sin folio propio,
     // sin fecha de pago/status heredado (nace "No Pagado"), y sin folios de compra/
@@ -8798,7 +8878,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               <col style={{ width: 36 }} />
               <col style={{ width: 28 }} />
               {columnasVisibles.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
-              <col style={{ width: 168 }} />
+              <col style={{ width: 200 }} />
             </colgroup>
             <thead>
               <tr>

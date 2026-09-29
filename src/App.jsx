@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.57.0";
+const APP_VERSION = "2.57.1";
 const CHANGELOG = [
+  { v: "2.57.1", desc: "Presupuesto vs. ejercido: los grupos se contraen y expanden con clic en su titulo, y hay boton Contraer grupos / Expandir grupos. Un grupo contraido conserva su subtotal, asi que se ve cuanto suma sin ver sus partidas. El boton de las transacciones pasa a llamarse Ver / Ocultar transacciones para no confundirse con el de los grupos. PDF y Excel salen tal como se ve" },
   { v: "2.57.0", desc: "Presupuesto vs. ejercido agrupa en niveles, como las otras tablas: hasta tres entre Resultado (sobreejercicio / subejercicio / sin desviacion), Origen, Area y Categoria, cada nivel con su subtotal y cuantas partidas tiene. El agrupamiento se recuerda entre sesiones. Las columnas Estimada, Real y Desviacion $ se ordenan con clic en el encabezado; el orden aplica dentro de cada grupo. PDF y Excel salen con los mismos niveles" },
   { v: "2.56.4", desc: "Presupuesto vs. ejercido gana el cuadro de busqueda, como las otras tablas. Busca en la partida -- concepto, folio, area -- y en sus transacciones: proveedor, concepto, folio y solicitante, porque a una partida se llega tambien por lo que se le cargo. Los totales, el PDF y el Excel respetan la busqueda, y el PDF la menciona" },
   { v: "2.56.3", desc: "En Presupuesto vs. ejercido cada partida con gasto se despliega para ver sus transacciones: dia, folio, proveedor, concepto, importe en la columna Real y si esta pagada. Boton Expandir todo / Contraer todo. El PDF y el Excel incluyen el desglose de las partidas que esten desplegadas, asi se decide en pantalla cuanto detalle llevar a la platica" },
@@ -11487,6 +11488,8 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
      sesiones, igual que los de Partidas y Transacciones. */
   const [groupBys, setGroupBys] = usePrefState("pref-comparativo-groupbys", [], sanearGroupBys(GROUP_OPCIONES_COMPARATIVO));
   const [orden, setOrden] = useSessionState("ss-comparativo-orden", { key: "dif", dir: "desc" });
+  const [contraidos, setContraidos] = useState(() => new Set());
+  const alternarGrupo = (ruta) => setContraidos((prev) => alternarEnSet(prev, ruta));
   const [abiertas, setAbiertas] = useState(() => new Set());
   const [buscar, setBuscar] = useSessionState("ss-comparativo-buscar", "");
   const alternar = (clave) => setAbiertas((prev) => alternarEnSet(prev, clave));
@@ -11595,7 +11598,11 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     ...(abiertas.has(r.clave)
       ? [...r.txs].sort((x, y) => String(x.dia || "").localeCompare(String(y.dia || ""))).map((t) => ({ tipo: "tx", t, r, depth }))
       : [])];
-  const armar = (lista, niveles, depth) => {
+  /* Un grupo contraído deja su título y su subtotal: se ve cuánto suma sin
+     ver sus partidas. La ruta identifica el grupo aunque el mismo valor se
+     repita en otra rama ("Mantenimiento" dentro de Sobre y dentro de Sub). */
+  const rutasGrupo = [];
+  const armar = (lista, niveles, depth, rutaPadre = "") => {
     if (!niveles.length) return lista.flatMap((r) => conDesglose(r, depth));
     const [{ field, dir = "asc" }, ...resto] = niveles;
     const vals = [...new Set(lista.map((r) => valorGrupo(r, field)))];
@@ -11604,8 +11611,11 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     if (dir === "desc") vals.reverse();
     return vals.flatMap((v) => {
       const sub = lista.filter((r) => valorGrupo(r, field) === v);
-      return [{ tipo: "titulo", texto: `${etqCampo(field)}: ${v}`, n: sub.length, depth },
-        ...armar(sub, resto, depth + 1),
+      const ruta = `${rutaPadre}/${field}:${v}`;
+      rutasGrupo.push(ruta);
+      const cerrado = contraidos.has(ruta);
+      return [{ tipo: "titulo", texto: `${etqCampo(field)}: ${v}`, n: sub.length, depth, ruta, cerrado },
+        ...(cerrado ? [] : armar(sub, resto, depth + 1, ruta)),
         { tipo: "subtotal", texto: v, t: sumar(sub), depth }];
     });
   };
@@ -11617,6 +11627,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     + (t.status === "Pagado" ? "" : " (sin pagar)");
   const conTx = filas.filter((r) => r.txs.length);
   const todoAbierto = conTx.length > 0 && conTx.every((r) => abiertas.has(r.clave));
+  const gruposContraidos = rutasGrupo.length > 0 && rutasGrupo.every((r) => contraidos.has(r));
 
   const exportarPDF = () => {
     const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
@@ -11709,9 +11720,15 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
       subtitle="La Estimada es la de la versión enviada a Dirección, no la de hoy. Real: transacciones vinculadas, sin canceladas."
       right={
         <div style={{ display: "flex", gap: 8 }}>
+          {rutasGrupo.length > 0 && (
+            <Button variant="ghost"
+              onClick={() => setContraidos(gruposContraidos ? new Set() : new Set(rutasGrupo))}>
+              {gruposContraidos ? "Expandir grupos" : "Contraer grupos"}
+            </Button>
+          )}
           <Button variant="ghost" disabled={!conTx.length}
             onClick={() => setAbiertas(todoAbierto ? new Set() : new Set(conTx.map((r) => r.clave)))}>
-            {todoAbierto ? "Contraer todo" : "Expandir todo"}
+            {todoAbierto ? "Ocultar transacciones" : "Ver transacciones"}
           </Button>
           <Button variant="ghost" onClick={exportarPDF} disabled={!detalle}>Generar PDF</Button>
           <Button variant="ghost" onClick={exportarExcel} disabled={!detalle}>Excel</Button>
@@ -11781,8 +11798,11 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
                   </td>
                 </tr>
               ) : x.tipo === "titulo" ? (
-                <tr key={`t${i}`}><td colSpan={5} style={{ ...td, background: ["#DCE1E6", "#E6EAEE", "#EEF1F4"][Math.min(x.depth, 2)],
+                <tr key={`t${i}`} onClick={() => alternarGrupo(x.ruta)} style={{ cursor: "pointer" }}
+                  title={x.cerrado ? "Expandir grupo" : "Contraer grupo"}>
+                  <td colSpan={5} style={{ ...td, background: ["#DCE1E6", "#E6EAEE", "#EEF1F4"][Math.min(x.depth, 2)],
                   fontWeight: 700, fontSize: [12.5, 12, 11.5][Math.min(x.depth, 2)], paddingLeft: 10 + x.depth * 22 }}>
+                  <span style={{ color: T.textFaint, fontSize: 10, marginRight: 8 }}>{x.cerrado ? "▶" : "▼"}</span>
                   {x.texto} <span style={{ fontWeight: 400, color: T.textFaint }}>({x.n})</span></td></tr>
               ) : x.tipo === "subtotal" ? (
                 <tr key={`s${i}`}>
@@ -11832,7 +11852,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
       )}
       <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10, lineHeight: 1.5 }}>
         Desviación = Real − Estimada: en rojo lo que se gastó de más, en verde lo que sobró. Ordenadas de mayor a menor desviación.
-        Las no presupuestadas entran con Estimada en cero. ▶ despliega las transacciones de una partida; el PDF y el Excel incluyen las que estén desplegadas.
+        Las no presupuestadas entran con Estimada en cero. ▶ en un grupo lo contrae o expande; ▶ en una partida despliega sus transacciones. El PDF y el Excel salen tal como se ve.
       </div>
     </Panel>
   );

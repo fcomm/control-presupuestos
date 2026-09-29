@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.56.3";
+const APP_VERSION = "2.56.4";
 const CHANGELOG = [
+  { v: "2.56.4", desc: "Presupuesto vs. ejercido gana el cuadro de busqueda, como las otras tablas. Busca en la partida -- concepto, folio, area -- y en sus transacciones: proveedor, concepto, folio y solicitante, porque a una partida se llega tambien por lo que se le cargo. Los totales, el PDF y el Excel respetan la busqueda, y el PDF la menciona" },
   { v: "2.56.3", desc: "En Presupuesto vs. ejercido cada partida con gasto se despliega para ver sus transacciones: dia, folio, proveedor, concepto, importe en la columna Real y si esta pagada. Boton Expandir todo / Contraer todo. El PDF y el Excel incluyen el desglose de las partidas que esten desplegadas, asi se decide en pantalla cuanto detalle llevar a la platica" },
   { v: "2.56.2", desc: "Presupuesto vs. ejercido gana Agrupar por: sin agrupar, origen o area, con subtotal por bloque. Por origen separa el plan enviado de las partidas agregadas en el mes y del gasto sin partida, porque no estaba planeado y se planeo mal son dos platicas distintas. Por area revisa todas las areas de corrido, ordenadas por desviacion. Las partidas agregadas muestran, como referencia, lo que se estimo al crearlas; la desviacion se sigue midiendo contra el plan enviado, en el que no estaban. PDF y Excel salen con el mismo agrupamiento" },
   { v: "2.56.1", desc: "Presupuesto vs. ejercido se simplifica a una sola tabla, un renglon por partida, con las columnas Estimada, Partida Presupuestal, Real, Desviacion $ y Desviacion %, y renglon de total. Filtro por area para la platica con cada una, ordenada de mayor a menor desviacion, rojo lo gastado de mas y verde lo que sobro. Se quitan las barras, el semaforo y las tarjetas. PDF y Excel con el mismo formato" },
@@ -11477,6 +11478,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   const [area, setArea] = useState("");
   const [agrupar, setAgrupar] = useSessionState("ss-comparativo-agrupar", "ninguno");
   const [abiertas, setAbiertas] = useState(() => new Set());
+  const [buscar, setBuscar] = useSessionState("ss-comparativo-buscar", "");
   const alternar = (clave) => setAbiertas((prev) => alternarEnSet(prev, clave));
 
   useEffect(() => {
@@ -11537,7 +11539,14 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   const deMoneda = renglones.filter((r) => r.moneda === moneda);
   const areas = [...new Set(deMoneda.map((r) => r.area))].sort();
   // Primero la desviación más grande: es lo que hay que platicar.
-  const filas = deMoneda.filter((r) => !area || r.area === area)
+  /* La búsqueda cubre la partida y sus transacciones: a una partida se
+     llega también por el proveedor o el folio de lo que se le cargó, que es
+     lo que el área suele recordar. */
+  const q = buscar.trim().toLowerCase();
+  const coincide = (r) => !q || [r.partida, r.folio, r.area,
+    ...r.txs.flatMap((t) => [t.proveedor, t.concepto_detallado, t.folio_transaccion, t.solicitante])]
+    .some((v) => String(v || "").toLowerCase().includes(q));
+  const filas = deMoneda.filter((r) => (!area || r.area === area) && coincide(r))
     .map((r) => ({ ...r, dif: r.real - r.estimada }))
     .sort((a, b) => b.dif - a.dif);
   const sumar = (l) => l.reduce((a, r) => ({ estimada: a.estimada + r.estimada, real: a.real + r.real }), { estimada: 0, real: 0 });
@@ -11590,7 +11599,8 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     doc.text(titulo, M, 40);
     doc.setFontSize(9).setFont(undefined, "normal").setTextColor(107, 119, 133);
     doc.text(`Estimada: versión ${rep.version} enviada el ${new Date(rep.enviado_en).toLocaleDateString("es-MX")}   ·   `
-      + `Real ${soloPagado ? "(solo pagado)" : "(transacciones vinculadas, sin canceladas)"} al ${formatFechaHora(new Date().toISOString())}   ·   ${moneda}`, M, 56);
+      + `Real ${soloPagado ? "(solo pagado)" : "(transacciones vinculadas, sin canceladas)"} al ${formatFechaHora(new Date().toISOString())}   ·   ${moneda}`
+      + (q ? `   ·   búsqueda: "${buscar.trim()}"` : ""), M, 56);
     autoTable(doc, {
       startY: 70,
       head: [encabezado],
@@ -11683,6 +11693,10 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
       }
     >
       <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
+        <Field label="Buscar">
+          <TextInput value={buscar} onChange={(e) => setBuscar(e.target.value)}
+            placeholder="Partida, folio, proveedor, concepto…" style={{ width: 240 }} />
+        </Field>
         <Field label="Mes"><Select value={per} onChange={(e) => { setPeriodo(e.target.value); setRepId(""); }}>
           {periodos.map((p) => <option key={p}>{p}</option>)}</Select></Field>
         {versiones.length > 1 && (
@@ -11761,7 +11775,8 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
                   <td style={{ ...num, color: colorDif(r.dif) }}>{pct(r.dif, r.estimada)}</td>
                 </tr>
               ))(x.r))}
-              {!filas.length && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: T.textFaint }}>Nada en {moneda} con estos filtros</td></tr>}
+              {!filas.length && <tr><td colSpan={5} style={{ ...td, textAlign: "center", color: T.textFaint }}>
+                {q ? `Ninguna partida coincide con "${buscar.trim()}"` : `Nada en ${moneda} con estos filtros`}</td></tr>}
             </tbody>
             {filas.length > 0 && (
               <tfoot>

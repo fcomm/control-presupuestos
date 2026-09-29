@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.56.2";
+const APP_VERSION = "2.56.3";
 const CHANGELOG = [
+  { v: "2.56.3", desc: "En Presupuesto vs. ejercido cada partida con gasto se despliega para ver sus transacciones: dia, folio, proveedor, concepto, importe en la columna Real y si esta pagada. Boton Expandir todo / Contraer todo. El PDF y el Excel incluyen el desglose de las partidas que esten desplegadas, asi se decide en pantalla cuanto detalle llevar a la platica" },
   { v: "2.56.2", desc: "Presupuesto vs. ejercido gana Agrupar por: sin agrupar, origen o area, con subtotal por bloque. Por origen separa el plan enviado de las partidas agregadas en el mes y del gasto sin partida, porque no estaba planeado y se planeo mal son dos platicas distintas. Por area revisa todas las areas de corrido, ordenadas por desviacion. Las partidas agregadas muestran, como referencia, lo que se estimo al crearlas; la desviacion se sigue midiendo contra el plan enviado, en el que no estaban. PDF y Excel salen con el mismo agrupamiento" },
   { v: "2.56.1", desc: "Presupuesto vs. ejercido se simplifica a una sola tabla, un renglon por partida, con las columnas Estimada, Partida Presupuestal, Real, Desviacion $ y Desviacion %, y renglon de total. Filtro por area para la platica con cada una, ordenada de mayor a menor desviacion, rojo lo gastado de mas y verde lo que sobro. Se quitan las barras, el semaforo y las tarjetas. PDF y Excel con el mismo formato" },
   { v: "2.56.0", desc: "Tab nuevo en Reportes a Direccion: Presupuesto vs. ejercido. Compara el presupuesto mensual que se envio a Direccion -- la version congelada, no las partidas de hoy, para que un monto subido despues no esconda la desviacion -- contra lo ejercido: transacciones vinculadas sin canceladas, o solo lo pagado con la casilla. Totales arriba; barras por area ordenadas por desviacion, donde el marco es lo presupuestado, verde lo ejercido y rojo lo que se paso; y la tabla de partidas con semaforo: excedida (mas de 110 %), subejercida (menos de 50 %), sin ejercer, en rango, y no presupuestado, que es gasto del mes en partidas que no iban en la version enviada o sin partida. Filtro por area para la platica con cada una, y PDF de lo que se ve. Avisa si el mes aun no termina" },
@@ -11475,6 +11476,8 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   const [soloPagado, setSoloPagado] = useState(false);
   const [area, setArea] = useState("");
   const [agrupar, setAgrupar] = useSessionState("ss-comparativo-agrupar", "ninguno");
+  const [abiertas, setAbiertas] = useState(() => new Set());
+  const alternar = (clave) => setAbiertas((prev) => alternarEnSet(prev, clave));
 
   useEffect(() => {
     if (!rep) { setDetalle(null); return; }
@@ -11565,9 +11568,20 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
      subtotales— para que la pantalla, el PDF y el Excel salgan iguales. */
   const cuerpoTabla = bloques.flatMap((b) => [
     ...(b.titulo ? [{ tipo: "titulo", texto: b.titulo }] : []),
-    ...b.filas.map((r) => ({ tipo: "fila", r })),
+    /* Las transacciones de una partida abierta van debajo de ella, con su
+       importe en la columna Real: así se ve de qué se compone el Real sin
+       cambiar de pantalla. Se ordenan por día. */
+    ...b.filas.flatMap((r) => [{ tipo: "fila", r },
+      ...(abiertas.has(r.clave)
+        ? [...r.txs].sort((x, y) => String(x.dia || "").localeCompare(String(y.dia || ""))).map((t) => ({ tipo: "tx", t, r }))
+        : [])]),
     ...(b.titulo ? [{ tipo: "subtotal", texto: b.titulo, t: sumar(b.filas) }] : []),
   ]);
+
+  const textoTx = (t) => [t.dia, t.folio_transaccion, t.proveedor, t.concepto_detallado].filter(Boolean).join(" · ")
+    + (t.status === "Pagado" ? "" : " (sin pagar)");
+  const conTx = filas.filter((r) => r.txs.length);
+  const todoAbierto = conTx.length > 0 && conTx.every((r) => abiertas.has(r.clave));
 
   const exportarPDF = () => {
     const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
@@ -11580,7 +11594,10 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     autoTable(doc, {
       startY: 70,
       head: [encabezado],
-      body: cuerpoTabla.map((x) => x.tipo === "titulo"
+      body: cuerpoTabla.map((x) => x.tipo === "tx"
+        ? ["", { content: `    ${textoTx(x.t)}`, styles: { halign: "left", fontSize: 7.5, textColor: [91, 107, 121] } },
+           { content: money(x.t.importe, x.t.moneda), styles: { fontSize: 7.5, textColor: [91, 107, 121] } }, "", ""]
+        : x.tipo === "titulo"
         ? [{ content: x.texto, colSpan: 5, styles: { fontStyle: "bold", fillColor: [236, 238, 241], halign: "left" } }]
         : x.tipo === "subtotal"
           ? [m(x.t.estimada), `Subtotal ${x.texto}`, m(x.t.real), m(x.t.real - x.t.estimada), pct(x.t.real - x.t.estimada, x.t.estimada)]
@@ -11594,7 +11611,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
       didParseCell: (d) => {
         const x = cuerpoTabla[d.row.index];
         if (d.section === "body" && x?.tipo === "subtotal") d.cell.styles.fontStyle = "bold";
-        if (d.section === "body" && (d.column.index === 3 || d.column.index === 4) && x && x.tipo !== "titulo") {
+        if (d.section === "body" && (d.column.index === 3 || d.column.index === 4) && x && x.tipo !== "titulo" && x.tipo !== "tx") {
           const dif = x.tipo === "fila" ? x.r.dif : x.t.real - x.t.estimada;
           if (dif > 0.005) d.cell.styles.textColor = [192, 72, 63];
           else if (dif < -0.005) d.cell.styles.textColor = [30, 143, 115];
@@ -11621,6 +11638,12 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
         row.font = { bold: true };
         row.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FFECEEF1" } };
         ws.mergeCells(row.number, 1, row.number, 6);
+        return;
+      }
+      if (x.tipo === "tx") {
+        const row = ws.addRow([null, `   ${textoTx(x.t)}`, Number(x.t.importe) || 0, null, null, x.t.area || ""]);
+        row.font = { size: 9, color: { argb: "FF5B6B79" } };
+        row.getCell(3).numFmt = fmtNum;
         return;
       }
       const row = x.tipo === "fila"
@@ -11650,6 +11673,10 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
       subtitle="La Estimada es la de la versión enviada a Dirección, no la de hoy. Real: transacciones vinculadas, sin canceladas."
       right={
         <div style={{ display: "flex", gap: 8 }}>
+          <Button variant="ghost" disabled={!conTx.length}
+            onClick={() => setAbiertas(todoAbierto ? new Set() : new Set(conTx.map((r) => r.clave)))}>
+            {todoAbierto ? "Contraer todo" : "Expandir todo"}
+          </Button>
           <Button variant="ghost" onClick={exportarPDF} disabled={!detalle}>Generar PDF</Button>
           <Button variant="ghost" onClick={exportarExcel} disabled={!detalle}>Excel</Button>
         </div>
@@ -11691,7 +11718,19 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
           <table style={{ ...tableStyle, border: `1px solid ${T.border}` }}>
             <thead><tr>{encabezado.map((h) => <th key={h} style={th}>{h}</th>)}</tr></thead>
             <tbody>
-              {cuerpoTabla.map((x, i) => x.tipo === "titulo" ? (
+              {cuerpoTabla.map((x, i) => x.tipo === "tx" ? (
+                <tr key={`x${i}`}>
+                  <td style={{ ...td, background: T.panel }} />
+                  <td style={{ ...td, background: T.panel, fontSize: 11.5, color: T.textDim, paddingLeft: 30 }}>
+                    {textoTx(x.t)}
+                  </td>
+                  <td style={{ ...num, background: T.panel, fontSize: 11.5, color: T.textDim }}>{money(x.t.importe, x.t.moneda)}</td>
+                  <td style={{ ...td, background: T.panel }} />
+                  <td style={{ ...td, background: T.panel }}>
+                    {x.t.status === "Pagado" ? <Pill tone="teal">Pagado</Pill> : <Pill tone="amber">Sin pagar</Pill>}
+                  </td>
+                </tr>
+              ) : x.tipo === "titulo" ? (
                 <tr key={`t${i}`}><td colSpan={5} style={{ ...td, background: "#DCE1E6", fontWeight: 700, fontSize: 12.5 }}>{x.texto}</td></tr>
               ) : x.tipo === "subtotal" ? (
                 <tr key={`s${i}`}>
@@ -11705,6 +11744,13 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
                 <tr key={r.clave} title={r.txs.map((t) => `${t.dia || ""}  ${t.proveedor || ""}  ${money(t.importe, t.moneda)}${t.status === "Pagado" ? "" : " (sin pagar)"}`).join("\n") || "Sin transacciones"}>
                   <td style={num}>{m(r.estimada)}</td>
                   <td style={{ ...td, textAlign: "center" }}>
+                    {r.txs.length > 0 && (
+                      <button type="button" onClick={() => alternar(r.clave)}
+                        title={abiertas.has(r.clave) ? "Ocultar transacciones" : `Ver ${r.txs.length} transacción(es)`}
+                        style={{ background: "none", border: "none", cursor: "pointer", color: T.accent, fontSize: 11, marginRight: 6 }}>
+                        {abiertas.has(r.clave) ? "▼" : "▶"} {r.txs.length}
+                      </button>
+                    )}
                     {r.partida}
                     <div style={{ fontSize: 10.5, color: T.textFaint, fontFamily: T.fontMono }}>
                       {etiquetaPartida(r)}
@@ -11733,7 +11779,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
       )}
       <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10, lineHeight: 1.5 }}>
         Desviación = Real − Estimada: en rojo lo que se gastó de más, en verde lo que sobró. Ordenadas de mayor a menor desviación.
-        Las no presupuestadas entran con Estimada en cero. Al pasar el mouse sobre una partida se ven sus transacciones.
+        Las no presupuestadas entran con Estimada en cero. ▶ despliega las transacciones de una partida; el PDF y el Excel incluyen las que estén desplegadas.
       </div>
     </Panel>
   );

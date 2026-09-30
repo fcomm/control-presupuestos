@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.59.1";
+const APP_VERSION = "2.59.2";
 const CHANGELOG = [
+  { v: "2.59.2", desc: "Cierre manual del seguimiento de un anticipo, para cuando la factura existe pero no esta como XML en su expediente: facturado en el finiquito, en el SAE, o el proveedor facturo todo al final. Pide una nota obligatoria que diga donde esta la factura -- el UUID o el folio si se tiene --, guarda quien y cuando, y se puede reabrir. La marca pasa a gris, ANT cerrado, distinta del verde de ANT facturado, para que se distinga un cierre con XML de uno por nota; al pasar el mouse se ve la nota. Se cierra desde la subpestana Anticipos o desde el detalle de la transaccion. Requiere 60-cierre-anticipos.sql" },
   { v: "2.59.1", desc: "La marca de anticipo se acorta para que no se encime con la columna de al lado: ANT sin XML · 6 d cuando falta la factura y ANT facturado cuando ya esta. El detalle completo sigue al pasar el mouse" },
   { v: "2.59.0", desc: "Seguimiento de anticipos, fase 1. La transaccion gana el campo Tipo de pago -- Pago Total, Anticipo o Finiquito -- en el formulario y en la edicion masiva; las que decian ANTICIPO en el Folio SAE quedaron marcadas por la migracion. Un anticipo pagado sin la Factura XML en su expediente se marca junto a su status con los dias desde el pago: ambar dentro del mes del pago, rojo si el mes ya cerro sin CFDI, porque entonces se pierden la deduccion y el IVA acreditable de ese mes. Subpestana nueva Anticipos en Transacciones, con todos los anticipos pagados, filtro por pendientes y acceso directo al detalle para adjuntar la factura; y recuadro en el Dashboard con los pendientes de la compania. Cuenta el XML, no el PDF: el XML es el comprobante fiscal. Requiere 59-tipo-pago-anticipos.sql" },
   { v: "2.58.0", desc: "Atajo Duplicar al mes siguiente en la fila de cada transaccion. Crea una copia con el mismo dia de pago del mes siguiente -- ajustado al ultimo dia si ese dia no existe, del 31 de octubre al 30 de noviembre -- que nace como borrador: sin folio, No Pagado, sin fecha de pago, sin folios de SAE ni factura, sin referencia, sin marcas de enviada o reportada y sin adjuntos. Si la original tiene partida, la liga a la equivalente del mes siguiente -- mismo concepto, rubro, proyecto y moneda -- y si no existe la crea copiando la original con su folio del mes nuevo. La confirmacion dice la fecha nueva y si la partida se liga o se crea, antes de tocar nada" },
@@ -785,6 +786,7 @@ const CAMPOS_SISTEMA_TRANSACCION = new Set([
   "enviado_pagos_at", "reportado_at", "drive_folder_id",
   "created_at", "updated_at", "created_by", "updated_by",
   "cancelada_en", "cancelada_por", "motivo_cancelacion", "historial_cancelacion",
+  "anticipo_cerrado_en", "anticipo_cerrado_por", "anticipo_nota_cierre",
 ]);
 
 const estaCancelada = (t) => !!t?.cancelada_en;
@@ -2375,8 +2377,12 @@ function seguimientoAnticipo(t, adj) {
   const dias = pago ? Math.max(0, Math.floor((Date.now() - new Date(`${pago}T12:00:00`).getTime()) / 86400000)) : null;
   const hoy = new Date();
   const mesHoy = `${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}`;
+  const conXml = !!adj?.xml;
+  const cerrado = !!t.anticipo_cerrado_en;
   return {
-    conXml: !!adj?.xml, conPdf: !!adj?.factura, pago, dias,
+    conXml, conPdf: !!adj?.factura, pago, dias, cerrado, nota: t.anticipo_nota_cierre || "",
+    // Pendiente: ni XML en el expediente ni cierre con nota.
+    pendiente: !conXml && !cerrado,
     mesCerrado: !!pago && pago.slice(0, 7) < mesHoy,
   };
 }
@@ -2386,6 +2392,8 @@ function PillAnticipo({ seg }) {
   // Corta a propósito: va en la columna Status, junto a otras marcas. El
   // detalle completo está al pasar el mouse.
   if (seg.conXml) return <span title="Anticipo con su Factura XML en el expediente"><Pill tone="teal">ANT facturado</Pill></span>;
+  // Cerrado a mano: gris, distinto del verde, porque no hay XML en el expediente.
+  if (seg.cerrado) return <span title={`Seguimiento cerrado a mano: ${seg.nota}`}><Pill tone="dim">ANT cerrado</Pill></span>;
   return (
     <span title={`Anticipo pagado${seg.pago ? ` el ${seg.pago}` : ""} sin Factura XML en su expediente`
       + (seg.conPdf ? " (tiene el PDF, falta el XML)" : "")
@@ -2411,6 +2419,7 @@ function AlertaAnticiposDashboard({ unidad, transacciones }) {
       for (let i = 0; i < ids.length; i += 150) {
         const { data, error } = await supabase.from("adjuntos_resumen_transaccion")
           .select("transaccion_id,xml,factura").in("transaccion_id", ids.slice(i, i + 150));
+        // (el cierre manual viaja en la transacción misma)
         if (error) { if (vivo) setAdj(null); return; }
         (data || []).forEach((r) => mapa.set(String(r.transaccion_id), r));
       }
@@ -2420,7 +2429,7 @@ function AlertaAnticiposDashboard({ unidad, transacciones }) {
   }, [clave]);
   if (!adj) return null;
   const pendientes = anticipos.map((t) => ({ t, seg: seguimientoAnticipo(t, adj.get(String(t.id))) }))
-    .filter((x) => x.seg && !x.seg.conXml)
+    .filter((x) => x.seg && x.seg.pendiente)
     .sort((a, b) => (b.seg.mesCerrado - a.seg.mesCerrado) || ((b.seg.dias || 0) - (a.seg.dias || 0)));
   if (!pendientes.length) return null;
   const porMoneda = {};
@@ -2447,27 +2456,28 @@ function AlertaAnticiposDashboard({ unidad, transacciones }) {
 
 /* Todos los anticipos pagados de la compañía con el estado de su factura.
    Es la lista de trabajo: de aquí se abre cada uno para adjuntar el XML. */
-function AnticiposPanel({ transacciones, adjDe, onAbrir }) {
+function AnticiposPanel({ transacciones, adjDe, onAbrir, onCerrar, onReabrir }) {
   const [soloPend, setSoloPend] = useSessionState("ss-anticipos-pendientes", true);
   const [buscar, setBuscar] = useSessionState("ss-anticipos-buscar", "");
   const todos = transacciones.map((t) => ({ t, seg: seguimientoAnticipo(t, adjDe(t)) })).filter((x) => x.seg);
   const q = buscar.trim().toLowerCase();
   const filas = todos
-    .filter((x) => !soloPend || !x.seg.conXml)
+    .filter((x) => !soloPend || x.seg.pendiente)
     .filter((x) => !q || [x.t.folio_transaccion, x.t.proveedor, x.t.concepto_detallado, x.t.folio_compra_sae]
       .some((v) => String(v || "").toLowerCase().includes(q)))
-    .sort((a, b) => (a.seg.conXml - b.seg.conXml) || (b.seg.mesCerrado - a.seg.mesCerrado) || ((b.seg.dias || 0) - (a.seg.dias || 0)));
-  const pend = todos.filter((x) => !x.seg.conXml);
+    .sort((a, b) => (b.seg.pendiente - a.seg.pendiente) || (b.seg.mesCerrado - a.seg.mesCerrado) || ((b.seg.dias || 0) - (a.seg.dias || 0)));
+  const pend = todos.filter((x) => x.seg.pendiente);
   return (
     <Panel title="Anticipos pagados"
-      subtitle={`${todos.length} anticipo(s) pagado(s) · ${pend.length} sin Factura XML · ${pend.filter((x) => x.seg.mesCerrado).length} de un mes ya cerrado`}>
+      subtitle={`${todos.length} anticipo(s) pagado(s) · ${pend.length} pendiente(s) de factura · ${pend.filter((x) => x.seg.mesCerrado).length} de un mes ya cerrado`
+        + ` · ${todos.filter((x) => x.seg.cerrado && !x.seg.conXml).length} cerrado(s) a mano`}>
       <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
         <Field label="Buscar">
           <TextInput value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Folio, proveedor, concepto…" style={{ width: 240 }} />
         </Field>
         <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12, color: T.textDim, paddingBottom: 9, cursor: "pointer" }}>
           <input type="checkbox" checked={soloPend} onChange={(e) => setSoloPend(e.target.checked)} />
-          Solo sin factura
+          Solo pendientes
         </label>
       </div>
       {!filas.length ? (
@@ -2487,9 +2497,14 @@ function AnticiposPanel({ transacciones, adjDe, onAbrir }) {
                   <td style={tdStyle}>{seg.pago || "—"}</td>
                   <td style={tdStyle}>
                     <PillAnticipo seg={seg} />
-                    {!seg.conXml && seg.conPdf && <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>tiene el PDF, falta el XML</div>}
+                    {seg.pendiente && seg.conPdf && <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>tiene el PDF, falta el XML</div>}
+                    {seg.cerrado && !seg.conXml && <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>{seg.nota}</div>}
                   </td>
-                  <td style={tdStyle}><Button variant="ghost" style={{ padding: "4px 10px" }} onClick={() => onAbrir(t)}>Abrir</Button></td>
+                  <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
+                    <Button variant="ghost" style={{ padding: "4px 10px", marginRight: 6 }} onClick={() => onAbrir(t)}>Abrir</Button>
+                    {seg.pendiente && <Button variant="ghost" style={{ padding: "4px 10px" }} onClick={() => onCerrar(t)}>Cerrar seguimiento</Button>}
+                    {seg.cerrado && <Button variant="ghost" style={{ padding: "4px 10px" }} onClick={() => onReabrir(t)}>Reabrir</Button>}
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -2497,7 +2512,7 @@ function AnticiposPanel({ transacciones, adjDe, onAbrir }) {
         </div>
       )}
       <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10, lineHeight: 1.5 }}>
-        Cuenta como facturado cuando la Factura XML está en el expediente de la transacción. Rojo: el mes del pago ya cerró sin CFDI.
+        Sale de pendientes al adjuntar la Factura XML en su expediente (verde), o al cerrar el seguimiento con una nota que diga dónde está la factura (gris). Rojo: el mes del pago ya cerró sin CFDI.
       </div>
     </Panel>
   );
@@ -8706,6 +8721,35 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
   };
 
+  /* Cierre manual del seguimiento de un anticipo: cuando la factura existe
+     pero no como XML en su expediente. La nota es obligatoria: sin ella, el
+     anticipo saldría de pendientes sin evidencia de nada. */
+  const cerrarAnticipo = async (t) => {
+    const nota = (prompt(
+      `Cerrar el seguimiento del anticipo ${t.folio_transaccion || ""} — ${t.proveedor || ""} (${money(t.importe, t.moneda)}).\n\n`
+      + `Si tienes la Factura XML, mejor adjúntala en su expediente: el cierre queda respaldado solo.\n\n`
+      + `¿Dónde está la factura? (obligatorio; incluye el UUID o el folio si lo tienes)\n`
+      + `Ej.: Facturado en el finiquito CTM-OCT26-012, UUID 3F2A…`) || "").trim();
+    if (!nota) return;
+    try {
+      await transaccionesApi.update(t.id, {
+        anticipo_cerrado_en: new Date().toISOString(),
+        anticipo_cerrado_por: session?.user?.id || null,
+        anticipo_nota_cierre: nota,
+      });
+    } catch (err) {
+      alert("No se pudo cerrar: " + (err.message || err) + "\n\n¿Ya corriste 60-cierre-anticipos.sql?");
+    }
+  };
+  const reabrirAnticipo = async (t) => {
+    if (!confirm(`¿Reabrir el seguimiento del anticipo ${t.folio_transaccion || ""}?\n\nSe cerró con la nota: ${t.anticipo_nota_cierre || "—"}`)) return;
+    try {
+      await transaccionesApi.update(t.id, { anticipo_cerrado_en: null, anticipo_cerrado_por: null, anticipo_nota_cierre: null });
+    } catch (err) {
+      alert("No se pudo reabrir: " + (err.message || err));
+    }
+  };
+
   const reactivar = async (t) => {
     const motivo = (prompt(`Reactivar ${t.folio_transaccion}.\n\nSe canceló el ${formatFechaHora(t.cancelada_en)}: ${t.motivo_cancelacion || "—"}\n\nMotivo de la reactivación (obligatorio):`) || "").trim();
     if (!motivo) return;
@@ -9151,7 +9195,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       </>)}
 
       {subTx === "anticipos" && (
-        <AnticiposPanel transacciones={transUnidad} adjDe={adjDe} onAbrir={startEdit} />
+        <AnticiposPanel transacciones={transUnidad} adjDe={adjDe} onAbrir={startEdit}
+          onCerrar={cerrarAnticipo} onReabrir={reabrirAnticipo} />
       )}
 
       {subTx === "io" && (<>
@@ -9500,6 +9545,25 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               const vieja = polizaVieja(t);
               return (
                 <div style={{ gridColumn: "span 4", marginTop: 8 }}>
+                  {(() => {
+                    const seg = seguimientoAnticipo(t, adjDe(t));
+                    if (!seg || seg.conXml) return null;
+                    return (
+                      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", background: T.panelAlt,
+                                    border: `1px solid ${seg.pendiente ? (seg.mesCerrado ? T.red : T.amber) : T.border}`,
+                                    borderRadius: 8, padding: "10px 13px", marginBottom: 12, fontSize: 12 }}>
+                        <PillAnticipo seg={seg} />
+                        <span style={{ flex: 1, minWidth: 220, color: T.textDim, lineHeight: 1.5 }}>
+                          {seg.pendiente
+                            ? "Anticipo pagado sin Factura XML. Adjúntala abajo, o cierra el seguimiento si la factura está en otro lado."
+                            : `Seguimiento cerrado: ${seg.nota}`}
+                        </span>
+                        {seg.pendiente
+                          ? <Button type="button" variant="ghost" onClick={() => cerrarAnticipo(t)}>Cerrar seguimiento</Button>
+                          : <Button type="button" variant="ghost" onClick={() => reabrirAnticipo(t)}>Reabrir</Button>}
+                      </div>
+                    );
+                  })()}
                   {estaCancelada(t) && (
                     <div style={{ background: T.panelAlt, border: `1px solid ${T.red}`, borderRadius: 8,
                                   padding: "10px 13px", marginBottom: 12, fontSize: 12, color: T.red, lineHeight: 1.5 }}>

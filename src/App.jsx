@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.59.2";
+const APP_VERSION = "2.59.3";
 const CHANGELOG = [
+  { v: "2.59.3", desc: "Arreglo: el aviso de listas del SAT en las confirmaciones hablaba siempre del 69-B aunque el proveedor solo estuviera en el 69. Son cosas distintas: el 69-B presume operaciones simuladas y pone en riesgo la deduccion y el IVA acreditable; el 69 publica incumplimientos del proveedor -- creditos firmes, no localizado -- que no invalidan sus facturas por si solos. Ahora el texto corresponde a lo encontrado, y si el supuesto es CSD sin efectos advierte que las facturas emitidas con ese sello no son validas" },
   { v: "2.59.2", desc: "Cierre manual del seguimiento de un anticipo, para cuando la factura existe pero no esta como XML en su expediente: facturado en el finiquito, en el SAE, o el proveedor facturo todo al final. Pide una nota obligatoria que diga donde esta la factura -- el UUID o el folio si se tiene --, guarda quien y cuando, y se puede reabrir. La marca pasa a gris, ANT cerrado, distinta del verde de ANT facturado, para que se distinga un cierre con XML de uno por nota; al pasar el mouse se ve la nota. Se cierra desde la subpestana Anticipos o desde el detalle de la transaccion. Requiere 60-cierre-anticipos.sql" },
   { v: "2.59.1", desc: "La marca de anticipo se acorta para que no se encime con la columna de al lado: ANT sin XML · 6 d cuando falta la factura y ANT facturado cuando ya esta. El detalle completo sigue al pasar el mouse" },
   { v: "2.59.0", desc: "Seguimiento de anticipos, fase 1. La transaccion gana el campo Tipo de pago -- Pago Total, Anticipo o Finiquito -- en el formulario y en la edicion masiva; las que decian ANTICIPO en el Folio SAE quedaron marcadas por la migracion. Un anticipo pagado sin la Factura XML en su expediente se marca junto a su status con los dias desde el pago: ambar dentro del mes del pago, rojo si el mes ya cerro sin CFDI, porque entonces se pierden la deduccion y el IVA acreditable de ese mes. Subpestana nueva Anticipos en Transacciones, con todos los anticipos pagados, filtro por pendientes y acceso directo al detalle para adjuntar la factura; y recuadro en el Dashboard con los pendientes de la compania. Cuenta el XML, no el PDF: el XML es el comprobante fiscal. Requiere 59-tipo-pago-anticipos.sql" },
@@ -977,8 +978,22 @@ function avisoSatTransacciones(trans, proveedores, listasSat) {
     if (hs.length && !vistos.has(p.id)) vistos.set(p.id, `  ${p.nombre} (${p.rfc}): ${hs.map(etiquetaSat).join("; ")}`);
   });
   if (!vistos.size) return "";
+  /* El texto depende de lo encontrado: el 69-B y el 69 no significan lo
+     mismo, y advertir del 69-B por un crédito firme exagera el riesgo. */
+  const todos = [];
+  (trans || []).forEach((t) => {
+    const p = t.proveedor_id ? proveedores.find((x) => x.id === t.proveedor_id) : null;
+    if (p) todos.push(...hallazgosSat(listasSat, p.rfc));
+  });
+  const hay69B = todos.some((h) => h.lista === "69-B");
+  const hayCsd = todos.some((h) => h.lista !== "69-B" && /csd/i.test(h.situacion || ""));
+  const hay69 = todos.some((h) => h.lista !== "69-B" && !/csd/i.test(h.situacion || ""));
+  const notas = [];
+  if (hay69B) notas.push("69-B: el SAT presume operaciones simuladas; pone en riesgo la deducción y el IVA acreditable de lo que se le pague.");
+  if (hayCsd) notas.push("CSD sin efectos: las facturas emitidas con ese sello no son válidas; verifica que el CFDI se haya timbrado con un sello vigente.");
+  if (hay69) notas.push("69: el proveedor tiene incumplimientos publicados (créditos firmes, no localizado, etc.). Por sí solo no invalida sus facturas, pero conviene revisarlo.");
   return `\n\nATENCIÓN — proveedor(es) en listas del SAT:\n${[...vistos.values()].join("\n")}\n` +
-    `El 69-B pone en riesgo la deducción y el acreditamiento del IVA. Verifícalo antes de continuar.`;
+    notas.join("\n") + "\nVerifícalo antes de continuar.";
 }
 
 /* ----------------------------------------------------------------------

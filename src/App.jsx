@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.59.0";
+const APP_VERSION = "2.59.1";
 const CHANGELOG = [
+  { v: "2.59.1", desc: "La marca de anticipo se acorta para que no se encime con la columna de al lado: ANT sin XML · 6 d cuando falta la factura y ANT facturado cuando ya esta. El detalle completo sigue al pasar el mouse" },
   { v: "2.59.0", desc: "Seguimiento de anticipos, fase 1. La transaccion gana el campo Tipo de pago -- Pago Total, Anticipo o Finiquito -- en el formulario y en la edicion masiva; las que decian ANTICIPO en el Folio SAE quedaron marcadas por la migracion. Un anticipo pagado sin la Factura XML en su expediente se marca junto a su status con los dias desde el pago: ambar dentro del mes del pago, rojo si el mes ya cerro sin CFDI, porque entonces se pierden la deduccion y el IVA acreditable de ese mes. Subpestana nueva Anticipos en Transacciones, con todos los anticipos pagados, filtro por pendientes y acceso directo al detalle para adjuntar la factura; y recuadro en el Dashboard con los pendientes de la compania. Cuenta el XML, no el PDF: el XML es el comprobante fiscal. Requiere 59-tipo-pago-anticipos.sql" },
   { v: "2.58.0", desc: "Atajo Duplicar al mes siguiente en la fila de cada transaccion. Crea una copia con el mismo dia de pago del mes siguiente -- ajustado al ultimo dia si ese dia no existe, del 31 de octubre al 30 de noviembre -- que nace como borrador: sin folio, No Pagado, sin fecha de pago, sin folios de SAE ni factura, sin referencia, sin marcas de enviada o reportada y sin adjuntos. Si la original tiene partida, la liga a la equivalente del mes siguiente -- mismo concepto, rubro, proyecto y moneda -- y si no existe la crea copiando la original con su folio del mes nuevo. La confirmacion dice la fecha nueva y si la partida se liga o se crea, antes de tocar nada" },
   { v: "2.57.2", desc: "El selector de partida gana filtro de Ano y abre en el mes y ano en curso, en vez de mostrar todas las partidas de todos los periodos. Si la transaccion ya tiene partida de otro periodo, abre en el periodo de esa partida, para que la seleccion actual se vea. Con Todos en el ano, los meses se separan por ano: Septiembre 2025 y Septiembre 2026 ya no se mezclan. Si el periodo no tiene partidas, lo dice y ofrece ver todas" },
@@ -2382,12 +2383,14 @@ function seguimientoAnticipo(t, adj) {
 
 function PillAnticipo({ seg }) {
   if (!seg) return null;
-  if (seg.conXml) return <span title="Anticipo con su Factura XML en el expediente"><Pill tone="teal">Anticipo facturado</Pill></span>;
+  // Corta a propósito: va en la columna Status, junto a otras marcas. El
+  // detalle completo está al pasar el mouse.
+  if (seg.conXml) return <span title="Anticipo con su Factura XML en el expediente"><Pill tone="teal">ANT facturado</Pill></span>;
   return (
     <span title={`Anticipo pagado${seg.pago ? ` el ${seg.pago}` : ""} sin Factura XML en su expediente`
       + (seg.conPdf ? " (tiene el PDF, falta el XML)" : "")
       + (seg.mesCerrado ? ". El mes del pago ya cerró: sin CFDI se pierden la deducción y el IVA acreditable." : ".")}>
-      <Pill tone={seg.mesCerrado ? "red" : "amber"}>Anticipo sin factura{seg.dias != null ? ` · ${seg.dias} d` : ""}</Pill>
+      <Pill tone={seg.mesCerrado ? "red" : "amber"}>ANT sin XML{seg.dias != null ? ` · ${seg.dias} d` : ""}</Pill>
     </span>
   );
 }

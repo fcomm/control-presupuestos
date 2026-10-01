@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.59.4";
+const APP_VERSION = "2.60.0";
 const CHANGELOG = [
+  { v: "2.60.0", desc: "Desde Partidas, la edicion de una transaccion vinculada permite quitarla: Eliminar si es borrador, Cancelar con motivo si ya esta registrada -- conserva su folio, como en Transacciones --; una pagada no se toca hasta regresarla a No Pagado. Y una partida con transacciones ya no se elimina dejandolas sueltas: hay que reasignarlas o quitarlas antes. Al intentar borrarla se abre una ventana con sus transacciones y la opcion de reasignarlas todas a otra partida de la misma moneda; al terminar, la partida se elimina. Cuentan tambien las canceladas: su folio sigue apuntando a la partida" },
   { v: "2.59.4", desc: "Desde Partidas, al editar una transaccion vinculada se puede cambiar su partida, con el mismo selector de Transacciones: busqueda, filtros de rubro, mes y ano, y solo partidas de su moneda. Al guardar, la transaccion pasa a la partida elegida y sale de la que se estaba viendo; el aviso lo dice antes de guardar" },
   { v: "2.59.3", desc: "Arreglo: el aviso de listas del SAT en las confirmaciones hablaba siempre del 69-B aunque el proveedor solo estuviera en el 69. Son cosas distintas: el 69-B presume operaciones simuladas y pone en riesgo la deduccion y el IVA acreditable; el 69 publica incumplimientos del proveedor -- creditos firmes, no localizado -- que no invalidan sus facturas por si solos. Ahora el texto corresponde a lo encontrado, y si el supuesto es CSD sin efectos advierte que las facturas emitidas con ese sello no son validas" },
   { v: "2.59.2", desc: "Cierre manual del seguimiento de un anticipo, para cuando la factura existe pero no esta como XML en su expediente: facturado en el finiquito, en el SAE, o el proveedor facturo todo al final. Pide una nota obligatoria que diga donde esta la factura -- el UUID o el folio si se tiene --, guarda quien y cuando, y se puede reabrir. La marca pasa a gris, ANT cerrado, distinta del verde de ANT facturado, para que se distinga un cierre con XML de uno por nota; al pasar el mouse se ve la nota. Se cierra desde la subpestana Anticipos o desde el detalle de la transaccion. Requiere 60-cierre-anticipos.sql" },
@@ -5704,9 +5705,108 @@ function SolicitudesPagoListaPanel({ unidad, session }) {
   );
 }
 
+/* Antes de eliminar una partida, sus transacciones se van a otra. Borrarla con
+   transacciones las dejaba sueltas, sin partida, y su gasto salía del
+   presupuesto sin que nadie lo decidiera. Solo se ofrecen partidas de la misma
+   moneda. Al terminar de reasignar, la partida se elimina. */
+function ReasignarYEliminarPartidaModal({ partida, vinculadas, partidasUnidad, transacciones, transaccionesApi, partidasApi, unidad, onClose }) {
+  const [destino, setDestino] = useState("");
+  const [avance, setAvance] = useState(null);
+  const candidatas = partidasUnidad.filter((p) => p.id !== partida.id && mismaMoneda(p.moneda, partida.moneda));
+  const total = vinculadas.reduce((a, t) => a + (Number(t.importe) || 0), 0);
+  const dest = candidatas.find((p) => p.id === destino);
+
+  const ejecutar = async () => {
+    if (!dest) return;
+    if (!confirm(`Se van a mover ${vinculadas.length} transacción(es) por ${money(total, partida.moneda)} a\n"${dest.concepto}" (${dest.folio || "—"}),\ny después se elimina la partida "${partida.concepto}" (${partida.folio || "—"}).\n\n¿Continuar?`)) return;
+    try {
+      for (let i = 0; i < vinculadas.length; i++) {
+        setAvance(`Moviendo ${i + 1} de ${vinculadas.length}…`);
+        await transaccionesApi.update(vinculadas[i].id, { partida_id: dest.id });
+      }
+      setAvance("Eliminando la partida…");
+      await partidasApi.remove(partida.id);
+      onClose();
+    } catch (err) {
+      setAvance(null);
+      alert("Se detuvo: " + (err.message || err) + "\n\nLas que ya se movieron quedan en la partida nueva; la original no se eliminó.");
+    }
+  };
+
+  return (
+    <Modal title="Esta partida tiene transacciones"
+      subtitle={`${partida.folio || "—"} · ${partida.concepto} — antes de eliminarla, sus transacciones tienen que ir a otra partida`}
+      onClose={avance ? () => {} : onClose} width={720} zIndex={1100} cerrarAlHacerClicFuera={false}>
+      <div style={{ fontSize: 12.5, color: T.textDim, marginBottom: 12, lineHeight: 1.5 }}>
+        {vinculadas.length} transacción(es) por {money(total, partida.moneda)}. Reasígnalas todas a otra partida, o cierra
+        esta ventana y quítalas una por una desde la partida (✎ → Eliminar o Cancelar transacción).
+      </div>
+      <div style={{ maxHeight: 220, overflowY: "auto", border: `1px solid ${T.border}`, borderRadius: 6, marginBottom: 14 }}>
+        <table style={tableStyle}>
+          <tbody>
+            {vinculadas.map((t) => (
+              <tr key={t.id}>
+                <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.accent }}>{t.folio_transaccion || "borrador"}</td>
+                <td style={tdStyle}>{t.proveedor || "—"}<span style={{ color: T.textFaint }}> · {t.concepto_detallado || ""}</span></td>
+                <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right" }}>{money(t.importe, t.moneda)}</td>
+                <td style={tdStyle}>{t.cancelada_en ? <Pill tone="dim">Cancelada</Pill> : <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status || "—"}</Pill>}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <Field label={`Reasignar todas a (solo partidas en ${monedaNorm(partida.moneda)})`}>
+        <PartidaPickerButton partidas={candidatas} transacciones={transacciones} unidad={unidad}
+          value={destino} onChange={setDestino} placeholder="Elegir partida destino…" />
+      </Field>
+      <div style={{ display: "flex", gap: 10, marginTop: 16, alignItems: "center" }}>
+        <Button onClick={ejecutar} disabled={!dest || !!avance}>Reasignar y eliminar partida</Button>
+        <Button variant="ghost" onClick={onClose} disabled={!!avance}>Cerrar</Button>
+        {avance && <span style={{ fontSize: 12, color: T.textDim }}>{avance}</span>}
+      </div>
+    </Modal>
+  );
+}
+
 function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, proveedoresApi, cuentasApi, unidad, partidasUnidad = [], partidasApi, transacciones = [] }) {
   const [form, setForm] = useState({ ...transaccion });
   const [saving, setSaving] = useState(false);
+
+  /* Las mismas reglas que en Transacciones: un borrador se elimina; una
+     registrada se cancela con motivo, porque su folio ya existe; una pagada
+     no se toca hasta regresarla a No Pagado. */
+  const esBorrador = pendienteDeRegistro(transaccion);
+  const quitar = async () => {
+    if (!puedeBorrarTransaccion(transaccion)) return;
+    const etiqueta = `${transaccion.concepto_detallado || transaccion.proveedor || "esta transacción"} (${money(transaccion.importe, transaccion.moneda)})`;
+    setSaving(true);
+    try {
+      if (esBorrador) {
+        if (!confirm(`¿Eliminar ${etiqueta}? Es un borrador sin folio. Esto no se puede deshacer.`)) return;
+        await transaccionesApi.remove(transaccion.id);
+      } else {
+        const aviso = transaccion.enviado_pagos_at
+          ? `\n\nOJO: ya se envió a Pagos el ${formatFechaHora(transaccion.enviado_pagos_at)}; avísales que no la paguen.` : "";
+        const motivo = (prompt(`Cancelar ${transaccion.folio_transaccion} — ${etiqueta}.\nConserva su folio y su expediente; sale de reportes y pagos.${aviso}\n\nMotivo de la cancelación (obligatorio):`) || "").trim();
+        if (!motivo) return;
+        const ahora = new Date().toISOString();
+        const { data: u } = await supabase.auth.getUser();
+        const quien = u?.user?.id || null;
+        const actualizada = await transaccionesApi.update(transaccion.id, {
+          cancelada_en: ahora, cancelada_por: quien, motivo_cancelacion: motivo,
+          historial_cancelacion: [...(transaccion.historial_cancelacion || []), { accion: "cancelada", fecha: ahora, usuario: quien, motivo }],
+        });
+        // Su REG se rehace con la leyenda CANCELADA, igual que desde Transacciones.
+        try { await generarPolizaTransaccion(transaccionesApi, actualizada || { ...transaccion, cancelada_en: ahora, motivo_cancelacion: motivo }, unidad, partidasUnidad); }
+        catch (e) { console.warn("No se pudo rehacer el REG", e); }
+      }
+      onClose();
+    } catch (err) {
+      alert("No se pudo: " + (err.message || err));
+    } finally {
+      setSaving(false);
+    }
+  };
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
   const cuentasDelProveedorSeleccionado = form.proveedor_id ? cuentasApi.rows.filter((c) => c.proveedor_id === form.proveedor_id) : [];
 
@@ -5855,6 +5955,13 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
         <div style={{ gridColumn: "span 4", display: "flex", gap: 10, marginTop: 4 }}>
           <Button type="submit" disabled={saving}>{saving ? "Guardando…" : "Guardar cambios"}</Button>
           <Button type="button" variant="ghost" onClick={onClose}>Cancelar</Button>
+          {!transaccion.cancelada_en && (
+            <Button type="button" variant="ghost" onClick={quitar} disabled={saving}
+              style={{ marginLeft: "auto", color: T.red, borderColor: T.red }}
+              title={esBorrador ? "Borrador sin folio: se elimina" : "Registrada: se cancela con motivo y conserva su folio"}>
+              {esBorrador ? "Eliminar transacción" : "Cancelar transacción"}
+            </Button>
+          )}
         </div>
       </form>
     </Modal>
@@ -6702,30 +6809,19 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const startEdit = (p) => { setForm(p); setEditId(p.id); setModalOpen(true); };
 
   const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" }); };
+  /* Una partida con transacciones no se elimina dejándolas sueltas: primero
+     se reasignan o se quitan. Cuentan también las canceladas, que no están en
+     `transacciones` (aquí llegan solo las vigentes) pero siguen apuntando a la
+     partida con su folio. */
+  const [reasignando, setReasignando] = useState(null);
   const remove = (id) => {
     const p = partidasUnidad.find((x) => x.id === id);
-    const vinculadas = transacciones.filter((t) => t.partida_id === id);
-    const pagadas = vinculadas.filter((t) => t.status === "Pagado");
-
-    // La regla de las transacciones pagadas se hereda: borrar la partida las
-    // dejaría apuntando a nada, con lo que el gasto desaparecería del
-    // presupuesto sin dejar rastro. Es el mismo daño, por la puerta de atrás.
-    if (pagadas.length) {
-      const total = pagadas.reduce((sum, t) => sum + (Number(t.importe) || 0), 0);
-      alert(
-        `No se puede eliminar la partida "${p?.concepto || id}" (folio ${p?.folio || "—"}).\n\n` +
-        `Tiene ${pagadas.length} transacción(es) marcadas como Pagadas por ${money(total, p?.moneda)}. ` +
-        `Borrarla las dejaría sin partida y ese gasto desaparecería del presupuesto.\n\n` +
-        `Primero reasígnalas a otra partida, o cámbiales el status a "No Pagado".`
-      );
+    const vinculadas = (transaccionesApi?.rows || transacciones).filter((t) => t.partida_id === id);
+    if (vinculadas.length) {
+      setReasignando({ partida: p, vinculadas });
       return;
     }
-
-    // Las no pagadas sí dejan borrar, pero se avisa: quedarán sin vincular.
-    const aviso = vinculadas.length
-      ? `\n\nOJO: ${vinculadas.length} transacción(es) sin pagar quedarán sin partida vinculada. Van a aparecer en "Transacciones importadas sin partida vinculada".`
-      : "";
-    if (!confirm(`¿Eliminar la partida "${p?.concepto || id}" (folio ${p?.folio || "—"})? Esto no se puede deshacer.${aviso}`)) return;
+    if (!confirm(`¿Eliminar la partida "${p?.concepto || id}" (folio ${p?.folio || "—"})? Esto no se puede deshacer.`)) return;
     partidasApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
   };
 
@@ -7046,8 +7142,21 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           </form>
         </Modal>
       )}
+      {reasignando && (
+        <ReasignarYEliminarPartidaModal
+          partida={reasignando.partida}
+          vinculadas={reasignando.vinculadas}
+          partidasUnidad={partidasUnidad}
+          transacciones={transacciones.filter((x) => !x.cancelada_en)}
+          transaccionesApi={transaccionesApi}
+          partidasApi={partidasApi}
+          unidad={unidad}
+          onClose={() => setReasignando(null)}
+        />
+      )}
       {transaccionEditando && (
         <TransaccionQuickEditModal
+          key={transaccionEditando.id}
           partidasUnidad={partidasUnidad}
           partidasApi={partidasApi}
           transacciones={transacciones.filter((x) => !x.cancelada_en)}

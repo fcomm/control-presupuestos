@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.59.3";
+const APP_VERSION = "2.59.4";
 const CHANGELOG = [
+  { v: "2.59.4", desc: "Desde Partidas, al editar una transaccion vinculada se puede cambiar su partida, con el mismo selector de Transacciones: busqueda, filtros de rubro, mes y ano, y solo partidas de su moneda. Al guardar, la transaccion pasa a la partida elegida y sale de la que se estaba viendo; el aviso lo dice antes de guardar" },
   { v: "2.59.3", desc: "Arreglo: el aviso de listas del SAT en las confirmaciones hablaba siempre del 69-B aunque el proveedor solo estuviera en el 69. Son cosas distintas: el 69-B presume operaciones simuladas y pone en riesgo la deduccion y el IVA acreditable; el 69 publica incumplimientos del proveedor -- creditos firmes, no localizado -- que no invalidan sus facturas por si solos. Ahora el texto corresponde a lo encontrado, y si el supuesto es CSD sin efectos advierte que las facturas emitidas con ese sello no son validas" },
   { v: "2.59.2", desc: "Cierre manual del seguimiento de un anticipo, para cuando la factura existe pero no esta como XML en su expediente: facturado en el finiquito, en el SAE, o el proveedor facturo todo al final. Pide una nota obligatoria que diga donde esta la factura -- el UUID o el folio si se tiene --, guarda quien y cuando, y se puede reabrir. La marca pasa a gris, ANT cerrado, distinta del verde de ANT facturado, para que se distinga un cierre con XML de uno por nota; al pasar el mouse se ve la nota. Se cierra desde la subpestana Anticipos o desde el detalle de la transaccion. Requiere 60-cierre-anticipos.sql" },
   { v: "2.59.1", desc: "La marca de anticipo se acorta para que no se encime con la columna de al lado: ANT sin XML · 6 d cuando falta la factura y ANT facturado cuando ya esta. El detalle completo sigue al pasar el mouse" },
@@ -5703,7 +5704,7 @@ function SolicitudesPagoListaPanel({ unidad, session }) {
   );
 }
 
-function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, proveedoresApi, cuentasApi, unidad, partidasUnidad = [] }) {
+function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, proveedoresApi, cuentasApi, unidad, partidasUnidad = [], partidasApi, transacciones = [] }) {
   const [form, setForm] = useState({ ...transaccion });
   const [saving, setSaving] = useState(false);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
@@ -5716,6 +5717,10 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
       return;
     }
     if (!validarMonedaContraPartida(form, partidasUnidad)) return;
+    if (!form.partida_id) {
+      alert("Elige la partida de la transacción.");
+      return;
+    }
     setSaving(true);
     try {
       const { id, ...restRaw } = form;
@@ -5742,6 +5747,25 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
       cerrarAlHacerClicFuera={false}
     >
       <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        {/* Cambiar de partida desde aquí: es donde se nota que una transacción
+            está en la partida equivocada. Solo se ofrecen las de su moneda. */}
+        <Field label="Partida" style={{ gridColumn: "span 4" }}>
+          <PartidaPickerButton
+            partidas={partidasUnidad.filter((p) => mismaMoneda(p.moneda, form.moneda))}
+            ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, form.moneda)).length}
+            moneda={form.moneda}
+            transacciones={transacciones}
+            partidasApi={partidasApi}
+            unidad={unidad}
+            value={form.partida_id || ""}
+            onChange={(id) => setForm({ ...form, partida_id: id })}
+          />
+          {form.partida_id !== transaccion.partida_id && (
+            <div style={{ fontSize: 11.5, color: T.amberDim, marginTop: 5 }}>
+              Al guardar, la transacción pasa a la partida elegida y deja de aparecer en la que estás viendo.
+            </div>
+          )}
+        </Field>
         <Field label="Día de Pago Programado">
           <TextInput type="date" value={form.dia || ""} onChange={(e) => setForm({ ...form, dia: e.target.value })} />
         </Field>
@@ -7025,6 +7049,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       {transaccionEditando && (
         <TransaccionQuickEditModal
           partidasUnidad={partidasUnidad}
+          partidasApi={partidasApi}
+          transacciones={transacciones.filter((x) => !x.cancelada_en)}
           transaccion={transaccionEditando}
           onClose={() => setTransaccionEditando(null)}
           transaccionesApi={transaccionesApi}

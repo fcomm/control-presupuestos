@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.61.2";
+const APP_VERSION = "2.61.3";
 const CHANGELOG = [
+  { v: "2.61.3", desc: "Arreglo: los menus de Columnas y de los filtros de seleccion multiple se abrian siempre alineados a la derecha del boton, y cuando el boton quedaba cerca del borde izquierdo de la ventana el menu se salia y se cortaba. Ahora miden el espacio al abrirse y se alinean hacia donde caben" },
   { v: "2.61.2", desc: "El tipo de cambio pasa a ser el de Banxico Para pagos: el que se usa un dia para convertir obligaciones en dolares es el publicado en el DOF el dia habil bancario anterior (serie SF60653, que ya trae valor tambien en fin de semana). Antes la app usaba el publicado ese mismo dia, que es un dia hábil mas reciente: el 2/oct daba 18.3688 en lugar de 18.0692. Aplica a la etiqueta, al campo de las transacciones pagadas, a la edicion masiva y a los equivalentes en pesos. La etiqueta dice TC pagos con la fecha a la que corresponde" },
   { v: "2.61.1", desc: "La etiqueta del tipo de cambio muestra fija la fecha en que se publico en el DOF, que es la fecha en que aplica: TC DOF 02/10/2026 · 18.3688. Antes solo decia la fecha del FIX al pasar el mouse, y como Banxico lo determina un dia habil antes de publicarse, parecia el de ayer. El detalle de cuando se determino sigue al pasar el mouse" },
   { v: "2.61.0", desc: "Tipo de cambio oficial, fase 1. La app carga el FIX de Banxico que guarda actualizar_tipo_cambio.py y usa el publicado en el DOF: para cualquier fecha, el FIX determinado el dia habil anterior. Junto a la version se ve el TC DOF de hoy, en ambar si el dato tiene mas de tres dias habiles de atraso. Las transacciones en USD ganan el campo Tipo de cambio: al marcarlas Pagadas se prellena con el TC DOF de su fecha de pago y queda guardado -- el de un pago hecho no se mueve cuando cambia el del dia --; es editable por si el banco aplico otro. La edicion masiva a Pagado tambien lo llena, cada una con su fecha. Bajo el importe de cada transaccion en USD aparece su equivalente en pesos: con el tipo de cambio guardado si esta pagada, con el del dia si no. Requiere 61-tipos-cambio.sql y 62-tipo-cambio-transacciones.sql" },
@@ -4137,21 +4138,31 @@ function eliminarCuentaBancaria(cuentasApi, id) {
   cuentasApi.remove(id).catch((err) => alert("No se pudo eliminar la cuenta: " + (err.message || err)));
 }
 
+/* Hacia dónde abrir un menú desplegable para que quepa en la ventana. Por
+   omisión se alinea al borde derecho del botón; si así se saldría por la
+   izquierda (botón cerca del borde izquierdo), se alinea al izquierdo. */
+function anclaMenu(el, ancho = 260) {
+  if (!el) return { right: 0 };
+  const r = el.getBoundingClientRect();
+  return r.right - ancho < 8 ? { left: 0 } : { right: 0 };
+}
+
 // Botón "Columnas" con un panel de checkboxes para mostrar/ocultar cada una.
 function ColumnVisibilityControl({ columns, hidden, onToggle, onShowAll, etiqueta = "Columnas" }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
   useClickOutside(ref, () => setOpen(false));
   const ocultas = columns.filter((c) => hidden.has(c.key)).length;
+  const [ancla, setAncla] = useState({ right: 0 });
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
-      <Button variant={ocultas ? "primary" : "ghost"} onClick={() => setOpen((o) => !o)}>
+      <Button variant={ocultas ? "primary" : "ghost"} onClick={() => { setAncla(anclaMenu(ref.current)); setOpen((o) => !o); }}>
         {etiqueta}{ocultas ? ` (${columns.length - ocultas}/${columns.length})` : ""}
       </Button>
       {open && (
         <div style={{
-          position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 50,
+          position: "absolute", top: "calc(100% + 6px)", ...ancla, zIndex: 50,
           background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8,
           padding: 14, minWidth: 220, maxHeight: 360, overflowY: "auto",
           boxShadow: "0 8px 24px rgba(35,42,49,0.14)",
@@ -4292,12 +4303,13 @@ function MultiSelect({ opciones, seleccionados, onChange, todosLabel, unidadLabe
 
   const label = seleccionados.length === 0 ? todosLabel : seleccionados.length === 1 ? String(seleccionados[0]) : `${seleccionados.length}${unidadLabel}`;
   const toggleValor = (v) => onChange(seleccionados.includes(v) ? seleccionados.filter((x) => x !== v) : [...seleccionados, v]);
+  const [ancla, setAncla] = useState({ right: 0 });
 
   return (
     <div ref={ref} style={{ position: "relative" }}>
       <button
         type="button"
-        onClick={() => setOpen((o) => !o)}
+        onClick={() => { setAncla(anclaMenu(ref.current)); setOpen((o) => !o); }}
         style={{ ...inputStyle, display: "inline-flex", alignItems: "center", gap: 8, width: 150, justifyContent: "space-between", cursor: "pointer" }}
       >
         <span>{label}</span>
@@ -4305,7 +4317,7 @@ function MultiSelect({ opciones, seleccionados, onChange, todosLabel, unidadLabe
       </button>
       {open && (
         <div style={{
-          position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 50,
+          position: "absolute", top: "calc(100% + 6px)", ...ancla, zIndex: 50,
           background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8,
           padding: 10, minWidth: 190, boxShadow: "0 8px 24px rgba(35,42,49,0.14)",
         }}>

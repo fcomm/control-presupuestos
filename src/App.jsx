@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.61.3";
+const APP_VERSION = "2.61.4";
 const CHANGELOG = [
+  { v: "2.61.4", desc: "En la tabla de Partidas, debajo del monto de cada partida se ve la suma de las transacciones asignadas y el porcentaje que representa: verde hasta 85 %, ambar hasta 100 %, rojo si se paso. Antes solo aparecia al pasar el mouse. Las partidas sin transacciones lo dicen. Las canceladas no cuentan" },
   { v: "2.61.3", desc: "Arreglo: los menus de Columnas y de los filtros de seleccion multiple se abrian siempre alineados a la derecha del boton, y cuando el boton quedaba cerca del borde izquierdo de la ventana el menu se salia y se cortaba. Ahora miden el espacio al abrirse y se alinean hacia donde caben" },
   { v: "2.61.2", desc: "El tipo de cambio pasa a ser el de Banxico Para pagos: el que se usa un dia para convertir obligaciones en dolares es el publicado en el DOF el dia habil bancario anterior (serie SF60653, que ya trae valor tambien en fin de semana). Antes la app usaba el publicado ese mismo dia, que es un dia hábil mas reciente: el 2/oct daba 18.3688 en lugar de 18.0692. Aplica a la etiqueta, al campo de las transacciones pagadas, a la edicion masiva y a los equivalentes en pesos. La etiqueta dice TC pagos con la fecha a la que corresponde" },
   { v: "2.61.1", desc: "La etiqueta del tipo de cambio muestra fija la fecha en que se publico en el DOF, que es la fecha en que aplica: TC DOF 02/10/2026 · 18.3688. Antes solo decia la fecha del FIX al pasar el mouse, y como Banxico lo determina un dia habil antes de publicarse, parecia el de ayer. El detalle de cuando se determino sigue al pasar el mouse" },
@@ -6521,12 +6522,16 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         const usado = usadoDe(p);
         const pct = p.monto_estimado ? (usado / p.monto_estimado) * 100 : 0;
         const tone = pct > 100 ? T.red : pct > 85 ? T.amber : T.teal;
+        const n = transacciones.filter((t) => t.partida_id === p.id).length;
+        /* El monto arriba; abajo, lo asignado en transacciones y su
+           porcentaje, a la vista: es lo que se revisa al recorrer la tabla. */
         return (
-          <span
-            style={{ fontFamily: T.fontMono, borderBottom: usado > 0 ? `1px dashed ${tone}` : "none", cursor: usado > 0 ? "help" : "default" }}
-            title={usado > 0 ? `Ejercido: ${money(usado, p.moneda)} (${pct.toFixed(0)}%)` : undefined}
-          >
+          <span style={{ fontFamily: T.fontMono, display: "inline-block", textAlign: "right" }}>
             {money(p.monto_estimado, p.moneda)}
+            <div style={{ fontSize: 10.5, color: n ? tone : T.textFaint, whiteSpace: "nowrap", marginTop: 1 }}
+              title={n ? `${n} transacción(es) asignada(s)` : undefined}>
+              {n ? `Asignado ${money(usado, p.moneda)} · ${pct.toFixed(0)}%` : "sin transacciones"}
+            </div>
           </span>
         );
       },

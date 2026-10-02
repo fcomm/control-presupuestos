@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.61.1";
+const APP_VERSION = "2.61.2";
 const CHANGELOG = [
+  { v: "2.61.2", desc: "El tipo de cambio pasa a ser el de Banxico Para pagos: el que se usa un dia para convertir obligaciones en dolares es el publicado en el DOF el dia habil bancario anterior (serie SF60653, que ya trae valor tambien en fin de semana). Antes la app usaba el publicado ese mismo dia, que es un dia hábil mas reciente: el 2/oct daba 18.3688 en lugar de 18.0692. Aplica a la etiqueta, al campo de las transacciones pagadas, a la edicion masiva y a los equivalentes en pesos. La etiqueta dice TC pagos con la fecha a la que corresponde" },
   { v: "2.61.1", desc: "La etiqueta del tipo de cambio muestra fija la fecha en que se publico en el DOF, que es la fecha en que aplica: TC DOF 02/10/2026 · 18.3688. Antes solo decia la fecha del FIX al pasar el mouse, y como Banxico lo determina un dia habil antes de publicarse, parecia el de ayer. El detalle de cuando se determino sigue al pasar el mouse" },
   { v: "2.61.0", desc: "Tipo de cambio oficial, fase 1. La app carga el FIX de Banxico que guarda actualizar_tipo_cambio.py y usa el publicado en el DOF: para cualquier fecha, el FIX determinado el dia habil anterior. Junto a la version se ve el TC DOF de hoy, en ambar si el dato tiene mas de tres dias habiles de atraso. Las transacciones en USD ganan el campo Tipo de cambio: al marcarlas Pagadas se prellena con el TC DOF de su fecha de pago y queda guardado -- el de un pago hecho no se mueve cuando cambia el del dia --; es editable por si el banco aplico otro. La edicion masiva a Pagado tambien lo llena, cada una con su fecha. Bajo el importe de cada transaccion en USD aparece su equivalente en pesos: con el tipo de cambio guardado si esta pagada, con el del dia si no. Requiere 61-tipos-cambio.sql y 62-tipo-cambio-transacciones.sql" },
   { v: "2.60.0", desc: "Desde Partidas, la edicion de una transaccion vinculada permite quitarla: Eliminar si es borrador, Cancelar con motivo si ya esta registrada -- conserva su folio, como en Transacciones --; una pagada no se toca hasta regresarla a No Pagado. Y una partida con transacciones ya no se elimina dejandolas sueltas: hay que reasignarlas o quitarlas antes. Al intentar borrarla se abre una ventana con sus transacciones y la opcion de reasignarlas todas a otra partida de la misma moneda; al terminar, la partida se elimina. Cuentan tambien las canceladas: su folio sigue apuntando a la partida" },
@@ -839,8 +840,11 @@ const fmtTotalesPorMoneda = (t) => Object.entries(t)
 /* ----------------------------------------------------------------------
    TIPO DE CAMBIO OFICIAL (Banxico, publicado en el DOF)
 ---------------------------------------------------------------------- */
-/* Serie SF43718 de Banxico (FIX por fecha de determinación), ordenada por
-   fecha. La carga la App una vez; los componentes la leen por contexto. */
+/* Serie SF60653 de Banxico, la de la columna "Para pagos": para cada día, el
+   tipo de cambio con que se convierten ese día las obligaciones en dólares
+   (el publicado en el DOF el día hábil bancario anterior). Trae valor también
+   en fin de semana. La carga la App una vez; los componentes la leen por
+   contexto. */
 /* Fecha LOCAL de hoy. El hoyLocalISO() general usa UTC: después de las 6 p.m. en
    México ya daría mañana, y el tipo de cambio sería el del día siguiente. */
 const hoyLocalISO = () => {
@@ -850,17 +854,17 @@ const hoyLocalISO = () => {
 const TipoCambioContext = React.createContext([]);
 const useTiposCambio = () => React.useContext(TipoCambioContext);
 
-/* El TC que aplica a una fecha es el PUBLICADO EN EL DOF ese día: el FIX
-   determinado el día hábil anterior. En fin de semana o inhábil no hay
-   publicación y aplica el último publicado — que también es el último FIX
-   anterior a la fecha. Por eso basta "el último FIX con fecha < la pedida". */
+/* El TC para pagos de una fecha es el valor de la serie en esa fecha. Si la
+   fecha todavía no tiene dato (un pago programado a futuro), el último que
+   haya: es el mejor estimado disponible. (La función conserva su nombre por
+   los lugares que ya la usan.) */
 function tcDOF(serie, fechaISO) {
   if (!serie?.length) return null;
   const f = String(fechaISO || hoyLocalISO()).slice(0, 10);
   let lo = 0, hi = serie.length - 1, res = null;
   while (lo <= hi) {
     const mid = (lo + hi) >> 1;
-    if (serie[mid].fecha < f) { res = serie[mid]; lo = mid + 1; } else hi = mid - 1;
+    if (serie[mid].fecha <= f) { res = serie[mid]; lo = mid + 1; } else hi = mid - 1;
   }
   return res ? { valor: Number(res.valor), fix: res.fecha } : null;
 }
@@ -892,7 +896,7 @@ function ImporteConEquivalente({ t, serie }) {
       {money(t.importe, t.moneda)}
       {eq && (
         <div style={{ fontSize: 10.5, color: T.textFaint, whiteSpace: "nowrap" }}
-          title={eq.guardado ? "Con el tipo de cambio guardado al pagarse" : "Con el tipo de cambio publicado hoy en el DOF"}>
+          title={eq.guardado ? "Con el tipo de cambio guardado al pagarse" : "Con el tipo de cambio para pagos de hoy"}>
           ≈ {money(eq.mxn, "MXP")} · TC {eq.tc.toFixed(4)}{eq.guardado ? "" : " hoy"}
         </div>
       )}
@@ -900,13 +904,6 @@ function ImporteConEquivalente({ t, serie }) {
   );
 }
 
-/* Día hábil siguiente (lunes a viernes; no conoce los feriados). El FIX que
-   Banxico determina un día se publica en el DOF el día hábil siguiente. */
-function diaHabilSiguiente(iso) {
-  const d = new Date(`${iso}T12:00:00`);
-  do { d.setDate(d.getDate() + 1); } while (d.getDay() % 6 === 0);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 const fechaCorta = (iso) => { const [y, m, d] = String(iso).split("-"); return `${d}/${m}/${y}`; };
 
 function IndicadorTipoCambio() {
@@ -914,14 +911,14 @@ function IndicadorTipoCambio() {
   const hoy = hoyLocalISO();
   const tc = tcDOF(serie, hoy);
   if (!tc) return null;
-  // El FIX de ayer es el normal; más de tres días hábiles de atraso es que la
-  // tarea programada dejó de correr.
+  // La serie trae el valor de hoy desde temprano; más de tres días hábiles de
+  // atraso es que la tarea programada dejó de correr.
   const atraso = diasHabilesEntre(tc.fix, hoy);
   return (
-    <span title={`Publicado en el DOF el ${fechaCorta(diaHabilSiguiente(tc.fix))}; es el que aplica hoy. `
-      + `Banxico lo determinó el ${fechaCorta(tc.fix)}.`
+    <span title={`Tipo de cambio para pagos del ${fechaCorta(tc.fix)} (Banxico): el publicado en el DOF el día hábil bancario anterior. `
+      + `Es el que se usa para convertir obligaciones en dólares.`
       + (atraso > 3 ? ` Lleva ${atraso} días hábiles sin actualizarse: revisa la tarea programada.` : "")}>
-      <Pill tone={atraso > 3 ? "amber" : "dim"}>TC DOF {fechaCorta(diaHabilSiguiente(tc.fix))} · {tc.valor.toFixed(4)}</Pill>
+      <Pill tone={atraso > 3 ? "amber" : "dim"}>TC pagos {fechaCorta(tc.fix)} · {tc.valor.toFixed(4)}</Pill>
     </span>
   );
 }
@@ -9793,7 +9790,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     onChange={(e) => setForm({ ...form, tipo_cambio: e.target.value, _tcAuto: false })}
                     placeholder={dof ? dof.valor.toFixed(4) : "Sin dato de Banxico"} />
                   <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>
-                    {dof ? `DOF de la fecha de pago: ${dof.valor.toFixed(4)} (FIX del ${dof.fix})` : "Sin tipo de cambio de Banxico para esa fecha"}
+                    {dof ? `Para pagos del ${fechaCorta(dof.fix)}: ${dof.valor.toFixed(4)}` : "Sin tipo de cambio de Banxico para esa fecha"}
                     {form.importe && Number(form.tipo_cambio) > 0 ? ` · ≈ ${money(Number(form.importe) * Number(form.tipo_cambio), "MXP")}` : ""}
                   </div>
                 </Field>
@@ -19918,7 +19915,7 @@ export default function App() {
     if (!session) return;
     let vivo = true;
     const desde = new Date(); desde.setDate(desde.getDate() - 550);
-    supabase.from("tipos_cambio").select("fecha,valor").eq("serie", "SF43718")
+    supabase.from("tipos_cambio").select("fecha,valor").eq("serie", "SF60653")
       .gte("fecha", desde.toISOString().slice(0, 10)).order("fecha")
       .then(({ data, error }) => { if (vivo && !error) setTiposCambio(data || []); });
     return () => { vivo = false; };

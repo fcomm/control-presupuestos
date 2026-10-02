@@ -4,12 +4,12 @@ Descarga el tipo de cambio oficial pesos por dólar de la API del SIE de Banxico
 y lo guarda en la tabla tipos_cambio de Supabase.
 
 Series:
-  SF43718  FIX, por fecha de determinación: el día que Banxico lo calcula.
-           El que publica el DOF un día es el FIX determinado el día hábil
-           anterior; es el que se usa para efectos fiscales.
-  SF60653  FIX por fecha de liquidación: el mismo FIX con dos días hábiles de
-           desfase (el valor del 2/oct es el determinado el 30/sep), y el del
-           viernes repetido en sábado y domingo. NO es el publicado en el DOF.
+  SF43718  FIX, por fecha de determinación: el día que Banxico lo calcula
+           (a partir de las 12:00). Se publica en el DOF el día hábil siguiente.
+  SF60653  "Para pagos": el tipo de cambio con que se convierten ese día las
+           obligaciones en dólares — el publicado en el DOF el día hábil
+           bancario anterior (= FIX determinado dos días hábiles antes). Trae
+           valor también en fin de semana. ES EL QUE USA LA APP.
 
 Cada corrida pide los últimos 15 días, no solo el de hoy: si la tarea dejó de
 correr unos días (vacaciones, la máquina apagada), la siguiente corrida rellena
@@ -64,7 +64,7 @@ faltan = [n for n, v in (("SUPABASE_URL", SUPABASE_URL), ("SUPABASE_SERVICE_KEY"
 if faltan:
     sys.exit(f"Faltan {', '.join(faltan)}. Ponlos en {ARCHIVO_CONF}.")
 
-SERIES = {"SF43718": "FIX (fecha de determinación)", "SF60653": "FIX (fecha de liquidación, T+2)"}
+SERIES = {"SF43718": "FIX (fecha de determinación)", "SF60653": "Para pagos"}
 API = "https://www.banxico.org.mx/SieAPIRest/service/v1/series/{series}/datos/{ini}/{fin}"
 DIAS_ATRAS = 15
 

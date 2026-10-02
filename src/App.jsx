@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.61.0";
+const APP_VERSION = "2.61.1";
 const CHANGELOG = [
+  { v: "2.61.1", desc: "La etiqueta del tipo de cambio muestra fija la fecha en que se publico en el DOF, que es la fecha en que aplica: TC DOF 02/10/2026 · 18.3688. Antes solo decia la fecha del FIX al pasar el mouse, y como Banxico lo determina un dia habil antes de publicarse, parecia el de ayer. El detalle de cuando se determino sigue al pasar el mouse" },
   { v: "2.61.0", desc: "Tipo de cambio oficial, fase 1. La app carga el FIX de Banxico que guarda actualizar_tipo_cambio.py y usa el publicado en el DOF: para cualquier fecha, el FIX determinado el dia habil anterior. Junto a la version se ve el TC DOF de hoy, en ambar si el dato tiene mas de tres dias habiles de atraso. Las transacciones en USD ganan el campo Tipo de cambio: al marcarlas Pagadas se prellena con el TC DOF de su fecha de pago y queda guardado -- el de un pago hecho no se mueve cuando cambia el del dia --; es editable por si el banco aplico otro. La edicion masiva a Pagado tambien lo llena, cada una con su fecha. Bajo el importe de cada transaccion en USD aparece su equivalente en pesos: con el tipo de cambio guardado si esta pagada, con el del dia si no. Requiere 61-tipos-cambio.sql y 62-tipo-cambio-transacciones.sql" },
   { v: "2.60.0", desc: "Desde Partidas, la edicion de una transaccion vinculada permite quitarla: Eliminar si es borrador, Cancelar con motivo si ya esta registrada -- conserva su folio, como en Transacciones --; una pagada no se toca hasta regresarla a No Pagado. Y una partida con transacciones ya no se elimina dejandolas sueltas: hay que reasignarlas o quitarlas antes. Al intentar borrarla se abre una ventana con sus transacciones y la opcion de reasignarlas todas a otra partida de la misma moneda; al terminar, la partida se elimina. Cuentan tambien las canceladas: su folio sigue apuntando a la partida" },
   { v: "2.59.4", desc: "Desde Partidas, al editar una transaccion vinculada se puede cambiar su partida, con el mismo selector de Transacciones: busqueda, filtros de rubro, mes y ano, y solo partidas de su moneda. Al guardar, la transaccion pasa a la partida elegida y sale de la que se estaba viendo; el aviso lo dice antes de guardar" },
@@ -899,6 +900,15 @@ function ImporteConEquivalente({ t, serie }) {
   );
 }
 
+/* Día hábil siguiente (lunes a viernes; no conoce los feriados). El FIX que
+   Banxico determina un día se publica en el DOF el día hábil siguiente. */
+function diaHabilSiguiente(iso) {
+  const d = new Date(`${iso}T12:00:00`);
+  do { d.setDate(d.getDate() + 1); } while (d.getDay() % 6 === 0);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+}
+const fechaCorta = (iso) => { const [y, m, d] = String(iso).split("-"); return `${d}/${m}/${y}`; };
+
 function IndicadorTipoCambio() {
   const serie = useTiposCambio();
   const hoy = hoyLocalISO();
@@ -908,9 +918,10 @@ function IndicadorTipoCambio() {
   // tarea programada dejó de correr.
   const atraso = diasHabilesEntre(tc.fix, hoy);
   return (
-    <span title={`Tipo de cambio publicado en el DOF hoy: FIX determinado por Banxico el ${tc.fix}.`
+    <span title={`Publicado en el DOF el ${fechaCorta(diaHabilSiguiente(tc.fix))}; es el que aplica hoy. `
+      + `Banxico lo determinó el ${fechaCorta(tc.fix)}.`
       + (atraso > 3 ? ` Lleva ${atraso} días hábiles sin actualizarse: revisa la tarea programada.` : "")}>
-      <Pill tone={atraso > 3 ? "amber" : "dim"}>TC DOF {tc.valor.toFixed(4)}</Pill>
+      <Pill tone={atraso > 3 ? "amber" : "dim"}>TC DOF {fechaCorta(diaHabilSiguiente(tc.fix))} · {tc.valor.toFixed(4)}</Pill>
     </span>
   );
 }

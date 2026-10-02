@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.60.0";
+const APP_VERSION = "2.61.0";
 const CHANGELOG = [
+  { v: "2.61.0", desc: "Tipo de cambio oficial, fase 1. La app carga el FIX de Banxico que guarda actualizar_tipo_cambio.py y usa el publicado en el DOF: para cualquier fecha, el FIX determinado el dia habil anterior. Junto a la version se ve el TC DOF de hoy, en ambar si el dato tiene mas de tres dias habiles de atraso. Las transacciones en USD ganan el campo Tipo de cambio: al marcarlas Pagadas se prellena con el TC DOF de su fecha de pago y queda guardado -- el de un pago hecho no se mueve cuando cambia el del dia --; es editable por si el banco aplico otro. La edicion masiva a Pagado tambien lo llena, cada una con su fecha. Bajo el importe de cada transaccion en USD aparece su equivalente en pesos: con el tipo de cambio guardado si esta pagada, con el del dia si no. Requiere 61-tipos-cambio.sql y 62-tipo-cambio-transacciones.sql" },
   { v: "2.60.0", desc: "Desde Partidas, la edicion de una transaccion vinculada permite quitarla: Eliminar si es borrador, Cancelar con motivo si ya esta registrada -- conserva su folio, como en Transacciones --; una pagada no se toca hasta regresarla a No Pagado. Y una partida con transacciones ya no se elimina dejandolas sueltas: hay que reasignarlas o quitarlas antes. Al intentar borrarla se abre una ventana con sus transacciones y la opcion de reasignarlas todas a otra partida de la misma moneda; al terminar, la partida se elimina. Cuentan tambien las canceladas: su folio sigue apuntando a la partida" },
   { v: "2.59.4", desc: "Desde Partidas, al editar una transaccion vinculada se puede cambiar su partida, con el mismo selector de Transacciones: busqueda, filtros de rubro, mes y ano, y solo partidas de su moneda. Al guardar, la transaccion pasa a la partida elegida y sale de la que se estaba viendo; el aviso lo dice antes de guardar" },
   { v: "2.59.3", desc: "Arreglo: el aviso de listas del SAT en las confirmaciones hablaba siempre del 69-B aunque el proveedor solo estuviera en el 69. Son cosas distintas: el 69-B presume operaciones simuladas y pone en riesgo la deduccion y el IVA acreditable; el 69 publica incumplimientos del proveedor -- creditos firmes, no localizado -- que no invalidan sus facturas por si solos. Ahora el texto corresponde a lo encontrado, y si el supuesto es CSD sin efectos advierte que las facturas emitidas con ese sello no son validas" },
@@ -833,6 +834,86 @@ const money = (n, moneda = "MXP") =>
 const fmtTotalesPorMoneda = (t) => Object.entries(t)
   .map(([m, v]) => `$${(Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${m}`)
   .join("   ·   ");
+
+/* ----------------------------------------------------------------------
+   TIPO DE CAMBIO OFICIAL (Banxico, publicado en el DOF)
+---------------------------------------------------------------------- */
+/* Serie SF43718 de Banxico (FIX por fecha de determinación), ordenada por
+   fecha. La carga la App una vez; los componentes la leen por contexto. */
+/* Fecha LOCAL de hoy. El hoyLocalISO() general usa UTC: después de las 6 p.m. en
+   México ya daría mañana, y el tipo de cambio sería el del día siguiente. */
+const hoyLocalISO = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
+const TipoCambioContext = React.createContext([]);
+const useTiposCambio = () => React.useContext(TipoCambioContext);
+
+/* El TC que aplica a una fecha es el PUBLICADO EN EL DOF ese día: el FIX
+   determinado el día hábil anterior. En fin de semana o inhábil no hay
+   publicación y aplica el último publicado — que también es el último FIX
+   anterior a la fecha. Por eso basta "el último FIX con fecha < la pedida". */
+function tcDOF(serie, fechaISO) {
+  if (!serie?.length) return null;
+  const f = String(fechaISO || hoyLocalISO()).slice(0, 10);
+  let lo = 0, hi = serie.length - 1, res = null;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (serie[mid].fecha < f) { res = serie[mid]; lo = mid + 1; } else hi = mid - 1;
+  }
+  return res ? { valor: Number(res.valor), fix: res.fecha } : null;
+}
+
+/* Días hábiles (lunes a viernes) entre dos fechas ISO; para saber si el dato
+   del tipo de cambio se quedó atrás. */
+function diasHabilesEntre(desdeISO, hastaISO) {
+  let n = 0;
+  const d = new Date(`${desdeISO}T12:00:00`), h = new Date(`${hastaISO}T12:00:00`);
+  while (d < h) { d.setDate(d.getDate() + 1); if (d.getDay() % 6 !== 0) n++; }
+  return n;
+}
+
+/* Equivalente en pesos de una transacción en USD: con el TC guardado si está
+   pagada (el de un pago hecho no se mueve), con el del día si no. */
+function equivalenteMXN(t, serie) {
+  if (monedaNorm(t?.moneda) !== "USD") return null;
+  const guardado = t.status === "Pagado" && Number(t.tipo_cambio) > 0 ? Number(t.tipo_cambio) : null;
+  const tc = guardado ?? tcDOF(serie, hoyLocalISO())?.valor;
+  if (!tc) return null;
+  return { mxn: (Number(t.importe) || 0) * tc, tc, guardado: !!guardado };
+}
+
+/* Importe y, si es en USD, su equivalente en pesos debajo. */
+function ImporteConEquivalente({ t, serie }) {
+  const eq = equivalenteMXN(t, serie);
+  return (
+    <span style={{ fontFamily: T.fontMono }}>
+      {money(t.importe, t.moneda)}
+      {eq && (
+        <div style={{ fontSize: 10.5, color: T.textFaint, whiteSpace: "nowrap" }}
+          title={eq.guardado ? "Con el tipo de cambio guardado al pagarse" : "Con el tipo de cambio publicado hoy en el DOF"}>
+          ≈ {money(eq.mxn, "MXP")} · TC {eq.tc.toFixed(4)}{eq.guardado ? "" : " hoy"}
+        </div>
+      )}
+    </span>
+  );
+}
+
+function IndicadorTipoCambio() {
+  const serie = useTiposCambio();
+  const hoy = hoyLocalISO();
+  const tc = tcDOF(serie, hoy);
+  if (!tc) return null;
+  // El FIX de ayer es el normal; más de tres días hábiles de atraso es que la
+  // tarea programada dejó de correr.
+  const atraso = diasHabilesEntre(tc.fix, hoy);
+  return (
+    <span title={`Tipo de cambio publicado en el DOF hoy: FIX determinado por Banxico el ${tc.fix}.`
+      + (atraso > 3 ? ` Lleva ${atraso} días hábiles sin actualizarse: revisa la tarea programada.` : "")}>
+      <Pill tone={atraso > 3 ? "amber" : "dim"}>TC DOF {tc.valor.toFixed(4)}</Pill>
+    </span>
+  );
+}
 
 /* ----------------------------------------------------------------------
    LISTAS DEL SAT (69-B y 69)
@@ -8024,6 +8105,7 @@ const SUBS_TRANSACCIONES = [
 
 function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO, gruposZona = {}, seedTransaccion, onSeedConsumido, listasSat }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
+  const tiposCambio = useTiposCambio();
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const marcadoresProyecto = marcadoresDisponibles(proyectosUnidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
@@ -8179,7 +8261,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { key: "area", label: "Área", render: (t) => t.area || "—" },
     { key: "proyecto", label: "Proyecto", render: (t) => t.proyecto || "—" },
     { key: "concepto_detallado", label: "Concepto", render: (t) => <span style={{ color: T.textDim }}>{t.concepto_detallado}</span> },
-    { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
+    { key: "importe", label: "Importe", render: (t) => <ImporteConEquivalente t={t} serie={tiposCambio} /> },
     { key: "status", label: "Status", render: (t) => t.status || "—" },
   ];
   const [filtrosSV, setFiltrosSV] = useSessionState("ss-transacciones-sv-filtros", { fechaDesde: "", fechaHasta: "" });
@@ -8299,7 +8381,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       ),
     },
     { key: "categoria", label: "Categoría", render: (t) => t.categoria ? <Pill>{t.categoria}</Pill> : <span style={{ color: T.textFaint }}>—</span> },
-    { key: "importe", label: "Importe", render: (t) => <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</span> },
+    { key: "importe", label: "Importe", render: (t) => <ImporteConEquivalente t={t} serie={tiposCambio} /> },
     { key: "status", label: "Status", render: (t) => (
       <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
         {t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—"}
@@ -8689,6 +8771,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     const rest = camposEditablesTransaccion(restRaw);
     rest.proveedor_id = rest.proveedor_id || null;
     rest.cuenta_id = rest.cuenta_id || null;
+    /* Tipo de cambio: solo en USD y solo pagada. Si se marcó Pagada sin que se
+       llenara (por ejemplo, porque aún no había dato), se toma el del DOF de
+       la fecha de pago. En pesos o sin pagar, queda vacío. */
+    if (monedaNorm(rest.moneda) === "USD" && rest.status === "Pagado") {
+      if (!(Number(rest.tipo_cambio) > 0)) rest.tipo_cambio = tcDOF(tiposCambio, rest.fecha_pago)?.valor ?? null;
+      else rest.tipo_cambio = Number(rest.tipo_cambio);
+    } else {
+      rest.tipo_cambio = null;
+    }
     rest.fecha_pago = rest.fecha_pago || null;
     setSaving(true);
     try {
@@ -8936,7 +9027,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     setAplicandoMasivo(true);
     try {
       for (const id of seleccionadas) {
-        await transaccionesApi.update(id, parche);
+        const t = transUnidad.find((x) => x.id === id);
+        let p = parche;
+        /* Al pasar a Pagado, cada transacción en USD sin tipo de cambio toma
+           el del DOF de SU fecha de pago. Al dejar de estar pagada, se borra. */
+        if (parche.status === "Pagado" && t && monedaNorm(t.moneda) === "USD" && !(Number(t.tipo_cambio) > 0)) {
+          const tc = tcDOF(tiposCambio, parche.fecha_pago || t.fecha_pago || t.dia)?.valor;
+          if (tc) p = { ...parche, tipo_cambio: tc };
+        }
+        if (parche.status && parche.status !== "Pagado") p = { ...p, tipo_cambio: null };
+        await transaccionesApi.update(id, p);
       }
       setEditandoMasivo(false);
       setSeleccionadas(new Set());
@@ -9652,6 +9752,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     // se programó. Solo si faltaba: no pisa una fecha real
                     // distinta que ya se hubiera capturado a mano.
                     fecha_pago: (status === "Pagado" && !form.fecha_pago) ? form.dia : form.fecha_pago,
+                    // En USD, el TC DOF de la fecha de pago, marcado como
+                    // automático: si luego cambia la fecha, se recalcula.
+                    ...(status === "Pagado" && monedaNorm(form.moneda) === "USD" && !(Number(form.tipo_cambio) > 0)
+                      ? { tipo_cambio: tcDOF(tiposCambio, form.fecha_pago || form.dia)?.valor ?? "", _tcAuto: true }
+                      : {}),
                   });
                 }}
               >
@@ -9662,9 +9767,27 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </Field>
             {form.status === "Pagado" && (
               <Field label="Fecha de Pago">
-                <TextInput type="date" value={form.fecha_pago} onChange={(e) => setForm({ ...form, fecha_pago: e.target.value })} required />
+                <TextInput type="date" value={form.fecha_pago} onChange={(e) => setForm({
+                  ...form, fecha_pago: e.target.value,
+                  ...(form._tcAuto && monedaNorm(form.moneda) === "USD"
+                    ? { tipo_cambio: tcDOF(tiposCambio, e.target.value)?.valor ?? "" } : {}),
+                })} required />
               </Field>
             )}
+            {form.status === "Pagado" && monedaNorm(form.moneda) === "USD" && (() => {
+              const dof = tcDOF(tiposCambio, form.fecha_pago);
+              return (
+                <Field label="Tipo de cambio">
+                  <TextInput type="number" step="0.0001" min="0" value={form.tipo_cambio ?? ""}
+                    onChange={(e) => setForm({ ...form, tipo_cambio: e.target.value, _tcAuto: false })}
+                    placeholder={dof ? dof.valor.toFixed(4) : "Sin dato de Banxico"} />
+                  <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>
+                    {dof ? `DOF de la fecha de pago: ${dof.valor.toFixed(4)} (FIX del ${dof.fix})` : "Sin tipo de cambio de Banxico para esa fecha"}
+                    {form.importe && Number(form.tipo_cambio) > 0 ? ` · ≈ ${money(Number(form.importe) * Number(form.tipo_cambio), "MXP")}` : ""}
+                  </div>
+                </Field>
+              );
+            })()}
             <Field label="🔒 Tu nota privada (solo tú la ves)" style={{ gridColumn: "span 4" }}>
               <TextInput value={notaPrivada} onChange={(e) => setNotaPrivada(e.target.value)} placeholder="Recordatorios, pendientes, contexto — nadie más puede ver esto" />
             </Field>
@@ -19777,6 +19900,18 @@ export default function App() {
      filas: la app necesita saber de sus proveedores, no del país. Por
      páginas de RFC para no pasarse del largo de URL. */
   const [listasSat, setListasSat] = useState({ mapa: new Map(), error: "", cargado: false, fuentes: [] });
+  /* FIX de Banxico del último año y medio: unos 380 valores. Si la tabla no
+     existe todavía (falta la migración 61), la app sigue sin tipo de cambio. */
+  const [tiposCambio, setTiposCambio] = useState([]);
+  useEffect(() => {
+    if (!session) return;
+    let vivo = true;
+    const desde = new Date(); desde.setDate(desde.getDate() - 550);
+    supabase.from("tipos_cambio").select("fecha,valor").eq("serie", "SF43718")
+      .gte("fecha", desde.toISOString().slice(0, 10)).order("fecha")
+      .then(({ data, error }) => { if (vivo && !error) setTiposCambio(data || []); });
+    return () => { vivo = false; };
+  }, [!!session]);
   const rfcsCatalogos = [...new Set(
     [...proveedoresApi.rows, ...contratosProvLegalApi.rows].map((p) => rfcSat(p.rfc)).filter((r) => r.length >= 12)
   )].sort().join(",");
@@ -19898,6 +20033,7 @@ export default function App() {
   }
 
   return (
+    <TipoCambioContext.Provider value={tiposCambio}>
     <div style={{ background: T.bg, minHeight: "100%", fontFamily: T.fontUI, color: T.text, padding: 24 }}>
       <style>{`
         * { box-sizing: border-box; }
@@ -19936,6 +20072,7 @@ export default function App() {
                 ))}
               </div>
             </details>
+            <IndicadorTipoCambio />
           </div>
         </div>
         <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
@@ -20010,5 +20147,6 @@ export default function App() {
         </>
       )}
     </div>
+    </TipoCambioContext.Provider>
   );
 }

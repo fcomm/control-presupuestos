@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.61.4";
+const APP_VERSION = "2.61.5";
 const CHANGELOG = [
+  { v: "2.61.5", desc: "Los encabezados de grupo de Partidas muestran tambien lo asignado en transacciones y su porcentaje, como cada partida. Y arreglo: el total de cada grupo -- en Partidas y en Transacciones -- sumaba pesos y dolares en una sola cifra; ahora va separado por moneda" },
   { v: "2.61.4", desc: "En la tabla de Partidas, debajo del monto de cada partida se ve la suma de las transacciones asignadas y el porcentaje que representa: verde hasta 85 %, ambar hasta 100 %, rojo si se paso. Antes solo aparecia al pasar el mouse. Las partidas sin transacciones lo dicen. Las canceladas no cuentan" },
   { v: "2.61.3", desc: "Arreglo: los menus de Columnas y de los filtros de seleccion multiple se abrian siempre alineados a la derecha del boton, y cuando el boton quedaba cerca del borde izquierdo de la ventana el menu se salia y se cortaba. Ahora miden el espacio al abrirse y se alinean hacia donde caben" },
   { v: "2.61.2", desc: "El tipo de cambio pasa a ser el de Banxico Para pagos: el que se usa un dia para convertir obligaciones en dolares es el publicado en el DOF el dia habil bancario anterior (serie SF60653, que ya trae valor tambien en fin de semana). Antes la app usaba el publicado ese mismo dia, que es un dia hábil mas reciente: el 2/oct daba 18.3688 en lugar de 18.0692. Aplica a la etiqueta, al campo de las transacciones pagadas, a la edicion masiva y a los equivalentes en pesos. La etiqueta dice TC pagos con la fecha a la que corresponde" },
@@ -4564,6 +4565,7 @@ function agruparRows(rows, levels, montoKey = "monto_estimado") {
   return {
     type: "group",
     key,
+    sumField: montoKey,
     entries: entries.map(([value, groupRows]) => ({
       value,
       count: groupRows.length,
@@ -4695,8 +4697,23 @@ function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth, resolve
 // Flattens a grouped tree into <tr> elements: a header row per group (collapsible,
 // with count + sum), followed by that group's leaf rows (via renderRowTr) when expanded.
 const GROUP_LEVEL_COLORS = [T.accent, T.teal, T.blue];
-function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}, counter = { n: 0 }) {
+/* Todas las filas que caen bajo un nodo del árbol de grupos. */
+function filasDeNodo(node) {
+  return node.type === "rows" ? node.rows : node.entries.flatMap((e) => filasDeNodo(e.child));
+}
+
+/* Suma por moneda, para que un grupo nunca junte pesos y dólares en una cifra. */
+function sumaGrupoPorMoneda(filas, campo) {
+  const r = {};
+  filas.forEach((x) => { const m = monedaNorm(x.moneda); r[m] = (r[m] || 0) + (Number(x[campo]) || 0); });
+  return Object.entries(r).sort(([a], [b]) => (a === "MXP" ? -1 : b === "MXP" ? 1 : 0));
+}
+
+/* `resumen(filas)` opcional: lo que se muestra a la derecha del encabezado del
+   grupo. Sin él, la suma por moneda del campo que traiga el árbol. */
+function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}, counter = { n: 0 }, resumen = null) {
   if (node.type === "rows") return node.rows.map((r) => renderRowTr(r, depth, ++counter.n));
+  const campoSuma = node.sumField || null;
   let out = [];
   const levelColor = GROUP_LEVEL_COLORS[depth % GROUP_LEVEL_COLORS.length];
   // La jerarquía visual baja de intensidad mientras más profundo el nivel:
@@ -4733,12 +4750,18 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
               <span style={{ fontSize: valueFontSize, fontWeight: valueFontWeight, fontFamily: T.fontUI, letterSpacing: 0 }}>{entry.value}</span>
             </Pill>
             <span style={{ fontSize: 10.5, color: T.textFaint, background: T.panel, borderRadius: 999, padding: "1px 7px", flexShrink: 0 }}>{entry.count}</span>
-            <span style={{ fontSize: depth === 0 ? 13 : 11.5, fontWeight: depth === 0 ? 700 : 600, fontFamily: T.fontMono, color: T.text, marginLeft: "auto", flexShrink: 0 }}>{money(entry.sum)}</span>
+            <span style={{ fontSize: depth === 0 ? 13 : 11.5, fontWeight: depth === 0 ? 700 : 600, fontFamily: T.fontMono, color: T.text, marginLeft: "auto", flexShrink: 0, textAlign: "right" }}>
+              {resumen
+                ? resumen(filasDeNodo(entry.child), depth)
+                : campoSuma
+                  ? sumaGrupoPorMoneda(filasDeNodo(entry.child), campoSuma).map(([m, v]) => money(v, m)).join(" · ")
+                  : money(entry.sum)}
+            </span>
           </div>
         </td>
       </tr>
     );
-    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels, counter));
+    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels, counter, resumen));
   });
   return out;
 }
@@ -6128,6 +6151,35 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const toggleGroup = (path) => setCollapsedGroups((prev) => alternarEnSet(prev, path));
   const groupKeys = groupBys.map((g) => g.field);
   const grouped = groupKeys.length ? agruparRows(partidasOrdenadasVistaBase, groupBys) : null;
+  /* Encabezado de un grupo de partidas: presupuesto por moneda y, debajo, lo
+     asignado en transacciones con su porcentaje — lo mismo que cada partida. */
+  const resumenGrupoPartidas = (filas) => {
+    const porMoneda = {};
+    filas.forEach((p) => {
+      const m = monedaNorm(p.moneda);
+      porMoneda[m] = porMoneda[m] || { pres: 0, asig: 0 };
+      porMoneda[m].pres += Number(p.monto_estimado) || 0;
+      porMoneda[m].asig += usadoDe(p);
+    });
+    const monedas = Object.keys(porMoneda).sort((a, b) => (a === "MXP" ? -1 : b === "MXP" ? 1 : 0));
+    return (
+      <span style={{ display: "inline-flex", gap: 18, justifyContent: "flex-end" }}>
+        {monedas.map((m) => {
+          const { pres, asig } = porMoneda[m];
+          const pct = pres ? (asig / pres) * 100 : 0;
+          const tone = pct > 100 ? T.red : pct > 85 ? T.amber : T.teal;
+          return (
+            <span key={m} style={{ display: "inline-block", textAlign: "right" }}>
+              {money(pres, m)}
+              <div style={{ fontSize: 10.5, fontWeight: 500, color: asig ? tone : T.textFaint, whiteSpace: "nowrap" }}>
+                {asig ? `Asignado ${money(asig, m)} · ${pct.toFixed(0)}%` : "sin transacciones"}
+              </div>
+            </span>
+          );
+        })}
+      </span>
+    );
+  };
 
   const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
@@ -7128,7 +7180,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             </thead>
             <tbody>
               {groupKeys.length
-                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])))
+                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr,
+                    Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])), { n: 0 }, resumenGrupoPartidas)
                 : partidasOrdenadasVistaBase.map((p, i) => renderRowTr(p, 0, i + 1))}
               {!partidasUnidad.length && (
                 <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>

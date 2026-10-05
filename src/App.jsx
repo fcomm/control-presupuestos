@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.61.6";
+const APP_VERSION = "2.61.8";
 const CHANGELOG = [
+  { v: "2.61.8", desc: "Se quita de la pantalla el historial de versiones: su texto estaba en la pagina aunque el desplegable estuviera cerrado, y la busqueda del navegador (Ctrl+F) lo encontraba primero que los datos. Queda solo el numero de version. El historial sigue en el codigo" },
+  { v: "2.61.7", desc: "Las partidas y transacciones en dolares se distinguen a simple vista: fondo azul tenue en toda la fila, una barra azul en el borde izquierdo y una etiqueta USD junto al importe, en vez de solo el USD chico al final de la cifra. Se confundian con las de pesos, sobre todo en grupos que mezclan las dos monedas" },
   { v: "2.61.6", desc: "En los encabezados de grupo de Partidas y Transacciones, el total en USD se apila debajo del de pesos en vez de ir a su derecha, donde se salia de la pantalla y no se veia. Cada moneda en su renglon, con su asignado debajo en Partidas" },
   { v: "2.61.5", desc: "Los encabezados de grupo de Partidas muestran tambien lo asignado en transacciones y su porcentaje, como cada partida. Y arreglo: el total de cada grupo -- en Partidas y en Transacciones -- sumaba pesos y dolares en una sola cifra; ahora va separado por moneda" },
   { v: "2.61.4", desc: "En la tabla de Partidas, debajo del monto de cada partida se ve la suma de las transacciones asignadas y el porcentaje que representa: verde hasta 85 %, ambar hasta 100 %, rojo si se paso. Antes solo aparecia al pasar el mouse. Las partidas sin transacciones lo dicen. Las canceladas no cuentan" },
@@ -892,12 +894,23 @@ function equivalenteMXN(t, serie) {
   return { mxn: (Number(t.importe) || 0) * tc, tc, guardado: !!guardado };
 }
 
+/* Las filas en dólares se distinguen a simple vista: fondo azul tenue y una
+   barra en el borde izquierdo. Solo con el "USD" chico al final de la cifra
+   se confundían con las de pesos. */
+const FONDO_USD = "#EEF4FB";
+const estiloFilaUSD = (moneda) => monedaNorm(moneda) === "USD"
+  ? { background: FONDO_USD, boxShadow: `inset 3px 0 0 ${T.accent}` } : undefined;
+const EtiquetaUSD = () => (
+  <span style={{ fontSize: 9.5, fontWeight: 700, color: "#FFFFFF", background: T.accent, borderRadius: 4,
+                 padding: "1px 5px", marginLeft: 6, verticalAlign: "middle", letterSpacing: "0.04em" }}>USD</span>
+);
+
 /* Importe y, si es en USD, su equivalente en pesos debajo. */
 function ImporteConEquivalente({ t, serie }) {
   const eq = equivalenteMXN(t, serie);
   return (
     <span style={{ fontFamily: T.fontMono }}>
-      {money(t.importe, t.moneda)}
+      {monedaNorm(t.moneda) === "USD" ? <>{money(t.importe, "MXP")}<EtiquetaUSD /></> : money(t.importe, t.moneda)}
       {eq && (
         <div style={{ fontSize: 10.5, color: T.textFaint, whiteSpace: "nowrap" }}
           title={eq.guardado ? "Con el tipo de cambio guardado al pagarse" : "Con el tipo de cambio para pagos de hoy"}>
@@ -6582,7 +6595,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
            porcentaje, a la vista: es lo que se revisa al recorrer la tabla. */
         return (
           <span style={{ fontFamily: T.fontMono, display: "inline-block", textAlign: "right" }}>
-            {money(p.monto_estimado, p.moneda)}
+            {monedaNorm(p.moneda) === "USD" ? <>{money(p.monto_estimado, "MXP")}<EtiquetaUSD /></> : money(p.monto_estimado, p.moneda)}
             <div style={{ fontSize: 10.5, color: n ? tone : T.textFaint, whiteSpace: "nowrap", marginTop: 1 }}
               title={n ? `${n} transacción(es) asignada(s)` : undefined}>
               {n ? `Asignado ${money(usado, p.moneda)} · ${pct.toFixed(0)}%` : "sin transacciones"}
@@ -6835,7 +6848,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     const transDeEsta = transacciones.filter((t) => t.partida_id === p.id);
     return (
       <React.Fragment key={p.id}>
-        <tr>
+        <tr style={estiloFilaUSD(p.moneda)}>
           <td style={{ ...tdStyle, width: 36, textAlign: "right", color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{n}</td>
           <td style={{ ...tdStyle, width: 30, textAlign: "center" }}>
             {transDeEsta.length > 0 && (
@@ -8773,7 +8786,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   };
 
   const renderRowTr = (t, depth = 0, n) => (
-    <tr key={t.id} style={estaCancelada(t) ? { opacity: 0.5 } : undefined}
+    <tr key={t.id} style={{ ...estiloFilaUSD(t.moneda), ...(estaCancelada(t) ? { opacity: 0.5 } : {}) }}
       title={estaCancelada(t) ? `Cancelada: ${t.motivo_cancelacion || ""}` : undefined}>
       <td style={{ ...tdStyle, width: 36, textAlign: "right", color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{n}</td>
       <td style={{ ...tdStyle, textAlign: "center" }}>
@@ -20135,24 +20148,10 @@ export default function App() {
           </div>
           <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
             <div style={{ fontSize: 24, fontWeight: 700 }}>Panel de gasto</div>
-            <details style={{ position: "relative" }}>
-              <summary style={{ display: "inline-flex" }}>
-                <Pill tone="dim">v{APP_VERSION}</Pill>
-              </summary>
-              <div style={{
-                position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 50,
-                background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8,
-                padding: 12, minWidth: 280, boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
-              }}>
-                <div style={{ fontSize: 10.5, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}>Historial de versiones</div>
-                {CHANGELOG.map((c) => (
-                  <div key={c.v} style={{ display: "flex", gap: 8, fontSize: 11.5, marginBottom: 5 }}>
-                    <span style={{ fontFamily: T.fontMono, color: T.accent, minWidth: 44 }}>v{c.v}</span>
-                    <span style={{ color: T.textDim }}>{c.desc}</span>
-                  </div>
-                ))}
-              </div>
-            </details>
+            {/* Solo el número de versión. El historial (CHANGELOG) ya no se pinta:
+                aunque estuviera en un desplegable cerrado, su texto vivía en la
+                página y Ctrl+F lo encontraba antes que los datos. */}
+            <Pill tone="dim">v{APP_VERSION}</Pill>
             <IndicadorTipoCambio />
           </div>
         </div>

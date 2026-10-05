@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.61.8";
+const APP_VERSION = "2.61.9";
 const CHANGELOG = [
+  { v: "2.61.9", desc: "El total de cada grupo se pinta en la columna Monto (Partidas) o Importe (Transacciones), justo encima de los montos que suma, y con el mismo formato que cada fila: monto arriba, asignado abajo en Partidas, y la etiqueta USD en los dolares. Antes iba pegado al extremo derecho, lejos de la columna, y se leia suelto. Si la columna esta oculta, el total vuelve al extremo derecho" },
   { v: "2.61.8", desc: "Se quita de la pantalla el historial de versiones: su texto estaba en la pagina aunque el desplegable estuviera cerrado, y la busqueda del navegador (Ctrl+F) lo encontraba primero que los datos. Queda solo el numero de version. El historial sigue en el codigo" },
   { v: "2.61.7", desc: "Las partidas y transacciones en dolares se distinguen a simple vista: fondo azul tenue en toda la fila, una barra azul en el borde izquierdo y una etiqueta USD junto al importe, en vez de solo el USD chico al final de la cifra. Se confundian con las de pesos, sobre todo en grupos que mezclan las dos monedas" },
   { v: "2.61.6", desc: "En los encabezados de grupo de Partidas y Transacciones, el total en USD se apila debajo del de pesos en vez de ir a su derecha, donde se salia de la pantalla y no se veia. Cada moneda en su renglon, con su asignado debajo en Partidas" },
@@ -4711,6 +4712,26 @@ function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth, resolve
 // Flattens a grouped tree into <tr> elements: a header row per group (collapsible,
 // with count + sum), followed by that group's leaf rows (via renderRowTr) when expanded.
 const GROUP_LEVEL_COLORS = [T.accent, T.teal, T.blue];
+/* Cuántas columnas hay antes y después de la columna `key`, en una tabla con
+   dos columnas fijas al inicio (# y expandir) y una al final (acciones).
+   null si la columna está oculta: el total vuelve al extremo derecho. */
+function posColumna(columnasVisibles, key) {
+  const i = columnasVisibles.findIndex((c) => c.key === key);
+  return i < 0 ? null : { antes: 2 + i, despues: columnasVisibles.length - i };
+}
+
+/* Total de un grupo de transacciones: un renglón por moneda, con el formato
+   de la columna Importe. */
+function resumenImportePorMoneda(filas) {
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
+      {sumaGrupoPorMoneda(filas, "importe").map(([m, v]) => (
+        <span key={m}>{m === "USD" ? <>{money(v, "MXP")}<EtiquetaUSD /></> : money(v, m)}</span>
+      ))}
+    </span>
+  );
+}
+
 /* Todas las filas que caen bajo un nodo del árbol de grupos. */
 function filasDeNodo(node) {
   return node.type === "rows" ? node.rows : node.entries.flatMap((e) => filasDeNodo(e.child));
@@ -4725,7 +4746,7 @@ function sumaGrupoPorMoneda(filas, campo) {
 
 /* `resumen(filas)` opcional: lo que se muestra a la derecha del encabezado del
    grupo. Sin él, la suma por moneda del campo que traiga el árbol. */
-function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}, counter = { n: 0 }, resumen = null) {
+function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}, counter = { n: 0 }, resumen = null, posResumen = null) {
   if (node.type === "rows") return node.rows.map((r) => renderRowTr(r, depth, ++counter.n));
   const campoSuma = node.sumField || null;
   let out = [];
@@ -4745,10 +4766,19 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
   node.entries.forEach((entry) => {
     const groupPath = `${path}/${node.key}:${entry.value}`;
     const isCollapsed = collapsed.has(groupPath);
+    /* Con posResumen, el total va en su propia celda, en la columna de los
+       montos que suma: se lee de arriba hacia abajo. Sin ella, al extremo
+       derecho de la fila. */
+    const enColumna = !!(posResumen && resumen);
+    const contenidoResumen = resumen
+      ? resumen(filasDeNodo(entry.child), depth)
+      : campoSuma
+        ? sumaGrupoPorMoneda(filasDeNodo(entry.child), campoSuma).map(([m, v]) => <div key={m}>{money(v, m)}</div>)
+        : money(entry.sum);
     out.push(
       <tr key={groupPath} onClick={() => toggleGroup(groupPath)} style={{ cursor: "pointer" }}>
         <td
-          colSpan={colSpan}
+          colSpan={enColumna ? posResumen.antes : colSpan}
           style={{
             ...tdStyle, background: bgShade,
             padding: rowPadding,
@@ -4764,18 +4794,25 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
               <span style={{ fontSize: valueFontSize, fontWeight: valueFontWeight, fontFamily: T.fontUI, letterSpacing: 0 }}>{entry.value}</span>
             </Pill>
             <span style={{ fontSize: 10.5, color: T.textFaint, background: T.panel, borderRadius: 999, padding: "1px 7px", flexShrink: 0 }}>{entry.count}</span>
-            <span style={{ fontSize: depth === 0 ? 13 : 11.5, fontWeight: depth === 0 ? 700 : 600, fontFamily: T.fontMono, color: T.text, marginLeft: "auto", flexShrink: 0, textAlign: "right" }}>
-              {resumen
-                ? resumen(filasDeNodo(entry.child), depth)
-                : campoSuma
-                  ? sumaGrupoPorMoneda(filasDeNodo(entry.child), campoSuma).map(([m, v]) => <div key={m}>{money(v, m)}</div>)
-                  : money(entry.sum)}
-            </span>
+            {!enColumna && (
+              <span style={{ fontSize: depth === 0 ? 13 : 11.5, fontWeight: depth === 0 ? 700 : 600, fontFamily: T.fontMono, color: T.text, marginLeft: "auto", flexShrink: 0, textAlign: "right" }}>
+                {contenidoResumen}
+              </span>
+            )}
           </div>
         </td>
+        {enColumna && (
+          <td style={{ ...tdStyle, background: bgShade, borderBottom: `1px solid ${T.borderSoft}`, padding: rowPadding,
+                       fontSize: depth === 0 ? 13 : 12, fontWeight: depth === 0 ? 700 : 600, fontFamily: T.fontMono }}>
+            {contenidoResumen}
+          </td>
+        )}
+        {enColumna && posResumen.despues > 0 && (
+          <td colSpan={posResumen.despues} style={{ ...tdStyle, background: bgShade, borderBottom: `1px solid ${T.borderSoft}`, padding: rowPadding }} />
+        )}
       </tr>
     );
-    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels, counter, resumen));
+    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels, counter, resumen, posResumen));
   });
   return out;
 }
@@ -6186,7 +6223,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           const tone = pct > 100 ? T.red : pct > 85 ? T.amber : T.teal;
           return (
             <span key={m} style={{ display: "inline-block", textAlign: "right" }}>
-              {money(pres, m)}
+              {m === "USD" ? <>{money(pres, "MXP")}<EtiquetaUSD /></> : money(pres, m)}
               <div style={{ fontSize: 10.5, fontWeight: 500, color: asig ? tone : T.textFaint, whiteSpace: "nowrap" }}>
                 {asig ? `Asignado ${money(asig, m)} · ${pct.toFixed(0)}%` : "sin transacciones"}
               </div>
@@ -7197,7 +7234,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             <tbody>
               {groupKeys.length
                 ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr,
-                    Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])), { n: 0 }, resumenGrupoPartidas)
+                    Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])), { n: 0 }, resumenGrupoPartidas,
+                    posColumna(columnasVisibles, "monto_estimado"))
                 : partidasOrdenadasVistaBase.map((p, i) => renderRowTr(p, 0, i + 1))}
               {!partidasUnidad.length && (
                 <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
@@ -9440,7 +9478,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </thead>
             <tbody>
               {groupKeys.length
-                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr, Object.fromEntries(GROUP_OPCIONES_TRANS.map((o) => [o.value, o.label])))
+                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr,
+                    Object.fromEntries(GROUP_OPCIONES_TRANS.map((o) => [o.value, o.label])), { n: 0 }, resumenImportePorMoneda,
+                    posColumna(columnasVisibles, "importe"))
                 : transEnriquecidas.map((t, i) => renderRowTr(t, 0, i + 1))}
               {!transUnidad.length && (
                 <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones aún</td></tr>

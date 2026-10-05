@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.61.5";
+const APP_VERSION = "2.61.6";
 const CHANGELOG = [
+  { v: "2.61.6", desc: "En los encabezados de grupo de Partidas y Transacciones, el total en USD se apila debajo del de pesos en vez de ir a su derecha, donde se salia de la pantalla y no se veia. Cada moneda en su renglon, con su asignado debajo en Partidas" },
   { v: "2.61.5", desc: "Los encabezados de grupo de Partidas muestran tambien lo asignado en transacciones y su porcentaje, como cada partida. Y arreglo: el total de cada grupo -- en Partidas y en Transacciones -- sumaba pesos y dolares en una sola cifra; ahora va separado por moneda" },
   { v: "2.61.4", desc: "En la tabla de Partidas, debajo del monto de cada partida se ve la suma de las transacciones asignadas y el porcentaje que representa: verde hasta 85 %, ambar hasta 100 %, rojo si se paso. Antes solo aparecia al pasar el mouse. Las partidas sin transacciones lo dicen. Las canceladas no cuentan" },
   { v: "2.61.3", desc: "Arreglo: los menus de Columnas y de los filtros de seleccion multiple se abrian siempre alineados a la derecha del boton, y cuando el boton quedaba cerca del borde izquierdo de la ventana el menu se salia y se cortaba. Ahora miden el espacio al abrirse y se alinean hacia donde caben" },
@@ -4754,7 +4755,7 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
               {resumen
                 ? resumen(filasDeNodo(entry.child), depth)
                 : campoSuma
-                  ? sumaGrupoPorMoneda(filasDeNodo(entry.child), campoSuma).map(([m, v]) => money(v, m)).join(" · ")
+                  ? sumaGrupoPorMoneda(filasDeNodo(entry.child), campoSuma).map(([m, v]) => <div key={m}>{money(v, m)}</div>)
                   : money(entry.sum)}
             </span>
           </div>
@@ -6163,7 +6164,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     });
     const monedas = Object.keys(porMoneda).sort((a, b) => (a === "MXP" ? -1 : b === "MXP" ? 1 : 0));
     return (
-      <span style={{ display: "inline-flex", gap: 18, justifyContent: "flex-end" }}>
+      /* Una moneda por renglón: lado a lado, la de dólares se salía de la
+         pantalla en tablas angostas y no se veía. */
+      <span style={{ display: "inline-flex", flexDirection: "column", gap: 4, alignItems: "flex-end" }}>
         {monedas.map((m) => {
           const { pres, asig } = porMoneda[m];
           const pct = pres ? (asig / pres) * 100 : 0;

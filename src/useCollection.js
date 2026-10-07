@@ -8,8 +8,12 @@ import { supabase } from "./supabaseClient";
 // Pass { withAudit: true } for tables that have created_by/updated_by columns
 // — insert/bulkInsert/update will auto-fill them from the signed-in user,
 // so callers never need to set them manually.
+//
+// `llave` es la columna que identifica cada fila (la llave primaria). Casi
+// todas las tablas usan `id`; vehiculo_ubicaciones usa `codigo`. Se usa como
+// desempate al paginar y para reconocer una fila en los eventos en vivo.
 export function useCollection(table, orderBy = "created_at", options = {}) {
-  const { withAudit = false } = options;
+  const { withAudit = false, llave = "id" } = options;
   const [rows, setRows] = useState([]);
   const [ready, setReady] = useState(false);
   const [error, setError] = useState(null);
@@ -18,21 +22,30 @@ export function useCollection(table, orderBy = "created_at", options = {}) {
 
   useEffect(() => {
     let mounted = true;
+    const k = (r) => r?.[llave];
 
     const fetchAll = async () => {
       // Supabase limita cada consulta a un máximo de filas por default (1000
       // en la mayoría de los proyectos) — con tablas grandes hace falta pedir
       // por páginas hasta traer todo, o las filas más recientes se quedan
       // fuera silenciosamente sin que se vea ningún error.
+      //
+      // El orden de las páginas tiene que ser TOTAL: ordenar solo por
+      // created_at no basta, porque una importación masiva pone el mismo
+      // created_at a cientos de filas (en transacciones hay 971 empatadas) y
+      // entre filas empatadas Postgres no garantiza el mismo orden de una
+      // consulta a otra. Si el corte de página cae dentro del empate, la
+      // página 2 puede repetir filas de la 1 y saltarse otras: llegaban
+      // transacciones duplicadas y faltaban otras. Los duplicados rompían la
+      // tabla (dos filas con la misma key de React) y la búsqueda dejaba de
+      // refrescarse. La llave primaria como desempate lo hace determinista.
       const PAGE_SIZE = 1000;
       let allRows = [];
       let from = 0;
       while (true) {
-        const { data, error: err } = await supabase
-          .from(table)
-          .select("*")
-          .order(orderBy, { ascending: true })
-          .range(from, from + PAGE_SIZE - 1);
+        let q = supabase.from(table).select("*").order(orderBy, { ascending: true });
+        if (orderBy !== llave) q = q.order(llave, { ascending: true });
+        const { data, error: err } = await q.range(from, from + PAGE_SIZE - 1);
         if (err) {
           if (!mounted) return;
           setError(err);
@@ -43,6 +56,10 @@ export function useCollection(table, orderBy = "created_at", options = {}) {
         if (!data || data.length < PAGE_SIZE) break;
         from += PAGE_SIZE;
       }
+      // Red de seguridad: si una fila se movió de página mientras se leía
+      // (alguien la editó en medio), que no entre dos veces.
+      const vistos = new Set();
+      allRows = allRows.filter((r) => (vistos.has(k(r)) ? false : (vistos.add(k(r)), true)));
       if (!mounted) return;
       setRows(allRows);
       setReady(true);
@@ -63,14 +80,14 @@ export function useCollection(table, orderBy = "created_at", options = {}) {
       .on("postgres_changes", { event: "*", schema: "public", table }, (payload) => {
         setRows((current) => {
           if (payload.eventType === "INSERT") {
-            if (current.some((r) => r.id === payload.new.id)) return current;
+            if (current.some((r) => k(r) === k(payload.new))) return current;
             return [...current, payload.new];
           }
           if (payload.eventType === "UPDATE") {
-            return current.map((r) => (r.id === payload.new.id ? payload.new : r));
+            return current.map((r) => (k(r) === k(payload.new) ? payload.new : r));
           }
           if (payload.eventType === "DELETE") {
-            return current.filter((r) => r.id !== payload.old.id);
+            return current.filter((r) => k(r) !== k(payload.old));
           }
           return current;
         });
@@ -82,7 +99,7 @@ export function useCollection(table, orderBy = "created_at", options = {}) {
       authListener.subscription.unsubscribe();
       supabase.removeChannel(channel);
     };
-  }, [table, orderBy]);
+  }, [table, orderBy, llave]);
 
   const currentUserId = useCallback(async () => {
     if (!withAudit) return null;
@@ -98,9 +115,9 @@ export function useCollection(table, orderBy = "created_at", options = {}) {
     }
     const { data, error: err } = await supabase.from(table).insert(payload).select().single();
     if (err) { setError(err); throw err; }
-    setRows((current) => (current.some((r) => r.id === data.id) ? current : [...current, data]));
+    setRows((current) => (current.some((r) => r[llave] === data[llave]) ? current : [...current, data]));
     return data;
-  }, [table, withAudit, currentUserId]);
+  }, [table, withAudit, currentUserId, llave]);
 
   const bulkInsert = useCallback(async (records) => {
     if (!records.length) return [];
@@ -111,9 +128,14 @@ export function useCollection(table, orderBy = "created_at", options = {}) {
     }
     const { data, error: err } = await supabase.from(table).insert(payload).select();
     if (err) { setError(err); throw err; }
-    setRows((current) => [...current, ...data]);
+    // El evento en vivo de cada fila puede llegar antes que esta respuesta:
+    // se agregan solo las que no estén ya.
+    setRows((current) => {
+      const ya = new Set(current.map((r) => r[llave]));
+      return [...current, ...data.filter((r) => !ya.has(r[llave]))];
+    });
     return data;
-  }, [table, withAudit, currentUserId]);
+  }, [table, withAudit, currentUserId, llave]);
 
   const update = useCallback(async (id, patch) => {
     let payload = patch;
@@ -121,17 +143,17 @@ export function useCollection(table, orderBy = "created_at", options = {}) {
       const uid = await currentUserId();
       if (uid) payload = { ...patch, updated_by: uid };
     }
-    const { data, error: err } = await supabase.from(table).update(payload).eq("id", id).select().single();
+    const { data, error: err } = await supabase.from(table).update(payload).eq(llave, id).select().single();
     if (err) { setError(err); throw err; }
-    setRows((current) => current.map((r) => (r.id === id ? data : r)));
+    setRows((current) => current.map((r) => (r[llave] === id ? data : r)));
     return data;
-  }, [table, withAudit, currentUserId]);
+  }, [table, withAudit, currentUserId, llave]);
 
   const remove = useCallback(async (id) => {
-    const { error: err } = await supabase.from(table).delete().eq("id", id);
+    const { error: err } = await supabase.from(table).delete().eq(llave, id);
     if (err) { setError(err); throw err; }
-    setRows((current) => current.filter((r) => r.id !== id));
-  }, [table]);
+    setRows((current) => current.filter((r) => r[llave] !== id));
+  }, [table, llave]);
 
   const removeWhere = useCallback(async (column, values) => {
     if (!values.length) return;

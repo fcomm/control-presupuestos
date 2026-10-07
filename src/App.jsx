@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.61.9";
+const APP_VERSION = "2.61.10";
 const CHANGELOG = [
+  { v: "2.61.10", desc: "Fix: la busqueda de Transacciones dejaba de refrescar la tabla despues de la primera busqueda, y se arreglaba al cambiar de pestana y regresar. Causa: la carga por paginas de 1000 ordenaba solo por fecha de creacion, y una importacion masiva dejo 971 transacciones con la misma; el corte de pagina caia en medio de ese empate y Postgres no garantiza el orden entre empatadas, asi que la segunda pagina repetia transacciones de la primera y se saltaba otras. Las repetidas rompian la tabla (dos filas con la misma llave) y ademas faltaban transacciones y otras contaban doble en totales. Ahora el orden desempata por la llave primaria en todas las tablas, y se descartan repetidas al cargar. El resumen de adjuntos tambien pagina con orden fijo" },
   { v: "2.61.9", desc: "El total de cada grupo se pinta en la columna Monto (Partidas) o Importe (Transacciones), justo encima de los montos que suma, y con el mismo formato que cada fila: monto arriba, asignado abajo en Partidas, y la etiqueta USD en los dolares. Antes iba pegado al extremo derecho, lejos de la columna, y se leia suelto. Si la columna esta oculta, el total vuelve al extremo derecho" },
   { v: "2.61.8", desc: "Se quita de la pantalla el historial de versiones: su texto estaba en la pagina aunque el desplegable estuviera cerrado, y la busqueda del navegador (Ctrl+F) lo encontraba primero que los datos. Queda solo el numero de version. El historial sigue en el codigo" },
   { v: "2.61.7", desc: "Las partidas y transacciones en dolares se distinguen a simple vista: fondo azul tenue en toda la fila, una barra azul en el borde izquierdo y una etiqueta USD junto al importe, en vez de solo el USD chico al final de la cifra. Se confundian con las de pesos, sobre todo en grupos que mezclan las dos monedas" },
@@ -8287,7 +8288,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     const mapa = new Map();
     for (let desde = 0; ; desde += 1000) {
       const { data, error } = await supabase.from("adjuntos_resumen_transaccion")
-        .select("*").range(desde, desde + 999);
+        .select("*").order("transaccion_id").range(desde, desde + 999);
       if (error) { setErrorResumenAdj(error.message); return; }
       (data || []).forEach((r) => mapa.set(r.transaccion_id, r));
       if (!data || data.length < 1000) break;
@@ -20026,7 +20027,7 @@ export default function App() {
   const notasApi = useCollection("transaccion_notas");
   const vehiculosApi = useCollection("vehiculos", "no_economico", { withAudit: true });
   const vehMantenimientosApi = useCollection("vehiculo_mantenimientos", "folio", { withAudit: true });
-  const vehUbicacionesApi = useCollection("vehiculo_ubicaciones", "nombre");
+  const vehUbicacionesApi = useCollection("vehiculo_ubicaciones", "nombre", { llave: "codigo" });
   const contratosParametrosApi = useCollection("contratos_parametros", "vigente_desde");
   const contratosProvLegalApi = useCollection("contratos_proveedor_legal", "razon_social");
   /* Hallazgos en listas del SAT de los RFC de los catálogos. Se consulta

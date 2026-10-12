@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.62.0";
+const APP_VERSION = "2.63.0";
 const CHANGELOG = [
+  { v: "2.63.0", desc: "Transacciones gana la columna ID SAE Proveedor, tomada del catalogo de proveedores. Solo aparece en transacciones ligadas al catalogo: si el proveedor esta solo como texto se ve un guion, y si esta ligado pero su ficha no tiene ID SAE dice sin ID, para que se sepa que hay que completarlo. Se puede ordenar por ella, el buscador la encuentra, y va tambien en la exportacion a Excel" },
   { v: "2.62.0", desc: "La categoria del gasto en el formulario de transaccion se filtra al teclear: se escribe parte del nombre y quedan solo las categorias que coinciden, sin importar acentos ni mayusculas. Escribir el nombre de un rubro deja su grupo completo. Se maneja tambien con teclado: flechas para moverse, Enter para elegir, Escape cierra la lista sin cerrar el formulario. El rubro de la partida sigue primero y marcado, y la agrupacion por rubro se conserva" },
   { v: "2.61.10", desc: "Fix: la busqueda de Transacciones dejaba de refrescar la tabla despues de la primera busqueda, y se arreglaba al cambiar de pestana y regresar. Causa: la carga por paginas de 1000 ordenaba solo por fecha de creacion, y una importacion masiva dejo 971 transacciones con la misma; el corte de pagina caia en medio de ese empate y Postgres no garantiza el orden entre empatadas, asi que la segunda pagina repetia transacciones de la primera y se saltaba otras. Las repetidas rompian la tabla (dos filas con la misma llave) y ademas faltaban transacciones y otras contaban doble en totales. Ahora el orden desempata por la llave primaria en todas las tablas, y se descartan repetidas al cargar. El resumen de adjuntos tambien pagina con orden fijo" },
   { v: "2.61.9", desc: "El total de cada grupo se pinta en la columna Monto (Partidas) o Importe (Transacciones), justo encima de los montos que suma, y con el mismo formato que cada fila: monto arriba, asignado abajo en Partidas, y la etiqueta USD en los dolares. Antes iba pegado al extremo derecho, lejos de la columna, y se leia suelto. Si la columna esta oculta, el total vuelve al extremo derecho" },
@@ -8358,10 +8359,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [sppDe, setSppDe] = useState(null);
   const cuentasDelProveedorSeleccionado = form.proveedor_id ? cuentasApi.rows.filter((c) => c.proveedor_id === form.proveedor_id) : [];
   const transUnidad = transacciones.filter((t) => t.unidad_detectada === unidad);
+  /* ID SAE del proveedor: vive en el catálogo de proveedores, no en la
+     transacción. Solo existe si la transacción está ligada al catálogo
+     (proveedor_id); con el proveedor solo como texto no hay de dónde sacarlo. */
+  const idSaePorProveedor = new Map(proveedoresApi.rows.map((p) => [p.id, (p.id_sae || "").trim()]));
+  const idSaeProv = (t) => (t.proveedor_id && idSaePorProveedor.get(t.proveedor_id)) || "";
   const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
 
   const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", proyecto: "", moneda: "" });
-  const [sort, setSort] = usePrefState("pref-transacciones-sort", { key: "dia", dir: "desc" }, sanearSort(["dia","folio_transaccion","partida","proveedor","proyecto","zona","area","concepto_detallado","importe","status","fecha_pago","updated_at"]));
+  const [sort, setSort] = usePrefState("pref-transacciones-sort", { key: "dia", dir: "desc" }, sanearSort(["dia","folio_transaccion","partida","proveedor","id_sae_proveedor","proyecto","zona","area","concepto_detallado","importe","status","fecha_pago","updated_at"]));
   const [seleccionadas, setSeleccionadas] = useState(new Set());
   const [marcandoReportado, setMarcandoReportado] = useState(false);
   const [marcandoEnviado, setMarcandoEnviado] = useState(false);
@@ -8422,7 +8428,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const partida = partidaDe(t);
-      const enTexto = [t.proveedor, t.concepto_detallado, t.solicitante, t.zona, t.folio_transaccion, partida?.folio, partida?.concepto]
+      const enTexto = [t.proveedor, idSaeProv(t), t.concepto_detallado, t.solicitante, t.zona, t.folio_transaccion, partida?.folio, partida?.concepto]
         .some((v) => (v || "").toLowerCase().includes(q));
       if (!enTexto) return false;
     }
@@ -8434,6 +8440,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
     proveedor: (r) => (r.proveedor || "").toLowerCase(),
+    id_sae_proveedor: (r) => idSaeProv(r).toLowerCase(),
     dia: (r) => r.dia || "",
     partida: (r) => (partidaDe(r)?.concepto || "").toLowerCase(),
   });
@@ -8591,6 +8598,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       ),
     },
     { key: "proveedor", label: "Proveedor", render: renderProveedorConIndicador },
+    {
+      key: "id_sae_proveedor", label: "ID SAE Proveedor",
+      render: (t) => {
+        const id = idSaeProv(t);
+        if (id) return <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{id}</span>;
+        // Se dice por qué falta: no es lo mismo un proveedor sin clave en el
+        // catálogo que una transacción que ni siquiera está ligada a él.
+        return <span style={{ color: T.textFaint, fontSize: 11.5 }} title={t.proveedor_id ? "El proveedor está en el catálogo pero sin ID SAE capturado" : "La transacción no está ligada al catálogo de proveedores"}>{t.proveedor_id ? "sin ID" : "—"}</span>;
+      },
+    },
     { key: "proyecto", label: "Proyecto", render: (t) => t.proyecto || "—" },
     { key: "zona", label: "Zona", render: (t) => t.zona || "—" },
     { key: "area", label: "Área", render: (t) => t.area || "—" },
@@ -8735,6 +8752,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { key: "area",       header: "Área",          width: 18, get: (t) => t.area || "" },
     { key: "solicitante",header: "Solicitante",   width: 18, get: (t) => t.solicitante || "" },
     { key: "proveedor",  header: "Proveedor",     width: 34, fija: true, izq: true, get: (t) => t.proveedor || "" },
+    { key: "id_sae_prov",header: "ID SAE proveedor", width: 14, get: (t) => idSaeProv(t) },
     { key: "concepto",   header: "Concepto del pago", width: 44, izq: true, get: (t) => t.concepto_detallado || "" },
     { key: "importe",    header: "Importe",       width: 15, fija: true, money: true, get: (t) => Number(t.importe) || 0 },
     { key: "moneda",     header: "Moneda",        width: 9,  get: (t) => t.moneda || "MXP" },

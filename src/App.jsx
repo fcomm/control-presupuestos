@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.61.10";
+const APP_VERSION = "2.62.0";
 const CHANGELOG = [
+  { v: "2.62.0", desc: "La categoria del gasto en el formulario de transaccion se filtra al teclear: se escribe parte del nombre y quedan solo las categorias que coinciden, sin importar acentos ni mayusculas. Escribir el nombre de un rubro deja su grupo completo. Se maneja tambien con teclado: flechas para moverse, Enter para elegir, Escape cierra la lista sin cerrar el formulario. El rubro de la partida sigue primero y marcado, y la agrupacion por rubro se conserva" },
   { v: "2.61.10", desc: "Fix: la busqueda de Transacciones dejaba de refrescar la tabla despues de la primera busqueda, y se arreglaba al cambiar de pestana y regresar. Causa: la carga por paginas de 1000 ordenaba solo por fecha de creacion, y una importacion masiva dejo 971 transacciones con la misma; el corte de pagina caia en medio de ese empate y Postgres no garantiza el orden entre empatadas, asi que la segunda pagina repetia transacciones de la primera y se saltaba otras. Las repetidas rompian la tabla (dos filas con la misma llave) y ademas faltaban transacciones y otras contaban doble en totales. Ahora el orden desempata por la llave primaria en todas las tablas, y se descartan repetidas al cargar. El resumen de adjuntos tambien pagina con orden fijo" },
   { v: "2.61.9", desc: "El total de cada grupo se pinta en la columna Monto (Partidas) o Importe (Transacciones), justo encima de los montos que suma, y con el mismo formato que cada fila: monto arriba, asignado abajo en Partidas, y la etiqueta USD en los dolares. Antes iba pegado al extremo derecho, lejos de la columna, y se leia suelto. Si la columna esta oculta, el total vuelve al extremo derecho" },
   { v: "2.61.8", desc: "Se quita de la pantalla el historial de versiones: su texto estaba en la pagina aunque el desplegable estuviera cerrado, y la busqueda del navegador (Ctrl+F) lo encontraba primero que los datos. Queda solo el numero de version. El historial sigue en el codigo" },
@@ -3292,6 +3293,95 @@ function TextInput(props) {
   }
   return <input {...props} style={{ ...inputStyle, ...(props.style || {}) }} />;
 }
+/* Selector de categoría con filtro al teclear. Un <select> nativo con casi
+   cien opciones obliga a recorrerlas con la vista; aquí se escribe parte del
+   nombre y quedan solo las que coinciden. Escribir el nombre de un rubro
+   ("materiales") deja el grupo completo, porque a veces se sabe el rubro y
+   no la palabra exacta. Sin acentos ni mayúsculas: "electrico" encuentra
+   "Material eléctrico".
+   `grupos` = [{ label, destacado, cats: [..] }], en el orden en que se ven. */
+const normCat = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+function CategoriaCombo({ value, onChange, grupos }) {
+  const [abierto, setAbierto] = useState(false);
+  const [query, setQuery] = useState(null);   // null = no se ha tecleado: se ven todas
+  const [activo, setActivo] = useState(0);
+  const refLista = useRef(null);
+
+  const q = normCat(query);
+  const filtrados = grupos
+    .map((g) => ({ ...g, cats: !q || normCat(g.label).includes(q) ? g.cats : g.cats.filter((c) => normCat(c).includes(q)) }))
+    .filter((g) => g.cats.length);
+  // Lista plana para moverse con las flechas; "Sin categoría" solo sin filtro.
+  const planas = [...(!q ? [""] : []), ...filtrados.flatMap((g) => g.cats)];
+
+  const abrir = () => { setAbierto(true); setQuery(null); setActivo(Math.max(0, planas.indexOf(value || ""))); };
+  const cerrar = () => { setAbierto(false); setQuery(null); };
+  const elegir = (c) => { onChange(c); cerrar(); };
+
+  useEffect(() => {
+    if (!abierto || !refLista.current) return;
+    refLista.current.querySelector(`[data-i="${activo}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [activo, abierto]);
+
+  let i = -1;
+  const opcion = (c, etiqueta, sangria) => {
+    const idx = ++i;
+    const sel = (value || "") === c;
+    return (
+      <div key={`o${idx}`} data-i={idx}
+        onMouseDown={(e) => { e.preventDefault(); elegir(c); }}
+        onMouseEnter={() => setActivo(idx)}
+        style={{ padding: `6px 10px 6px ${sangria ? 24 : 10}px`, cursor: "pointer", fontSize: 13,
+                 background: idx === activo ? T.accentBg : "transparent",
+                 fontWeight: sel ? 700 : 400, color: c ? T.text : T.textDim }}>
+        {etiqueta}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        value={abierto && query !== null ? query : (value || "")}
+        placeholder={abierto ? "Escribe para filtrar…" : "— Sin categoría —"}
+        onFocus={(e) => { abrir(); e.target.select(); }}
+        onClick={() => { if (!abierto) abrir(); }}
+        onBlur={cerrar}
+        onChange={(e) => { setQuery(e.target.value); setActivo(0); if (!abierto) setAbierto(true); }}
+        onKeyDown={(e) => {
+          if (e.key === "ArrowDown") { e.preventDefault(); if (!abierto) abrir(); else setActivo((a) => Math.min(a + 1, planas.length - 1)); }
+          else if (e.key === "ArrowUp") { e.preventDefault(); setActivo((a) => Math.max(a - 1, 0)); }
+          else if (e.key === "Enter") { if (abierto) { e.preventDefault(); if (planas.length) elegir(planas[activo]); } }
+          // Escape cierra la lista, no el formulario completo.
+          else if (e.key === "Escape" && abierto) { e.preventDefault(); e.stopPropagation(); cerrar(); }
+        }}
+        autoComplete="off"
+        style={{ ...inputStyle, paddingRight: 26 }}
+      />
+      <span style={{ position: "absolute", right: 9, top: "50%", transform: "translateY(-50%)", pointerEvents: "none", fontSize: 10, color: T.textFaint }}>▾</span>
+      {abierto && (
+        <div ref={refLista}
+          style={{ position: "absolute", top: "calc(100% + 2px)", left: 0, minWidth: "100%", width: "max-content", maxWidth: 360,
+                   maxHeight: 320, overflowY: "auto", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 6,
+                   boxShadow: "0 8px 24px rgba(0,0,0,0.18)", zIndex: 50, padding: "4px 0" }}>
+          {!q && opcion("", "— Sin categoría —", false)}
+          {filtrados.map((g) => (
+            <div key={g.label}>
+              <div style={{ padding: "7px 10px 3px", fontSize: 12.5, fontWeight: 700, fontStyle: "italic", color: g.destacado ? T.accent : T.text }}>
+                {g.destacado ? `▸ ${g.label} (rubro de la partida)` : g.label}
+              </div>
+              {g.cats.map((c) => opcion(c, c, true))}
+            </div>
+          ))}
+          {!planas.length && (
+            <div style={{ padding: "8px 10px", fontSize: 12.5, color: T.textFaint }}>Ninguna categoría coincide con “{query}”</div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Select(props) {
   return <select {...props} style={{ ...inputStyle, ...(props.style || {}) }} />;
 }
@@ -9805,37 +9895,25 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   se restringe a él: con datos reales, 39 de 228 transacciones
                   tenían la categoría correcta para el gasto y una partida de
                   otro rubro. La discrepancia es información, no error. */}
-              <Select value={form.categoria || ""} onChange={(e) => setForm({ ...form, categoria: e.target.value })}>
-                <option value="">— Sin categoría —</option>
-                {(() => {
-                  const p = partidasUnidad.find((x) => x.id === form.partida_id);
-                  const delRubro = p ? (RUBROS.find((r) => r.rubro === p.rubro)?.categorias || []) : [];
-                  /* El resto se agrupa POR RUBRO. En una lista plana son casi
-                     cien opciones sin estructura, y encontrar la correcta
-                     obliga a recorrerlas todas — que es justo la fricción que
-                     empuja a no elegir ninguna.
-                     El rubro de la partida sigue primero: es el caso normal, y
-                     bajarlo al orden alfabético lo escondería entre los demás. */
-                  const otros = RUBROS
+              {(() => {
+                const p = partidasUnidad.find((x) => x.id === form.partida_id);
+                const delRubro = p ? (RUBROS.find((r) => r.rubro === p.rubro)?.categorias || []) : [];
+                /* El resto se agrupa POR RUBRO. En una lista plana son casi
+                   cien opciones sin estructura, y encontrar la correcta
+                   obliga a recorrerlas todas — que es justo la fricción que
+                   empuja a no elegir ninguna.
+                   El rubro de la partida sigue primero: es el caso normal, y
+                   bajarlo al orden alfabético lo escondería entre los demás. */
+                const grupos = [
+                  ...(delRubro.length ? [{ label: p.rubro, destacado: true, cats: delRubro }] : []),
+                  ...RUBROS
                     .filter((r) => !p || r.rubro !== p.rubro)
-                    .map((r) => ({ rubro: r.rubro, cats: r.categorias.filter((c) => !delRubro.includes(c)) }))
-                    .filter((r) => r.cats.length);
-                  return (
-                    <>
-                      {delRubro.length > 0 && (
-                        <optgroup label={`▸ ${p.rubro} (rubro de la partida)`}>
-                          {delRubro.map((c) => <option key={c}>{c}</option>)}
-                        </optgroup>
-                      )}
-                      {otros.map((r) => (
-                        <optgroup key={r.rubro} label={r.rubro}>
-                          {r.cats.map((c) => <option key={`${r.rubro}|${c}`}>{c}</option>)}
-                        </optgroup>
-                      ))}
-                    </>
-                  );
-                })()}
-              </Select>
+                    .map((r) => ({ label: r.rubro, cats: r.categorias.filter((c) => !delRubro.includes(c)) }))
+                    .filter((r) => r.cats.length),
+                ];
+                return <CategoriaCombo value={form.categoria || ""} grupos={grupos}
+                  onChange={(c) => setForm((f) => ({ ...f, categoria: c }))} />;
+              })()}
               {(() => {
                 const p = partidasUnidad.find((x) => x.id === form.partida_id);
                 const cats = p ? (RUBROS.find((r) => r.rubro === p.rubro)?.categorias || []) : CATEGORIAS_TODAS;

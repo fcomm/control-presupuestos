@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.63.0";
+const APP_VERSION = "2.64.0";
 const CHANGELOG = [
+  { v: "2.64.0", desc: "El comprometido de una partida ahora solo suma transacciones registradas, pagadas o no; los borradores ya no restan disponible hasta que se registran (al reportarlas a Direccion o enviarlas a Pagos). Pagado sigue siendo lo marcado como Pagado, pero tambien solo de registradas, para que nunca supere al comprometido. Aplica igual en Partidas (Usado, Disponible y la linea bajo el monto, que ahora dice Comprometido y avisa cuantas hay en borrador), en el selector de partida, en las graficas del Dashboard y en Presupuesto vs. ejercido. Se usa la fecha de registro y no el folio: el historico de OSB quedo registrado sin folio y si no sus partidas quedarian en cero" },
   { v: "2.63.0", desc: "Transacciones gana la columna ID SAE Proveedor, tomada del catalogo de proveedores. Solo aparece en transacciones ligadas al catalogo: si el proveedor esta solo como texto se ve un guion, y si esta ligado pero su ficha no tiene ID SAE dice sin ID, para que se sepa que hay que completarlo. Se puede ordenar por ella, el buscador la encuentra, y va tambien en la exportacion a Excel" },
   { v: "2.62.0", desc: "La categoria del gasto en el formulario de transaccion se filtra al teclear: se escribe parte del nombre y quedan solo las categorias que coinciden, sin importar acentos ni mayusculas. Escribir el nombre de un rubro deja su grupo completo. Se maneja tambien con teclado: flechas para moverse, Enter para elegir, Escape cierra la lista sin cerrar el formulario. El rubro de la partida sigue primero y marcado, y la agrupacion por rubro se conserva" },
   { v: "2.61.10", desc: "Fix: la busqueda de Transacciones dejaba de refrescar la tabla despues de la primera busqueda, y se arreglaba al cambiar de pestana y regresar. Causa: la carga por paginas de 1000 ordenaba solo por fecha de creacion, y una importacion masiva dejo 971 transacciones con la misma; el corte de pagina caia en medio de ese empate y Postgres no garantiza el orden entre empatadas, asi que la segunda pagina repetia transacciones de la primera y se saltaba otras. Las repetidas rompian la tabla (dos filas con la misma llave) y ademas faltaban transacciones y otras contaban doble en totales. Ahora el orden desempata por la llave primaria en todas las tablas, y se descartan repetidas al cargar. El resumen de adjuntos tambien pagina con orden fijo" },
@@ -806,6 +807,14 @@ const CAMPOS_SISTEMA_TRANSACCION = new Set([
 ]);
 
 const estaCancelada = (t) => !!t?.cancelada_en;
+/* Comprometido de una partida = transacciones REGISTRADAS ligadas a ella,
+   pagadas o no. Un borrador todavía no es un compromiso (no se ha reportado
+   ni enviado a Pagos) y no debe restar disponible. Se usa registrada_en y no
+   el folio a propósito: el histórico de OSB importado quedó registrado sin
+   folio (1,394 pagadas de 2025-2026) y con el folio como criterio sus
+   partidas quedarían en cero. Pagado = comprometido con status Pagado, así
+   nunca puede ser mayor que lo comprometido. */
+const cuentaEnComprometido = (t) => !!t && !t.cancelada_en && !!t.registrada_en;
 const camposEditablesTransaccion = (obj) => Object.fromEntries(
   Object.entries(obj).filter(([k]) => !k.startsWith("_") && !CAMPOS_SISTEMA_TRANSACCION.has(k)));
 
@@ -1193,7 +1202,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
     try { onChange(id); } catch (err) { console.error("Error al elegir partida:", err); }
   };
 
-  const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
+  const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id && cuentaEnComprometido(t)).reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
   /* Sin origenTransaccion: el blanco de siempre. Con ella —se abre desde una
      transacción, típicamente "sin vincular"— nace con lo que esa transacción
@@ -3668,6 +3677,7 @@ function Dashboard({ unidad, unidades, partidas, transacciones, proveedores = []
     });
 
     transFiltradasMes.forEach((t) => {
+      if (!cuentaEnComprometido(t)) return;
       const partida = partidasFiltradasMes.find((p) => p.id === t.partida_id);
       if (!partida) return;
       const m = (t.moneda || "MXP") === "USD" ? "USD" : "MXP";
@@ -3699,6 +3709,7 @@ function Dashboard({ unidad, unidades, partidas, transacciones, proveedores = []
       if (mapas[m][p.mes]) mapas[m][p.mes].presupuestado += Number(p.monto_estimado) || 0;
     });
     transUnidad.forEach((t) => {
+      if (!cuentaEnComprometido(t)) return;
       const partida = partidasUnidad.find((p) => p.id === t.partida_id);
       if (!partida) return;
       const m = (t.moneda || "MXP") === "USD" ? "USD" : "MXP";
@@ -6326,7 +6337,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     );
   };
 
-  const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id).reduce((s, t) => s + (Number(t.importe) || 0), 0);
+  const usadoDe = (p) => transacciones.filter((t) => t.partida_id === p.id && cuentaEnComprometido(t)).reduce((s, t) => s + (Number(t.importe) || 0), 0);
 
   // Exporta las partidas que están a la vista (con los filtros aplicados).
   // Encabezado, ancho y valor viven juntos en un solo arreglo para que agregar
@@ -6719,15 +6730,17 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         const usado = usadoDe(p);
         const pct = p.monto_estimado ? (usado / p.monto_estimado) * 100 : 0;
         const tone = pct > 100 ? T.red : pct > 85 ? T.amber : T.teal;
-        const n = transacciones.filter((t) => t.partida_id === p.id).length;
+        const ligadas = transacciones.filter((t) => t.partida_id === p.id);
+        const n = ligadas.filter(cuentaEnComprometido).length;
+        const nBorr = ligadas.length - n;
         /* El monto arriba; abajo, lo asignado en transacciones y su
            porcentaje, a la vista: es lo que se revisa al recorrer la tabla. */
         return (
           <span style={{ fontFamily: T.fontMono, display: "inline-block", textAlign: "right" }}>
             {monedaNorm(p.moneda) === "USD" ? <>{money(p.monto_estimado, "MXP")}<EtiquetaUSD /></> : money(p.monto_estimado, p.moneda)}
             <div style={{ fontSize: 10.5, color: n ? tone : T.textFaint, whiteSpace: "nowrap", marginTop: 1 }}
-              title={n ? `${n} transacción(es) asignada(s)` : undefined}>
-              {n ? `Asignado ${money(usado, p.moneda)} · ${pct.toFixed(0)}%` : "sin transacciones"}
+              title={n || nBorr ? `${n} registrada(s) en el comprometido${nBorr ? ` · ${nBorr} en borrador, no cuentan todavía` : ""}` : undefined}>
+              {n ? `Comprometido ${money(usado, p.moneda)} · ${pct.toFixed(0)}%` : (nBorr ? `solo ${nBorr} en borrador` : "sin transacciones")}
             </div>
           </span>
         );
@@ -12362,7 +12375,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   }
 
   const [mesPer, anioPer] = per.split(" ");
-  const cuenta = (t) => !t.cancelada_en && (!soloPagado || t.status === "Pagado");
+  const cuenta = (t) => cuentaEnComprometido(t) && (!soloPagado || t.status === "Pagado");
   const monedaDe = (x) => ((x || "MXP") === "USD" ? "USD" : "MXP");
   const txDe = (id) => transacciones.filter((t) => String(t.partida_id) === String(id) && cuenta(t));
   const areaDe = (congelada, txs) => {

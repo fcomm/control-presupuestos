@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.64.0";
+const APP_VERSION = "2.65.0";
 const CHANGELOG = [
+  { v: "2.65.0", desc: "Los recuadros de Proveedores en listas del SAT y Anticipos pagados sin factura salen del Dashboard y pasan a una nueva subpestana Alertas en Transacciones. Ahi los anticipos se listan todos (ya no solo 8) y cada uno se abre con un clic para adjuntar su XML. Si no hay nada pendiente, cada recuadro lo dice en vez de desaparecer, y si las listas del SAT no se pudieron consultar tambien se avisa" },
   { v: "2.64.0", desc: "El comprometido de una partida ahora solo suma transacciones registradas, pagadas o no; los borradores ya no restan disponible hasta que se registran (al reportarlas a Direccion o enviarlas a Pagos). Pagado sigue siendo lo marcado como Pagado, pero tambien solo de registradas, para que nunca supere al comprometido. Aplica igual en Partidas (Usado, Disponible y la linea bajo el monto, que ahora dice Comprometido y avisa cuantas hay en borrador), en el selector de partida, en las graficas del Dashboard y en Presupuesto vs. ejercido. Se usa la fecha de registro y no el folio: el historico de OSB quedo registrado sin folio y si no sus partidas quedarian en cero" },
   { v: "2.63.0", desc: "Transacciones gana la columna ID SAE Proveedor, tomada del catalogo de proveedores. Solo aparece en transacciones ligadas al catalogo: si el proveedor esta solo como texto se ve un guion, y si esta ligado pero su ficha no tiene ID SAE dice sin ID, para que se sepa que hay que completarlo. Se puede ordenar por ella, el buscador la encuentra, y va tambien en la exportacion a Excel" },
   { v: "2.62.0", desc: "La categoria del gasto en el formulario de transaccion se filtra al teclear: se escribe parte del nombre y quedan solo las categorias que coinciden, sin importar acentos ni mayusculas. Escribir el nombre de un rubro deja su grupo completo. Se maneja tambien con teclado: flechas para moverse, Enter para elegir, Escape cierra la lista sin cerrar el formulario. El rubro de la partida sigue primero y marcado, y la agrupacion por rubro se conserva" },
@@ -1030,11 +1031,12 @@ function EstadoSat({ listasSat, rfc, conCatalogo = true }) {
     <Pill tone="teal">SAT OK</Pill></span>;
 }
 
-/* Recuadro del Dashboard: los proveedores de la compañía que están en una
+/* Recuadro de Transacciones > Alertas (antes en el Dashboard): los proveedores de la compañía que están en una
    lista, con lo que falta pagarles. Es lo que hay que revisar antes del
    siguiente pago, y aquí se ve sin ir a buscarlo. */
 function AlertaSatDashboard({ unidad, proveedores, transacciones, listasSat }) {
-  if (!listasSat?.cargado || listasSat.error) return null;
+  if (listasSat?.error) return <div style={{ fontSize: 12, color: T.amber }}>Las listas del SAT no se pudieron consultar: {listasSat.error}</div>;
+  if (!listasSat?.cargado) return <div style={{ fontSize: 12, color: T.textFaint }}>Consultando las listas del SAT…</div>;
   const listados = proveedores
     .filter((p) => p.unidad === unidad)
     .map((p) => ({ p, hs: hallazgosSat(listasSat, p.rfc) }))
@@ -2539,9 +2541,9 @@ function PillAnticipo({ seg }) {
   );
 }
 
-/* Recuadro del Dashboard: anticipos pagados que aún no tienen su XML. Lee el
+/* Recuadro de Transacciones > Alertas (antes en el Dashboard): anticipos pagados que aún no tienen su XML. Lee el
    resumen de adjuntos solo de esos, no de todas las transacciones. */
-function AlertaAnticiposDashboard({ unidad, transacciones }) {
+function AlertaAnticiposDashboard({ unidad, transacciones, onAbrir }) {
   const anticipos = transacciones.filter((t) => t.unidad_detectada === unidad && esAnticipo(t)
     && t.status === "Pagado" && !t.cancelada_en);
   const [adj, setAdj] = useState(null);
@@ -2563,20 +2565,24 @@ function AlertaAnticiposDashboard({ unidad, transacciones }) {
     })();
     return () => { vivo = false; };
   }, [clave]);
-  if (!adj) return null;
+  if (!adj) return <div style={{ fontSize: 12, color: T.textFaint }}>Revisando anticipos…</div>;
   const pendientes = anticipos.map((t) => ({ t, seg: seguimientoAnticipo(t, adj.get(String(t.id))) }))
     .filter((x) => x.seg && x.seg.pendiente)
     .sort((a, b) => (b.seg.mesCerrado - a.seg.mesCerrado) || ((b.seg.dias || 0) - (a.seg.dias || 0)));
-  if (!pendientes.length) return null;
+  if (!pendientes.length) {
+    return <div style={{ fontSize: 12, color: T.teal }}>Ningún anticipo pagado de {unidad} está pendiente de factura.</div>;
+  }
   const porMoneda = {};
   pendientes.forEach(({ t }) => { const m = t.moneda === "USD" ? "USD" : "MXP"; porMoneda[m] = (porMoneda[m] || 0) + (Number(t.importe) || 0); });
   return (
     <Panel title={`Anticipos pagados sin factura — ${unidad}`}
       subtitle={`${pendientes.length} anticipo(s) · ${Object.entries(porMoneda).map(([m, v]) => money(v, m)).join(" · ")}`
-        + ` · ${pendientes.filter((x) => x.seg.mesCerrado).length} de un mes ya cerrado. Se revisan en Transacciones > Anticipos.`}>
+        + ` · ${pendientes.filter((x) => x.seg.mesCerrado).length} de un mes ya cerrado. Clic en uno para abrirlo y adjuntar su XML.`}>
       <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
-        {pendientes.slice(0, 8).map(({ t, seg }) => (
-          <div key={t.id} style={{ display: "flex", gap: 12, alignItems: "center", background: T.panel, padding: "8px 12px", flexWrap: "wrap" }}>
+        {/* En su propia pestaña ya no hay que recortar: van todos. */}
+        {pendientes.map(({ t, seg }) => (
+          <div key={t.id} onClick={onAbrir ? () => onAbrir(t) : undefined} title={onAbrir ? "Abrir la transacción" : undefined}
+            style={{ display: "flex", gap: 12, alignItems: "center", background: T.panel, padding: "8px 12px", flexWrap: "wrap", cursor: onAbrir ? "pointer" : "default" }}>
             <span style={{ fontFamily: T.fontMono, fontSize: 12, color: T.accent, minWidth: 120 }}>{t.folio_transaccion || "—"}</span>
             <span style={{ flex: 1, minWidth: 200, fontSize: 12.5 }}>{t.proveedor || "—"}
               <span style={{ color: T.textFaint }}> · {t.concepto_detallado || ""}</span></span>
@@ -2585,7 +2591,6 @@ function AlertaAnticiposDashboard({ unidad, transacciones }) {
           </div>
         ))}
       </div>
-      {pendientes.length > 8 && <div style={{ fontSize: 11.5, color: T.textFaint, marginTop: 8 }}>y {pendientes.length - 8} más…</div>}
     </Panel>
   );
 }
@@ -3741,9 +3746,6 @@ function Dashboard({ unidad, unidades, partidas, transacciones, proveedores = []
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-      <AlertaAnticiposDashboard unidad={unidad} transacciones={transacciones} />
-      <AlertaSatDashboard unidad={unidad} proveedores={proveedores}
-        transacciones={transacciones.filter((t) => t.unidad_detectada === unidad)} listasSat={listasSat} />
       <ResumenComparativoPanel
         partidasRango={partidasRango}
         idsRango={idsRango}
@@ -8337,6 +8339,7 @@ function EditarMasivoModal({ filas, proveedores, proyectos, zonas, onCerrar, onA
 const SUBS_TRANSACCIONES = [
   { id: "general",   label: "General" },
   { id: "anticipos", label: "Anticipos" },
+  { id: "alertas",   label: "Alertas" },
   { id: "io",        label: "Importar / Exportar" },
 ];
 
@@ -9703,6 +9706,17 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       {subTx === "anticipos" && (
         <AnticiposPanel transacciones={transUnidad} adjDe={adjDe} onAbrir={startEdit}
           onCerrar={cerrarAnticipo} onReabrir={reabrirAnticipo} />
+      )}
+
+      {/* Lo que pide atención antes de pagar: proveedores en listas del SAT y
+         anticipos sin factura. Vivía en el Dashboard, que es para ver números;
+         aquí queda junto a las transacciones que hay que abrir para resolverlo. */}
+      {subTx === "alertas" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+          <AlertaSatDashboard unidad={unidad} proveedores={proveedoresApi.rows}
+            transacciones={transUnidad.filter((t) => !estaCancelada(t))} listasSat={listasSat} />
+          <AlertaAnticiposDashboard unidad={unidad} transacciones={transacciones} onAbrir={startEdit} />
+        </div>
       )}
 
       {subTx === "io" && (<>

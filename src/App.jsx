@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.66.1";
+const APP_VERSION = "2.67.0";
 const CHANGELOG = [
+  { v: "2.67.0", desc: "Dashboard: el periodo se elige con Desde - Hasta, con el mes como unidad minima; cada extremo lleva su mes y su ano, asi que el rango puede cruzar de un ano a otro. Atajos para fijarlo de un clic: Mes actual, Mes anterior y actual, ano en curso a la fecha, Ano anterior y Todo. Reemplaza la cascada Ano / YTD / Periodo, donde el rango quedaba escondido hasta cambiar primero el ano. General arranca en el ano en curso a la fecha, como antes; la subpestana Sempra, que antes tenia Ano y Mes sueltos, usa el mismo selector y arranca en Todo porque ahi importa el acumulado del proyecto" },
   { v: "2.66.1", desc: "Partidas: el desglose de transacciones vinculadas muestra el Proveedor de cada transaccion, antes del concepto. Muchas no traen concepto y la fila quedaba sin nada que la identificara" },
   { v: "2.66.0", desc: "Dashboard estrena subpestanas: General (lo de siempre) y Sempra, solo con los gastos de ese proyecto. Aparece solo en la compania que tiene partidas o transacciones Sempra. Muestra por moneda Presupuestado, Comprometido, Pagado, Por pagar y Disponible, con los borradores aparte; una grafica por mes; el gasto por categoria (si la transaccion no trae categoria se usa la de su partida); los 10 principales proveedores; y la lista de transacciones con busqueda y filtro de status. Un gasto es Sempra si lo dice la transaccion o su partida, y las que no coinciden se listan aparte porque consumen presupuesto de otro proyecto. Filtros propios de Ano y Mes" },
   { v: "2.65.0", desc: "Los recuadros de Proveedores en listas del SAT y Anticipos pagados sin factura salen del Dashboard y pasan a una nueva subpestana Alertas en Transacciones. Ahi los anticipos se listan todos (ya no solo 8) y cada uno se abre con un clic para adjuntar su XML. Si no hay nada pendiente, cada recuadro lo dice en vez de desaparecer, y si las listas del SAT no se pudieron consultar tambien se avisa" },
@@ -3504,6 +3505,102 @@ function Gauge({ pct, size = 92 }) {
    TABS: DASHBOARD
 ---------------------------------------------------------------------- */
 /* -----------------------------------------------------------------
+   RANGO DE MESES (Desde - Hasta)
+   Filtro de periodo con el mes como unidad mínima. Cada extremo lleva su
+   mes y su año, así que el rango puede cruzar de un año a otro. Se guarda
+   como índice lineal (año*12 + mes) para comparar extremos sin importar el
+   año. Si mover un extremo lo deja del otro lado, el otro se arrastra con
+   él en vez de rechazar el cambio. Los atajos solo fijan Desde y Hasta;
+   después se pueden mover a mano.
+   ----------------------------------------------------------------- */
+const idxMes = (anio, mes) => (Number(anio) || 0) * 12 + MESES.indexOf(mes);
+const deIdxMes = (i) => ({ anio: Math.floor(i / 12), mes: MESES[((i % 12) + 12) % 12] });
+
+function etiquetaRangoMeses(desde, hasta) {
+  const d = deIdxMes(desde), h = deIdxMes(hasta);
+  if (desde === hasta) return `${d.mes} ${d.anio}`;
+  if (d.anio === h.anio) return `${d.mes} a ${h.mes} ${d.anio}`;
+  return `${d.mes} ${d.anio} a ${h.mes} ${h.anio}`;
+}
+
+/**
+ * `clave`: prefijo de sessionStorage. `aniosConDatos`: años que ofrecer.
+ * `porDefecto`: "ytd" (enero al mes actual) o "todo" (todo lo que hay).
+ */
+function useRangoMeses(clave, aniosConDatos, porDefecto = "ytd") {
+  const hoy = new Date();
+  const anioHoy = hoy.getFullYear();
+  const idxHoy = anioHoy * 12 + hoy.getMonth();
+  const anios = [...new Set([...aniosConDatos.map(Number).filter(Boolean), anioHoy, Math.floor((idxHoy - 1) / 12)])]
+    .sort((a, b) => a - b);
+  const minIdx = anios[0] * 12;
+  const maxIdx = anios[anios.length - 1] * 12 + 11;
+
+  const atajos = [
+    { id: "mes",  label: "Mes actual",            d: idxHoy,          h: idxHoy },
+    { id: "dos",  label: "Mes anterior y actual", d: idxHoy - 1,      h: idxHoy },
+    { id: "ytd",  label: `${anioHoy} a la fecha`, d: anioHoy * 12,    h: idxHoy },
+    ...(anios.includes(anioHoy - 1)
+      ? [{ id: "ant", label: `Año ${anioHoy - 1}`, d: (anioHoy - 1) * 12, h: (anioHoy - 1) * 12 + 11 }]
+      : []),
+    { id: "todo", label: "Todo",                  d: minIdx,          h: Math.max(maxIdx, idxHoy) },
+  ];
+  const def = atajos.find((a) => a.id === porDefecto) || atajos.find((a) => a.id === "ytd");
+
+  const [desdeG, setDesde] = useSessionState(`${clave}-desde`, def.d);
+  const [hastaG, setHasta] = useSessionState(`${clave}-hasta`, def.h);
+  const valido = (i) => Number.isInteger(i) && i >= minIdx && i <= maxIdx;
+  let desde = valido(desdeG) ? desdeG : def.d;
+  let hasta = valido(hastaG) ? hastaG : def.h;
+  if (desde > hasta) { const x = desde; desde = hasta; hasta = x; }
+
+  const fijarDesde = (i) => { setDesde(i); if (i > hasta) setHasta(i); };
+  const fijarHasta = (i) => { setHasta(i); if (i < desde) setDesde(i); };
+  const enRango = (anio, mes) => {
+    if (!anio || !mes) return false;
+    const i = idxMes(anio, mes);
+    return i >= desde && i <= hasta;
+  };
+
+  const d = deIdxMes(desde), h = deIdxMes(hasta);
+  const selectorExtremo = (etiqueta, v, fijar) => (
+    <Field label={etiqueta}>
+      <div style={{ display: "flex", gap: 6 }}>
+        <Select value={v.mes} onChange={(e) => fijar(idxMes(v.anio, e.target.value))} style={{ width: 115 }}>
+          {MESES.map((m) => <option key={m} value={m}>{m}</option>)}
+        </Select>
+        <Select value={v.anio} onChange={(e) => fijar(idxMes(Number(e.target.value), v.mes))} style={{ width: 90 }}>
+          {anios.map((a) => <option key={a} value={a}>{a}</option>)}
+        </Select>
+      </div>
+    </Field>
+  );
+
+  const controles = (
+    <>
+      {selectorExtremo("Desde", d, fijarDesde)}
+      {selectorExtremo("Hasta", h, fijarHasta)}
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", paddingBottom: 2 }}>
+        {atajos.map((a) => {
+          const activo = a.d === desde && a.h === hasta;
+          return (
+            <button key={a.id} onClick={() => { setDesde(a.d); setHasta(a.h); }}
+              style={{ padding: "5px 10px", borderRadius: 999, cursor: "pointer", fontSize: 11.5, fontFamily: T.fontUI,
+                       border: `1px solid ${activo ? T.accent : T.border}`,
+                       background: activo ? T.accent : "transparent",
+                       color: activo ? "#FFFFFF" : T.textDim }}>
+              {a.label}
+            </button>
+          );
+        })}
+      </div>
+    </>
+  );
+
+  return { desde, hasta, enRango, label: etiquetaRangoMeses(desde, hasta), controles };
+}
+
+/* -----------------------------------------------------------------
    DASHBOARD > SEMPRA
    Subpestaña dedicada a los gastos del proyecto Sempra (OSB). Un gasto es
    Sempra si lo dice la transacción O su partida: hay transacciones con
@@ -3556,8 +3653,6 @@ function Dashboard(props) {
 }
 
 function DashboardSempra({ unidad, partidas, transacciones }) {
-  const [anioSel, setAnioSel] = useSessionState("ss-sempra-anio", "Todos");
-  const [mesSel, setMesSel] = useSessionState("ss-sempra-mes", "Todos");
   const [buscar, setBuscar] = useSessionState("ss-sempra-buscar", "");
   const [statusSel, setStatusSel] = useSessionState("ss-sempra-status", "todas");
 
@@ -3579,14 +3674,12 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
     return esSempra(t.proyecto) || esSempra(p?.proyecto);
   }), [transacciones, partidaPorId, unidad]);
 
-  const anios = [...new Set([
+  // Sempra arranca en "Todo": aquí importa el acumulado del proyecto, no el mes.
+  const rango = useRangoMeses("ss-sempra-rango", [
     ...partidasSempra.map((p) => Number(p.anio)),
     ...transSempra.map((t) => periodoDe(t).anio),
-  ].filter(Boolean))].sort((a, b) => b - a);
-  const anioEf = anios.includes(Number(anioSel)) ? Number(anioSel) : null; // null = Todos
-
-  const enPeriodo = ({ anio, mes }) =>
-    (anioEf === null || anio === anioEf) && (mesSel === "Todos" || mes === mesSel);
+  ], "todo");
+  const enPeriodo = ({ anio, mes }) => rango.enRango(anio, mes);
 
   const partidasF = partidasSempra.filter((p) => enPeriodo({ anio: Number(p.anio), mes: p.mes }));
   const transF = transSempra.filter((t) => enPeriodo(periodoDe(t)));
@@ -3679,7 +3772,7 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
     return <EmptyState title="Sin gastos de Sempra" body={`No hay partidas ni transacciones del proyecto Sempra en ${unidad}.`} />;
   }
 
-  const periodoLabel = `${mesSel === "Todos" ? "Todos los meses" : mesSel} · ${anioEf ?? "todos los años"}`;
+  const periodoLabel = rango.label;
   const etiquetaMoneda = (m, primero) => (
     <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, margin: primero ? "0 0 4px" : "18px 0 4px" }}>{m}</div>
   );
@@ -3715,19 +3808,8 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
       <Panel title={`Proyecto ${PROYECTO_SEMPRA} — ${unidad}`}
         subtitle={`Comprometido = transacciones registradas, pagadas o no; los borradores se muestran aparte · ${periodoLabel}`}
         right={
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-            <Field label="Año">
-              <Select value={anioEf ?? "Todos"} onChange={(e) => setAnioSel(e.target.value)} style={{ width: 110 }}>
-                <option value="Todos">Todos</option>
-                {anios.map((a) => <option key={a} value={a}>{a}</option>)}
-              </Select>
-            </Field>
-            <Field label="Mes">
-              <Select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={{ width: 130 }}>
-                <option value="Todos">Todos</option>
-                {MESES.map((m) => <option key={m} value={m}>{m}</option>)}
-              </Select>
-            </Field>
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
+            {rango.controles}
           </div>
         }>
         {!monedas.length && <div style={{ fontSize: 12, color: T.textFaint }}>Sin partidas ni transacciones de Sempra en este periodo.</div>}
@@ -3873,96 +3955,23 @@ function DashboardGeneral({ unidad, unidades, partidas, transacciones, proveedor
 
   /* -----------------------------------------------------------------
      FILTRO ÚNICO DEL DASHBOARD
-     Vivía dentro del panel comparativo, pero gobierna también las gráficas
-     de abajo, así que sube aquí. Antes había dos juegos de filtros en la
-     misma pantalla —uno arriba y otro a media página— y no se veía cuál
-     mandaba sobre qué.
-     Cascada:
-       1. Periodo -> Todo (un año), YTD, o Desde-Hasta
-       2a. Todo/YTD -> un selector de Año (YTD fija el año actual)
-       2b. Desde-Hasta -> CADA extremo lleva su propio Mes Y Año, para poder
-           cruzar de un año a otro (ej. Julio 2025 a Agosto 2026). El resto
-           del panel (columnas del pivot, KPIs) ya sabía leer varios años a
-           la vez — lo único que hacía falta era dejar de forzar un solo año
-           arriba, en el filtro.
+     Gobierna el panel comparativo y las gráficas de abajo. El periodo es un
+     rango Desde - Hasta con el mes como unidad mínima (ver useRangoMeses);
+     reemplaza la cascada anterior de Año / YTD / Periodo, donde el rango
+     quedaba escondido detrás de cambiar primero el año.
      ----------------------------------------------------------------- */
   // Filtro de Proyecto. Va ANTES de `controlesFiltro`: ese const arma su JSX
   // al evaluarse, así que si la declaración quedara más abajo, el propio
   // render fallaría por zona muerta temporal y la pantalla saldría en blanco.
   const [proyectoKpi, setProyectoKpi] = useSessionState("ss-dashboard-proyecto", "Todos");
 
-  const hoy = new Date();
-  const anioActual = hoy.getFullYear();
-  const mesActualIdx = hoy.getMonth();
-
-  const aniosConDatos = [...new Set(partidasUnidad.map((p) => Number(p.anio)).filter(Boolean))].sort((a, b) => b - a);
-  const aniosAscendente = [...aniosConDatos].sort((a, b) => a - b);
-  const hayYTD = partidasUnidad.some((p) => Number(p.anio) === anioActual && MESES.indexOf(p.mes) <= mesActualIdx);
-  const opcionesAnio = [...(hayYTD ? ["YTD"] : []), ...aniosConDatos.map(String)];
-
-  const [anioGuardado, setAnioSel] = useSessionState("ss-dashboard-f1-anio", null);
-  const anioSel = opcionesAnio.includes(anioGuardado) ? anioGuardado : (opcionesAnio[0] ?? null);
-  const esYTD = anioSel === "YTD";
-  const anioEfectivo = esYTD ? anioActual : Number(anioSel);
-
-  const [modoGuardado, setModo] = useSessionState("ss-dashboard-f2-periodo", "todo");
-  const modo = esYTD ? "todo" : (modoGuardado === "rango" ? "rango" : "todo");
-  const esRango = !esYTD && modo === "rango";
-
-  // Un índice lineal (año*12 + mes) para poder comparar y ordenar dos
-  // extremos que pueden caer en años distintos, como si fueran un solo eje.
-  const indiceLineal = (anio, mes) => (Number(anio) || 0) * 12 + MESES.indexOf(mes);
-
-  // Cada extremo del rango lleva su propio año — es lo que permite cruzar de
-  // un año a otro. Se listan solo los meses con datos para el año de CADA
-  // extremo, para no ofrecer una combinación que garantice una tabla vacía.
-  const [anioDesdeGuardado, setAnioDesde] = useSessionState("ss-dashboard-f3-anio-desde", null);
-  const [anioHastaGuardado, setAnioHasta] = useSessionState("ss-dashboard-f3-anio-hasta", null);
-  const anioDesde = aniosAscendente.includes(Number(anioDesdeGuardado)) ? Number(anioDesdeGuardado) : (aniosAscendente[0] ?? anioActual);
-  const anioHasta = aniosAscendente.includes(Number(anioHastaGuardado)) ? Number(anioHastaGuardado) : (aniosAscendente[aniosAscendente.length - 1] ?? anioActual);
-
-  const mesesDelAnioDesde = MESES.filter((m) => partidasUnidad.some((p) => Number(p.anio) === anioDesde && p.mes === m));
-  const mesesDelAnioHasta = MESES.filter((m) => partidasUnidad.some((p) => Number(p.anio) === anioHasta && p.mes === m));
-  const [desdeGuardado, setMesDesde] = useSessionState("ss-dashboard-f3-desde", null);
-  const [hastaGuardado, setMesHasta] = useSessionState("ss-dashboard-f3-hasta", null);
-  const mesDesde = mesesDelAnioDesde.includes(desdeGuardado) ? desdeGuardado : (mesesDelAnioDesde[0] ?? MESES[0]);
-  const mesHasta = mesesDelAnioHasta.includes(hastaGuardado) ? hastaGuardado : (mesesDelAnioHasta[mesesDelAnioHasta.length - 1] ?? MESES[11]);
-
-  // Si mover un extremo lo deja "después" del otro, se arrastra el otro con
-  // él en vez de rechazar el cambio — mismo criterio que ya usaba el filtro
-  // de un solo año, ahora comparando por el índice lineal (año, mes).
-  const idxHastaActual = indiceLineal(anioHasta, mesHasta);
-  const idxDesdeActual = indiceLineal(anioDesde, mesDesde);
-  const cambiarAnioDesde = (a) => {
-    setAnioDesde(a);
-    if (indiceLineal(a, mesDesde) > idxHastaActual) { setAnioHasta(a); setMesHasta(mesDesde); }
-  };
-  const cambiarMesDesde = (m) => {
-    setMesDesde(m);
-    if (indiceLineal(anioDesde, m) > idxHastaActual) { setAnioHasta(anioDesde); setMesHasta(m); }
-  };
-  const cambiarAnioHasta = (a) => {
-    setAnioHasta(a);
-    if (idxDesdeActual > indiceLineal(a, mesHasta)) { setAnioDesde(a); setMesDesde(mesHasta); }
-  };
-  const cambiarMesHasta = (m) => {
-    setMesHasta(m);
-    if (idxDesdeActual > indiceLineal(anioHasta, m)) { setAnioDesde(anioHasta); setMesDesde(m); }
-  };
-
-  const partidasRango = partidasUnidad.filter((p) => {
-    if (esYTD) return Number(p.anio) === anioActual && MESES.indexOf(p.mes) <= mesActualIdx;
-    if (esRango) {
-      const i = indiceLineal(p.anio, p.mes);
-      return i >= idxDesdeActual && i <= idxHastaActual;
-    }
-    // "Todo": el único año seleccionado arriba, sin cambios respecto de antes.
-    return Number(p.anio) === anioEfectivo;
-  });
+  const aniosConDatos = [...new Set(partidasUnidad.map((p) => Number(p.anio)).filter(Boolean))];
+  const rango = useRangoMeses("ss-dashboard-rango", aniosConDatos, "ytd");
+  const partidasRango = partidasUnidad.filter((p) => rango.enRango(p.anio, p.mes));
   const idsRango = new Set(partidasRango.map((p) => p.id));
 
-  // Las gráficas de abajo ya consumían `partidasFiltradasMes`; ahora ese
-  // nombre apunta al rango del filtro único, así que obedecen sin tocarlas.
+  // Las gráficas de abajo ya consumían `partidasFiltradasMes`; ese nombre
+  // apunta al rango del filtro único, así que obedecen sin tocarlas.
   const partidasFiltradasMes = partidasRango;
 
   // Los controles se arman aquí y se le entregan al panel para que los pinte
@@ -3975,53 +3984,11 @@ function DashboardGeneral({ unidad, unidades, partidas, transacciones, proveedor
           {proyectosUnidad.map((p) => <option key={p.nombre}>{p.nombre}</option>)}
         </Select>
       </Field>
-      {!esRango && (
-        <Field label="Año">
-          <Select value={anioSel ?? ""} onChange={(e) => setAnioSel(e.target.value)} style={{ width: 110 }} disabled={!opcionesAnio.length}>
-            {opcionesAnio.map((o) => <option key={o} value={o}>{o}</option>)}
-          </Select>
-        </Field>
-      )}
-      {!esYTD && (
-        <Field label="Periodo">
-          <Select value={modo} onChange={(e) => setModo(e.target.value)} style={{ width: 150 }}>
-            <option value="todo">Todo (un año)</option>
-            <option value="rango">Desde - Hasta</option>
-          </Select>
-        </Field>
-      )}
-      {esRango && (
-        <>
-          <Field label="Desde">
-            <div style={{ display: "flex", gap: 6 }}>
-              <Select value={mesDesde} onChange={(e) => cambiarMesDesde(e.target.value)} style={{ width: 115 }}>
-                {mesesDelAnioDesde.map((m) => <option key={m} value={m}>{m}</option>)}
-              </Select>
-              <Select value={anioDesde} onChange={(e) => cambiarAnioDesde(Number(e.target.value))} style={{ width: 90 }}>
-                {aniosAscendente.map((a) => <option key={a} value={a}>{a}</option>)}
-              </Select>
-            </div>
-          </Field>
-          <Field label="Hasta">
-            <div style={{ display: "flex", gap: 6 }}>
-              <Select value={mesHasta} onChange={(e) => cambiarMesHasta(e.target.value)} style={{ width: 115 }}>
-                {mesesDelAnioHasta.map((m) => <option key={m} value={m}>{m}</option>)}
-              </Select>
-              <Select value={anioHasta} onChange={(e) => cambiarAnioHasta(Number(e.target.value))} style={{ width: 90 }}>
-                {aniosAscendente.map((a) => <option key={a} value={a}>{a}</option>)}
-              </Select>
-            </div>
-          </Field>
-        </>
-      )}
+      {rango.controles}
     </div>
   );
 
-  const mesLabel = esYTD
-    ? ` · YTD ${anioActual}`
-    : esRango
-      ? (anioDesde === anioHasta ? ` · ${mesDesde} a ${mesHasta} ${anioDesde}` : ` · ${mesDesde} ${anioDesde} a ${mesHasta} ${anioHasta}`)
-      : ` · ${anioEfectivo}`;
+  const mesLabel = ` · ${rango.label}`;
 
 
   const idsPartidasFiltradas = new Set(partidasFiltradasMes.map((p) => p.id));

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.65.0";
+const APP_VERSION = "2.66.0";
 const CHANGELOG = [
+  { v: "2.66.0", desc: "Dashboard estrena subpestanas: General (lo de siempre) y Sempra, solo con los gastos de ese proyecto. Aparece solo en la compania que tiene partidas o transacciones Sempra. Muestra por moneda Presupuestado, Comprometido, Pagado, Por pagar y Disponible, con los borradores aparte; una grafica por mes; el gasto por categoria (si la transaccion no trae categoria se usa la de su partida); los 10 principales proveedores; y la lista de transacciones con busqueda y filtro de status. Un gasto es Sempra si lo dice la transaccion o su partida, y las que no coinciden se listan aparte porque consumen presupuesto de otro proyecto. Filtros propios de Ano y Mes" },
   { v: "2.65.0", desc: "Los recuadros de Proveedores en listas del SAT y Anticipos pagados sin factura salen del Dashboard y pasan a una nueva subpestana Alertas en Transacciones. Ahi los anticipos se listan todos (ya no solo 8) y cada uno se abre con un clic para adjuntar su XML. Si no hay nada pendiente, cada recuadro lo dice en vez de desaparecer, y si las listas del SAT no se pudieron consultar tambien se avisa" },
   { v: "2.64.0", desc: "El comprometido de una partida ahora solo suma transacciones registradas, pagadas o no; los borradores ya no restan disponible hasta que se registran (al reportarlas a Direccion o enviarlas a Pagos). Pagado sigue siendo lo marcado como Pagado, pero tambien solo de registradas, para que nunca supere al comprometido. Aplica igual en Partidas (Usado, Disponible y la linea bajo el monto, que ahora dice Comprometido y avisa cuantas hay en borrador), en el selector de partida, en las graficas del Dashboard y en Presupuesto vs. ejercido. Se usa la fecha de registro y no el folio: el historico de OSB quedo registrado sin folio y si no sus partidas quedarian en cero" },
   { v: "2.63.0", desc: "Transacciones gana la columna ID SAE Proveedor, tomada del catalogo de proveedores. Solo aparece en transacciones ligadas al catalogo: si el proveedor esta solo como texto se ve un guion, y si esta ligado pero su ficha no tiene ID SAE dice sin ID, para que se sepa que hay que completarlo. Se puede ordenar por ella, el buscador la encuentra, y va tambien en la exportacion a Excel" },
@@ -3501,7 +3502,369 @@ function Gauge({ pct, size = 92 }) {
 /* ----------------------------------------------------------------------
    TABS: DASHBOARD
 ---------------------------------------------------------------------- */
-function Dashboard({ unidad, unidades, partidas, transacciones, proveedores = [], listasSat }) {
+/* -----------------------------------------------------------------
+   DASHBOARD > SEMPRA
+   Subpestaña dedicada a los gastos del proyecto Sempra (OSB). Un gasto es
+   Sempra si lo dice la transacción O su partida: hay transacciones con
+   proyecto Sempra colgadas de partidas de otro proyecto (y al revés), y
+   con un solo criterio esas se perderían. Las cruzadas se listan aparte,
+   porque cuentan aquí como gasto Sempra pero restan disponible a la
+   partida de otro proyecto.
+   El periodo de una transacción es el de su partida, igual que en el resto
+   del Dashboard; solo si no tiene partida se usa su fecha.
+   ----------------------------------------------------------------- */
+const PROYECTO_SEMPRA = "Sempra";
+const esSempra = (v) => String(v || "").trim().toLowerCase() === PROYECTO_SEMPRA.toLowerCase();
+
+const SUBS_DASHBOARD = [
+  { id: "general", label: "General" },
+  { id: "sempra",  label: PROYECTO_SEMPRA },
+];
+
+function Dashboard(props) {
+  const { unidad, partidas, transacciones } = props;
+  // La subpestaña solo aparece en la compañía que tiene gastos o partidas Sempra.
+  const haySempra = useMemo(
+    () => partidas.some((p) => p.unidad === unidad && esSempra(p.proyecto))
+      || transacciones.some((t) => t.unidad_detectada === unidad && esSempra(t.proyecto)),
+    [unidad, partidas, transacciones]
+  );
+  const [subGuardado, setSub] = useSessionState("ss-dashboard-sub", "general");
+  const sub = haySempra && subGuardado === "sempra" ? "sempra" : "general";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {haySempra && (
+        <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start" }}>
+          {SUBS_DASHBOARD.map((s) => (
+            <button key={s.id} onClick={() => setSub(s.id)}
+              style={{ padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
+                       background: sub === s.id ? T.accent : "transparent",
+                       color: sub === s.id ? "#FFFFFF" : T.textDim,
+                       fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI }}>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {sub === "sempra"
+        ? <DashboardSempra unidad={unidad} partidas={partidas} transacciones={transacciones} />
+        : <DashboardGeneral {...props} />}
+    </div>
+  );
+}
+
+function DashboardSempra({ unidad, partidas, transacciones }) {
+  const [anioSel, setAnioSel] = useSessionState("ss-sempra-anio", "Todos");
+  const [mesSel, setMesSel] = useSessionState("ss-sempra-mes", "Todos");
+  const [buscar, setBuscar] = useSessionState("ss-sempra-buscar", "");
+  const [statusSel, setStatusSel] = useSessionState("ss-sempra-status", "todas");
+
+  const partidasUnidad = useMemo(() => partidas.filter((p) => p.unidad === unidad), [partidas, unidad]);
+  const partidaPorId = useMemo(() => new Map(partidasUnidad.map((p) => [p.id, p])), [partidasUnidad]);
+  const partidasSempra = useMemo(() => partidasUnidad.filter((p) => esSempra(p.proyecto)), [partidasUnidad]);
+
+  const periodoDe = (t) => {
+    const p = partidaPorId.get(t.partida_id);
+    if (p) return { anio: Number(p.anio), mes: p.mes };
+    const d = t.dia ? new Date(`${t.dia}T12:00:00`) : null;
+    return d ? { anio: d.getFullYear(), mes: MESES[d.getMonth()] } : { anio: null, mes: null };
+  };
+
+  const transSempra = useMemo(() => transacciones.filter((t) => {
+    if (estaCancelada(t)) return false;
+    const p = partidaPorId.get(t.partida_id);
+    if (!p && t.unidad_detectada !== unidad) return false;
+    return esSempra(t.proyecto) || esSempra(p?.proyecto);
+  }), [transacciones, partidaPorId, unidad]);
+
+  const anios = [...new Set([
+    ...partidasSempra.map((p) => Number(p.anio)),
+    ...transSempra.map((t) => periodoDe(t).anio),
+  ].filter(Boolean))].sort((a, b) => b - a);
+  const anioEf = anios.includes(Number(anioSel)) ? Number(anioSel) : null; // null = Todos
+
+  const enPeriodo = ({ anio, mes }) =>
+    (anioEf === null || anio === anioEf) && (mesSel === "Todos" || mes === mesSel);
+
+  const partidasF = partidasSempra.filter((p) => enPeriodo({ anio: Number(p.anio), mes: p.mes }));
+  const transF = transSempra.filter((t) => enPeriodo(periodoDe(t)));
+  const monedaDe = (x) => (x.moneda === "USD" ? "USD" : "MXP");
+
+  // --- KPIs por moneda: nunca se suma MXP con USD ---
+  const kpis = { MXP: null, USD: null };
+  const nuevoKpi = () => ({ presupuestado: 0, comprometido: 0, pagado: 0, borrador: 0, nBorrador: 0 });
+  partidasF.forEach((p) => {
+    const m = monedaDe(p);
+    kpis[m] = kpis[m] || nuevoKpi();
+    kpis[m].presupuestado += Number(p.monto_estimado) || 0;
+  });
+  transF.forEach((t) => {
+    const m = monedaDe(t);
+    kpis[m] = kpis[m] || nuevoKpi();
+    const imp = Number(t.importe) || 0;
+    if (cuentaEnComprometido(t)) {
+      kpis[m].comprometido += imp;
+      if (t.status === "Pagado") kpis[m].pagado += imp;
+    } else {
+      kpis[m].borrador += imp;
+      kpis[m].nBorrador++;
+    }
+  });
+  const monedas = ["MXP", "USD"].filter((m) => kpis[m]);
+
+  // --- Por mes (presupuestado vs. comprometido vs. pagado) ---
+  const variosAnios = new Set([...partidasF.map((p) => Number(p.anio)), ...transF.map((t) => periodoDe(t).anio)]).size > 1;
+  const porMes = useMemo(() => {
+    const mapas = { MXP: {}, USD: {} };
+    const fila = (m, anio, mes) => {
+      const k = (Number(anio) || 0) * 12 + MESES.indexOf(mes);
+      if (!mapas[m][k]) mapas[m][k] = { k, mes: variosAnios ? `${String(mes).slice(0, 3)} ${String(anio).slice(2)}` : mes,
+                                         presupuestado: 0, comprometido: 0, pagado: 0 };
+      return mapas[m][k];
+    };
+    partidasF.forEach((p) => { fila(monedaDe(p), p.anio, p.mes).presupuestado += Number(p.monto_estimado) || 0; });
+    transF.forEach((t) => {
+      if (!cuentaEnComprometido(t)) return;
+      const { anio, mes } = periodoDe(t);
+      if (!mes) return;
+      const f = fila(monedaDe(t), anio, mes);
+      f.comprometido += Number(t.importe) || 0;
+      if (t.status === "Pagado") f.pagado += Number(t.importe) || 0;
+    });
+    const orden = (o) => Object.values(o).sort((a, b) => a.k - b.k);
+    return { MXP: orden(mapas.MXP), USD: orden(mapas.USD) };
+  }, [partidasF, transF, variosAnios]);
+
+  // --- Agrupados por categoría y por proveedor (solo registradas) ---
+  const agrupar = (claveDe) => {
+    const g = {};
+    transF.filter(cuentaEnComprometido).forEach((t) => {
+      const m = monedaDe(t);
+      const nombre = claveDe(t);
+      const k = `${m}|${nombre}`;
+      if (!g[k]) g[k] = { moneda: m, nombre, n: 0, comprometido: 0, pagado: 0 };
+      g[k].n++;
+      g[k].comprometido += Number(t.importe) || 0;
+      if (t.status === "Pagado") g[k].pagado += Number(t.importe) || 0;
+    });
+    return Object.values(g).sort((a, b) => (a.moneda === b.moneda ? b.comprometido - a.comprometido : a.moneda === "MXP" ? -1 : 1));
+  };
+  const categoriaDe = (t) => (t.categoria || "").trim() || (partidaPorId.get(t.partida_id)?.categoria || "").trim() || "Sin categoría";
+  const porCategoria = agrupar(categoriaDe);
+  const porProveedor = agrupar((t) => (t.proveedor || "").trim() || "Sin proveedor");
+  const topProveedores = ["MXP", "USD"].flatMap((m) => porProveedor.filter((r) => r.moneda === m).slice(0, 10));
+
+  // --- Cruzadas: el proyecto de la transacción y el de su partida no coinciden ---
+  const cruzadas = transF.filter((t) => {
+    const p = partidaPorId.get(t.partida_id);
+    return p && esSempra(t.proyecto) !== esSempra(p.proyecto);
+  });
+
+  // --- Lista de transacciones ---
+  const q = buscar.trim().toLowerCase();
+  const filas = transF
+    .filter((t) => statusSel === "todas"
+      || (statusSel === "pagadas" && cuentaEnComprometido(t) && t.status === "Pagado")
+      || (statusSel === "porpagar" && cuentaEnComprometido(t) && t.status !== "Pagado")
+      || (statusSel === "borradores" && !cuentaEnComprometido(t)))
+    .filter((t) => !q || [t.folio_transaccion, t.proveedor, t.concepto_detallado, t.folio_compra_sae, t.folio_factura, categoriaDe(t)]
+      .some((v) => String(v || "").toLowerCase().includes(q)))
+    .sort((a, b) => String(b.dia || "").localeCompare(String(a.dia || "")));
+  const totalesFilas = {};
+  filas.forEach((t) => { const m = monedaDe(t); totalesFilas[m] = (totalesFilas[m] || 0) + (Number(t.importe) || 0); });
+
+  if (!partidasSempra.length && !transSempra.length) {
+    return <EmptyState title="Sin gastos de Sempra" body={`No hay partidas ni transacciones del proyecto Sempra en ${unidad}.`} />;
+  }
+
+  const periodoLabel = `${mesSel === "Todos" ? "Todos los meses" : mesSel} · ${anioEf ?? "todos los años"}`;
+  const etiquetaMoneda = (m, primero) => (
+    <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, margin: primero ? "0 0 4px" : "18px 0 4px" }}>{m}</div>
+  );
+  const tablaAgrupada = (rows, titulo) => (
+    <div style={{ overflowX: "auto" }}>
+      <table style={tableStyle}>
+        <thead><tr>
+          <th style={thStyle}>Moneda</th><th style={thStyle}>{titulo}</th>
+          <th style={{ ...thStyle, textAlign: "right" }}>#</th>
+          <th style={{ ...thStyle, textAlign: "right" }}>Comprometido</th>
+          <th style={{ ...thStyle, textAlign: "right" }}>Pagado</th>
+          <th style={{ ...thStyle, textAlign: "right" }}>Por pagar</th>
+        </tr></thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={`${r.moneda}|${r.nombre}`}>
+              <td style={tdStyle}><Pill tone="dim">{r.moneda}</Pill></td>
+              <td style={tdStyle}>{r.nombre}</td>
+              <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{r.n}</td>
+              <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(r.comprometido, r.moneda)}</td>
+              <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, color: T.teal }}>{money(r.pagado, r.moneda)}</td>
+              <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(r.comprometido - r.pagado, r.moneda)}</td>
+            </tr>
+          ))}
+          {!rows.length && <tr><td colSpan={6} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones registradas en este periodo</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <Panel title={`Proyecto ${PROYECTO_SEMPRA} — ${unidad}`}
+        subtitle={`Comprometido = transacciones registradas, pagadas o no; los borradores se muestran aparte · ${periodoLabel}`}
+        right={
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+            <Field label="Año">
+              <Select value={anioEf ?? "Todos"} onChange={(e) => setAnioSel(e.target.value)} style={{ width: 110 }}>
+                <option value="Todos">Todos</option>
+                {anios.map((a) => <option key={a} value={a}>{a}</option>)}
+              </Select>
+            </Field>
+            <Field label="Mes">
+              <Select value={mesSel} onChange={(e) => setMesSel(e.target.value)} style={{ width: 130 }}>
+                <option value="Todos">Todos</option>
+                {MESES.map((m) => <option key={m} value={m}>{m}</option>)}
+              </Select>
+            </Field>
+          </div>
+        }>
+        {!monedas.length && <div style={{ fontSize: 12, color: T.textFaint }}>Sin partidas ni transacciones de Sempra en este periodo.</div>}
+        {monedas.map((m, i) => {
+          const k = kpis[m];
+          const disponible = k.presupuestado - k.comprometido;
+          return (
+            <div key={m}>
+              {etiquetaMoneda(m, i === 0)}
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                <KpiCard label="Presupuestado" value={money(k.presupuestado, m)} />
+                <KpiCard label="Comprometido" value={money(k.comprometido, m)} accent={T.accent} />
+                <KpiCard label="Pagado" value={money(k.pagado, m)} accent={T.teal} />
+                <KpiCard label="Por pagar" value={money(k.comprometido - k.pagado, m)} accent={T.amberDim} />
+                <KpiCard label="Disponible" value={money(disponible, m)} accent={disponible < 0 ? T.red : T.text} />
+              </div>
+              {k.nBorrador > 0 && (
+                <div style={{ fontSize: 11.5, color: T.amberDim, marginTop: 6 }}>
+                  Además hay {k.nBorrador} borrador(es) por {money(k.borrador, m)} que todavía no cuentan como comprometido.
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </Panel>
+
+      {cruzadas.length > 0 && (
+        <Panel title="Transacciones con proyecto distinto al de su partida"
+          subtitle={`${cruzadas.length} transacción(es) · aquí cuentan como gasto Sempra, pero el presupuesto que consumen es el de la partida indicada. Si la partida está mal, corrígela en Transacciones.`}>
+          <div style={{ overflowX: "auto" }}>
+            <table style={tableStyle}>
+              <thead><tr>
+                <th style={thStyle}>Folio</th><th style={thStyle}>Proveedor</th>
+                <th style={thStyle}>Proyecto (transacción)</th><th style={thStyle}>Partida</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Importe</th>
+              </tr></thead>
+              <tbody>
+                {cruzadas.map((t) => {
+                  const p = partidaPorId.get(t.partida_id);
+                  return (
+                    <tr key={t.id}>
+                      <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.accent }}>{t.folio_transaccion || "—"}</td>
+                      <td style={tdStyle}>{t.proveedor || "—"}</td>
+                      <td style={tdStyle}>{t.proyecto || "—"}</td>
+                      <td style={tdStyle}><Pill tone="amber">{p.proyecto}</Pill> <span style={{ color: T.textFaint, fontSize: 11.5 }}>{p.concepto} · {p.mes} {p.anio}</span></td>
+                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      )}
+
+      {(porMes.MXP.length > 0 || porMes.USD.length > 0) && (
+        <Panel title="Por mes" subtitle={`Presupuestado vs. comprometido vs. pagado · ${periodoLabel}`}>
+          {["MXP", "USD"].filter((m) => porMes[m].length).map((m, i) => (
+            <div key={m}>
+              {etiquetaMoneda(m, i === 0)}
+              <ResponsiveContainer width="100%" height={240}>
+                <BarChart data={porMes[m]} margin={{ left: 8, right: 16 }}>
+                  <CartesianGrid strokeDasharray="2 4" stroke={T.borderSoft} vertical={false} />
+                  <XAxis dataKey="mes" tick={{ fill: T.textFaint, fontSize: 10 }} stroke={T.border} />
+                  <YAxis tick={{ fill: T.textFaint, fontSize: 10 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} stroke={T.border} />
+                  <Tooltip content={<ChartTooltip />} />
+                  <Legend wrapperStyle={{ fontSize: 11, color: T.textDim }} />
+                  <Bar dataKey="presupuestado" name="Presupuestado" fill={T.border} radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="comprometido" name="Comprometido" fill={T.accent} radius={[3, 3, 0, 0]} />
+                  <Bar dataKey="pagado" name="Pagado" fill={T.teal} radius={[3, 3, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ))}
+        </Panel>
+      )}
+
+      <Panel title="Por categoría del gasto" subtitle="Si la transacción no trae categoría se toma la de su partida">
+        {tablaAgrupada(porCategoria, "Categoría")}
+      </Panel>
+
+      <Panel title="Principales proveedores" subtitle="Los 10 con más comprometido en cada moneda">
+        {tablaAgrupada(topProveedores, "Proveedor")}
+      </Panel>
+
+      <Panel title="Transacciones Sempra"
+        subtitle={`${filas.length} transacción(es) · ${["MXP", "USD"].filter((m) => totalesFilas[m] !== undefined).map((m) => money(totalesFilas[m], m)).join(" · ") || "—"}`}>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
+          <Field label="Buscar">
+            <TextInput value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Folio, proveedor, concepto, categoría…" style={{ width: 260 }} />
+          </Field>
+          <Field label="Status">
+            <Select value={statusSel} onChange={(e) => setStatusSel(e.target.value)} style={{ width: 150 }}>
+              <option value="todas">Todas</option>
+              <option value="pagadas">Pagadas</option>
+              <option value="porpagar">Por pagar</option>
+              <option value="borradores">Borradores</option>
+            </Select>
+          </Field>
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={tableStyle}>
+            <thead><tr>
+              <th style={thStyle}>Folio</th><th style={thStyle}>Periodo</th><th style={thStyle}>Fecha</th>
+              <th style={thStyle}>Proveedor</th><th style={thStyle}>Concepto</th><th style={thStyle}>Categoría</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Importe</th><th style={thStyle}>Status</th>
+            </tr></thead>
+            <tbody>
+              {filas.map((t) => {
+                const { anio, mes } = periodoDe(t);
+                const registrada = cuentaEnComprometido(t);
+                return (
+                  <tr key={t.id}>
+                    <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.accent, whiteSpace: "nowrap" }}>{t.folio_transaccion || "—"}</td>
+                    <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{mes ? `${mes} ${anio}` : "—"}</td>
+                    <td style={{ ...tdStyle, fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{t.dia || "—"}</td>
+                    <td style={tdStyle}>{t.proveedor || "—"}</td>
+                    <td style={{ ...tdStyle, color: T.textDim }}>{t.concepto_detallado || "—"}</td>
+                    <td style={tdStyle}>{categoriaDe(t)}</td>
+                    <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{money(t.importe, t.moneda)}</td>
+                    <td style={tdStyle}>
+                      {!registrada ? <Pill tone="amber">Borrador</Pill>
+                        : t.status === "Pagado" ? <Pill tone="teal">Pagado</Pill>
+                        : <Pill tone="dim">{t.status || "No Pagado"}</Pill>}
+                    </td>
+                  </tr>
+                );
+              })}
+              {!filas.length && <tr><td colSpan={8} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna transacción con estos filtros</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+    </div>
+  );
+}
+
+function DashboardGeneral({ unidad, unidades, partidas, transacciones, proveedores = [], listasSat }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const idsPartidas = new Set(partidasUnidad.map((p) => p.id));

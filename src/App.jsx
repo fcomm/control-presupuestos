@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.66.0";
+const APP_VERSION = "2.66.1";
 const CHANGELOG = [
+  { v: "2.66.1", desc: "Partidas: el desglose de transacciones vinculadas muestra el Proveedor de cada transaccion, antes del concepto. Muchas no traen concepto y la fila quedaba sin nada que la identificara" },
   { v: "2.66.0", desc: "Dashboard estrena subpestanas: General (lo de siempre) y Sempra, solo con los gastos de ese proyecto. Aparece solo en la compania que tiene partidas o transacciones Sempra. Muestra por moneda Presupuestado, Comprometido, Pagado, Por pagar y Disponible, con los borradores aparte; una grafica por mes; el gasto por categoria (si la transaccion no trae categoria se usa la de su partida); los 10 principales proveedores; y la lista de transacciones con busqueda y filtro de status. Un gasto es Sempra si lo dice la transaccion o su partida, y las que no coinciden se listan aparte porque consumen presupuesto de otro proyecto. Filtros propios de Ano y Mes" },
   { v: "2.65.0", desc: "Los recuadros de Proveedores en listas del SAT y Anticipos pagados sin factura salen del Dashboard y pasan a una nueva subpestana Alertas en Transacciones. Ahi los anticipos se listan todos (ya no solo 8) y cada uno se abre con un clic para adjuntar su XML. Si no hay nada pendiente, cada recuadro lo dice en vez de desaparecer, y si las listas del SAT no se pudieron consultar tambien se avisa" },
   { v: "2.64.0", desc: "El comprometido de una partida ahora solo suma transacciones registradas, pagadas o no; los borradores ya no restan disponible hasta que se registran (al reportarlas a Direccion o enviarlas a Pagos). Pagado sigue siendo lo marcado como Pagado, pero tambien solo de registradas, para que nunca supere al comprometido. Aplica igual en Partidas (Usado, Disponible y la linea bajo el monto, que ahora dice Comprometido y avisa cuantas hay en borrador), en el selector de partida, en las graficas del Dashboard y en Presupuesto vs. ejercido. Se usa la fecha de registro y no el folio: el historico de OSB quedo registrado sin folio y si no sus partidas quedarian en cero" },
@@ -7423,6 +7424,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                     <tbody>
                       {transDeEsta.map((t, idx) => (
                         <tr key={t.id}>
+                          <td style={{ ...tdStyle, padding: "7px 12px", width: "32%", color: T.text, borderBottom: idx === transDeEsta.length - 1 ? "none" : `1px solid ${T.borderSoft}` }}>
+                            {t.proveedor || "—"}
+                          </td>
                           <td style={{ ...tdStyle, padding: "7px 12px", color: T.textDim, borderBottom: idx === transDeEsta.length - 1 ? "none" : `1px solid ${T.borderSoft}` }}>
                             {t.concepto_detallado || "—"}
                           </td>

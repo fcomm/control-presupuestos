@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.67.0";
+const APP_VERSION = "2.68.0";
 const CHANGELOG = [
+  { v: "2.68.0", desc: "Generar REG por lotes: en Transacciones, al seleccionar, aparece Generar REG N para las registradas que no tienen REG o lo tienen viejo. Va de una en una y cuida el Storage: si lo que espera pasar a Drive llega a 40 MB, se pausa hasta que el script lo mueva y luego sigue sola. Se puede detener en cualquier momento; al volver a pulsar solo toma las que siguen sin REG. Pensado para el historico de OSB que recibio folio directo en la base" },
   { v: "2.67.0", desc: "Dashboard: el periodo se elige con Desde - Hasta, con el mes como unidad minima; cada extremo lleva su mes y su ano, asi que el rango puede cruzar de un ano a otro. Atajos para fijarlo de un clic: Mes actual, Mes anterior y actual, ano en curso a la fecha, Ano anterior y Todo. Reemplaza la cascada Ano / YTD / Periodo, donde el rango quedaba escondido hasta cambiar primero el ano. General arranca en el ano en curso a la fecha, como antes; la subpestana Sempra, que antes tenia Ano y Mes sueltos, usa el mismo selector y arranca en Todo porque ahi importa el acumulado del proyecto" },
   { v: "2.66.1", desc: "Partidas: el desglose de transacciones vinculadas muestra el Proveedor de cada transaccion, antes del concepto. Muchas no traen concepto y la fila quedaba sin nada que la identificara" },
   { v: "2.66.0", desc: "Dashboard estrena subpestanas: General (lo de siempre) y Sempra, solo con los gastos de ese proyecto. Aparece solo en la compania que tiene partidas o transacciones Sempra. Muestra por moneda Presupuestado, Comprometido, Pagado, Por pagar y Disponible, con los borradores aparte; una grafica por mes; el gasto por categoria (si la transaccion no trae categoria se usa la de su partida); los 10 principales proveedores; y la lista de transacciones con busqueda y filtro de status. Un gasto es Sempra si lo dice la transaccion o su partida, y las que no coinciden se listan aparte porque consumen presupuesto de otro proyecto. Filtros propios de Ano y Mes" },
@@ -9698,6 +9699,60 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
   };
 
+  /* REG por lotes para registradas sin REG o con REG viejo. Una por una y con
+     tope de búfer: si lo que espera pasar a Drive llega al tope, se pausa
+     hasta que el script lo vacíe. Detener corta después del REG en curso;
+     volver a pulsar retoma, porque solo toma las que siguen sin REG. */
+  const [regLote, setRegLote] = useState(null); // { hechos, total, errores, esperandoMB }
+  const detenerRegLote = useRef(false);
+  const necesitaReg = (t) => !!t && !pendienteDeRegistro(t) && (!t.poliza_generada_en || polizaVieja(t));
+
+  const generarRegsSeleccionadas = async () => {
+    const pend = [...seleccionadas]
+      .map((id) => transUnidad.find((t) => t.id === id))
+      .filter(necesitaReg)
+      .sort((a, b) => String(a.folio_transaccion).localeCompare(String(b.folio_transaccion)));
+    if (!pend.length) { alert("Las seleccionadas ya tienen su REG al día."); return; }
+    const topeMB = Math.round(REG_LOTE_BUFER_MAX_BYTES / 1048576);
+    if (!confirm(`Se van a generar ${pend.length} REG, uno por uno.\n\n`
+      + `Para no saturar el Storage, si lo pendiente de pasar a Drive llega a ${topeMB} MB el proceso se pausa hasta que el script de Drive lo mueva, y sigue solo. Para que avance, el script tiene que estar corriendo.\n\n`
+      + `Deja esta pestaña abierta. Puedes detenerlo cuando quieras: al volver a pulsar, solo toma las que sigan sin REG.\n\n¿Continuar?`)) return;
+
+    detenerRegLote.current = false;
+    let hechos = 0, errores = 0;
+    setRegLote({ hechos, total: pend.length, errores, esperandoMB: null });
+    try {
+      for (const t of pend) {
+        if (detenerRegLote.current) break;
+        for (;;) {
+          const bytes = await bytesEnBuferAdjuntos();
+          if (bytes < REG_LOTE_BUFER_MAX_BYTES) break;
+          setRegLote({ hechos, total: pend.length, errores, esperandoMB: Math.round(bytes / 1048576) });
+          await new Promise((r) => setTimeout(r, REG_LOTE_ESPERA_MS));
+          if (detenerRegLote.current) break;
+        }
+        if (detenerRegLote.current) break;
+        setRegLote({ hechos, total: pend.length, errores, esperandoMB: null });
+        try {
+          await generarPolizaTransaccion(transaccionesApi, t, unidad, partidas);
+        } catch (err) {
+          errores++;
+          console.warn(`No se pudo generar el REG de ${t.folio_transaccion || t.id}:`, err);
+        }
+        hechos++;
+        setRegLote({ hechos, total: pend.length, errores, esperandoMB: null });
+      }
+      const resto = pend.length - hechos;
+      alert(`REG generados: ${hechos - errores}.`
+        + (errores ? `\nCon error: ${errores} (siguen sin REG; vuelve a pulsar para reintentarlos).` : "")
+        + (resto ? `\nPendientes por detener: ${resto}.` : ""));
+    } catch (err) {
+      alert("Se interrumpió la generación de REG: " + (err.message || err));
+    } finally {
+      setRegLote(null);
+    }
+  };
+
   /* Reportar a Dirección o enviar a Pagos es el momento en que la transacción
      se vuelve oficial. Si en ese instante sigue en borrador, es que faltaba
      darle folio: se registra sola.
@@ -9896,6 +9951,24 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 <Button onClick={registrarSeleccionadas} disabled={registrando}>
                   {registrando ? "Registrando…" : `Registrar ${sinRegistrar}`}
                 </Button>
+              ) : null;
+            })()}
+            {regLote ? (
+              <>
+                <span style={{ fontSize: 12.5, color: T.text }}>
+                  {regLote.esperandoMB != null
+                    ? `REG ${regLote.hechos}/${regLote.total} — en pausa: ${regLote.esperandoMB} MB esperan pasar a Drive`
+                    : `Generando REG ${regLote.hechos}/${regLote.total}…`}
+                  {regLote.errores ? ` (${regLote.errores} con error)` : ""}
+                </span>
+                <Button variant="ghost" onClick={() => { detenerRegLote.current = true; }}>Detener</Button>
+              </>
+            ) : (() => {
+              const sinReg = [...seleccionadas]
+                .map((id) => transUnidad.find((t) => t.id === id))
+                .filter(necesitaReg).length;
+              return sinReg > 0 ? (
+                <Button onClick={generarRegsSeleccionadas}>{`Generar REG ${sinReg}`}</Button>
               ) : null;
             })()}
             <div style={{ width: 1, alignSelf: "stretch", background: T.accent, opacity: 0.3, margin: "0 2px" }} />
@@ -17147,6 +17220,22 @@ function pdfPoliza(t, { partida, centroCosto, razonSocial, idSae } = {}) {
   }
 
   return doc;
+}
+
+/* Generación de REG por lotes. Cada REG pesa ~230 KB y vive en Storage hasta
+   que mover_adjuntos_a_drive.py lo pasa a Drive. El plan gratuito tiene 1 GB,
+   así que el lote no genera más mientras lo pendiente de pasar supere este
+   tope: espera a que el script vacíe el búfer y sigue. 40 MB son ~175 REG. */
+const REG_LOTE_BUFER_MAX_BYTES = 40 * 1024 * 1024;
+const REG_LOTE_ESPERA_MS = 60 * 1000;
+
+/* Bytes que siguen en Storage esperando pasar a Drive (de cualquier tipo de
+   adjunto: el tope protege el Storage completo, no solo los REG). */
+async function bytesEnBuferAdjuntos() {
+  const { data, error } = await supabase.from("adjuntos").select("tamano")
+    .not("storage_path", "is", null);
+  if (error) throw error;
+  return (data || []).reduce((s, a) => s + (Number(a.tamano) || 0), 0);
 }
 
 /**

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.69.0";
+const APP_VERSION = "2.69.1";
 const CHANGELOG = [
+  { v: "2.69.1", desc: "Los filtros de Transacciones caben en una sola fila: cada control crece desde un ancho base en vez de tener un ancho fijo, y las etiquetas largas se acortan a Direccion y Pagos (las opciones ya dicen Reportado y Enviado). En pantallas angostas se siguen acomodando en dos filas" },
   { v: "2.69.0", desc: "Filtro nuevo Registro en Transacciones: Todas, Registradas o No registradas. No registradas son los borradores -- sin folio, que todavia no cuentan en el comprometido --, para encontrarlos de un golpe y registrarlos o eliminarlos. Se combina con los demas filtros; las canceladas siguen gobernadas por su propio filtro (y una cancelada siempre es registrada, porque tuvo folio)" },
   { v: "2.68.0", desc: "Generar REG por lotes: en Transacciones, al seleccionar, aparece Generar REG N para las registradas que no tienen REG o lo tienen viejo. Va de una en una y cuida el Storage: si lo que espera pasar a Drive llega a 40 MB, se pausa hasta que el script lo mueva y luego sigue sola. Se puede detener en cualquier momento; al volver a pulsar solo toma las que siguen sin REG. Pensado para el historico de OSB que recibio folio directo en la base" },
   { v: "2.67.0", desc: "Dashboard: el periodo se elige con Desde - Hasta, con el mes como unidad minima; cada extremo lleva su mes y su ano, asi que el rango puede cruzar de un ano a otro. Atajos para fijarlo de un clic: Mes actual, Mes anterior y actual, ano en curso a la fecha, Ano anterior y Todo. Reemplaza la cascada Ano / YTD / Periodo, donde el rango quedaba escondido hasta cambiar primero el ano. General arranca en el ano en curso a la fecha, como antes; la subpestana Sempra, que antes tenia Ano y Mes sueltos, usa el mismo selector y arranca en Todo porque ahi importa el acumulado del proyecto" },
@@ -9855,51 +9856,51 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               ya quedaron. Antes vivían once controles en una sola fila que
               se envolvía sin orden aparente; separarlas por propósito hace
               más fácil encontrar cada una. */}
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <Field label="Buscar">
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <Field label="Buscar" style={{ flex: "2 1 170px" }}>
               <TextInput
                 value={filtros.texto}
                 onChange={(e) => setFiltros({ ...filtros, texto: e.target.value })}
                 placeholder="Proveedor, concepto, folio, área…"
-                style={{ width: 220 }}
+                style={{ width: "100%" }}
               />
             </Field>
-            <Field label="Desde">
+            <Field label="Desde" style={{ flex: "1 1 118px" }}>
               <TextInput type="date" value={filtros.fechaDesde} onChange={(e) => setFiltros({ ...filtros, fechaDesde: e.target.value })} />
             </Field>
-            <Field label="Hasta">
+            <Field label="Hasta" style={{ flex: "1 1 118px" }}>
               <TextInput type="date" value={filtros.fechaHasta} onChange={(e) => setFiltros({ ...filtros, fechaHasta: e.target.value })} />
             </Field>
-            <Field label="Reportado a Dirección">
-              <Select value={filtros.reportado} onChange={(e) => setFiltros({ ...filtros, reportado: e.target.value })} style={{ width: 170 }}>
+            <Field label="Dirección" style={{ flex: "1 1 108px" }}>
+              <Select value={filtros.reportado} onChange={(e) => setFiltros({ ...filtros, reportado: e.target.value })} style={{ width: "100%" }}>
                 <option>Todos</option>
-                <option>Reportado</option>
+                <option value="Reportado">Reportado</option>
                 <option>No reportado</option>
               </Select>
             </Field>
-            <Field label="Enviado a Pagos">
-              <Select value={filtros.enviadoPagos} onChange={(e) => setFiltros({ ...filtros, enviadoPagos: e.target.value })} style={{ width: 160 }}>
+            <Field label="Pagos" style={{ flex: "1 1 108px" }}>
+              <Select value={filtros.enviadoPagos} onChange={(e) => setFiltros({ ...filtros, enviadoPagos: e.target.value })} style={{ width: "100%" }}>
                 <option>Todos</option>
                 <option>Enviado</option>
                 <option>No enviado</option>
               </Select>
             </Field>
-            <Field label="Canceladas">
-              <Select value={filtros.canceladas || "ocultar"} onChange={(e) => setFiltros({ ...filtros, canceladas: e.target.value })} style={{ width: 140 }}>
+            <Field label="Canceladas" style={{ flex: "1 1 108px" }}>
+              <Select value={filtros.canceladas || "ocultar"} onChange={(e) => setFiltros({ ...filtros, canceladas: e.target.value })} style={{ width: "100%" }}>
                 <option value="ocultar">Ocultarlas</option>
                 <option value="mostrar">Mostrarlas</option>
                 <option value="solo">Solo canceladas</option>
               </Select>
             </Field>
-            <Field label="Registro">
-              <Select value={filtros.registro || "Todas"} onChange={(e) => setFiltros({ ...filtros, registro: e.target.value })} style={{ width: 150 }}>
+            <Field label="Registro" style={{ flex: "1 1 120px" }}>
+              <Select value={filtros.registro || "Todas"} onChange={(e) => setFiltros({ ...filtros, registro: e.target.value })} style={{ width: "100%" }}>
                 <option value="Todas">Todas</option>
                 <option value="registradas">Registradas</option>
                 <option value="borradores">No registradas</option>
               </Select>
             </Field>
-            <Field label="Adjuntos">
-              <Select value={filtroAdj} onChange={(e) => setFiltros({ ...filtros, adjuntos: e.target.value })} style={{ width: 190 }}>
+            <Field label="Adjuntos" style={{ flex: "1 1 120px" }}>
+              <Select value={filtroAdj} onChange={(e) => setFiltros({ ...filtros, adjuntos: e.target.value })} style={{ width: "100%" }}>
                 <option value="Todos">Todos</option>
                 {MARCAS_ADJUNTO_TRANSACCION.map((m) => (
                   <option key={m.campo} value={`sin:${m.campo}`}>Sin {m.largo.split(" (")[0]}</option>
@@ -9907,14 +9908,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 <option value="ninguno">Sin ningún adjunto</option>
               </Select>
             </Field>
-            <Field label="Proyecto">
-              <Select value={filtros.proyecto} onChange={(e) => setFiltros({ ...filtros, proyecto: e.target.value })} style={{ width: 190 }}>
+            <Field label="Proyecto" style={{ flex: "1.4 1 140px" }}>
+              <Select value={filtros.proyecto} onChange={(e) => setFiltros({ ...filtros, proyecto: e.target.value })} style={{ width: "100%" }}>
                 <option value="">Todos los proyectos</option>
                 {marcadoresProyecto.map((p) => <option key={p} value={p}>{p}</option>)}
               </Select>
             </Field>
-            <Field label="Moneda">
-              <Select value={filtros.moneda} onChange={(e) => setFiltros({ ...filtros, moneda: e.target.value })} style={{ width: 130 }}>
+            <Field label="Moneda" style={{ flex: "0.8 1 78px" }}>
+              <Select value={filtros.moneda} onChange={(e) => setFiltros({ ...filtros, moneda: e.target.value })} style={{ width: "100%" }}>
                 <option value="">Todas</option>
                 {monedasDisponibles.map((m) => <option key={m} value={m}>{m}</option>)}
               </Select>

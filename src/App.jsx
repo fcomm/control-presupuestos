@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.68.0";
+const APP_VERSION = "2.69.0";
 const CHANGELOG = [
+  { v: "2.69.0", desc: "Filtro nuevo Registro en Transacciones: Todas, Registradas o No registradas. No registradas son los borradores -- sin folio, que todavia no cuentan en el comprometido --, para encontrarlos de un golpe y registrarlos o eliminarlos. Se combina con los demas filtros; las canceladas siguen gobernadas por su propio filtro (y una cancelada siempre es registrada, porque tuvo folio)" },
   { v: "2.68.0", desc: "Generar REG por lotes: en Transacciones, al seleccionar, aparece Generar REG N para las registradas que no tienen REG o lo tienen viejo. Va de una en una y cuida el Storage: si lo que espera pasar a Drive llega a 40 MB, se pausa hasta que el script lo mueva y luego sigue sola. Se puede detener en cualquier momento; al volver a pulsar solo toma las que siguen sin REG. Pensado para el historico de OSB que recibio folio directo en la base" },
   { v: "2.67.0", desc: "Dashboard: el periodo se elige con Desde - Hasta, con el mes como unidad minima; cada extremo lleva su mes y su ano, asi que el rango puede cruzar de un ano a otro. Atajos para fijarlo de un clic: Mes actual, Mes anterior y actual, ano en curso a la fecha, Ano anterior y Todo. Reemplaza la cascada Ano / YTD / Periodo, donde el rango quedaba escondido hasta cambiar primero el ano. General arranca en el ano en curso a la fecha, como antes; la subpestana Sempra, que antes tenia Ano y Mes sueltos, usa el mismo selector y arranca en Todo porque ahi importa el acumulado del proyecto" },
   { v: "2.66.1", desc: "Partidas: el desglose de transacciones vinculadas muestra el Proveedor de cada transaccion, antes del concepto. Muchas no traen concepto y la fila quedaba sin nada que la identificara" },
@@ -8769,6 +8770,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     const verCanc = filtros.canceladas || "ocultar";
     if (verCanc === "ocultar" && estaCancelada(t)) return false;
     if (verCanc === "solo" && !estaCancelada(t)) return false;
+    // No registradas = borradores: sin folio o sin fecha de registro.
+    const verReg = filtros.registro || "Todas";
+    if (verReg === "registradas" && pendienteDeRegistro(t)) return false;
+    if (verReg === "borradores" && !pendienteDeRegistro(t)) return false;
     if (filtroAdj === "ninguno" && adjDe(t)) return false;
     if (filtroAdj.startsWith("sin:") && adjDe(t)?.[filtroAdj.slice(4)]) return false;
     // Coincidencia exacta con el marcador guardado en la transacción — el
@@ -8785,8 +8790,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtroAdj !== "Todos" || (filtros.canceladas || "ocultar") !== "ocultar" || filtros.proyecto || filtros.moneda;
-  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", adjuntos: "Todos", canceladas: "ocultar", proyecto: "", moneda: "" });
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtroAdj !== "Todos" || (filtros.canceladas || "ocultar") !== "ocultar" || (filtros.registro || "Todas") !== "Todas" || filtros.proyecto || filtros.moneda;
+  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", adjuntos: "Todos", canceladas: "ocultar", registro: "Todas", proyecto: "", moneda: "" });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
@@ -9884,6 +9889,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 <option value="ocultar">Ocultarlas</option>
                 <option value="mostrar">Mostrarlas</option>
                 <option value="solo">Solo canceladas</option>
+              </Select>
+            </Field>
+            <Field label="Registro">
+              <Select value={filtros.registro || "Todas"} onChange={(e) => setFiltros({ ...filtros, registro: e.target.value })} style={{ width: 150 }}>
+                <option value="Todas">Todas</option>
+                <option value="registradas">Registradas</option>
+                <option value="borradores">No registradas</option>
               </Select>
             </Field>
             <Field label="Adjuntos">

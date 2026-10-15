@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.69.1";
+const APP_VERSION = "2.70.0";
 const CHANGELOG = [
+  { v: "2.70.0", desc: "Paginacion en las tablas largas: Transacciones (y Sin vincular), Partidas, Proveedores, Anticipos pagados, Transacciones Sempra, Reporte de Pagos, Reporte de Pagos a Direccion, Solicitudes de pago, Flotilla y SMI de vehiculos. Pie de tabla con Mostrando X-Y de N, selector de 25, 50, 100, 250 o Todos (se recuerda por tabla) y botones de primera, anterior, siguiente y ultima. Cambiar filtros, orden o agrupamiento regresa a la pagina 1; editar una fila no. Es solo de pantalla: totales, encabezados con suma, seleccionar todas, exportaciones y reportes siguen usando la lista completa del filtro. Con agrupamiento se paginan los grupos de primer nivel, sin partir ninguno, para que sus subtotales sigan completos; la numeracion # sigue corrida entre paginas. Las tablas aparecen sin pie cuando tienen 25 filas o menos" },
   { v: "2.69.1", desc: "Los filtros de Transacciones caben en una sola fila: cada control crece desde un ancho base en vez de tener un ancho fijo, y las etiquetas largas se acortan a Direccion y Pagos (las opciones ya dicen Reportado y Enviado). En pantallas angostas se siguen acomodando en dos filas" },
   { v: "2.69.0", desc: "Filtro nuevo Registro en Transacciones: Todas, Registradas o No registradas. No registradas son los borradores -- sin folio, que todavia no cuentan en el comprometido --, para encontrarlos de un golpe y registrarlos o eliminarlos. Se combina con los demas filtros; las canceladas siguen gobernadas por su propio filtro (y una cancelada siempre es registrada, porque tuvo folio)" },
   { v: "2.68.0", desc: "Generar REG por lotes: en Transacciones, al seleccionar, aparece Generar REG N para las registradas que no tienen REG o lo tienen viejo. Va de una en una y cuida el Storage: si lo que espera pasar a Drive llega a 40 MB, se pausa hasta que el script lo mueva y luego sigue sola. Se puede detener en cualquier momento; al volver a pulsar solo toma las que siguen sin REG. Pensado para el historico de OSB que recibio folio directo en la base" },
@@ -2614,6 +2615,7 @@ function AnticiposPanel({ transacciones, adjDe, onAbrir, onCerrar, onReabrir }) 
       .some((v) => String(v || "").toLowerCase().includes(q)))
     .sort((a, b) => (b.seg.pendiente - a.seg.pendiente) || (b.seg.mesCerrado - a.seg.mesCerrado) || ((b.seg.dias || 0) - (a.seg.dias || 0)));
   const pend = todos.filter((x) => x.seg.pendiente);
+  const pagAnt = usePaginacion("anticipos", filas, { reinicio: [soloPend, buscar] });
   return (
     <Panel title="Anticipos pagados"
       subtitle={`${todos.length} anticipo(s) pagado(s) · ${pend.length} pendiente(s) de factura · ${pend.filter((x) => x.seg.mesCerrado).length} de un mes ya cerrado`
@@ -2635,7 +2637,7 @@ function AnticiposPanel({ transacciones, adjDe, onAbrir, onCerrar, onReabrir }) 
           <table style={tableStyle}>
             <thead><tr>{["Folio", "Proveedor", "Concepto", "Importe", "Pagado el", "Factura", ""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
             <tbody>
-              {filas.map(({ t, seg }) => (
+              {pagAnt.filas.map(({ t, seg }) => (
                 <tr key={t.id}>
                   <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.accent }}>{t.folio_transaccion || "—"}</td>
                   <td style={tdStyle}>{t.proveedor || "—"}</td>
@@ -2656,6 +2658,7 @@ function AnticiposPanel({ transacciones, adjDe, onAbrir, onCerrar, onReabrir }) 
               ))}
             </tbody>
           </table>
+          <Paginador pag={pagAnt} etiqueta="anticipos" />
         </div>
       )}
       <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10, lineHeight: 1.5 }}>
@@ -3806,6 +3809,7 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
     </div>
   );
 
+  const pagSempra = usePaginacion("sempra", filas, { reinicio: [unidad, buscar, statusSel] });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <Panel title={`Proyecto ${PROYECTO_SEMPRA} — ${unidad}`}
@@ -3921,7 +3925,7 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
               <th style={{ ...thStyle, textAlign: "right" }}>Importe</th><th style={thStyle}>Status</th>
             </tr></thead>
             <tbody>
-              {filas.map((t) => {
+              {pagSempra.filas.map((t) => {
                 const { anio, mes } = periodoDe(t);
                 const registrada = cuentaEnComprometido(t);
                 return (
@@ -3944,6 +3948,7 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
               {!filas.length && <tr><td colSpan={8} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna transacción con estos filtros</td></tr>}
             </tbody>
           </table>
+          <Paginador pag={pagSempra} etiqueta="transacciones" />
         </div>
       </Panel>
     </div>
@@ -5176,6 +5181,89 @@ function filasDeNodo(node) {
   return node.type === "rows" ? node.rows : node.entries.flatMap((e) => filasDeNodo(e.child));
 }
 
+/* ----------------------------------------------------------------------
+   PAGINACIÓN
+   La paginación es solo de PANTALLA: filtros, totales, selección "todas",
+   exportaciones y reportes siguen trabajando sobre la lista completa.
+   Con agrupamiento se paginan los grupos de primer nivel, nunca se parte un
+   grupo: su subtotal sería de media página y mentiría.
+---------------------------------------------------------------------- */
+const OPCIONES_POR_PAGINA = [25, 50, 100, 250, 0]; // 0 = Todos
+function usePaginacion(clave, filas = [], { agrupado = null, reinicio = null, porDefecto = 50 } = {}) {
+  const [porPagina, setPorPagina] = usePrefState(`pref-paginacion-${clave}`, porDefecto,
+    (g, d) => (OPCIONES_POR_PAGINA.includes(g) ? g : d));
+  const [pagina, setPagina] = useState(1);
+  // Cambiar filtros u orden regresa a la página 1; editar una fila no.
+  const firma = JSON.stringify(reinicio);
+  useEffect(() => { setPagina(1); }, [firma]);
+  const porGrupos = !!(agrupado && agrupado.type !== "rows" && Array.isArray(agrupado.entries));
+  const total = porGrupos ? agrupado.entries.length : filas.length;
+  const nPaginas = porPagina ? Math.max(1, Math.ceil(total / porPagina)) : 1;
+  const actual = Math.min(Math.max(1, pagina), nPaginas);
+  const ini = porPagina ? (actual - 1) * porPagina : 0;
+  const fin = porPagina ? Math.min(total, ini + porPagina) : total;
+  return {
+    filas: porGrupos ? filas : filas.slice(ini, fin),
+    agrupado: porGrupos ? { ...agrupado, entries: agrupado.entries.slice(ini, fin) } : agrupado,
+    // Filas antes de esta página: para que la numeración (#) siga corrida.
+    offset: porGrupos ? agrupado.entries.slice(0, ini).reduce((a, e) => a + filasDeNodo(e.child).length, 0) : ini,
+    pagina: actual, nPaginas, total, ini, fin, porPagina, porGrupos, totalFilas: filas.length,
+    irA: (n) => setPagina(Math.min(Math.max(1, n), nPaginas)),
+    cambiarPorPagina: (n) => { setPorPagina(n); setPagina(1); },
+  };
+}
+
+function Paginador({ pag, etiqueta = "registros" }) {
+  const ref = useRef(null);
+  if (!pag || pag.total <= OPCIONES_POR_PAGINA[0]) return null;
+  const n = (x) => Number(x).toLocaleString("es-MX");
+  const ir = (destino) => {
+    pag.irA(destino);
+    // Si el inicio de la tabla quedó arriba de la vista, se regresa a él.
+    requestAnimationFrame(() => {
+      const caja = ref.current?.closest("table")?.parentElement || ref.current?.parentElement?.parentElement;
+      if (caja && caja.getBoundingClientRect().top < 0) caja.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
+  };
+  const boton = (txt, destino, apagado, titulo) => (
+    <button type="button" onClick={() => ir(destino)} disabled={apagado} title={titulo}
+      style={{
+        border: `1px solid ${T.border}`, background: apagado ? "transparent" : T.panel,
+        color: apagado ? T.textFaint : T.text, borderRadius: 6, padding: "4px 10px",
+        fontSize: 13, lineHeight: 1.2, fontFamily: T.fontUI, cursor: apagado ? "default" : "pointer",
+      }}>{txt}</button>
+  );
+  const unidad = pag.porGrupos ? "grupos" : etiqueta;
+  return (
+    <div ref={ref} style={{
+      position: "sticky", left: 0, display: "flex", justifyContent: "space-between", alignItems: "center",
+      gap: 12, flexWrap: "wrap", paddingTop: 12, fontSize: 12, color: T.textDim, fontFamily: T.fontUI,
+    }}>
+      <span>
+        {pag.porPagina && pag.nPaginas > 1
+          ? <>Mostrando <b style={{ color: T.text }}>{n(pag.ini + 1)}–{n(pag.fin)}</b> de {n(pag.total)} {unidad}</>
+          : <>{n(pag.total)} {unidad}</>}
+        {pag.porGrupos && <> · {n(pag.totalFilas)} {etiqueta}</>}
+      </span>
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <span>{pag.porGrupos ? "Grupos por página" : "Por página"}</span>
+        <select value={pag.porPagina} onChange={(e) => pag.cambiarPorPagina(Number(e.target.value))}
+          style={{ ...inputStyle, width: "auto", padding: "4px 6px", fontSize: 12.5 }}>
+          {OPCIONES_POR_PAGINA.map((o) => <option key={o} value={o}>{o || "Todos"}</option>)}
+        </select>
+        {pag.nPaginas > 1 && (<>
+          <span style={{ width: 6 }} />
+          {boton("«", 1, pag.pagina === 1, "Primera página")}
+          {boton("‹", pag.pagina - 1, pag.pagina === 1, "Página anterior")}
+          <span style={{ minWidth: 104, textAlign: "center" }}>Página <b style={{ color: T.text }}>{pag.pagina}</b> de {pag.nPaginas}</span>
+          {boton("›", pag.pagina + 1, pag.pagina === pag.nPaginas, "Página siguiente")}
+          {boton("»", pag.nPaginas, pag.pagina === pag.nPaginas, "Última página")}
+        </>)}
+      </div>
+    </div>
+  );
+}
+
 /* Suma por moneda, para que un grupo nunca junte pesos y dólares en una cifra. */
 function sumaGrupoPorMoneda(filas, campo) {
   const r = {};
@@ -6235,6 +6323,7 @@ function SolicitudesPagoListaPanel({ unidad, session }) {
   const vigentes = Object.values(porFolio).sort((a, b) => b.folio - a.folio);
   const historialDe = (folio) => filas.filter((s) => s.folio === folio).sort((a, b) => b.revision - a.revision);
 
+  const pagSol = usePaginacion("solicitudes-pago", vigentes, { reinicio: [unidad] });
   return (
     /* Como item de una fila flexible: cerrado ocupa lo que mide, y al
        abrirse toma el renglón completo en vez de quedar apretado a media
@@ -6264,7 +6353,7 @@ function SolicitudesPagoListaPanel({ unidad, session }) {
                 </tr>
               </thead>
               <tbody>
-                {vigentes.map((s) => (
+                {pagSol.filas.map((s) => (
                   <React.Fragment key={s.folio}>
                     <tr style={{ borderTop: `1px solid ${T.borderSoft}` }}>
                       <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{s.folio}</td>
@@ -6304,6 +6393,7 @@ function SolicitudesPagoListaPanel({ unidad, session }) {
               </tbody>
             </table>
           )}
+          {!cargando && <Paginador pag={pagSol} etiqueta="solicitudes" />}
         </div>
       )}
 
@@ -7480,6 +7570,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     partidasApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
   };
 
+  const pagPartidas = usePaginacion("partidas", partidasOrdenadasVistaBase,
+    { agrupado: grouped, reinicio: [unidad, filtros, sort, groupBys] });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <Panel
@@ -7677,10 +7769,10 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             </thead>
             <tbody>
               {groupKeys.length
-                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr,
-                    Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])), { n: 0 }, resumenGrupoPartidas,
+                ? buildGroupedTrs(pagPartidas.agrupado, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr,
+                    Object.fromEntries(GROUP_OPCIONES.map((o) => [o.value, o.label])), { n: pagPartidas.offset }, resumenGrupoPartidas,
                     posColumna(columnasVisibles, "monto_estimado"))
-                : partidasOrdenadasVistaBase.map((p, i) => renderRowTr(p, 0, i + 1))}
+                : pagPartidas.filas.map((p, i) => renderRowTr(p, 0, pagPartidas.offset + i + 1))}
               {!partidasUnidad.length && (
                 <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin partidas aún</td></tr>
               )}
@@ -7689,6 +7781,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
               )}
             </tbody>
           </table>
+          <Paginador pag={pagPartidas} etiqueta="partidas" />
         </div>
       </Panel>
 
@@ -9823,6 +9916,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     return <EmptyState title="Primero crea partidas" body={`Registra al menos una partida de ${unidad} en la pestaña Partidas antes de capturar transacciones reales.`} />;
   }
 
+  const pagTrans = usePaginacion("transacciones", transEnriquecidas,
+    { agrupado: grouped, reinicio: [unidad, filtros, sort, groupBys] });
+  const pagSV = usePaginacion("transacciones-sin-vincular", sinVincularFiltrado,
+    { agrupado: groupedSV, reinicio: [unidad, filtrosSV, groupBysSV] });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start" }}>
@@ -10008,7 +10105,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               <tr>
                 <th style={thStyle}>#</th>
                 <th style={{ ...thStyle, textAlign: "center" }}>
-                  <input type="checkbox" checked={transOrdenadas.length > 0 && transOrdenadas.every((t) => seleccionadas.has(t.id))} onChange={toggleSeleccionTodas} />
+                  <input type="checkbox" checked={transOrdenadas.length > 0 && transOrdenadas.every((t) => seleccionadas.has(t.id))} onChange={toggleSeleccionTodas}
+                    title={`Selecciona las ${transOrdenadas.length} del filtro, no solo las de esta página`} />
                 </th>
                 {columnasVisibles.map((c) => (
                   <SortableTh
@@ -10023,10 +10121,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </thead>
             <tbody>
               {groupKeys.length
-                ? buildGroupedTrs(grouped, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr,
-                    Object.fromEntries(GROUP_OPCIONES_TRANS.map((o) => [o.value, o.label])), { n: 0 }, resumenImportePorMoneda,
+                ? buildGroupedTrs(pagTrans.agrupado, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr,
+                    Object.fromEntries(GROUP_OPCIONES_TRANS.map((o) => [o.value, o.label])), { n: pagTrans.offset }, resumenImportePorMoneda,
                     posColumna(columnasVisibles, "importe"))
-                : transEnriquecidas.map((t, i) => renderRowTr(t, 0, i + 1))}
+                : pagTrans.filas.map((t, i) => renderRowTr(t, 0, pagTrans.offset + i + 1))}
               {!transUnidad.length && (
                 <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones aún</td></tr>
               )}
@@ -10035,6 +10133,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               )}
             </tbody>
           </table>
+          <Paginador pag={pagTrans} etiqueta="transacciones" />
         </div>
       </Panel>
 
@@ -10108,13 +10207,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               </thead>
               <tbody>
                 {groupKeysSV.length
-                  ? buildGroupedTrs(groupedSV, "", collapsedGroupsSV, toggleGroupSV, columnasSV.length + 1, 0, renderRowSinVinc, Object.fromEntries(GROUP_OPCIONES_SINVINC.map((o) => [o.value, o.label])))
-                  : sinVincularFiltrado.map((t) => renderRowSinVinc(t))}
+                  ? buildGroupedTrs(pagSV.agrupado, "", collapsedGroupsSV, toggleGroupSV, columnasSV.length + 1, 0, renderRowSinVinc, Object.fromEntries(GROUP_OPCIONES_SINVINC.map((o) => [o.value, o.label])))
+                  : pagSV.filas.map((t) => renderRowSinVinc(t))}
                 {!sinVincularFiltrado.length && (
                   <tr><td colSpan={columnasSV.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna coincide con estos filtros</td></tr>
                 )}
               </tbody>
             </table>
+          <Paginador pag={pagSV} etiqueta="transacciones" />
           </div>
           <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10 }}>
             Elige una partida en el selector de cada fila para vincularla — se guarda al instante.
@@ -11288,6 +11388,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
   const hayAvisos = sinProveedorVinculado > 0 || sinCuentaVinculada > 0;
 
+  const pagRP = usePaginacion("reporte-pagos", filasOrdenadas, { reinicio: [unidad, buscar, fechaDesde, fechaHasta, sort] });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, paddingBottom: hayAvisos ? 70 : 0 }}>
       {filasOrdenadas.some((f) => f._borrador) && (
@@ -11434,7 +11535,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               </tr>
             </thead>
             <tbody>
-              {filasOrdenadas.map((f) => (
+              {pagRP.filas.map((f) => (
                 <tr key={f.id}>
                   {columnas.map((c, ci) => (
                     <td
@@ -11462,6 +11563,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               )}
             </tbody>
           </table>
+          <Paginador pag={pagRP} etiqueta="transacciones" />
         </div>
       </Panel>
       {previewPDF && (
@@ -11759,6 +11861,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
     );
   }
 
+  const pagRD = usePaginacion("reporte-pagos-direccion", filasOrdenadas, { reinicio: [unidad, buscar, fechaDesde, fechaHasta, sort] });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       {borradoresFuera.length > 0 && (
@@ -11866,7 +11969,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
               </tr>
             </thead>
             <tbody>
-              {filasOrdenadas.map((f) => (
+              {pagRD.filas.map((f) => (
                 <tr key={f.id}>
                   {columnas.map((c) => (
                     <td key={c.key} style={c.key === "importe" ? { ...tdStyle, fontFamily: T.fontMono } : tdStyle}>
@@ -11880,6 +11983,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
               )}
             </tbody>
           </table>
+          <Paginador pag={pagRD} etiqueta="transacciones" />
         </div>
       </Panel>
     </div>
@@ -19200,6 +19304,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi, lis
     URL.revokeObjectURL(url);
   };
 
+  const pagProv = usePaginacion("proveedores", filtrados, { reinicio: [unidad, buscar] });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
     <Panel
@@ -19227,7 +19332,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi, lis
             <tr>{["Nombre","RFC","SAT","Id SAE","Referencia","Notas","Cuentas",""].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr>
           </thead>
           <tbody>
-            {filtrados.map((p) => (
+            {pagProv.filas.map((p) => (
               <tr key={p.id}>
                 <td style={tdStyle}>{p.nombre}</td>
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.rfc || "—"}</td>
@@ -19260,6 +19365,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi, lis
             )}
           </tbody>
         </table>
+          <Paginador pag={pagProv} etiqueta="proveedores" />
       </div>
 
       {baja && (
@@ -20187,6 +20293,7 @@ function FlotillaPanel({ vehiculos, vehiculosApi, mantenimientos, ubicaciones, p
     }
   };
 
+  const pagVeh = usePaginacion("vehiculos", filas, { reinicio: [busqueda, sort, filas.length] });
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -20220,7 +20327,7 @@ function FlotillaPanel({ vehiculos, vehiculosApi, mantenimientos, ubicaciones, p
               </tr>
             </thead>
             <tbody>
-              {filas.map((v, i) => {
+              {pagVeh.filas.map((v, i) => {
                 const smis = (smiPorVehiculo[v.id] || []).slice().sort((a, b) => (a.folio || "").localeCompare(b.folio || ""));
                 const abierto = expandido === v.id;
                 return (
@@ -20279,6 +20386,7 @@ function FlotillaPanel({ vehiculos, vehiculosApi, mantenimientos, ubicaciones, p
                               ))}
                             </tbody>
                           </table>
+          <Paginador pag={pagVeh} etiqueta="vehículos" />
                         </td>
                       </tr>
                     )}
@@ -20350,6 +20458,7 @@ function MantenimientosPanel({ vehiculos, mantenimientos, mantenimientosApi, per
     mantenimientosApi.remove(m.id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
   };
 
+  const pagMtto = usePaginacion("mantenimientos", filas, { reinicio: [sort, filas.length] });
   return (
     <div style={{ display: "grid", gap: 14 }}>
       <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
@@ -20398,11 +20507,11 @@ function MantenimientosPanel({ vehiculos, mantenimientos, mantenimientosApi, per
               </tr>
             </thead>
             <tbody>
-              {filas.map((m, i) => {
+              {pagMtto.filas.map((m, i) => {
                 const v = porId[m.vehiculo_id];
                 return (
                   <tr key={m.id}>
-                    <td style={{ ...tdStyle, color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{i + 1}</td>
+                    <td style={{ ...tdStyle, color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{pagMtto.offset + i + 1}</td>
                     <td style={{ ...tdStyle, fontFamily: T.fontMono, fontWeight: 600 }}>{m.folio}</td>
                     <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{v ? v.no_economico : <span style={{ color: T.textFaint }}>—</span>}</td>
                     <td style={tdStyle}>{(v && v.compania) || <span style={{ color: T.textFaint }}>—</span>}</td>
@@ -20427,6 +20536,7 @@ function MantenimientosPanel({ vehiculos, mantenimientos, mantenimientosApi, per
               })}
             </tbody>
           </table>
+          <Paginador pag={pagMtto} etiqueta="SMI" />
         </div>
       )}
 

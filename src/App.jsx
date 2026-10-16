@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.70.0";
+const APP_VERSION = "2.71.0";
 const CHANGELOG = [
+  { v: "2.71.0", desc: "Compras PPD en parcialidades (requiere 63-compras-ppd.sql). Una transaccion se marca como Compra PPD En parcialidades: compromete el total en su partida, y desde su formulario se agregan, una por una, sus parcialidades con el % de la compra; el importe y el desglose fiscal salen del %, y la que completa el 100 % toma exactamente el saldo. Cada parcialidad es una transaccion completa -- folio <padre>-P<n>, expediente, REG, Enviar a Pagos, comprobante, tipo de cambio propio --, con la partida, moneda y proveedor de la compra. Comprometido cuenta la compra y no las parcialidades; Pagado cuenta las parcialidades y no la compra, cuyo status lo calcula la base. La compra nunca va a Pagos ni a los reportes de pagos. Adjunto nuevo: Complemento de pago (REP), marcado en parcialidades y en transacciones PPD." },
   { v: "2.70.0", desc: "Paginacion en las tablas largas: Transacciones (y Sin vincular), Partidas, Proveedores, Anticipos pagados, Transacciones Sempra, Reporte de Pagos, Reporte de Pagos a Direccion, Solicitudes de pago, Flotilla y SMI de vehiculos. Pie de tabla con Mostrando X-Y de N, selector de 25, 50, 100, 250 o Todos (se recuerda por tabla) y botones de primera, anterior, siguiente y ultima. Cambiar filtros, orden o agrupamiento regresa a la pagina 1; editar una fila no. Es solo de pantalla: totales, encabezados con suma, seleccionar todas, exportaciones y reportes siguen usando la lista completa del filtro. Con agrupamiento se paginan los grupos de primer nivel, sin partir ninguno, para que sus subtotales sigan completos; la numeracion # sigue corrida entre paginas. Las tablas aparecen sin pie cuando tienen 25 filas o menos" },
   { v: "2.69.1", desc: "Los filtros de Transacciones caben en una sola fila: cada control crece desde un ancho base en vez de tener un ancho fijo, y las etiquetas largas se acortan a Direccion y Pagos (las opciones ya dicen Reportado y Enviado). En pantallas angostas se siguen acomodando en dos filas" },
   { v: "2.69.0", desc: "Filtro nuevo Registro en Transacciones: Todas, Registradas o No registradas. No registradas son los borradores -- sin folio, que todavia no cuentan en el comprometido --, para encontrarlos de un golpe y registrarlos o eliminarlos. Se combina con los demas filtros; las canceladas siguen gobernadas por su propio filtro (y una cancelada siempre es registrada, porque tuvo folio)" },
@@ -776,6 +777,23 @@ async function registrarTransaccion(transaccionesApi, t, unidad, transUnidad) {
     return await transaccionesApi.update(t.id, { registrada_en: ahora });
   }
 
+  /* Una parcialidad no toma número de la serie: su folio es el del padre
+     más -P<n>. No compite con nadie, así que no hay reintento que hacer. */
+  if (esParcialidad(t)) {
+    let padre = transUnidad.find((x) => x.id === t.transaccion_padre_id);
+    if (!padre) {
+      const { data } = await supabase.from("transacciones").select("id, folio_transaccion, registrada_en")
+        .eq("id", t.transaccion_padre_id).maybeSingle();
+      padre = data;
+    }
+    if (!padre?.folio_transaccion || !padre?.registrada_en) {
+      throw new Error("La compra PPD de esta parcialidad todavía no está registrada: regístrala primero.");
+    }
+    return await transaccionesApi.update(t.id, {
+      folio_transaccion: `${padre.folio_transaccion}-P${t.num_parcialidad}`, registrada_en: ahora,
+    });
+  }
+
   const mes = t.mes || (t.dia ? MESES[Number(String(t.dia).slice(5, 7)) - 1] : null);
   const anio = t.anio || (t.dia ? Number(String(t.dia).slice(0, 4)) : new Date().getFullYear());
   const { prefix, siguiente: local } = nextFolioTransaccion(unidad, mes, anio, transUnidad, 0);
@@ -822,7 +840,24 @@ const estaCancelada = (t) => !!t?.cancelada_en;
    folio (1,394 pagadas de 2025-2026) y con el folio como criterio sus
    partidas quedarían en cero. Pagado = comprometido con status Pagado, así
    nunca puede ser mayor que lo comprometido. */
-const cuentaEnComprometido = (t) => !!t && !t.cancelada_en && !!t.registrada_en;
+/* Compras PPD en parcialidades (requiere 63-compras-ppd.sql). El PADRE
+   compromete el total de la compra en su partida; de él se derivan, una por
+   una, sus HIJAS: cada parcialidad de pago, con su % y folio <padre>-P<n>.
+   Comprometido cuenta al padre y NO a las hijas; Pagado cuenta a las hijas y
+   NO al padre, cuyo status lo calcula la base a partir de ellas. Así nada se
+   suma dos veces. */
+const esPadrePPD = (t) => !!t?.es_padre;
+const esParcialidad = (t) => !!t?.transaccion_padre_id;
+const cuentaEnComprometido = (t) => !!t && !t.cancelada_en && !!t.registrada_en && !esParcialidad(t);
+const cuentaEnPagado = (t) => !!t && !t.cancelada_en && !!t.registrada_en && !esPadrePPD(t) && t.status === "Pagado";
+/* Borrador o cancelada: lo que antes era "no cuenta en comprometido". Ahora
+   se dice explícito, porque una parcialidad registrada tampoco cuenta en
+   comprometido y no por eso es un borrador. */
+const borradorOCancelada = (t) => !!t && (!t.registrada_en || !!t.cancelada_en);
+/* Campos que identifican a un padre o a una hija. Duplicar una transacción
+   no los hereda: la copia nace como transacción normal. */
+const SIN_LIGA_PPD = { es_padre: false, transaccion_padre_id: null, num_parcialidad: null };
+const fmtPct = (n) => `${(Math.round((Number(n) || 0) * 100) / 100).toLocaleString("es-MX", { maximumFractionDigits: 2 })} %`;
 const camposEditablesTransaccion = (obj) => Object.fromEntries(
   Object.entries(obj).filter(([k]) => !k.startsWith("_") && !CAMPOS_SISTEMA_TRANSACCION.has(k)));
 
@@ -3703,13 +3738,9 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
     const m = monedaDe(t);
     kpis[m] = kpis[m] || nuevoKpi();
     const imp = Number(t.importe) || 0;
-    if (cuentaEnComprometido(t)) {
-      kpis[m].comprometido += imp;
-      if (t.status === "Pagado") kpis[m].pagado += imp;
-    } else {
-      kpis[m].borrador += imp;
-      kpis[m].nBorrador++;
-    }
+    if (cuentaEnComprometido(t)) kpis[m].comprometido += imp;
+    else if (borradorOCancelada(t)) { kpis[m].borrador += imp; kpis[m].nBorrador++; }
+    if (cuentaEnPagado(t)) kpis[m].pagado += imp;
   });
   const monedas = ["MXP", "USD"].filter((m) => kpis[m]);
 
@@ -3725,12 +3756,12 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
     };
     partidasF.forEach((p) => { fila(monedaDe(p), p.anio, p.mes).presupuestado += Number(p.monto_estimado) || 0; });
     transF.forEach((t) => {
-      if (!cuentaEnComprometido(t)) return;
+      if (!cuentaEnComprometido(t) && !cuentaEnPagado(t)) return;
       const { anio, mes } = periodoDe(t);
       if (!mes) return;
       const f = fila(monedaDe(t), anio, mes);
-      f.comprometido += Number(t.importe) || 0;
-      if (t.status === "Pagado") f.pagado += Number(t.importe) || 0;
+      if (cuentaEnComprometido(t)) f.comprometido += Number(t.importe) || 0;
+      if (cuentaEnPagado(t)) f.pagado += Number(t.importe) || 0;
     });
     const orden = (o) => Object.values(o).sort((a, b) => a.k - b.k);
     return { MXP: orden(mapas.MXP), USD: orden(mapas.USD) };
@@ -3739,14 +3770,13 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
   // --- Agrupados por categoría y por proveedor (solo registradas) ---
   const agrupar = (claveDe) => {
     const g = {};
-    transF.filter(cuentaEnComprometido).forEach((t) => {
+    transF.filter((t) => cuentaEnComprometido(t) || cuentaEnPagado(t)).forEach((t) => {
       const m = monedaDe(t);
       const nombre = claveDe(t);
       const k = `${m}|${nombre}`;
       if (!g[k]) g[k] = { moneda: m, nombre, n: 0, comprometido: 0, pagado: 0 };
-      g[k].n++;
-      g[k].comprometido += Number(t.importe) || 0;
-      if (t.status === "Pagado") g[k].pagado += Number(t.importe) || 0;
+      if (cuentaEnComprometido(t)) { g[k].n++; g[k].comprometido += Number(t.importe) || 0; }
+      if (cuentaEnPagado(t)) g[k].pagado += Number(t.importe) || 0;
     });
     return Object.values(g).sort((a, b) => (a.moneda === b.moneda ? b.comprometido - a.comprometido : a.moneda === "MXP" ? -1 : 1));
   };
@@ -3765,9 +3795,9 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
   const q = buscar.trim().toLowerCase();
   const filas = transF
     .filter((t) => statusSel === "todas"
-      || (statusSel === "pagadas" && cuentaEnComprometido(t) && t.status === "Pagado")
-      || (statusSel === "porpagar" && cuentaEnComprometido(t) && t.status !== "Pagado")
-      || (statusSel === "borradores" && !cuentaEnComprometido(t)))
+      || (statusSel === "pagadas" && cuentaEnPagado(t))
+      || (statusSel === "porpagar" && !borradorOCancelada(t) && !esPadrePPD(t) && t.status !== "Pagado")
+      || (statusSel === "borradores" && borradorOCancelada(t)))
     .filter((t) => !q || [t.folio_transaccion, t.proveedor, t.concepto_detallado, t.folio_compra_sae, t.folio_factura, categoriaDe(t)]
       .some((v) => String(v || "").toLowerCase().includes(q)))
     .sort((a, b) => String(b.dia || "").localeCompare(String(a.dia || "")));
@@ -3927,7 +3957,7 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
             <tbody>
               {pagSempra.filas.map((t) => {
                 const { anio, mes } = periodoDe(t);
-                const registrada = cuentaEnComprometido(t);
+                const registrada = !borradorOCancelada(t);
                 return (
                   <tr key={t.id}>
                     <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.accent, whiteSpace: "nowrap" }}>{t.folio_transaccion || "—"}</td>
@@ -4021,15 +4051,16 @@ function DashboardGeneral({ unidad, unidades, partidas, transacciones, proveedor
     });
 
     transFiltradasMes.forEach((t) => {
-      if (!cuentaEnComprometido(t)) return;
+      const comp = cuentaEnComprometido(t), pag = cuentaEnPagado(t);
+      if (!comp && !pag) return;
       const partida = partidasFiltradasMes.find((p) => p.id === t.partida_id);
       if (!partida) return;
       const m = (t.moneda || "MXP") === "USD" ? "USD" : "MXP";
       const splits = resolverProrrateo(partida.proyecto, proyectosUnidad);
       splits.forEach(({ proyecto, fraccion }) => {
         if (!mapas[m][proyecto]) mapas[m][proyecto] = { proyecto, presupuestado: 0, ejecutado: 0, pagado: 0 };
-        mapas[m][proyecto].ejecutado += (Number(t.importe) || 0) * fraccion;
-        if (t.status === "Pagado") mapas[m][proyecto].pagado += (Number(t.importe) || 0) * fraccion;
+        if (comp) mapas[m][proyecto].ejecutado += (Number(t.importe) || 0) * fraccion;
+        if (pag) mapas[m][proyecto].pagado += (Number(t.importe) || 0) * fraccion;
       });
     });
 
@@ -4200,7 +4231,8 @@ function ResumenComparativoPanel({
   // 9 a 17 columnas de dinero — ilegible de un vistazo, que es justo para lo
   // que se usa.
   const partidasMoneda = partidasRango;
-  const pagadasMoneda = transacciones.filter((t) => t.status === "Pagado" && idsRango.has(t.partida_id));
+  // El padre de una compra PPD no es un pago: lo pagado son sus parcialidades.
+  const pagadasMoneda = transacciones.filter((t) => t.status === "Pagado" && !esPadrePPD(t) && idsRango.has(t.partida_id));
 
   const aniosPresentes = [...new Set([
     ...partidasMoneda.map((p) => p.anio),
@@ -8845,6 +8877,65 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const adjDe = (t) => resumenAdj.get(t.id) || null;
 
   const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
+
+  /* Compras PPD. Las hijas se buscan con canceladas incluidas: el número
+     P<n> de una cancelada no se reutiliza, porque su folio ya existe. */
+  const hijasDe = (padre) => transUnidad.filter((x) => x.transaccion_padre_id === padre.id)
+    .sort((a, b) => (a.num_parcialidad || 0) - (b.num_parcialidad || 0));
+  const padreDe = (t) => (t?.transaccion_padre_id ? transUnidad.find((x) => x.id === t.transaccion_padre_id) || null : null);
+  const resumenPPD = (padre) => {
+    const todas = hijasDe(padre);
+    const hijas = todas.filter((h) => !estaCancelada(h));
+    const pagadas = hijas.filter((h) => h.status === "Pagado");
+    const suma = (lista, campo) => lista.reduce((s, h) => s + (Number(h[campo]) || 0), 0);
+    const total = Number(padre.importe) || 0;
+    const pctAsignado = r2(suma(hijas, "pct_pago"));
+    return {
+      todas, hijas, total, pctAsignado,
+      pctPagado: r2(suma(pagadas, "pct_pago")),
+      asignado: r2(suma(hijas, "importe")),
+      pagado: r2(suma(pagadas, "importe")),
+      saldo: r2(total - suma(pagadas, "importe")),
+      pctPorAsignar: r2(100 - pctAsignado),
+      siguienteNum: todas.reduce((m, h) => Math.max(m, Number(h.num_parcialidad) || 0), 0) + 1,
+    };
+  };
+  /* Monto de una parcialidad: el % sobre el total del padre. La que completa
+     el 100 % toma exactamente lo que falta, para que los centavos cuadren. Se
+     aplica igual a cada concepto del desglose fiscal que el padre tenga. */
+  const CAMPOS_DESGLOSE = ["subtotal", "iva", "ret_isr", "ret_iva", "descuento"];
+  const montoParcialidad = (padre, campo, pct, hijaId = null) => {
+    const otras = hijasDe(padre).filter((h) => !estaCancelada(h) && h.id !== hijaId);
+    const pctOtras = otras.reduce((s, h) => s + (Number(h.pct_pago) || 0), 0);
+    const total = Number(padre[campo]) || 0;
+    if (pctOtras + (Number(pct) || 0) >= 100 - 1e-9) return r2(total - otras.reduce((s, h) => s + (Number(h[campo]) || 0), 0));
+    return r2(total * (Number(pct) || 0) / 100);
+  };
+  const agregarParcialidad = (padre) => {
+    if (pendienteDeRegistro(padre)) {
+      alert("Registra primero la compra PPD: cada parcialidad toma su folio del de ella.");
+      return;
+    }
+    if (estaCancelada(padre)) { alert("Esta compra PPD está cancelada."); return; }
+    const r = resumenPPD(padre);
+    if (r.pctPorAsignar <= 0) { alert("Esta compra ya tiene parcialidades por el 100 %."); return; }
+    setForm({
+      ...blank,
+      partida_id: padre.partida_id, unidad_detectada: padre.unidad_detectada || unidad,
+      solicitante: padre.solicitante || "", smi: padre.smi || "", proyecto: padre.proyecto || "",
+      zona: padre.zona || "", area: padre.area || "", categoria: padre.categoria || "",
+      proveedor: padre.proveedor || "", proveedor_id: padre.proveedor_id || "", cuenta_id: padre.cuenta_id || "",
+      concepto_detallado: padre.concepto_detallado || "", moneda: padre.moneda || "MXP",
+      folio_compra_sae: padre.folio_compra_sae || "", folio_factura: padre.folio_factura || "",
+      forma_pago: padre.forma_pago || "03", metodo_pago: padre.metodo_pago || "PPD",
+      transaccion_padre_id: padre.id, num_parcialidad: r.siguienteNum, pct_pago: r.pctPorAsignar,
+      importe: montoParcialidad(padre, "importe", r.pctPorAsignar),
+    });
+    setEditId(null);
+    setNotaPrivada("");
+    setModalOpen(true);
+  };
+
   // MXP primero, como en el resto de la app — no alfabético, que pondría USD antes.
   const monedasDisponibles = [...new Set(transUnidad.map((t) => t.moneda || "MXP"))]
     .sort((a, b) => (a === "MXP" ? -1 : b === "MXP" ? 1 : a.localeCompare(b)));
@@ -9011,7 +9102,25 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const COLUMNAS_TRANS = [
     {
       key: "folio_transaccion", label: "ID",
-      render: (t) => <span style={{ color: T.accent, fontWeight: 600 }}>{t.folio_transaccion || "—"}</span>,
+      render: (t) => {
+        const ppd = esPadrePPD(t) ? resumenPPD(t) : null;
+        return (
+          <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            <span style={{ color: T.accent, fontWeight: 600 }}>{t.folio_transaccion || "—"}</span>
+            {ppd && (
+              <span title={`Compra PPD en parcialidades\n${ppd.hijas.length} parcialidad(es) · ${fmtPct(ppd.pctAsignado)} asignado\n` +
+                           `Pagado: ${money(ppd.pagado, t.moneda)} · Saldo: ${money(ppd.saldo, t.moneda)}`}>
+                <Pill tone={ppd.pctPagado >= 100 ? "teal" : "accent"}>PPD {fmtPct(ppd.pctPagado)}</Pill>
+              </span>
+            )}
+            {esParcialidad(t) && (
+              <span title={`Parcialidad ${t.num_parcialidad} de la compra PPD ${padreDe(t)?.folio_transaccion || ""} (${fmtPct(t.pct_pago)})`}>
+                <Pill tone="dim">P{t.num_parcialidad} · {fmtPct(t.pct_pago)}</Pill>
+              </span>
+            )}
+          </span>
+        );
+      },
     },
     { key: "dia", label: "Día de Pago Programado", render: (t) => t.dia || "—" },
     { key: "smi", label: "SMI", render: (t) => t.smi || "—" },
@@ -9107,7 +9216,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       key: "adjuntos", label: "Adjuntos",
       render: (t) => {
         const a = adjDe(t);
-        const faltan = MARCAS_ADJUNTO_TRANSACCION.filter((m) => !a?.[m.campo]).map((m) => m.largo.split(" (")[0]);
+        const marcas = marcasAdjuntoDe(t);
+        const faltan = marcas.filter((m) => !a?.[m.campo]).map((m) => m.largo.split(" (")[0]);
         const titulo = [
           a?.nombres ? `Adjuntos:\n${a.nombres}` : "Sin adjuntos",
           faltan.length ? `Falta: ${faltan.join(", ")}` : "",
@@ -9115,10 +9225,12 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         ].filter(Boolean).join("\n\n");
         return (
           <span title={titulo} style={{ display: "inline-flex", gap: 3, flexWrap: "wrap" }}>
-            {MARCAS_ADJUNTO_TRANSACCION.map((m) => {
+            {marcas.map((m) => {
               const hay = !!a?.[m.campo];
-              // El comprobante que falta en una pagada es lo único urgente.
-              if (!hay && m.campo === "comprobante" && t.status === "Pagado") {
+              // El comprobante que falta en una pagada es lo único urgente;
+              // en una parcialidad pagada, también su complemento de pago.
+              if (!hay && (m.campo === "comprobante" || (m.campo === "rep" && esParcialidad(t)))
+                  && t.status === "Pagado" && !esPadrePPD(t)) {
                 return <Pill key={m.campo} tone="amber">{m.corto}</Pill>;
               }
               return (
@@ -9193,6 +9305,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const COLUMNAS_EXPORT_TX = [
     { key: "dia",        header: "Día",           width: 12, fija: true, get: (t) => t.dia || "" },
     { key: "folio_tx",   header: "Folio",         width: 15, get: (t) => t.folio_transaccion || "" },
+    { key: "ppd",        header: "Compra PPD",    width: 14,
+      get: (t) => (esPadrePPD(t) ? "Compra (padre)" : esParcialidad(t) ? `P${t.num_parcialidad} · ${fmtPct(t.pct_pago)}` : "") },
     { key: "partida",    header: "Partida",       width: 16, get: (t) => t._folioPartida || "" },
     { key: "concepto_p", header: "Concepto de la partida", width: 40, izq: true, get: (t) => t._conceptoPartida || "" },
     { key: "rubro",      header: "Rubro",         width: 26, izq: true, get: (t) => t._rubro || "" },
@@ -9448,6 +9562,19 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 
   const submit = async (e) => {
     e.preventDefault();
+    const padrePPD = esParcialidad(form) ? padreDe(form) : null;
+    if (esParcialidad(form)) {
+      if (!padrePPD) { alert("No encuentro la compra PPD de esta parcialidad."); return; }
+      const pct = Number(form.pct_pago);
+      if (!(pct > 0 && pct <= 100)) { alert("El % de la parcialidad debe ser mayor que 0 y como máximo 100."); return; }
+      const otras = hijasDe(padrePPD).filter((h) => !estaCancelada(h) && h.id !== editId)
+        .reduce((s, h) => s + (Number(h.pct_pago) || 0), 0);
+      if (otras + pct > 100 + 1e-9) {
+        alert(`Con este % las parcialidades de ${padrePPD.folio_transaccion} sumarían ${fmtPct(otras + pct)}. ` +
+              `Lo máximo que le queda por asignar es ${fmtPct(100 - otras)}.`);
+        return;
+      }
+    }
     if (!form.partida_id || !form.importe) return;
     if (form.status === "Pagado" && estaCancelada(form)) {
       alert("Esta transacción está cancelada: no se puede marcar como Pagada. Reactívala primero si el pago sí ocurrió.");
@@ -9472,6 +9599,26 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       rest.tipo_cambio = null;
     }
     rest.fecha_pago = rest.fecha_pago || null;
+    /* Compra PPD: el status del padre lo calcula la base con sus parcialidades
+       (no se manda). La parcialidad hereda partida, moneda y proveedor de su
+       padre, y su importe y desglose salen del %. */
+    if (rest.es_padre) {
+      delete rest.status; delete rest.fecha_pago;
+      rest.tipo_cambio = null;
+    }
+    if (padrePPD) {
+      const pct = Number(form.pct_pago);
+      rest.pct_pago = pct;
+      rest.partida_id = padrePPD.partida_id;
+      rest.moneda = padrePPD.moneda;
+      rest.proveedor_id = padrePPD.proveedor_id || null;
+      rest.proveedor = padrePPD.proveedor;
+      rest.unidad_detectada = padrePPD.unidad_detectada || rest.unidad_detectada;
+      rest.importe = montoParcialidad(padrePPD, "importe", pct, editId);
+      CAMPOS_DESGLOSE.forEach((c) => {
+        if (padrePPD[c] !== null && padrePPD[c] !== undefined && padrePPD[c] !== "") rest[c] = montoParcialidad(padrePPD, c, pct, editId);
+      });
+    }
     setSaving(true);
     try {
       let transaccionId = editId;
@@ -9579,7 +9726,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       // lo quita camposEditablesTransaccion; aquí se limpia lo propio del pago.
       const base = camposEditablesTransaccion(t);
       await insertTransaccionBorrador(transaccionesApi, {
-        ...base,
+        ...base, ...SIN_LIGA_PPD, ...(esParcialidad(t) ? { pct_pago: null } : {}),
         dia: nuevoDia, partida_id: partidaId,
         status: "No Pagado", fecha_pago: null,
         folio_compra_sae: "", folio_factura: "", referencia_pago: "",
@@ -9601,7 +9748,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     // nueva, y comprometerse con ella es una decisión aparte.
     const { id, folio_transaccion, registrada_en, created_by, updated_by, updated_at, created_at, reportado_at, ...resto } = t;
     const limpio = Object.fromEntries(Object.entries(resto).filter(([k]) => !k.startsWith("_")));
-    setForm({ ...limpio, status: "No Pagado", fecha_pago: "", folio_compra_sae: "", folio_factura: "", referencia_pago: "" });
+    setForm({ ...limpio, ...SIN_LIGA_PPD, ...(esParcialidad(t) ? { pct_pago: null } : {}),
+              status: "No Pagado", fecha_pago: "", folio_compra_sae: "", folio_factura: "", referencia_pago: "" });
     setEditId(null);
     setNotaPrivada("");
     setModalOpen(true);
@@ -9895,7 +10043,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
   };
   const marcarEnviadasPagos = async (enviar) => {
-    const ids = enviar ? sinCanceladas(seleccionadas, "enviar") : seleccionadas;
+    let ids = enviar ? sinCanceladas(seleccionadas, "enviar") : seleccionadas;
+    if (enviar) {
+      const padres = [...ids].map((id) => transUnidad.find((x) => x.id === id)).filter(esPadrePPD);
+      if (padres.length) {
+        alert(`${padres.length} seleccionada(s) son compras PPD y no se envían a Pagos: se envían sus parcialidades. ` +
+          `Se quitan de la selección: ${padres.map((t) => t.folio_transaccion || "sin folio").join(", ")}`);
+        ids = new Set([...ids].filter((id) => !padres.some((t) => t.id === id)));
+      }
+    }
     if (!ids.size) return;
     if (enviar && !confirmarSat(ids)) return;
     setMarcandoEnviado(true);
@@ -9999,7 +10155,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <Field label="Adjuntos" style={{ flex: "1 1 120px" }}>
               <Select value={filtroAdj} onChange={(e) => setFiltros({ ...filtros, adjuntos: e.target.value })} style={{ width: "100%" }}>
                 <option value="Todos">Todos</option>
-                {MARCAS_ADJUNTO_TRANSACCION.map((m) => (
+                {[...MARCAS_ADJUNTO_TRANSACCION, MARCA_REP].map((m) => (
                   <option key={m.campo} value={`sin:${m.campo}`}>Sin {m.largo.split(" (")[0]}</option>
                 ))}
                 <option value="ninguno">Sin ningún adjunto</option>
@@ -10354,17 +10510,48 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       )}
       {modalOpen && (
         <Modal
-          title={editId ? "Editar transacción" : "Nueva transacción real"}
+          title={esParcialidad(form)
+            ? `${editId ? "Editar" : "Nueva"} parcialidad P${form.num_parcialidad}`
+            : editId ? "Editar transacción" : "Nueva transacción real"}
           subtitle={form.folio_transaccion ? `ID: ${form.folio_transaccion} — se vincula a una partida` : "Se vincula a una partida — una partida puede tener varias"}
           onClose={closeModal}
           cerrarAlHacerClicFuera={false}
         >
           <AutoriaCaption record={form} perfilesApi={perfilesApi} />
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+            {esParcialidad(form) && (() => {
+              const padre = padreDe(form);
+              const r = padre ? resumenPPD(padre) : null;
+              return (
+                <div style={{ gridColumn: "span 4", background: T.panelAlt, border: `1px solid ${T.accent}55`,
+                              borderRadius: 8, padding: "10px 13px", fontSize: 12, color: T.textDim, lineHeight: 1.6 }}>
+                  Parcialidad <b>P{form.num_parcialidad}</b> de la compra PPD{" "}
+                  <b style={{ fontFamily: T.fontMono, color: T.accent }}>{padre?.folio_transaccion || "—"}</b>
+                  {r && <> · Total {money(r.total, padre.moneda)} · Pagado {money(r.pagado, padre.moneda)} ({fmtPct(r.pctPagado)})
+                    · Saldo {money(r.saldo, padre.moneda)}</>}
+                  <br />
+                  Partida, proveedor y moneda son los de la compra. El importe sale del %; la parcialidad que
+                  completa el 100 % toma exactamente el saldo.
+                  {padre && editId && (
+                    <> {" "}<button type="button" onClick={() => startEdit(padre)}
+                      style={{ background: "transparent", border: "none", padding: 0, color: T.accent,
+                               cursor: "pointer", fontSize: 12, fontFamily: T.fontUI }}>Abrir la compra PPD</button></>
+                  )}
+                </div>
+              );
+            })()}
             <Field label="Partida" style={{ gridColumn: "span 4" }}>
               {/* Solo las partidas de la MISMA moneda. Prevenir es mejor que
                   rechazar al guardar: la opción equivocada ni se ofrece. */}
-              <PartidaPickerButton
+              {esParcialidad(form) ? (() => {
+                const p = partidasUnidad.find((x) => x.id === form.partida_id);
+                return (
+                  <div style={{ padding: "8px 10px", border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 13, color: T.textDim }}>
+                    {p ? <><span style={{ fontFamily: T.fontMono }}>{p.folio}</span> · {p.concepto} · {p.mes} {p.anio}</> : "—"}
+                    {" "}<i style={{ color: T.textFaint }}>(la de la compra PPD)</i>
+                  </div>
+                );
+              })() : <PartidaPickerButton
                 partidas={partidasUnidad.filter((p) => mismaMoneda(p.moneda, form.moneda))}
                 ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, form.moneda)).length}
                 moneda={form.moneda}
@@ -10375,7 +10562,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 proyectosOpciones={marcadoresProyecto}
                 value={form.partida_id}
                 onChange={(id) => setForm({ ...form, partida_id: id })}
-              />
+              />}
             </Field>
             <Field label="Día de Pago Programado">
               <TextInput type="date" value={form.dia} onChange={(e) => setForm({ ...form, dia: e.target.value })} />
@@ -10405,7 +10592,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               </Select>
             </Field>
             <Field label="Proveedor (catálogo)">
-              <ProveedorPickerButton
+              {esParcialidad(form) ? (
+                <div style={{ padding: "8px 10px", border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 13, color: T.textDim }}>
+                  {form.proveedor || "—"}
+                </div>
+              ) : <ProveedorPickerButton
                 proveedores={proveedoresUnidad}
                 proveedoresApi={proveedoresApi}
                 cuentasApi={cuentasApi}
@@ -10415,7 +10606,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   const proveedor = p !== undefined ? p : (proveedoresUnidad.find((pr) => pr.id === id) || null);
                   setForm({ ...form, proveedor_id: id, proveedor: proveedor ? proveedor.nombre : form.proveedor, cuenta_id: "" });
                 }}
-              />
+              />}
             </Field>
             <Field label="Cuenta bancaria">
               <Select value={form.cuenta_id} onChange={(e) => setForm({ ...form, cuenta_id: e.target.value })} disabled={!form.proveedor_id}>
@@ -10426,7 +10617,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               </Select>
             </Field>
             <Field label="Proveedor / razón social (texto)" style={{ gridColumn: "span 2" }}>
-              <TextInput value={form.proveedor} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} placeholder="Se llena solo al elegir del catálogo, o captúralo si no está dado de alta" />
+              <TextInput value={form.proveedor} readOnly={esParcialidad(form)} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} placeholder="Se llena solo al elegir del catálogo, o captúralo si no está dado de alta" />
             </Field>
             <Field label="Concepto de pago (detallado)" style={{ gridColumn: "span 2" }}>
               <TextInput value={form.concepto_detallado} onChange={(e) => setForm({ ...form, concepto_detallado: e.target.value })} />
@@ -10452,8 +10643,20 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <Field label="Referencia de Pago">
               <TextInput value={form.referencia_pago} onChange={(e) => setForm({ ...form, referencia_pago: e.target.value })} placeholder="Folio SPEI, cheque, etc." />
             </Field>
+            {esParcialidad(form) && (
+              <Field label="% de la compra">
+                <TextInput type="number" step="0.01" min="0.01" max="100" value={form.pct_pago ?? ""}
+                  onChange={(e) => {
+                    const padre = padreDe(form);
+                    const pct = e.target.value;
+                    setForm({ ...form, pct_pago: pct, importe: padre ? montoParcialidad(padre, "importe", pct, editId) : form.importe });
+                  }} required />
+              </Field>
+            )}
             <Field label="Importe">
-              <TextInput type="number" step="0.01" value={form.importe} onChange={(e) => setForm({ ...form, importe: e.target.value })} placeholder="0.00" />
+              <TextInput type="number" step="0.01" value={form.importe} readOnly={esParcialidad(form)}
+                title={esParcialidad(form) ? "Sale del % de la compra" : undefined}
+                onChange={(e) => setForm({ ...form, importe: e.target.value })} placeholder="0.00" />
             </Field>
             <Field label="Categoría del gasto">
               {/* Las opciones salen del rubro de la partida vinculada, pero NO
@@ -10495,6 +10698,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </Field>
             <Field label="Moneda">
               <Select
+                disabled={esParcialidad(form)}
                 value={form.moneda}
                 onChange={(e) => {
                   // Al cambiar de moneda, la partida elegida puede dejar de ser
@@ -10517,6 +10721,31 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 {TIPOS_PAGO.map((x) => <option key={x}>{x}</option>)}
               </Select>
             </Field>
+            {!esParcialidad(form) && (() => {
+              const guardada = editId ? transUnidad.find((x) => x.id === editId) : null;
+              const conHijas = guardada && esPadrePPD(guardada) && hijasDe(guardada).length > 0;
+              const yaPagadaOEnviada = guardada && !esPadrePPD(guardada) && (guardada.status === "Pagado" || guardada.enviado_pagos_at);
+              const bloqueo = conHijas ? "Ya tiene parcialidades: no puede dejar de ser compra PPD."
+                : yaPagadaOEnviada ? "Ya está pagada o enviada a Pagos: no se puede convertir en compra PPD." : "";
+              return (
+                <Field label="Compra PPD">
+                  <label title={bloqueo || "El total se compromete aquí y se paga en parcialidades, cada una con su %"}
+                    style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 12.5, paddingTop: 7,
+                             color: bloqueo ? T.textFaint : T.text, cursor: bloqueo ? "not-allowed" : "pointer" }}>
+                    <input type="checkbox" checked={!!form.es_padre} disabled={!!bloqueo}
+                      onChange={(e) => setForm({ ...form, es_padre: e.target.checked })} />
+                    En parcialidades
+                  </label>
+                </Field>
+              );
+            })()}
+            {form.es_padre ? (
+              <Field label="Status">
+                <div style={{ fontSize: 12, color: T.textDim, paddingTop: 7, lineHeight: 1.4 }}>
+                  {form.status === "Pagado" ? "Pagada (100 %)" : "Lo calculan sus parcialidades"}
+                </div>
+              </Field>
+            ) : (
             <Field label="Status">
               <Select
                 value={form.status}
@@ -10543,7 +10772,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 <option>No Pagado</option>
               </Select>
             </Field>
-            {form.status === "Pagado" && (
+            )}
+            {form.status === "Pagado" && !form.es_padre && (
               <Field label="Fecha de Pago">
                 <TextInput type="date" value={form.fecha_pago} onChange={(e) => setForm({
                   ...form, fecha_pago: e.target.value,
@@ -10552,7 +10782,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 })} required />
               </Field>
             )}
-            {form.status === "Pagado" && monedaNorm(form.moneda) === "USD" && (() => {
+            {form.status === "Pagado" && !form.es_padre && monedaNorm(form.moneda) === "USD" && (() => {
               const dof = tcDOF(tiposCambio, form.fecha_pago);
               return (
                 <Field label="Tipo de cambio">
@@ -10596,6 +10826,50 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               const vieja = polizaVieja(t);
               return (
                 <div style={{ gridColumn: "span 4", marginTop: 8 }}>
+                  {esPadrePPD(t) && (() => {
+                    const r = resumenPPD(t);
+                    return (
+                      <div style={{ background: T.panelAlt, border: `1px solid ${T.accent}55`, borderRadius: 8,
+                                    padding: "10px 13px", marginBottom: 12, fontSize: 12 }}>
+                        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: r.todas.length ? 8 : 0 }}>
+                          <b>Compra PPD en parcialidades</b>
+                          <span style={{ color: T.textDim, flex: 1, minWidth: 220 }}>
+                            Total {money(r.total, t.moneda)} · Pagado {money(r.pagado, t.moneda)} ({fmtPct(r.pctPagado)})
+                            · Saldo {money(r.saldo, t.moneda)} · Por asignar {fmtPct(r.pctPorAsignar)}
+                          </span>
+                          {!estaCancelada(t) && r.pctPorAsignar > 0 && (
+                            <Button type="button" variant="ghost" onClick={() => agregarParcialidad(t)}
+                              title="Abre la parcialidad nueva en este mismo formulario: guarda antes los cambios de la compra">
+                              Agregar parcialidad
+                            </Button>
+                          )}
+                        </div>
+                        {r.todas.length > 0 ? (
+                          <table style={tableStyle}>
+                            <thead><tr>{["Folio", "Día programado", "%", "Importe", "Status", "Pagos"].map((h) => <th key={h} style={thStyle}>{h}</th>)}</tr></thead>
+                            <tbody>
+                              {r.todas.map((h) => (
+                                <tr key={h.id} onClick={() => startEdit(h)} style={{ cursor: "pointer", opacity: estaCancelada(h) ? 0.5 : 1 }}
+                                    title="Abrir la parcialidad">
+                                  <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.accent }}>{h.folio_transaccion || `P${h.num_parcialidad} (borrador)`}</td>
+                                  <td style={tdStyle}>{h.dia || "—"}</td>
+                                  <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{fmtPct(h.pct_pago)}</td>
+                                  <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{money(h.importe, h.moneda)}</td>
+                                  <td style={tdStyle}>{estaCancelada(h) ? <Pill tone="dim">Cancelada</Pill>
+                                    : <Pill tone={h.status === "Pagado" ? "teal" : "amber"}>{h.status || "No Pagado"}</Pill>}</td>
+                                  <td style={tdStyle}>{h.enviado_pagos_at ? formatFechaCorta(h.enviado_pagos_at) : "—"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        ) : (
+                          <div style={{ color: T.textFaint, marginTop: 6 }}>
+                            Sin parcialidades todavía. Agrega la primera cuando toque pagarla.
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                   {(() => {
                     const seg = seguimientoAnticipo(t, adjDe(t));
                     if (!seg || seg.conXml) return null;
@@ -10830,8 +11104,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
      llegara a Pagos, pero eso ahora lo garantiza Enviar a Pagos: registra los
      que falten antes de enviar. Excluirlos obligaba a ir a Transacciones a
      registrarlos a mano, que es el paso que se olvidaba. */
+  /* El padre de una compra PPD nunca va a Pagos: se pagan sus parcialidades. */
   const transUnidad = transacciones.filter(
-    (t) => partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad
+    (t) => (partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad) && !esPadrePPD(t)
   );
 
   const filas = transUnidad.map((t) => {
@@ -11636,14 +11911,14 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
      lo detuviera. */
   const transUnidad = transacciones.filter(
     (t) => (partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad)
-      && t.registrada_en
+      && t.registrada_en && !esPadrePPD(t)
   );
   /* Los borradores se cuentan aparte para AVISAR que se dejaron fuera. Un
      reporte que los omite en silencio parece vacío sin explicación, que es
      peor que incluirlos. */
   const borradoresFuera = transacciones.filter(
     (t) => (partidasUnidad.some((p) => p.id === t.partida_id) || t.unidad_detectada === unidad)
-      && !t.registrada_en
+      && !t.registrada_en && !esPadrePPD(t)
   );
 
   const filas = transUnidad.map((t) => {
@@ -12618,7 +12893,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
   });
   const reportadas = new Set(filas.map((f) => String(f.d.origen_id)));
   const noReportadas = transacciones.filter((t) =>
-    t.unidad_detectada === unidad && !t.cancelada_en && t.status === "Pagado"
+    t.unidad_detectada === unidad && !t.cancelada_en && t.status === "Pagado" && !esPadrePPD(t)
     && t.dia && rep.periodo_ini && t.dia >= rep.periodo_ini && t.dia <= rep.periodo_fin
     && !reportadas.has(String(t.id)));
 
@@ -12913,7 +13188,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   }
 
   const [mesPer, anioPer] = per.split(" ");
-  const cuenta = (t) => cuentaEnComprometido(t) && (!soloPagado || t.status === "Pagado");
+  const cuenta = (t) => (soloPagado ? cuentaEnPagado(t) : cuentaEnComprometido(t));
   const monedaDe = (x) => ((x || "MXP") === "USD" ? "USD" : "MXP");
   const txDe = (id) => transacciones.filter((t) => String(t.partida_id) === String(id) && cuenta(t));
   const areaDe = (congelada, txs) => {
@@ -13321,7 +13596,8 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
 
   // --- Transacciones de la semana elegida ---
   const finSemana = (() => { const d = new Date(`${semanaRep}T12:00:00`); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); })();
-  const transSemana = transUnidad.filter((t) => t.dia && t.dia >= semanaRep && t.dia <= finSemana);
+  // Se reportan pagos: de una compra PPD van sus parcialidades, no el padre.
+  const transSemana = transUnidad.filter((t) => t.dia && t.dia >= semanaRep && t.dia <= finSemana && !esPadrePPD(t));
   const filasTrans = transSemana.map((t) => {
     const p = partidaDe(t);
     return {
@@ -16686,6 +16962,7 @@ const CATEGORIAS_ADJUNTO_TRANSACCION = [
   { value: "xml",         label: "Factura XML",         boton: "Adjuntar Factura XML" },
   { value: "cotizacion",  label: "Cotización",          boton: "Adjuntar Cotización" },
   { value: "comprobante", label: "Comprobante de pago", boton: "Adjuntar Comprobante de Pago" },
+  { value: "rep",         label: "Complemento de pago (REP)", boton: "Adjuntar Complemento de Pago" },
   { value: "soporte",     label: "Soporte",             boton: "Adjuntar Soporte" },
 ];
 /* Lo que la columna Adjuntos de Transacciones muestra SIEMPRE, lleno o
@@ -16699,6 +16976,16 @@ const MARCAS_ADJUNTO_TRANSACCION = [
   { campo: "comprobante", corto: "CP",  largo: "Comprobante de pago" },
   { campo: "soporte",     corto: "SOP", largo: "Soporte" },
 ];
+/* El complemento de pago (REP) solo se espera en pagos de facturas PPD: en
+   las parcialidades y en las PPD de un solo pago. Al padre no le toca (sus
+   pagos son las hijas), y en el resto mostrarlo siempre vacío sería ruido. */
+const MARCA_REP = { campo: "rep", corto: "REP", largo: "Complemento de pago (REP)" };
+const esMetodoPPD = (t) => /^PPD/i.test(String(t?.metodo_pago || ""));
+const marcasAdjuntoDe = (t) => {
+  if (esParcialidad(t)) return [...MARCAS_ADJUNTO_TRANSACCION.filter((m) => m.campo !== "factura" && m.campo !== "xml"), MARCA_REP];
+  if (!esPadrePPD(t) && esMetodoPPD(t)) return [...MARCAS_ADJUNTO_TRANSACCION, MARCA_REP];
+  return MARCAS_ADJUNTO_TRANSACCION;
+};
 
 const etiquetaCategoria = (v, entidad) => {
   if (v === "reg") return "REG";

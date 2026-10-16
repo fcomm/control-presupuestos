@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.71.0";
+const APP_VERSION = "2.71.1";
 const CHANGELOG = [
+  { v: "2.71.1", desc: "Compras PPD: una transaccion ya registrada se puede convertir a En parcialidades aunque ya se hubiera enviado a Pagos -- al guardar se avisa y se le quita la marca de enviada, porque a Pagos se envia cada parcialidad --. Si esta Pagada, basta con cambiarla a No Pagado en el mismo formulario; antes habia que guardar ese cambio primero y la casilla seguia apagada si estaba enviada." },
   { v: "2.71.0", desc: "Compras PPD en parcialidades (requiere 63-compras-ppd.sql). Una transaccion se marca como Compra PPD En parcialidades: compromete el total en su partida, y desde su formulario se agregan, una por una, sus parcialidades con el % de la compra; el importe y el desglose fiscal salen del %, y la que completa el 100 % toma exactamente el saldo. Cada parcialidad es una transaccion completa -- folio <padre>-P<n>, expediente, REG, Enviar a Pagos, comprobante, tipo de cambio propio --, con la partida, moneda y proveedor de la compra. Comprometido cuenta la compra y no las parcialidades; Pagado cuenta las parcialidades y no la compra, cuyo status lo calcula la base. La compra nunca va a Pagos ni a los reportes de pagos. Adjunto nuevo: Complemento de pago (REP), marcado en parcialidades y en transacciones PPD." },
   { v: "2.70.0", desc: "Paginacion en las tablas largas: Transacciones (y Sin vincular), Partidas, Proveedores, Anticipos pagados, Transacciones Sempra, Reporte de Pagos, Reporte de Pagos a Direccion, Solicitudes de pago, Flotilla y SMI de vehiculos. Pie de tabla con Mostrando X-Y de N, selector de 25, 50, 100, 250 o Todos (se recuerda por tabla) y botones de primera, anterior, siguiente y ultima. Cambiar filtros, orden o agrupamiento regresa a la pagina 1; editar una fila no. Es solo de pantalla: totales, encabezados con suma, seleccionar todas, exportaciones y reportes siguen usando la lista completa del filtro. Con agrupamiento se paginan los grupos de primer nivel, sin partir ninguno, para que sus subtotales sigan completos; la numeracion # sigue corrida entre paginas. Las tablas aparecen sin pie cuando tienen 25 filas o menos" },
   { v: "2.69.1", desc: "Los filtros de Transacciones caben en una sola fila: cada control crece desde un ancho base en vez de tener un ancho fijo, y las etiquetas largas se acortan a Direccion y Pagos (las opciones ya dicen Reportado y Enviado). En pantallas angostas se siguen acomodando en dos filas" },
@@ -9576,6 +9577,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       }
     }
     if (!form.partida_id || !form.importe) return;
+    /* Convertir en compra PPD una transacción que ya se envió a Pagos: la
+       compra deja de ser un pago (lo son sus parcialidades), así que pierde
+       la marca de enviada. Pagos ya la tenía: hay que avisarles. */
+    const original = editId ? transUnidad.find((x) => x.id === editId) : null;
+    const convirtiendoEnviada = !!(form.es_padre && original && !esPadrePPD(original) && original.enviado_pagos_at);
+    if (convirtiendoEnviada && !confirm(
+      `${original.folio_transaccion || "Esta transacción"} ya se había enviado a Pagos el ${formatFechaCorta(original.enviado_pagos_at)}.\n\n` +
+      "Al llevarla en parcialidades se le quita esa marca: a Pagos se envía cada parcialidad cuando toque pagarla. " +
+      "Avísales que el envío anterior ya no va por el total.\n\n¿Continuar?")) return;
     if (form.status === "Pagado" && estaCancelada(form)) {
       alert("Esta transacción está cancelada: no se puede marcar como Pagada. Reactívala primero si el pago sí ocurrió.");
       return;
@@ -9624,6 +9634,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       let transaccionId = editId;
       if (editId) {
         await transaccionesApi.update(editId, rest);
+        if (convirtiendoEnviada) await transaccionesApi.update(editId, { enviado_pagos_at: null });
         setEditId(null);
       } else {
         const creada = await insertTransaccionBorrador(transaccionesApi, rest);
@@ -10724,9 +10735,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             {!esParcialidad(form) && (() => {
               const guardada = editId ? transUnidad.find((x) => x.id === editId) : null;
               const conHijas = guardada && esPadrePPD(guardada) && hijasDe(guardada).length > 0;
-              const yaPagadaOEnviada = guardada && !esPadrePPD(guardada) && (guardada.status === "Pagado" || guardada.enviado_pagos_at);
+              /* Se mira el status del formulario, no el guardado: basta con
+                 pasarla a No Pagado aquí mismo para poder convertirla. */
+              const pagada = !form.es_padre && form.status === "Pagado";
               const bloqueo = conHijas ? "Ya tiene parcialidades: no puede dejar de ser compra PPD."
-                : yaPagadaOEnviada ? "Ya está pagada o enviada a Pagos: no se puede convertir en compra PPD." : "";
+                : pagada ? "Está como Pagada. Cámbiala a No Pagado para llevarla en parcialidades." : "";
               return (
                 <Field label="Compra PPD">
                   <label title={bloqueo || "El total se compromete aquí y se paga en parcialidades, cada una con su %"}

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.71.1";
+const APP_VERSION = "2.72.0";
 const CHANGELOG = [
+  { v: "2.72.0", desc: "Transacciones: las parcialidades de una compra PPD se muestran anidadas bajo ella, un nivel adentro y con fondo propio, y se contraen o expanden con el boton junto a su folio (por omision expandidas, porque ahi estan los pagos pendientes). Si la compra queda fuera del filtro, su parcialidad sale suelta para no perderla. El total del encabezado, los totales de grupo y la paginacion cuentan solo el primer nivel: antes sumaban la compra y sus parcialidades, el mismo dinero dos veces." },
   { v: "2.71.1", desc: "Compras PPD: una transaccion ya registrada se puede convertir a En parcialidades aunque ya se hubiera enviado a Pagos -- al guardar se avisa y se le quita la marca de enviada, porque a Pagos se envia cada parcialidad --. Si esta Pagada, basta con cambiarla a No Pagado en el mismo formulario; antes habia que guardar ese cambio primero y la casilla seguia apagada si estaba enviada." },
   { v: "2.71.0", desc: "Compras PPD en parcialidades (requiere 63-compras-ppd.sql). Una transaccion se marca como Compra PPD En parcialidades: compromete el total en su partida, y desde su formulario se agregan, una por una, sus parcialidades con el % de la compra; el importe y el desglose fiscal salen del %, y la que completa el 100 % toma exactamente el saldo. Cada parcialidad es una transaccion completa -- folio <padre>-P<n>, expediente, REG, Enviar a Pagos, comprobante, tipo de cambio propio --, con la partida, moneda y proveedor de la compra. Comprometido cuenta la compra y no las parcialidades; Pagado cuenta las parcialidades y no la compra, cuyo status lo calcula la base. La compra nunca va a Pagos ni a los reportes de pagos. Adjunto nuevo: Complemento de pago (REP), marcado en parcialidades y en transacciones PPD." },
   { v: "2.70.0", desc: "Paginacion en las tablas largas: Transacciones (y Sin vincular), Partidas, Proveedores, Anticipos pagados, Transacciones Sempra, Reporte de Pagos, Reporte de Pagos a Direccion, Solicitudes de pago, Flotilla y SMI de vehiculos. Pie de tabla con Mostrando X-Y de N, selector de 25, 50, 100, 250 o Todos (se recuerda por tabla) y botones de primera, anterior, siguiente y ultima. Cambiar filtros, orden o agrupamiento regresa a la pagina 1; editar una fila no. Es solo de pantalla: totales, encabezados con suma, seleccionar todas, exportaciones y reportes siguen usando la lista completa del filtro. Con agrupamiento se paginan los grupos de primer nivel, sin partir ninguno, para que sus subtotales sigan completos; la numeracion # sigue corrida entre paginas. Las tablas aparecen sin pie cuando tienen 25 filas o menos" },
@@ -8878,6 +8879,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const adjDe = (t) => resumenAdj.get(t.id) || null;
 
   const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
+  /* Compras PPD cuyas parcialidades están contraídas en la lista. Por omisión
+     se ven: ahí están los pagos pendientes, no conviene esconderlos. */
+  const [ppdContraidas, setPpdContraidas] = useState(() => new Set());
+  const togglePPD = (id) => setPpdContraidas((prev) => {
+    const s = new Set(prev);
+    if (s.has(id)) s.delete(id); else s.add(id);
+    return s;
+  });
 
   /* Compras PPD. Las hijas se buscan con canceladas incluidas: el número
      P<n> de una cancelada no se reutiliza, porque su folio ya existe. */
@@ -9002,7 +9011,22 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
   const toggleGroup = (path) => setCollapsedGroups((prev) => alternarEnSet(prev, path));
   const groupKeys = groupBys.map((g) => g.field);
-  const grouped = groupKeys.length ? agruparRows(transEnriquecidas, groupBys, "importe") : null;
+  /* Una parcialidad cuyo compra también pasó el filtro se muestra anidada
+     bajo ella, no como fila propia; si la compra quedó fuera del filtro, la
+     parcialidad sale suelta para no perderla. Los totales y la paginación se
+     calculan sobre el primer nivel: sumar la compra y sus parcialidades
+     contaría el mismo dinero dos veces. La exportación sigue con todas. */
+  const idsFiltradas = new Set(transFiltradas.map((t) => t.id));
+  const anidada = (t) => esParcialidad(t) && idsFiltradas.has(t.transaccion_padre_id);
+  const hijasVisibles = {};
+  transEnriquecidas.forEach((t) => {
+    if (!anidada(t)) return;
+    if (!hijasVisibles[t.transaccion_padre_id]) hijasVisibles[t.transaccion_padre_id] = [];
+    hijasVisibles[t.transaccion_padre_id].push(t);
+  });
+  Object.values(hijasVisibles).forEach((l) => l.sort((a, b) => (a.num_parcialidad || 0) - (b.num_parcialidad || 0)));
+  const transPrimerNivel = transEnriquecidas.filter((t) => !anidada(t));
+  const grouped = groupKeys.length ? agruparRows(transPrimerNivel, groupBys, "importe") : null;
 
   // --- Tabla "sin vincular": mismos controles que la tabla principal (fechas, agrupar, columnas) ---
   // Indicador de vínculo del proveedor: sin catálogo / con catálogo sin cuenta / con cuenta bancaria.
@@ -9105,8 +9129,18 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       key: "folio_transaccion", label: "ID",
       render: (t) => {
         const ppd = esPadrePPD(t) ? resumenPPD(t) : null;
+        const nHijas = ppd ? (hijasVisibles[t.id] || []).length : 0;
+        const contraida = ppdContraidas.has(t.id);
         return (
           <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+            {nHijas > 0 && (
+              <button type="button" onClick={() => togglePPD(t.id)}
+                title={contraida ? `Mostrar sus ${nHijas} parcialidad(es)` : "Ocultar sus parcialidades"}
+                style={{ background: "transparent", border: `1px solid ${T.border}`, borderRadius: 4, cursor: "pointer",
+                         color: T.textDim, fontSize: 10, lineHeight: 1, padding: "3px 5px", fontFamily: T.fontMono }}>
+                {contraida ? `▸ ${nHijas}` : "▾"}
+              </button>
+            )}
             <span style={{ color: T.accent, fontWeight: 600 }}>{t.folio_transaccion || "—"}</span>
             {ppd && (
               <span title={`Compra PPD en parcialidades\n${ppd.hijas.length} parcialidad(es) · ${fmtPct(ppd.pctAsignado)} asignado\n` +
@@ -9497,10 +9531,21 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
   };
 
-  const renderRowTr = (t, depth = 0, n) => (
-    <tr key={t.id} style={{ ...estiloFilaUSD(t.moneda), ...(estaCancelada(t) ? { opacity: 0.5 } : {}) }}
+  /* Una compra PPD lleva debajo sus parcialidades, un nivel adentro y sin
+     número propio: el # cuenta filas de primer nivel. */
+  const renderRowTr = (t, depth = 0, n) => {
+    const fila = renderFilaTr(t, depth, n, false);
+    const hijas = esPadrePPD(t) ? hijasVisibles[t.id] || [] : [];
+    if (!hijas.length || ppdContraidas.has(t.id)) return fila;
+    return [fila, ...hijas.map((h) => renderFilaTr(h, depth + 1, "", true))];
+  };
+  const renderFilaTr = (t, depth, n, esHija) => (
+    <tr key={t.id} style={{ ...estiloFilaUSD(t.moneda), ...(esHija ? { background: T.panelAlt } : {}),
+                            ...(estaCancelada(t) ? { opacity: 0.5 } : {}) }}
       title={estaCancelada(t) ? `Cancelada: ${t.motivo_cancelacion || ""}` : undefined}>
-      <td style={{ ...tdStyle, width: 36, textAlign: "right", color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{n}</td>
+      <td style={{ ...tdStyle, width: 36, textAlign: "right", color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>
+        {esHija ? "↳" : n}
+      </td>
       <td style={{ ...tdStyle, textAlign: "center" }}>
         <input type="checkbox" checked={seleccionadas.has(t.id)} onChange={() => toggleSeleccion(t.id)} />
       </td>
@@ -10083,7 +10128,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     return <EmptyState title="Primero crea partidas" body={`Registra al menos una partida de ${unidad} en la pestaña Partidas antes de capturar transacciones reales.`} />;
   }
 
-  const pagTrans = usePaginacion("transacciones", transEnriquecidas,
+  const pagTrans = usePaginacion("transacciones", transPrimerNivel,
     { agrupado: grouped, reinicio: [unidad, filtros, sort, groupBys] });
   const pagSV = usePaginacion("transacciones-sin-vincular", sinVincularFiltrado,
     { agrupado: groupedSV, reinicio: [unidad, filtrosSV, groupBysSV] });
@@ -10280,7 +10325,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
                     width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
                     onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={onColDragOver} onDrop={(e) => onColDrop(e, c.key)}
-                    sumLabel={c.key === "importe" ? sumaPorMoneda(transOrdenadas, "importe") : undefined}
+                    sumLabel={c.key === "importe" ? sumaPorMoneda(transPrimerNivel, "importe") : undefined}
                   />
                 ))}
                 <th style={thStyle}></th>

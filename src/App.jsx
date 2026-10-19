@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.72.0";
+const APP_VERSION = "2.72.1";
 const CHANGELOG = [
+  { v: "2.72.1", desc: "Transacciones agrupadas: una compra PPD aparece en cada grupo donde caen sus parcialidades -- p. ej. agrupando por dia de pago, el 20 con su P1 y el 22 con su P2 --, y en cada uno solo con las de ese grupo. Ahi la compra muestra lo que se paga en el grupo, con la leyenda de su total, para que los totales de grupo no repitan dinero; lo que aun no tiene parcialidad queda en el grupo de la propia compra como por asignar. Editar o cancelar desde cualquiera de esas filas actua sobre la compra real. El folio de una parcialidad ya no se parte en dos renglones." },
   { v: "2.72.0", desc: "Transacciones: las parcialidades de una compra PPD se muestran anidadas bajo ella, un nivel adentro y con fondo propio, y se contraen o expanden con el boton junto a su folio (por omision expandidas, porque ahi estan los pagos pendientes). Si la compra queda fuera del filtro, su parcialidad sale suelta para no perderla. El total del encabezado, los totales de grupo y la paginacion cuentan solo el primer nivel: antes sumaban la compra y sus parcialidades, el mismo dinero dos veces." },
   { v: "2.71.1", desc: "Compras PPD: una transaccion ya registrada se puede convertir a En parcialidades aunque ya se hubiera enviado a Pagos -- al guardar se avisa y se le quita la marca de enviada, porque a Pagos se envia cada parcialidad --. Si esta Pagada, basta con cambiarla a No Pagado en el mismo formulario; antes habia que guardar ese cambio primero y la casilla seguia apagada si estaba enviada." },
   { v: "2.71.0", desc: "Compras PPD en parcialidades (requiere 63-compras-ppd.sql). Una transaccion se marca como Compra PPD En parcialidades: compromete el total en su partida, y desde su formulario se agregan, una por una, sus parcialidades con el % de la compra; el importe y el desglose fiscal salen del %, y la que completa el 100 % toma exactamente el saldo. Cada parcialidad es una transaccion completa -- folio <padre>-P<n>, expediente, REG, Enviar a Pagos, comprobante, tipo de cambio propio --, con la partida, moneda y proveedor de la compra. Comprometido cuenta la compra y no las parcialidades; Pagado cuenta las parcialidades y no la compra, cuyo status lo calcula la base. La compra nunca va a Pagos ni a los reportes de pagos. Adjunto nuevo: Complemento de pago (REP), marcado en parcialidades y en transacciones PPD." },
@@ -9025,7 +9026,44 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     hijasVisibles[t.transaccion_padre_id].push(t);
   });
   Object.values(hijasVisibles).forEach((l) => l.sort((a, b) => (a.num_parcialidad || 0) - (b.num_parcialidad || 0)));
-  const transPrimerNivel = transEnriquecidas.filter((t) => !anidada(t));
+  /* Agrupada, una compra PPD aparece en CADA grupo donde caen sus
+     parcialidades (p. ej. un día de pago por cada una), y en cada uno solo
+     con las suyas de ese grupo. Esas copias de la compra valen lo que se paga
+     en el grupo, no el total, para que los totales de grupo no repitan
+     dinero; lo que todavía no tiene parcialidad se queda en el grupo de la
+     propia compra como "por asignar". Las copias guardan la original en
+     _ppdOriginal: las acciones de la fila (editar, cancelar…) usan esa. */
+  const valorDeGrupo = (r, g) => (g.field === "_mes" ? `${r._mes ?? ""}|${r._anio ?? ""}` : String(r[g.field] ?? ""));
+  const copiarCamposDeGrupo = (destino, origen) => {
+    groupBys.forEach((g) => {
+      destino[g.field] = origen[g.field];
+      if (g.field === "_mes") destino._anio = origen._anio;
+    });
+  };
+  const transPrimerNivel = transEnriquecidas.filter((t) => !anidada(t)).flatMap((t) => {
+    const hijas = hijasVisibles[t.id];
+    if (!groupKeys.length || !esPadrePPD(t) || !hijas?.length) return [t];
+    const total = Number(t.importe) || 0;
+    const bloques = new Map();
+    hijas.forEach((h) => {
+      const k = groupBys.map((g) => valorDeGrupo(h, g)).join("¦");
+      if (!bloques.has(k)) bloques.set(k, []);
+      bloques.get(k).push(h);
+    });
+    const copias = [...bloques.entries()].map(([k, hs]) => {
+      const c = { ...t, _ppdOriginal: t, _ppdKey: `${t.id}¦${k}`, _ppdHijas: hs, _ppdTotal: total,
+                  importe: r2(hs.reduce((s, h) => s + (Number(h.importe) || 0), 0)) };
+      copiarCamposDeGrupo(c, hs[0]);
+      return c;
+    });
+    const asignado = hijasDe(t).filter((h) => !estaCancelada(h)).reduce((s, h) => s + (Number(h.importe) || 0), 0);
+    const porAsignar = r2(total - asignado);
+    if (porAsignar > 0.004) {
+      copias.push({ ...t, _ppdOriginal: t, _ppdKey: `${t.id}¦por-asignar`, _ppdHijas: [], _ppdTotal: total,
+                    _ppdPorAsignar: true, importe: porAsignar });
+    }
+    return copias;
+  });
   const grouped = groupKeys.length ? agruparRows(transPrimerNivel, groupBys, "importe") : null;
 
   // --- Tabla "sin vincular": mismos controles que la tabla principal (fechas, agrupar, columnas) ---
@@ -9128,20 +9166,21 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     {
       key: "folio_transaccion", label: "ID",
       render: (t) => {
-        const ppd = esPadrePPD(t) ? resumenPPD(t) : null;
-        const nHijas = ppd ? (hijasVisibles[t.id] || []).length : 0;
-        const contraida = ppdContraidas.has(t.id);
+        const ppd = esPadrePPD(t) ? resumenPPD(t._ppdOriginal || t) : null;
+        const nHijas = ppd ? (t._ppdHijas ?? hijasVisibles[t.id] ?? []).length : 0;
+        const claveColapso = t._ppdKey || t.id;
+        const contraida = ppdContraidas.has(claveColapso);
         return (
           <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
             {nHijas > 0 && (
-              <button type="button" onClick={() => togglePPD(t.id)}
+              <button type="button" onClick={() => togglePPD(claveColapso)}
                 title={contraida ? `Mostrar sus ${nHijas} parcialidad(es)` : "Ocultar sus parcialidades"}
                 style={{ background: "transparent", border: `1px solid ${T.border}`, borderRadius: 4, cursor: "pointer",
                          color: T.textDim, fontSize: 10, lineHeight: 1, padding: "3px 5px", fontFamily: T.fontMono }}>
                 {contraida ? `▸ ${nHijas}` : "▾"}
               </button>
             )}
-            <span style={{ color: T.accent, fontWeight: 600 }}>{t.folio_transaccion || "—"}</span>
+            <span style={{ color: T.accent, fontWeight: 600, whiteSpace: "nowrap" }}>{t.folio_transaccion || "—"}</span>
             {ppd && (
               <span title={`Compra PPD en parcialidades\n${ppd.hijas.length} parcialidad(es) · ${fmtPct(ppd.pctAsignado)} asignado\n` +
                            `Pagado: ${money(ppd.pagado, t.moneda)} · Saldo: ${money(ppd.saldo, t.moneda)}`}>
@@ -9215,7 +9254,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       ),
     },
     { key: "categoria", label: "Categoría", render: (t) => t.categoria ? <Pill>{t.categoria}</Pill> : <span style={{ color: T.textFaint }}>—</span> },
-    { key: "importe", label: "Importe", render: (t) => <ImporteConEquivalente t={t} serie={tiposCambio} /> },
+    { key: "importe", label: "Importe", render: (t) => (t._ppdTotal != null ? (
+        /* Copia de una compra PPD dentro de un grupo: vale lo de ese grupo. */
+        <span title={t._ppdPorAsignar ? "Parte de la compra que aún no tiene parcialidad"
+                                      : "Lo que se paga en este grupo con sus parcialidades"}>
+          <ImporteConEquivalente t={t} serie={tiposCambio} />
+          <div style={{ fontSize: 10.5, color: T.textFaint, whiteSpace: "nowrap" }}>
+            {t._ppdPorAsignar ? "por asignar · " : ""}de {money(t._ppdTotal, t.moneda)}
+          </div>
+        </span>
+      ) : <ImporteConEquivalente t={t} serie={tiposCambio} />) },
     { key: "status", label: "Status", render: (t) => (
       <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
         {t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—"}
@@ -9533,14 +9581,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 
   /* Una compra PPD lleva debajo sus parcialidades, un nivel adentro y sin
      número propio: el # cuenta filas de primer nivel. */
-  const renderRowTr = (t, depth = 0, n) => {
-    const fila = renderFilaTr(t, depth, n, false);
-    const hijas = esPadrePPD(t) ? hijasVisibles[t.id] || [] : [];
-    if (!hijas.length || ppdContraidas.has(t.id)) return fila;
+  const renderRowTr = (v, depth = 0, n) => {
+    const fila = renderFilaTr(v, depth, n, false);
+    const hijas = esPadrePPD(v) ? (v._ppdHijas ?? hijasVisibles[v.id] ?? []) : [];
+    if (!hijas.length || ppdContraidas.has(v._ppdKey || v.id)) return fila;
     return [fila, ...hijas.map((h) => renderFilaTr(h, depth + 1, "", true))];
   };
-  const renderFilaTr = (t, depth, n, esHija) => (
-    <tr key={t.id} style={{ ...estiloFilaUSD(t.moneda), ...(esHija ? { background: T.panelAlt } : {}),
+  const renderFilaTr = (v, depth, n, esHija) => {
+    const t = v._ppdOriginal || v;
+    return (
+    <tr key={v._ppdKey || v.id} style={{ ...estiloFilaUSD(t.moneda), ...(esHija ? { background: T.panelAlt } : {}),
                             ...(estaCancelada(t) ? { opacity: 0.5 } : {}) }}
       title={estaCancelada(t) ? `Cancelada: ${t.motivo_cancelacion || ""}` : undefined}>
       <td style={{ ...tdStyle, width: 36, textAlign: "right", color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>
@@ -9550,7 +9600,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         <input type="checkbox" checked={seleccionadas.has(t.id)} onChange={() => toggleSeleccion(t.id)} />
       </td>
       {columnasVisibles.map((c, i) => (
-        <td key={c.key} style={i === 0 && depth ? { ...tdStyle, paddingLeft: 14 + depth * 26 } : tdStyle}>{c.render(t)}</td>
+        <td key={c.key} style={i === 0 && depth ? { ...tdStyle, paddingLeft: 14 + depth * 26 } : tdStyle}>{c.render(v)}</td>
       ))}
       <td style={tdStyle}>
         <div style={{ display: "flex", gap: 4 }}>
@@ -9583,7 +9633,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         </div>
       </td>
     </tr>
-  );
+    );
+  };
 
   const [notaPrivada, setNotaPrivada] = useState("");
   const notaActual = (transaccionId) => notasApi.rows.find((n) => n.transaccion_id === transaccionId && n.usuario_id === session?.user?.id);

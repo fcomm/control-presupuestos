@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.74.0";
+const APP_VERSION = "2.74.1";
 const CHANGELOG = [
+  { v: "2.74.1", desc: "SPP: el desglose fiscal parte del total de la factura -- en una parcialidad, el de la compra, fijo -- y el regimen del proveedor deduce el subtotal; ya no se pide el subtotal como dato. Se lee de arriba abajo como la factura: Subtotal, Descuento (si hay), IVA, IVA retenido e ISR retenido (si aplican), Total, % de la parcialidad y Pago de la parcialidad. En captura manual cada renglon se edita." },
   { v: "2.74.0", desc: "Compras PPD: el boton de SPP sale solo en las parcialidades, nunca en la compra (antes salia si la compra tenia Tipo de pago Anticipo), y la compra queda fuera del seguimiento de anticipos. La SPP de una parcialidad calcula lo que se paga como total de la compra x % de la parcialidad -- la que cierra el 100 % toma el saldo --; si la parcialidad tenia registrado otro importe, avisa y al generar lo corrige (si no esta pagada). El desglose guardado de la compra solo se reutiliza si corresponde a su total actual. Cambiar el total de una compra recalcula sus parcialidades no pagadas con su mismo %; las pagadas no se tocan y se avisa si ya no cuadran." },
   { v: "2.73.2", desc: "SPP: los esquemas fiscales de persona fisica empiezan con la clave de regimen del SAT -- 612 Personas Fisicas con Actividades Empresariales y Profesionales, 626 RESICO -- para que no se confundan; los montos no cambian." },
   { v: "2.73.1", desc: "SPP: nuevos esquemas fiscales del Regimen de las Personas Fisicas con Actividades Empresariales y Profesionales (612): servicios profesionales -- ISR 10% y 2/3 del IVA -- y venta de bienes -- sin retenciones --. El esquema que retenia ISR 1.25% se llama ahora Persona fisica RESICO, que es el regimen al que corresponde esa tasa; sus montos no cambian." },
@@ -5962,6 +5963,9 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
   }, [unidad]);
 
   const [esquema, setEsquema] = useState(desgloseGuardado ? "manual" : "pf_servicios");
+  // Total de la factura del que se deduce el desglose: en una parcialidad es
+  // el de la compra y no se edita aquí.
+  const [totalFactura, setTotalFactura] = useState(Number(base.importe) || 0);
   const [pctPago, setPctPago] = useState(padre ? Number(t.pct_pago) || 0 : 50);
   const [guardando, setGuardando] = useState(false);
   const [formato, setFormato] = useState("pdf");
@@ -6161,12 +6165,16 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
 
       <div style={{ borderTop: `1px solid ${T.borderSoft}`, margin: "14px 0", paddingTop: 14 }}>
         <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>Desglose fiscal</div>
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 12, marginBottom: 10 }}>
-          <Field label="Esquema fiscal del proveedor">
+        {/* Se parte del TOTAL de la factura (en una parcialidad, el de la
+            compra) y el régimen del proveedor deduce el subtotal: es el dato
+            que se conoce. El desglose se lee de arriba abajo como la factura.
+            En captura manual cada renglón se edita suelto. */}
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12, marginBottom: 12 }}>
+          <Field label="Régimen fiscal del proveedor">
             <Select value={esquema} onChange={(e) => {
               const esq = e.target.value;
               setEsquema(esq);
-              if (esq !== "manual") recalcular(esq, subtotalDesdeTotal(base.importe, esq));
+              if (esq !== "manual") recalcular(esq, subtotalDesdeTotal(totalFactura, esq));
             }}>
               {ESQUEMAS_FISCALES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
             </Select>
@@ -6174,46 +6182,68 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
               {(ESQUEMAS_FISCALES.find((x) => x.id === esquema) || {}).nota}
             </span>
           </Field>
-          <Field label="Subtotal">
-            <TextInput type="number" value={d.subtotal}
-              onChange={(e) => { const v = e.target.value; setD({ ...d, subtotal: v });
-                if (esquema !== "manual") recalcular(esquema, v); }} />
-          </Field>
-          <Field label="% que se paga">
-            <TextInput type="number" value={pctPago} disabled={!!padre}
-              title={padre ? "Es el % de la parcialidad; se cambia en la parcialidad misma" : undefined}
-              onChange={(e) => setPctPago(e.target.value)} />
-          </Field>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-          <Field label="IVA">
-            <TextInput type="number" value={d.iva} onChange={(e) => setD({ ...d, iva: e.target.value })} />
-          </Field>
-          <Field label="Retención ISR">
-            <TextInput type="number" value={d.ret_isr} onChange={(e) => setD({ ...d, ret_isr: e.target.value })} />
-          </Field>
-          <Field label="Retención IVA">
-            <TextInput type="number" value={d.ret_iva} onChange={(e) => setD({ ...d, ret_iva: e.target.value })} />
-          </Field>
-          <Field label="Descuento">
-            <TextInput type="number" value={d.descuento} onChange={(e) => setD({ ...d, descuento: e.target.value })} />
+          <Field label={padre ? "Total de la compra (factura)" : "Total de la factura"}>
+            <TextInput type="number" step="0.01" value={totalFactura} disabled={!!padre}
+              title={padre ? "Es el importe de la compra PPD; se cambia en la compra" : undefined}
+              onChange={(e) => {
+                const v = e.target.value;
+                setTotalFactura(v);
+                if (esquema !== "manual") recalcular(esquema, subtotalDesdeTotal(v, esquema));
+              }} />
           </Field>
         </div>
 
-        <div style={{ display: "flex", gap: 24, marginTop: 12, padding: "10px 14px", background: T.panelAlt, borderRadius: 6, flexWrap: "wrap" }}>
-          <div><span style={{ fontSize: 11, color: T.textFaint }}>TOTAL</span>
-            <div style={{ fontFamily: T.fontMono, fontSize: 15, fontWeight: 700 }}>${num(total)}</div></div>
-          <div><span style={{ fontSize: 11, color: T.textFaint }}>A PAGAR {pctPago}%</span>
-            <div style={{ fontFamily: T.fontMono, fontSize: 15, fontWeight: 700, color: T.teal }}>${num(aPagar)}</div></div>
-          {/* El contraste con lo capturado revela si el desglose cuadra. */}
-          <div><span style={{ fontSize: 11, color: T.textFaint }}>{padre ? "IMPORTE DE LA COMPRA" : "IMPORTE DE LA TRANSACCIÓN"}</span>
-            <div style={{ fontFamily: T.fontMono, fontSize: 15,
-              color: Math.abs(total - (Number(base.importe) || 0)) < 1 ? T.textDim : T.amber }}>
-              ${num(base.importe)}
-              {Math.abs(total - (Number(base.importe) || 0)) >= 1 &&
-                <span style={{ fontSize: 11 }}> · no coincide</span>}
-            </div></div>
-        </div>
+        {(() => {
+          const manual = esquema === "manual";
+          const esq = ESQUEMAS_FISCALES.find((x) => x.id === esquema) || {};
+          const filaStyle = { display: "grid", gridTemplateColumns: "1fr 180px", alignItems: "center",
+                              padding: "6px 14px", borderBottom: `1px solid ${T.borderSoft}`, fontSize: 13 };
+          const cifra = { fontFamily: T.fontMono, textAlign: "right" };
+          const linea = (label, campoD, { mostrar = true } = {}) => {
+            if (!mostrar) return null;
+            return (
+              <div style={filaStyle}>
+                <span style={{ color: T.textDim }}>{label}</span>
+                {manual ? (
+                  <TextInput type="number" step="0.01" value={d[campoD]} style={{ textAlign: "right" }}
+                    onChange={(e) => setD({ ...d, [campoD]: e.target.value })} />
+                ) : (
+                  <span style={cifra}>${num(d[campoD])}</span>
+                )}
+              </div>
+            );
+          };
+          const noCuadra = Math.abs(total - (Number(totalFactura) || 0)) >= 1;
+          return (
+            <div style={{ border: `1px solid ${T.border}`, borderRadius: 8, overflow: "hidden", maxWidth: 520 }}>
+              {linea("Subtotal", "subtotal")}
+              {linea("Descuento", "descuento", { mostrar: manual || Number(d.descuento) !== 0 })}
+              {linea(`IVA ${esq.iva != null ? `${Math.round(esq.iva * 100)}%` : ""}`.trim(), "iva")}
+              {linea("IVA retenido", "ret_iva", { mostrar: manual || Number(d.ret_iva) !== 0 })}
+              {linea("ISR retenido", "ret_isr", { mostrar: manual || Number(d.ret_isr) !== 0 })}
+              <div style={{ ...filaStyle, background: T.panelAlt, fontWeight: 700 }}>
+                <span>Total</span>
+                <span style={{ ...cifra, color: noCuadra ? T.amber : T.text }}>
+                  ${num(total)}
+                  {noCuadra && <div style={{ fontSize: 10.5, fontWeight: 400 }}>no coincide con ${num(totalFactura)}</div>}
+                </span>
+              </div>
+              <div style={filaStyle}>
+                <span style={{ color: T.textDim }}>{padre ? `% de la parcialidad P${t.num_parcialidad}` : "% que se paga"}</span>
+                {padre ? (
+                  <span style={cifra} title="Se cambia en la parcialidad misma">{fmtPct(pctPago)}</span>
+                ) : (
+                  <TextInput type="number" step="0.01" value={pctPago} style={{ textAlign: "right" }}
+                    onChange={(e) => setPctPago(e.target.value)} />
+                )}
+              </div>
+              <div style={{ ...filaStyle, borderBottom: "none", background: "#1E8F730F" }}>
+                <span style={{ fontWeight: 700 }}>{padre ? "Pago de la parcialidad" : "Total a pagar"}</span>
+                <span style={{ ...cifra, fontSize: 15, fontWeight: 700, color: T.teal }}>${num(aPagar)}</span>
+              </div>
+            </div>
+          );
+        })()}
       </div>
 
       <div style={{ borderTop: `1px solid ${T.borderSoft}`, margin: "14px 0", paddingTop: 14,

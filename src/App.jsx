@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.74.2";
+const APP_VERSION = "2.74.3";
 const CHANGELOG = [
+  { v: "2.74.3", desc: "Parcialidades PPD: corregido el calculo del monto. Cualquier parcialidad que llevara la suma al 100 % se trataba como la que cierra y tomaba total menos lo GUARDADO en las demas (P1 80 % de 648,204.40 salia 414,850.15 en vez de 518,563.52). Ahora solo la ultima -- la de numero mas alto -- toma lo que falta, calculado contra lo que las demas deben valer por su %, y las ya pagadas cuentan con lo pagado. Una sola funcion para el formulario, la SPP y el recalculo al cambiar el total de la compra." },
   { v: "2.74.2", desc: "Parcialidades PPD: el importe se muestra como Importe (calculado), deshabilitado, y se recalcula al abrir la parcialidad con su % sobre el total actual de la compra; antes mostraba el importe guardado aunque la compra hubiera cambiado. Una parcialidad ya pagada conserva el importe que se pago." },
   { v: "2.74.1", desc: "SPP: el desglose fiscal parte del total de la factura -- en una parcialidad, el de la compra, fijo -- y el regimen del proveedor deduce el subtotal; ya no se pide el subtotal como dato. Se lee de arriba abajo como la factura: Subtotal, Descuento (si hay), IVA, IVA retenido e ISR retenido (si aplican), Total, % de la parcialidad y Pago de la parcialidad. En captura manual cada renglon se edita." },
   { v: "2.74.0", desc: "Compras PPD: el boton de SPP sale solo en las parcialidades, nunca en la compra (antes salia si la compra tenia Tipo de pago Anticipo), y la compra queda fuera del seguimiento de anticipos. La SPP de una parcialidad calcula lo que se paga como total de la compra x % de la parcialidad -- la que cierra el 100 % toma el saldo --; si la parcialidad tenia registrado otro importe, avisa y al generar lo corrige (si no esta pagada). El desglose guardado de la compra solo se reutiliza si corresponde a su total actual. Cambiar el total de una compra recalcula sus parcialidades no pagadas con su mismo %; las pagadas no se tocan y se avisa si ya no cuadran." },
@@ -867,6 +868,24 @@ const borradorOCancelada = (t) => !!t && (!t.registrada_en || !!t.cancelada_en);
 /* Campos que identifican a un padre o a una hija. Duplicar una transacción
    no los hereda: la copia nace como transacción normal. */
 const SIN_LIGA_PPD = { es_padre: false, transaccion_padre_id: null, num_parcialidad: null };
+/* Monto de una parcialidad: % × total de la compra. Solo la ÚLTIMA (la de
+   número más alto, cuando entre todas suman 100 %) toma lo que falta, para
+   que los centavos cuadren con el total; y eso que falta se calcula contra
+   lo que las demás DEBEN valer (su % del total), no contra lo que tengan
+   guardado, que pudo quedar viejo si el total cambió. Las ya pagadas cuentan
+   con lo que se pagó. `otras` son las parcialidades activas distintas de
+   esta; `campo` permite aplicarlo igual a subtotal, IVA, etc. */
+const montoParcialidadPura = (totalCampo, pct, num, otras, campo = "importe") => {
+  const total = Number(totalCampo) || 0;
+  const p = Number(pct) || 0;
+  const pctOtras = otras.reduce((s, h) => s + (Number(h.pct_pago) || 0), 0);
+  const esUltima = otras.every((h) => (Number(h.num_parcialidad) || 0) < (Number(num) || Infinity));
+  if (!(esUltima && pctOtras + p >= 100 - 1e-9)) return Math.round(total * p) / 100;
+  const vanOtras = otras.reduce((s, h) => s + (h.status === "Pagado"
+    ? Number(h[campo]) || 0
+    : Math.round(total * (Number(h.pct_pago) || 0)) / 100), 0);
+  return Math.round((total - vanOtras) * 100) / 100;
+};
 const fmtPct = (n) => `${(Math.round((Number(n) || 0) * 100) / 100).toLocaleString("es-MX", { maximumFractionDigits: 2 })} %`;
 const camposEditablesTransaccion = (obj) => Object.fromEntries(
   Object.entries(obj).filter(([k]) => !k.startsWith("_") && !CAMPOS_SISTEMA_TRANSACCION.has(k)));
@@ -6012,10 +6031,8 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
   /* Parcialidad: se paga el % sobre el total de la compra. La que completa
      el 100 % toma exactamente lo que falta después de las demás, para que
      los centavos cuadren con el total. */
-  const pctOtras = otrasParcialidades.reduce((s, h) => s + (Number(h.pct_pago) || 0), 0);
-  const cierra = padre && pctOtras + (Number(pctPago) || 0) >= 100 - 1e-9;
-  const aPagar = !padre ? r2(total * (Number(pctPago) || 0) / 100)
-    : cierra ? r2(total - otrasParcialidades.reduce((s, h) => s + (Number(h.importe) || 0), 0))
+  const aPagar = padre
+    ? montoParcialidadPura(total, pctPago, t.num_parcialidad, otrasParcialidades)
     : r2(total * (Number(pctPago) || 0) / 100);
   // Si la parcialidad tiene registrado otro importe, se avisa y al generar
   // se corrige (si aún no está pagada): lo que se paga es lo de la SPP.
@@ -9023,12 +9040,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
      el 100 % toma exactamente lo que falta, para que los centavos cuadren. Se
      aplica igual a cada concepto del desglose fiscal que el padre tenga. */
   const CAMPOS_DESGLOSE = ["subtotal", "iva", "ret_isr", "ret_iva", "descuento"];
-  const montoParcialidad = (padre, campo, pct, hijaId = null) => {
+  const montoParcialidad = (padre, campo, pct, hijaId = null, num = null) => {
     const otras = hijasDe(padre).filter((h) => !estaCancelada(h) && h.id !== hijaId);
-    const pctOtras = otras.reduce((s, h) => s + (Number(h.pct_pago) || 0), 0);
-    const total = Number(padre[campo]) || 0;
-    if (pctOtras + (Number(pct) || 0) >= 100 - 1e-9) return r2(total - otras.reduce((s, h) => s + (Number(h[campo]) || 0), 0));
-    return r2(total * (Number(pct) || 0) / 100);
+    const n = num ?? (hijaId ? transPorId.get(hijaId)?.num_parcialidad : null) ?? resumenPPD(padre).siguienteNum;
+    return montoParcialidadPura(padre[campo], pct, n, otras, campo);
   };
   /* Cuando cambia el total de una compra, sus parcialidades NO pagadas se
      recalculan con su mismo % (la que cierra el 100 % toma el saldo). Las
@@ -9037,16 +9052,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const recalcularParcialidades = async (padre, nuevoTotal) => {
     const hijas = hijasDe(padre).filter((h) => !estaCancelada(h));
     if (!hijas.length) return "";
-    const pctTotal = hijas.reduce((s, h) => s + (Number(h.pct_pago) || 0), 0);
     const pendientes = hijas.filter((h) => h.status !== "Pagado");
-    const ultima = pctTotal >= 100 - 1e-9 ? pendientes[pendientes.length - 1] : null;
     const nuevos = {};
-    pendientes.forEach((h) => { if (h !== ultima) nuevos[h.id] = r2(nuevoTotal * (Number(h.pct_pago) || 0) / 100); });
-    if (ultima) {
-      const otras = hijas.filter((h) => h.id !== ultima.id)
-        .reduce((s, h) => s + (nuevos[h.id] ?? (Number(h.importe) || 0)), 0);
-      nuevos[ultima.id] = r2(nuevoTotal - otras);
-    }
+    pendientes.forEach((h) => {
+      nuevos[h.id] = montoParcialidadPura(nuevoTotal, h.pct_pago, h.num_parcialidad, hijas.filter((x) => x.id !== h.id));
+    });
     for (const h of pendientes) {
       if (r2(h.importe) !== nuevos[h.id]) await transaccionesApi.update(h.id, { importe: nuevos[h.id] });
     }
@@ -9076,7 +9086,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       folio_compra_sae: padre.folio_compra_sae || "", folio_factura: padre.folio_factura || "",
       forma_pago: padre.forma_pago || "03", metodo_pago: padre.metodo_pago || "PPD",
       transaccion_padre_id: padre.id, num_parcialidad: r.siguienteNum, pct_pago: r.pctPorAsignar,
-      importe: montoParcialidad(padre, "importe", r.pctPorAsignar),
+      importe: montoParcialidad(padre, "importe", r.pctPorAsignar, null, r.siguienteNum),
     });
     setEditId(null);
     setNotaPrivada("");
@@ -9894,9 +9904,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       // Una parcialidad ya pagada conserva el importe que se pagó.
       const yaPagada = original?.status === "Pagado";
       if (!yaPagada) {
-        rest.importe = montoParcialidad(padrePPD, "importe", pct, editId);
+        rest.importe = montoParcialidad(padrePPD, "importe", pct, editId, form.num_parcialidad);
         CAMPOS_DESGLOSE.forEach((c) => {
-          if (padrePPD[c] !== null && padrePPD[c] !== undefined && padrePPD[c] !== "") rest[c] = montoParcialidad(padrePPD, c, pct, editId);
+          if (padrePPD[c] !== null && padrePPD[c] !== undefined && padrePPD[c] !== "") rest[c] = montoParcialidad(padrePPD, c, pct, editId, form.num_parcialidad);
         });
       }
     }
@@ -9947,7 +9957,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
        actual de la compra. Se recalcula al abrirla por si la compra cambió.
        Una ya pagada conserva lo que se pagó. */
     const padreH = esParcialidad(t) ? padreDe(t) : null;
-    if (padreH && t.status !== "Pagado") limpio.importe = montoParcialidad(padreH, "importe", t.pct_pago, t.id);
+    if (padreH && t.status !== "Pagado") limpio.importe = montoParcialidad(padreH, "importe", t.pct_pago, t.id, t.num_parcialidad);
     setForm(limpio);
     setEditId(t.id);
     setNotaPrivada(notaActual(t.id)?.nota || "");
@@ -10942,7 +10952,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   onChange={(e) => {
                     const padre = padreDe(form);
                     const pct = e.target.value;
-                    setForm({ ...form, pct_pago: pct, importe: padre ? montoParcialidad(padre, "importe", pct, editId) : form.importe });
+                    setForm({ ...form, pct_pago: pct, importe: padre ? montoParcialidad(padre, "importe", pct, editId, form.num_parcialidad) : form.importe });
                   }} required />
               </Field>
             )}

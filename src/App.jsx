@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.73.0";
+const APP_VERSION = "2.73.2";
 const CHANGELOG = [
+  { v: "2.73.2", desc: "SPP: los esquemas fiscales de persona fisica empiezan con la clave de regimen del SAT -- 612 Personas Fisicas con Actividades Empresariales y Profesionales, 626 RESICO -- para que no se confundan; los montos no cambian." },
+  { v: "2.73.1", desc: "SPP: nuevos esquemas fiscales del Regimen de las Personas Fisicas con Actividades Empresariales y Profesionales (612): servicios profesionales -- ISR 10% y 2/3 del IVA -- y venta de bienes -- sin retenciones --. El esquema que retenia ISR 1.25% se llama ahora Persona fisica RESICO, que es el regimen al que corresponde esa tasa; sus montos no cambian." },
   { v: "2.73.0", desc: "SPP de parcialidades PPD: el boton de Solicitud de Pago aparece en cada parcialidad, y la solicitud se arma sobre el TOTAL de la compra con el % de la parcialidad (fijo); lo que se paga es exactamente el importe de la parcialidad. El desglose confirmado se guarda completo en la compra -- las siguientes parcialidades lo reutilizan -- y en la parcialidad solo su parte; ya no se le escribe pct 50 ni tipo Anticipo, que le cambiaban el % y activaban el seguimiento de anticipos. Las parcialidades quedan fuera de ese seguimiento. El conector de la parcialidad ya no se va a otro renglon." },
   { v: "2.72.2", desc: "Transacciones: una parcialidad que pasa el filtro trae a su compra PPD como encabezado aunque la compra no lo pase (p. ej. compra de junio con parcialidad en octubre); esa compra suma solo lo de sus parcialidades visibles, con la leyenda lo visible, para no meter en los totales dinero fuera del filtro. Antes la parcialidad salia suelta, sin su compra. Ademas la compra y sus parcialidades se leen como un bloque: barra de color a la izquierda, parcialidades con fondo tintado, conector y separacion punteada entre ellas; la compra contraida conserva la barra tenue." },
   { v: "2.72.1", desc: "Transacciones agrupadas: una compra PPD aparece en cada grupo donde caen sus parcialidades -- p. ej. agrupando por dia de pago, el 20 con su P1 y el 22 con su P2 --, y en cada uno solo con las de ese grupo. Ahi la compra muestra lo que se paga en el grupo, con la leyenda de su total, para que los totales de grupo no repitan dinero; lo que aun no tiene parcialidad queda en el grupo de la propia compra como por asignar. Editar o cancelar desde cualquiera de esas filas actua sobre la compra real. El folio de una parcialidad ya no se parte en dos renglones." },
@@ -2484,9 +2486,17 @@ function detectarDesviaciones(registros, reportado) {
  * Calcularlas mal en un documento que va a Pagos es peor que preguntarlas.
  */
 const ESQUEMAS_FISCALES = [
-  { id: "pf_servicios", label: "Persona física — servicios profesionales",
+  /* El id pf_servicios se conserva (es el esquema por omisión), pero su 1.25 %
+     de ISR es el de RESICO (art. 113-J LISR): así se llama ahora. */
+  { id: "pf_servicios", label: "626 · Régimen Simplificado de Confianza (RESICO) — persona física",
     iva: 0.16, retIsr: 0.0125, retIvaSobreIva: 2 / 3,
-    nota: "IVA 16%, ISR 1.25%, retención de 2/3 del IVA" },
+    nota: "Régimen Simplificado de Confianza (626): IVA 16%, ISR 1.25%, retención de 2/3 del IVA" },
+  { id: "pf_612_profesionales", label: "612 · Personas Físicas con Actividades Empresariales y Profesionales — servicios profesionales",
+    iva: 0.16, retIsr: 0.10, retIvaSobreIva: 2 / 3,
+    nota: "Régimen 612, honorarios a persona moral: IVA 16%, ISR 10% (art. 106 LISR), retención de 2/3 del IVA" },
+  { id: "pf_612_empresarial", label: "612 · Personas Físicas con Actividades Empresariales y Profesionales — venta de bienes",
+    iva: 0.16, retIsr: 0, retIvaSobreIva: 0,
+    nota: "Régimen 612, actividad empresarial (enajenación de bienes): IVA 16%, sin retenciones" },
   { id: "pf_arrendamiento", label: "Persona física — arrendamiento",
     iva: 0.16, retIsr: 0.10, retIvaSobreIva: 2 / 3,
     nota: "IVA 16%, ISR 10%, retención de 2/3 del IVA" },

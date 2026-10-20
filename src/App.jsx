@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.74.1";
+const APP_VERSION = "2.74.2";
 const CHANGELOG = [
+  { v: "2.74.2", desc: "Parcialidades PPD: el importe se muestra como Importe (calculado), deshabilitado, y se recalcula al abrir la parcialidad con su % sobre el total actual de la compra; antes mostraba el importe guardado aunque la compra hubiera cambiado. Una parcialidad ya pagada conserva el importe que se pago." },
   { v: "2.74.1", desc: "SPP: el desglose fiscal parte del total de la factura -- en una parcialidad, el de la compra, fijo -- y el regimen del proveedor deduce el subtotal; ya no se pide el subtotal como dato. Se lee de arriba abajo como la factura: Subtotal, Descuento (si hay), IVA, IVA retenido e ISR retenido (si aplican), Total, % de la parcialidad y Pago de la parcialidad. En captura manual cada renglon se edita." },
   { v: "2.74.0", desc: "Compras PPD: el boton de SPP sale solo en las parcialidades, nunca en la compra (antes salia si la compra tenia Tipo de pago Anticipo), y la compra queda fuera del seguimiento de anticipos. La SPP de una parcialidad calcula lo que se paga como total de la compra x % de la parcialidad -- la que cierra el 100 % toma el saldo --; si la parcialidad tenia registrado otro importe, avisa y al generar lo corrige (si no esta pagada). El desglose guardado de la compra solo se reutiliza si corresponde a su total actual. Cambiar el total de una compra recalcula sus parcialidades no pagadas con su mismo %; las pagadas no se tocan y se avisa si ya no cuadran." },
   { v: "2.73.2", desc: "SPP: los esquemas fiscales de persona fisica empiezan con la clave de regimen del SAT -- 612 Personas Fisicas con Actividades Empresariales y Profesionales, 626 RESICO -- para que no se confundan; los montos no cambian." },
@@ -9890,10 +9891,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       rest.proveedor_id = padrePPD.proveedor_id || null;
       rest.proveedor = padrePPD.proveedor;
       rest.unidad_detectada = padrePPD.unidad_detectada || rest.unidad_detectada;
-      rest.importe = montoParcialidad(padrePPD, "importe", pct, editId);
-      CAMPOS_DESGLOSE.forEach((c) => {
-        if (padrePPD[c] !== null && padrePPD[c] !== undefined && padrePPD[c] !== "") rest[c] = montoParcialidad(padrePPD, c, pct, editId);
-      });
+      // Una parcialidad ya pagada conserva el importe que se pagó.
+      const yaPagada = original?.status === "Pagado";
+      if (!yaPagada) {
+        rest.importe = montoParcialidad(padrePPD, "importe", pct, editId);
+        CAMPOS_DESGLOSE.forEach((c) => {
+          if (padrePPD[c] !== null && padrePPD[c] !== undefined && padrePPD[c] !== "") rest[c] = montoParcialidad(padrePPD, c, pct, editId);
+        });
+      }
     }
     setSaving(true);
     try {
@@ -9938,6 +9943,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     // Quita campos internos (_proyecto, _rubro, _mes, _vinculo) que se agregan
     // solo para el agrupamiento — no existen como columnas reales en Supabase.
     const limpio = Object.fromEntries(Object.entries(t).filter(([k]) => !k.startsWith("_")));
+    /* El importe de una parcialidad no se captura: es el % sobre el total
+       actual de la compra. Se recalcula al abrirla por si la compra cambió.
+       Una ya pagada conserva lo que se pagó. */
+    const padreH = esParcialidad(t) ? padreDe(t) : null;
+    if (padreH && t.status !== "Pagado") limpio.importe = montoParcialidad(padreH, "importe", t.pct_pago, t.id);
     setForm(limpio);
     setEditId(t.id);
     setNotaPrivada(notaActual(t.id)?.nota || "");
@@ -10936,9 +10946,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   }} required />
               </Field>
             )}
-            <Field label="Importe">
-              <TextInput type="number" step="0.01" value={form.importe} readOnly={esParcialidad(form)}
-                title={esParcialidad(form) ? "Sale del % de la compra" : undefined}
+            <Field label={esParcialidad(form) ? "Importe (calculado)" : "Importe"}>
+              <TextInput type="number" step="0.01" value={form.importe} disabled={esParcialidad(form)}
+                title={esParcialidad(form)
+                  ? (form.status === "Pagado" && editId && transUnidad.find((x) => x.id === editId)?.status === "Pagado"
+                      ? "Ya pagada: conserva el importe que se pagó"
+                      : "% de la parcialidad × total de la compra; se recalcula al cambiar el %")
+                  : undefined}
                 onChange={(e) => setForm({ ...form, importe: e.target.value })} placeholder="0.00" />
             </Field>
             <Field label="Categoría del gasto">

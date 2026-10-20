@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.72.2";
+const APP_VERSION = "2.73.0";
 const CHANGELOG = [
+  { v: "2.73.0", desc: "SPP de parcialidades PPD: el boton de Solicitud de Pago aparece en cada parcialidad, y la solicitud se arma sobre el TOTAL de la compra con el % de la parcialidad (fijo); lo que se paga es exactamente el importe de la parcialidad. El desglose confirmado se guarda completo en la compra -- las siguientes parcialidades lo reutilizan -- y en la parcialidad solo su parte; ya no se le escribe pct 50 ni tipo Anticipo, que le cambiaban el % y activaban el seguimiento de anticipos. Las parcialidades quedan fuera de ese seguimiento. El conector de la parcialidad ya no se va a otro renglon." },
   { v: "2.72.2", desc: "Transacciones: una parcialidad que pasa el filtro trae a su compra PPD como encabezado aunque la compra no lo pase (p. ej. compra de junio con parcialidad en octubre); esa compra suma solo lo de sus parcialidades visibles, con la leyenda lo visible, para no meter en los totales dinero fuera del filtro. Antes la parcialidad salia suelta, sin su compra. Ademas la compra y sus parcialidades se leen como un bloque: barra de color a la izquierda, parcialidades con fondo tintado, conector y separacion punteada entre ellas; la compra contraida conserva la barra tenue." },
   { v: "2.72.1", desc: "Transacciones agrupadas: una compra PPD aparece en cada grupo donde caen sus parcialidades -- p. ej. agrupando por dia de pago, el 20 con su P1 y el 22 con su P2 --, y en cada uno solo con las de ese grupo. Ahi la compra muestra lo que se paga en el grupo, con la leyenda de su total, para que los totales de grupo no repitan dinero; lo que aun no tiene parcialidad queda en el grupo de la propia compra como por asignar. Editar o cancelar desde cualquiera de esas filas actua sobre la compra real. El folio de una parcialidad ya no se parte en dos renglones." },
   { v: "2.72.0", desc: "Transacciones: las parcialidades de una compra PPD se muestran anidadas bajo ella, un nivel adentro y con fondo propio, y se contraen o expanden con el boton junto a su folio (por omision expandidas, porque ahi estan los pagos pendientes). Si la compra queda fuera del filtro, su parcialidad sale suelta para no perderla. El total del encabezado, los totales de grupo y la paginacion cuentan solo el primer nivel: antes sumaban la compra y sus parcialidades, el mismo dinero dos veces." },
@@ -2556,7 +2557,8 @@ const TIPOS_PAGO = ["Pago Total", "Anticipo", "Finiquito"];
    Urgente cuando el mes del pago ya cerró sin CFDI: se pierden la deducción
    y el IVA acreditable de ese mes. */
 function seguimientoAnticipo(t, adj) {
-  if (!esAnticipo(t) || t.status !== "Pagado" || t.cancelada_en) return null;
+  // Una parcialidad PPD no es anticipo: su factura existe desde la compra.
+  if (!esAnticipo(t) || esParcialidad(t) || t.status !== "Pagado" || t.cancelada_en) return null;
   const pago = String(t.fecha_pago || t.dia || "").slice(0, 10);
   const dias = pago ? Math.max(0, Math.floor((Date.now() - new Date(`${pago}T12:00:00`).getTime()) / 86400000)) : null;
   const hoy = new Date();
@@ -5893,8 +5895,17 @@ function generarPdfSPP(r) {
  * es exacto si el importe correspondía justo a ese esquema. Presentarlo como
  * un hecho invitaría a firmar un documento con cifras que nadie revisó.
  */
-function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosUnidad, proveedoresApi, cuentasApi, transaccionesApi, session }) {
+function SolicitudPagoModal({ transaccion, padre = null, onClose, unidad, partidas, proyectosUnidad, proveedoresApi, cuentasApi, transaccionesApi, session }) {
   const t = transaccion;
+  /* Parcialidad de una compra PPD: la SPP se arma sobre el TOTAL de la compra
+     y paga el % de la parcialidad, igual que un anticipo sobre el total. La
+     base del desglose es entonces el padre; si una SPP anterior ya confirmó
+     su desglose, se reutiliza para que todas las parcialidades cuadren. */
+  const base = padre || t;
+  const desgloseGuardado = padre && Number(padre.subtotal) > 0
+    ? { subtotal: r2(padre.subtotal), iva: r2(padre.iva), ret_isr: r2(padre.ret_isr), ret_iva: r2(padre.ret_iva),
+        descuento: r2(padre.descuento) }
+    : null;
   const partida = partidas.find((p) => p.id === t.partida_id);
   const proveedor = proveedoresApi.rows.find((p) => p.id === t.proveedor_id);
   const cuenta = cuentasApi.rows.find((c) => c.id === t.cuenta_id)
@@ -5935,15 +5946,16 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
     return () => { vivo = false; };
   }, [unidad]);
 
-  const [esquema, setEsquema] = useState("pf_servicios");
-  const [pctPago, setPctPago] = useState(50);
+  const [esquema, setEsquema] = useState(desgloseGuardado ? "manual" : "pf_servicios");
+  const [pctPago, setPctPago] = useState(padre ? Number(t.pct_pago) || 0 : 50);
   const [guardando, setGuardando] = useState(false);
   const [formato, setFormato] = useState("pdf");
 
   // El subtotal se deduce del importe pagado, que es lo único que la
   // transacción guarda hoy.
   const [d, setD] = useState(() => {
-    const sub = subtotalDesdeTotal(t.importe, "pf_servicios");
+    if (desgloseGuardado) return desgloseGuardado;
+    const sub = subtotalDesdeTotal(base.importe, "pf_servicios");
     return { ...calcularDesglose(sub, "pf_servicios"), descuento: 0 };
   });
   const recalcular = (esq, sub) => {
@@ -5958,12 +5970,15 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
     responsable: cfgCia?.spp_responsable || "",
     solicitante: t.solicitante || session?.user?.email?.split("@")[0] || "",
     lugar_adquisicion: cfgCia?.spp_lugar_adquisicion || "Queretaro",
-    tipo_pago: "Anticipo",
+    tipo_pago: padre ? `Parcialidad ${t.num_parcialidad}` : "Anticipo",
     condicion_pago: "TRANSFERENCIA",
     concepto: t.concepto_detallado || "",
     descripcion: t.concepto_detallado || "",
     cantidad: 1,
-    observaciones: "",
+    observaciones: padre
+      ? `Parcialidad P${t.num_parcialidad}: ${Number(t.pct_pago) || 0}% de la compra ${padre.folio_transaccion || ""} ` +
+        `por ${money(padre.importe, padre.moneda)}${padre.folio_factura ? `, factura ${padre.folio_factura}` : ""}.`
+      : "",
     // Faltaba aquí: el campo ya existía en el formulario (editable), pero
     // nunca se llenaba con el dato real de la transacción al abrir.
     referencia_pago: t.referencia_pago || "",
@@ -5971,7 +5986,17 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
   });
 
   const total = totalDesglose(d);
-  const aPagar = r2(total * (Number(pctPago) || 0) / 100);
+  /* Si el desglose confirma el total de la compra, lo que se paga es
+     exactamente el importe de la parcialidad (la que cierra el 100 % absorbe
+     los centavos); recalcular total × % podría diferir por redondeo. */
+  const aPagar = padre ? r2(t.importe) : r2(total * (Number(pctPago) || 0) / 100);
+  /* Lo que se paga es lo que la parcialidad dice: es lo que va a Pagos. Si
+     no corresponde al % del total de la compra (p. ej. el total cambió
+     después de crearla) se avisa, en vez de imprimir dos cifras que no
+     cuadran sin decir nada. Un peso de tolerancia por los centavos de la
+     parcialidad que cierra el 100 %. */
+  const esperadoPorPct = padre ? r2((Number(base.importe) || 0) * (Number(pctPago) || 0) / 100) : 0;
+  const pctNoCuadra = padre && Math.abs(esperadoPorPct - aPagar) > 1;
   const num = (v) => (Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
   const faltantes = [];
@@ -6034,12 +6059,28 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
       try {
         // El desglose confirmado se guarda también en la transacción: es el
         // dato que faltaba para saber de qué se compone el importe.
-        await transaccionesApi.update(t.id, {
-          subtotal: d.subtotal, iva: d.iva, ret_isr: d.ret_isr, ret_iva: d.ret_iva,
-          descuento: Number(d.descuento) || 0, pct_pago: Number(pctPago) || 0,
-          tipo_pago: f.tipo_pago, condicion_pago: f.condicion_pago,
-          observaciones_spp: f.observaciones,
-        });
+        if (padre) {
+          /* La parcialidad guarda SU parte del desglose; su % y su tipo de
+             pago no se tocan (el % es el de la parcialidad, y "Anticipo"
+             activaría el seguimiento de anticipos). El desglose completo
+             queda en la compra para que las siguientes SPP lo reutilicen. */
+          const pct = (Number(t.pct_pago) || 0) / 100;
+          await transaccionesApi.update(t.id, {
+            subtotal: r2(d.subtotal * pct), iva: r2(d.iva * pct), ret_isr: r2(d.ret_isr * pct),
+            ret_iva: r2(d.ret_iva * pct), descuento: r2((Number(d.descuento) || 0) * pct),
+            condicion_pago: f.condicion_pago, observaciones_spp: f.observaciones,
+          });
+          const nuevo = { subtotal: r2(d.subtotal), iva: r2(d.iva), ret_isr: r2(d.ret_isr), ret_iva: r2(d.ret_iva),
+                          descuento: r2(Number(d.descuento) || 0) };
+          if (Object.keys(nuevo).some((k) => r2(padre[k]) !== nuevo[k])) await transaccionesApi.update(padre.id, nuevo);
+        } else {
+          await transaccionesApi.update(t.id, {
+            subtotal: d.subtotal, iva: d.iva, ret_isr: d.ret_isr, ret_iva: d.ret_iva,
+            descuento: Number(d.descuento) || 0, pct_pago: Number(pctPago) || 0,
+            tipo_pago: f.tipo_pago, condicion_pago: f.condicion_pago,
+            observaciones_spp: f.observaciones,
+          });
+        }
       } catch { /* el documento es lo que importa; el desglose se puede recapturar */ }
 
       if (formato === "pdf") generarPdfSPP(reg);
@@ -6060,8 +6101,20 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
 
   return (
     <Modal title={`Solicitud de Pago a Proveedores — ${unidad}`}
-      subtitle="Revisa cada cifra antes de generar: el desglose fiscal se deduce del importe pagado y solo es exacto si corresponde al esquema elegido"
+      subtitle={padre
+        ? `Parcialidad P${t.num_parcialidad} de la compra ${padre.folio_transaccion || ""}: el total es el de la compra y se paga el ${Number(t.pct_pago) || 0}%. ` +
+          (desgloseGuardado ? "El desglose es el que ya se confirmó en una SPP anterior de esta compra." : "Revisa el desglose: se deduce del total de la compra.")
+        : "Revisa cada cifra antes de generar: el desglose fiscal se deduce del importe pagado y solo es exacto si corresponde al esquema elegido"}
       onClose={onClose} width={900} cerrarAlHacerClicFuera={false}>
+      {pctNoCuadra && (
+        <div style={{ borderLeft: `3px solid ${T.red}`, background: "#C0483F0D", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 14, lineHeight: 1.5 }}>
+          <b>El importe de la parcialidad no corresponde a su %.</b>{" "}
+          El {Number(pctPago) || 0}% de {money(base.importe, base.moneda)} es {money(esperadoPorPct, base.moneda)}, pero la
+          parcialidad es de {money(aPagar, base.moneda)} ({fmtPct((aPagar / (Number(base.importe) || 1)) * 100)} real).
+          Probablemente el total de la compra cambió después de crearla. Corrige el % o el importe de la parcialidad antes de
+          generar: la solicitud imprimiría un porcentaje que no cuadra con lo que se paga.
+        </div>
+      )}
       {faltantes.length > 0 && (
         <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 14 }}>
           <b>La solicitud va a salir incompleta</b>
@@ -6094,7 +6147,7 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
             <Select value={esquema} onChange={(e) => {
               const esq = e.target.value;
               setEsquema(esq);
-              if (esq !== "manual") recalcular(esq, subtotalDesdeTotal(t.importe, esq));
+              if (esq !== "manual") recalcular(esq, subtotalDesdeTotal(base.importe, esq));
             }}>
               {ESQUEMAS_FISCALES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
             </Select>
@@ -6108,7 +6161,9 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
                 if (esquema !== "manual") recalcular(esquema, v); }} />
           </Field>
           <Field label="% que se paga">
-            <TextInput type="number" value={pctPago} onChange={(e) => setPctPago(e.target.value)} />
+            <TextInput type="number" value={pctPago} disabled={!!padre}
+              title={padre ? "Es el % de la parcialidad; se cambia en la parcialidad misma" : undefined}
+              onChange={(e) => setPctPago(e.target.value)} />
           </Field>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
@@ -6132,11 +6187,11 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
           <div><span style={{ fontSize: 11, color: T.textFaint }}>A PAGAR {pctPago}%</span>
             <div style={{ fontFamily: T.fontMono, fontSize: 15, fontWeight: 700, color: T.teal }}>${num(aPagar)}</div></div>
           {/* El contraste con lo capturado revela si el desglose cuadra. */}
-          <div><span style={{ fontSize: 11, color: T.textFaint }}>IMPORTE DE LA TRANSACCIÓN</span>
+          <div><span style={{ fontSize: 11, color: T.textFaint }}>{padre ? "IMPORTE DE LA COMPRA" : "IMPORTE DE LA TRANSACCIÓN"}</span>
             <div style={{ fontFamily: T.fontMono, fontSize: 15,
-              color: Math.abs(total - (Number(t.importe) || 0)) < 1 ? T.textDim : T.amber }}>
-              ${num(t.importe)}
-              {Math.abs(total - (Number(t.importe) || 0)) >= 1 &&
+              color: Math.abs(total - (Number(base.importe) || 0)) < 1 ? T.textDim : T.amber }}>
+              ${num(base.importe)}
+              {Math.abs(total - (Number(base.importe) || 0)) >= 1 &&
                 <span style={{ fontSize: 11 }}> · no coincide</span>}
             </div></div>
         </div>
@@ -6146,7 +6201,8 @@ function SolicitudPagoModal({ transaccion, onClose, unidad, partidas, proyectosU
                     display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
         <Field label="Tipo de pago">
           <Select value={f.tipo_pago} onChange={(e) => setF({ ...f, tipo_pago: e.target.value })}>
-            {["Anticipo", "Pago Total", "Finiquito"].map((x) => <option key={x}>{x}</option>)}
+            {[...(padre ? [`Parcialidad ${t.num_parcialidad}`] : []), "Anticipo", "Pago Total", "Finiquito"]
+              .map((x) => <option key={x}>{x}</option>)}
           </Select>
         </Field>
         <Field label="Condición de pago">
@@ -9200,15 +9256,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 {contraida ? `▸ ${nHijas}` : "▾"}
               </button>
             )}
-            <span style={{ color: T.accent, fontWeight: 600, whiteSpace: "nowrap" }}>{t.folio_transaccion || "—"}</span>
+            <span style={{ color: T.accent, fontWeight: 600, whiteSpace: "nowrap" }}>
+              {esParcialidad(t) && padreDe(t) && <span style={{ fontFamily: T.fontMono, fontWeight: 700, marginRight: 5 }}>└</span>}
+              {t.folio_transaccion || "—"}
+            </span>
             {ppd && (
               <span title={`Compra PPD en parcialidades\n${ppd.hijas.length} parcialidad(es) · ${fmtPct(ppd.pctAsignado)} asignado\n` +
                            `Pagado: ${money(ppd.pagado, t.moneda)} · Saldo: ${money(ppd.saldo, t.moneda)}`}>
                 <Pill tone={ppd.pctPagado >= 100 ? "teal" : "accent"}>PPD {fmtPct(ppd.pctPagado)}</Pill>
               </span>
-            )}
-            {esParcialidad(t) && padreDe(t) && (
-              <span style={{ order: -1, color: T.accent, fontFamily: T.fontMono, fontWeight: 700, marginRight: -2 }}>└</span>
             )}
             {esParcialidad(t) && (
               <span title={`Parcialidad ${t.num_parcialidad} de la compra PPD ${padreDe(t)?.folio_transaccion || ""} (${fmtPct(t.pct_pago)})`}>
@@ -9642,7 +9698,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           {/* La SPP solo aplica a anticipos, y el marcador vive en Folio SAE.
               Mostrar el botón en todas invitaría a generar solicitudes de
               pagos que no las necesitan. */}
-          {esAnticipo(t) && (
+          {(esAnticipo(t) || esParcialidad(t)) && (
             <IconButton icon="§" label="Generar Solicitud de Pago" tone={T.teal} onClick={() => setSppDe(t)} />
           )}
           <IconButton icon="✎" label="Editar" tone={T.accent} onClick={() => startEdit(t)} />
@@ -10617,6 +10673,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       {sppDe && (
         <SolicitudPagoModal
           transaccion={sppDe}
+          padre={padreDe(sppDe)}
           onClose={() => setSppDe(null)}
           unidad={unidad}
           partidas={partidasUnidad}

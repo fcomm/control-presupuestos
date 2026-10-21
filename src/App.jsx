@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.74.3";
+const APP_VERSION = "2.75.0";
 const CHANGELOG = [
+  { v: "2.75.0", desc: "Compras PPD: la compra tiene status Parcial cuando ya hay parcialidades pagadas pero no cubren el 100 %, y Pagado cuando lo cubren (requiere 65-ppd-status-parcial.sql); su Fecha de pago es la del ultimo pago hecho. Parcial se muestra con su propio color y, al pasar el cursor, el % pagado." },
   { v: "2.74.3", desc: "Parcialidades PPD: corregido el calculo del monto. Cualquier parcialidad que llevara la suma al 100 % se trataba como la que cierra y tomaba total menos lo GUARDADO en las demas (P1 80 % de 648,204.40 salia 414,850.15 en vez de 518,563.52). Ahora solo la ultima -- la de numero mas alto -- toma lo que falta, calculado contra lo que las demas deben valer por su %, y las ya pagadas cuentan con lo pagado. Una sola funcion para el formulario, la SPP y el recalculo al cambiar el total de la compra." },
   { v: "2.74.2", desc: "Parcialidades PPD: el importe se muestra como Importe (calculado), deshabilitado, y se recalcula al abrir la parcialidad con su % sobre el total actual de la compra; antes mostraba el importe guardado aunque la compra hubiera cambiado. Una parcialidad ya pagada conserva el importe que se pago." },
   { v: "2.74.1", desc: "SPP: el desglose fiscal parte del total de la factura -- en una parcialidad, el de la compra, fijo -- y el regimen del proveedor deduce el subtotal; ya no se pide el subtotal como dato. Se lee de arriba abajo como la factura: Subtotal, Descuento (si hay), IVA, IVA retenido e ISR retenido (si aplican), Total, % de la parcialidad y Pago de la parcialidad. En captura manual cada renglon se edita." },
@@ -9434,7 +9435,12 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       ) : <ImporteConEquivalente t={t} serie={tiposCambio} />) },
     { key: "status", label: "Status", render: (t) => (
       <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
-        {t.status ? <Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status}</Pill> : "—"}
+        {t.status ? (
+          <span title={t.status === "Parcial" && esPadrePPD(t)
+            ? `Compra PPD con pagos parciales: ${fmtPct(resumenPPD(t._ppdOriginal || t).pctPagado)} pagado` : undefined}>
+            <Pill tone={t.status === "Pagado" ? "teal" : t.status === "Parcial" ? "accent" : "amber"}>{t.status}</Pill>
+          </span>
+        ) : "—"}
         <PillAnticipo seg={seguimientoAnticipo(t, adjDe(t))} />
       </span>
     ) },
@@ -11051,7 +11057,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             {form.es_padre ? (
               <Field label="Status">
                 <div style={{ fontSize: 12, color: T.textDim, paddingTop: 7, lineHeight: 1.4 }}>
-                  {form.status === "Pagado" ? "Pagada (100 %)" : "Lo calculan sus parcialidades"}
+                  {form.status === "Pagado" ? "Pagada (100 %)"
+                    : form.status === "Parcial" ? "Parcial: hay parcialidades pagadas"
+                    : "Sin pagos aún"} · lo calculan sus parcialidades
                 </div>
               </Field>
             ) : (
@@ -21535,4 +21543,4 @@ export default function App() {
     </div>
     </TipoCambioContext.Provider>
   );
-}
+}

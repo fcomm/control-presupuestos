@@ -322,8 +322,11 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.75.0";
+const APP_VERSION = "2.76.0";
 const CHANGELOG = [
+  { v: "2.76.0", desc: "Transacciones, compras PPD: nueva presentacion. Color propio (violeta) en lugar de la barra azul, que ya significa USD. La compra muestra bajo su total una barra de avance con Pagado y Saldo, y en el ID la etiqueta PPD con cuantas parcialidades tiene. Las parcialidades son filas compactas colgadas de un arbol en la columna # que solo muestran lo que cambia por pago (dia, importe, status, fecha, adjuntos, acciones); lo heredado de la compra -- proveedor, proyecto, zona, area, partida, categoria, SMI -- va vacio, y el concepto dice Parcialidad n de N y su %." },
+  { v: "2.75.2", desc: "Tipo de pago: nueva opcion Parcialidad, tambien en la edicion masiva. Las parcialidades nuevas de una compra PPD nacen con ese tipo de pago." },
+  { v: "2.75.1", desc: "Compras PPD: en el formulario de la compra se deshabilitan Folio Compra SAE, Referencia de Pago y Tipo de pago -- son datos de cada pago y van en sus parcialidades -- y al guardar la compra quedan vacios." },
   { v: "2.75.0", desc: "Compras PPD: la compra tiene status Parcial cuando ya hay parcialidades pagadas pero no cubren el 100 %, y Pagado cuando lo cubren (requiere 65-ppd-status-parcial.sql); su Fecha de pago es la del ultimo pago hecho. Parcial se muestra con su propio color y, al pasar el cursor, el % pagado." },
   { v: "2.74.3", desc: "Parcialidades PPD: corregido el calculo del monto. Cualquier parcialidad que llevara la suma al 100 % se trataba como la que cierra y tomaba total menos lo GUARDADO en las demas (P1 80 % de 648,204.40 salia 414,850.15 en vez de 518,563.52). Ahora solo la ultima -- la de numero mas alto -- toma lo que falta, calculado contra lo que las demas deben valer por su %, y las ya pagadas cuentan con lo pagado. Una sola funcion para el formulario, la SPP y el recalculo al cambiar el total de la compra." },
   { v: "2.74.2", desc: "Parcialidades PPD: el importe se muestra como Importe (calculado), deshabilitado, y se recalcula al abrir la parcialidad con su % sobre el total actual de la compra; antes mostraba el importe guardado aunque la compra hubiera cambiado. Una parcialidad ya pagada conserva el importe que se pago." },
@@ -984,6 +987,12 @@ function equivalenteMXN(t, serie) {
    barra en el borde izquierdo. Solo con el "USD" chico al final de la cifra
    se confundían con las de pesos. */
 const FONDO_USD = "#EEF4FB";
+/* Compras PPD: color propio para no confundirse con el azul de USD. */
+const COLOR_PPD = "#6E56A0";
+const FONDO_PPD = "#F6F3FB";
+/* Columnas que una parcialidad hereda de su compra: en la lista van vacías. */
+const COLUMNAS_HEREDADAS_PPD = new Set(["smi", "folio", "partida", "proveedor", "id_sae_proveedor", "proyecto",
+  "zona", "area", "categoria"]);
 const estiloFilaUSD = (moneda) => monedaNorm(moneda) === "USD"
   ? { background: FONDO_USD, boxShadow: `inset 3px 0 0 ${T.accent}` } : undefined;
 const EtiquetaUSD = () => (
@@ -2581,7 +2590,7 @@ function esAnticipo(t) {
   return t?.tipo_pago === "Anticipo" || /ANTICIP/i.test(String(t?.folio_compra_sae || ""));
 }
 
-const TIPOS_PAGO = ["Pago Total", "Anticipo", "Finiquito"];
+const TIPOS_PAGO = ["Pago Total", "Anticipo", "Finiquito", "Parcialidad"];
 
 /* Seguimiento de la factura de un anticipo pagado. Cuenta el XML y no el
    PDF: el XML es el comprobante fiscal. null si no aplica (no es anticipo,
@@ -9086,6 +9095,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       concepto_detallado: padre.concepto_detallado || "", moneda: padre.moneda || "MXP",
       folio_compra_sae: padre.folio_compra_sae || "", folio_factura: padre.folio_factura || "",
       forma_pago: padre.forma_pago || "03", metodo_pago: padre.metodo_pago || "PPD",
+      tipo_pago: "Parcialidad",
       transaccion_padre_id: padre.id, num_parcialidad: r.siguienteNum, pct_pago: r.pctPorAsignar,
       importe: montoParcialidad(padre, "importe", r.pctPorAsignar, null, r.siguienteNum),
     });
@@ -9346,18 +9356,21 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               </button>
             )}
             <span style={{ color: T.accent, fontWeight: 600, whiteSpace: "nowrap" }}>
-              {esParcialidad(t) && padreDe(t) && <span style={{ fontFamily: T.fontMono, fontWeight: 700, marginRight: 5 }}>└</span>}
               {t.folio_transaccion || "—"}
             </span>
             {ppd && (
               <span title={`Compra PPD en parcialidades\n${ppd.hijas.length} parcialidad(es) · ${fmtPct(ppd.pctAsignado)} asignado\n` +
-                           `Pagado: ${money(ppd.pagado, t.moneda)} · Saldo: ${money(ppd.saldo, t.moneda)}`}>
-                <Pill tone={ppd.pctPagado >= 100 ? "teal" : "accent"}>PPD {fmtPct(ppd.pctPagado)}</Pill>
+                           `Pagado: ${money(ppd.pagado, t.moneda)} · Saldo: ${money(ppd.saldo, t.moneda)}`}
+                style={{ fontSize: 10.5, fontFamily: T.fontMono, color: COLOR_PPD, border: `1px solid ${COLOR_PPD}66`,
+                         background: FONDO_PPD, borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap" }}>
+                PPD · {ppd.hijas.length} parc.
               </span>
             )}
             {esParcialidad(t) && (
               <span title={`Parcialidad ${t.num_parcialidad} de la compra PPD ${padreDe(t)?.folio_transaccion || ""} (${fmtPct(t.pct_pago)})`}>
-                <Pill tone="dim">P{t.num_parcialidad} · {fmtPct(t.pct_pago)}</Pill>
+                <span style={{ fontSize: 10.5, fontFamily: T.fontMono, color: COLOR_PPD, whiteSpace: "nowrap" }}>
+                  P{t.num_parcialidad} · {fmtPct(t.pct_pago)}
+                </span>
               </span>
             )}
           </span>
@@ -9432,7 +9445,22 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             {t._ppdPorAsignar ? "por asignar · " : t._ppdContexto ? "lo visible · " : ""}de {money(t._ppdTotal, t.moneda)}
           </div>
         </span>
-      ) : <ImporteConEquivalente t={t} serie={tiposCambio} />) },
+      ) : esPadrePPD(t) ? (() => {
+        const r = resumenPPD(t);
+        const pct = Math.max(0, Math.min(100, r.pctPagado));
+        return (
+          <span>
+            <ImporteConEquivalente t={t} serie={tiposCambio} />
+            <div title={`Pagado ${fmtPct(r.pctPagado)} de la compra`}
+              style={{ height: 5, background: `${COLOR_PPD}22`, borderRadius: 3, margin: "4px 0 2px", maxWidth: 150, overflow: "hidden" }}>
+              <div style={{ width: `${pct}%`, height: "100%", background: pct >= 100 ? T.teal : COLOR_PPD }} />
+            </div>
+            <div style={{ fontSize: 10.5, color: T.textFaint, whiteSpace: "nowrap" }}>
+              Pagado {money(r.pagado, t.moneda)} · Saldo {money(r.saldo, t.moneda)}
+            </div>
+          </span>
+        );
+      })() : <ImporteConEquivalente t={t} serie={tiposCambio} />) },
     { key: "status", label: "Status", render: (t) => (
       <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
         {t.status ? (
@@ -9755,10 +9783,12 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 
   /* Una compra PPD lleva debajo sus parcialidades, un nivel adentro y sin
      número propio: el # cuenta filas de primer nivel. */
-  /* La compra y sus parcialidades se leen como un bloque: una barra de color
-     a la izquierda las une, y las parcialidades van con fondo tintado, con
-     sangría y con el conector └ antes del folio. La compra sin parcialidades
-     a la vista (o contraída) lleva la barra más tenue. */
+  /* La compra y sus parcialidades se leen como un bloque, con su propio
+     color (violeta): el azul de la izquierda ya significa "USD". Las
+     parcialidades son filas compactas colgadas de un árbol (├ └) que solo
+     muestran lo que cambia por pago (día, importe, status, fecha, adjuntos,
+     acciones); lo que heredan de la compra va vacío, para que no parezcan
+     transacciones sueltas. */
   const renderRowTr = (v, depth = 0, n) => {
     const hijas = esPadrePPD(v) ? (v._ppdHijas ?? hijasVisibles[v.id] ?? []) : [];
     const abierta = hijas.length > 0 && !ppdContraidas.has(v._ppdKey || v.id);
@@ -9769,25 +9799,36 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const renderFilaTr = (v, depth, n, rolPPD) => {
     const t = v._ppdOriginal || v;
     const esHija = rolPPD === "hija" || rolPPD === "hija-ultima";
-    const barra = rolPPD === "padre" || esHija ? `inset 4px 0 0 ${T.accent}`
-      : rolPPD === "padre-cerrado" ? `inset 4px 0 0 ${T.accent}55` : undefined;
-    const fondo = esHija ? { background: T.accentBg } : rolPPD === "padre" ? { background: `${T.accent}0D` } : {};
-    const separacion = esHija && rolPPD !== "hija-ultima" ? { borderBottom: `1px dashed ${T.accent}44` } : {};
+    const celdaHija = esHija ? { background: FONDO_PPD, paddingTop: 5, paddingBottom: 5 } : {};
+    const separacion = esHija && rolPPD !== "hija-ultima" ? { borderBottom: `1px dashed ${COLOR_PPD}33` } : {};
+    const padreAbierto = rolPPD === "padre" ? { borderBottom: `1px solid ${COLOR_PPD}55` } : {};
+    const celda = { ...tdStyle, ...celdaHija, ...separacion, ...padreAbierto };
+    const padreH = esHija ? padreDe(t) : null;
+    const nActivas = padreH ? hijasDe(padreH).filter((h) => !estaCancelada(h)).length : 0;
     return (
-    <tr key={v._ppdKey || v.id} style={{ ...estiloFilaUSD(t.moneda), ...fondo,
+    <tr key={v._ppdKey || v.id} style={{ ...(esHija ? {} : estiloFilaUSD(t.moneda)),
                             ...(estaCancelada(t) ? { opacity: 0.5 } : {}) }}
       title={estaCancelada(t) ? `Cancelada: ${t.motivo_cancelacion || ""}` : undefined}>
-      <td style={{ ...tdStyle, ...separacion, width: 36, textAlign: "right", color: esHija ? T.accent : T.textFaint,
-                   fontFamily: T.fontMono, fontSize: 11, boxShadow: barra }}>
-        {esHija ? "↳" : n}
+      <td style={{ ...celda, width: 36, textAlign: esHija ? "center" : "right", fontFamily: T.fontMono,
+                   color: esHija ? COLOR_PPD : T.textFaint, fontSize: esHija ? 15 : 11, lineHeight: 1,
+                   ...(esHija && estiloFilaUSD(t.moneda) ? { boxShadow: estiloFilaUSD(t.moneda).boxShadow } : {}) }}>
+        {esHija ? (rolPPD === "hija-ultima" ? "└" : "├") : n}
       </td>
-      <td style={{ ...tdStyle, ...separacion, textAlign: "center" }}>
+      <td style={{ ...celda, textAlign: "center" }}>
         <input type="checkbox" checked={seleccionadas.has(t.id)} onChange={() => toggleSeleccion(t.id)} />
       </td>
       {columnasVisibles.map((c, i) => (
-        <td key={c.key} style={{ ...tdStyle, ...separacion, ...(i === 0 && depth ? { paddingLeft: 14 + depth * 26 } : {}) }}>{c.render(v)}</td>
+        <td key={c.key} style={{ ...celda, ...(i === 0 && depth ? { paddingLeft: 10 + depth * 14 } : {}) }}>
+          {!esHija ? c.render(v)
+            : COLUMNAS_HEREDADAS_PPD.has(c.key) ? null
+            : c.key === "concepto_detallado" ? (
+              <span style={{ fontSize: 12, color: COLOR_PPD }}>
+                Parcialidad {t.num_parcialidad}{nActivas ? ` de ${nActivas}` : ""} · {fmtPct(t.pct_pago)}
+              </span>
+            ) : c.render(v)}
+        </td>
       ))}
-      <td style={{ ...tdStyle, ...separacion }}>
+      <td style={celda}>
         <div style={{ display: "flex", gap: 4 }}>
           {/* La SPP solo aplica a anticipos, y el marcador vive en Folio SAE.
               Mostrar el botón en todas invitaría a generar solicitudes de
@@ -9898,6 +9939,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     if (rest.es_padre) {
       delete rest.status; delete rest.fecha_pago;
       rest.tipo_cambio = null;
+      // Datos de cada pago: en la compra quedan vacíos (van en las parcialidades).
+      rest.folio_compra_sae = "";
+      rest.referencia_pago = "";
+      rest.tipo_pago = "";
     }
     if (padrePPD) {
       const pct = Number(form.pct_pago);
@@ -10931,8 +10976,12 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <Field label="Concepto de pago (detallado)" style={{ gridColumn: "span 2" }}>
               <TextInput value={form.concepto_detallado} onChange={(e) => setForm({ ...form, concepto_detallado: e.target.value })} />
             </Field>
+            {/* En una compra PPD estos datos son de cada pago, no de la compra:
+                van en sus parcialidades. */}
             <Field label="Folio Compra SAE">
-              <TextInput value={form.folio_compra_sae} onChange={(e) => setForm({ ...form, folio_compra_sae: e.target.value })} />
+              <TextInput value={form.es_padre ? "" : form.folio_compra_sae} disabled={!!form.es_padre}
+                placeholder={form.es_padre ? "Va en cada parcialidad" : undefined}
+                onChange={(e) => setForm({ ...form, folio_compra_sae: e.target.value })} />
             </Field>
             <Field label="Folio Factura">
               <TextInput value={form.folio_factura} onChange={(e) => setForm({ ...form, folio_factura: e.target.value })} />
@@ -10950,7 +10999,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               </Select>
             </Field>
             <Field label="Referencia de Pago">
-              <TextInput value={form.referencia_pago} onChange={(e) => setForm({ ...form, referencia_pago: e.target.value })} placeholder="Folio SPEI, cheque, etc." />
+              <TextInput value={form.es_padre ? "" : form.referencia_pago} disabled={!!form.es_padre}
+                onChange={(e) => setForm({ ...form, referencia_pago: e.target.value })}
+                placeholder={form.es_padre ? "Va en cada parcialidad" : "Folio SPEI, cheque, etc."} />
             </Field>
             {esParcialidad(form) && (
               <Field label="% de la compra">
@@ -11029,8 +11080,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <Field label="Tipo de pago">
               {/* Anticipo implica seguimiento de su factura: al pagarse sin
                   Factura XML en el expediente, se marca en la tabla. */}
-              <Select value={form.tipo_pago || ""} onChange={(e) => setForm({ ...form, tipo_pago: e.target.value })}>
-                <option value="">— Sin especificar —</option>
+              <Select value={form.es_padre ? "" : form.tipo_pago || ""} disabled={!!form.es_padre}
+                title={form.es_padre ? "Va en cada parcialidad" : undefined}
+                onChange={(e) => setForm({ ...form, tipo_pago: e.target.value })}>
+                <option value="">{form.es_padre ? "— Va en cada parcialidad —" : "— Sin especificar —"}</option>
                 {TIPOS_PAGO.map((x) => <option key={x}>{x}</option>)}
               </Select>
             </Field>
@@ -21543,4 +21596,4 @@ export default function App() {
     </div>
     </TipoCambioContext.Provider>
   );
-}
+}

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.76.0";
+const APP_VERSION = "2.76.1";
 const CHANGELOG = [
+  { v: "2.76.1", desc: "Reportes semanales a Direccion (Enviar a Direccion oficial y Reportes a Direccion): la semana va de lunes a viernes. Lo programado en sabado o domingo no se reporta." },
   { v: "2.76.0", desc: "Transacciones, compras PPD: nueva presentacion. Color propio (violeta) en lugar de la barra azul, que ya significa USD. La compra muestra bajo su total una barra de avance con Pagado y Saldo, y en el ID la etiqueta PPD con cuantas parcialidades tiene. Las parcialidades son filas compactas colgadas de un arbol en la columna # que solo muestran lo que cambia por pago (dia, importe, status, fecha, adjuntos, acciones); lo heredado de la compra -- proveedor, proyecto, zona, area, partida, categoria, SMI -- va vacio, y el concepto dice Parcialidad n de N y su %." },
   { v: "2.75.2", desc: "Tipo de pago: nueva opcion Parcialidad, tambien en la edicion masiva. Las parcialidades nuevas de una compra PPD nacen con ese tipo de pago." },
   { v: "2.75.1", desc: "Compras PPD: en el formulario de la compra se deshabilitan Folio Compra SAE, Referencia de Pago y Tipo de pago -- son datos de cada pago y van en sus parcialidades -- y al guardar la compra quedan vacios." },
@@ -9621,7 +9622,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [versionesSem, setVersionesSem] = useState([]);
   const [oficialSem, setOficialSem] = useState(false);
   const [recargaSem, setRecargaSem] = useState(0);
-  const finSemanaOf = (() => { const d = new Date(`${semanaOf}T12:00:00`); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); })();
+  /* La semana que se reporta a Dirección es de lunes a viernes: lo
+     programado en sábado o domingo no se reporta (decisión de negocio). */
+  const finSemanaOf = (() => { const d = new Date(`${semanaOf}T12:00:00`); d.setDate(d.getDate() + 4); return d.toISOString().slice(0, 10); })();
   const periodoSem = `Semana ${semanaOf}`;
 
   useEffect(() => {
@@ -13965,7 +13968,8 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
   }));
 
   // --- Transacciones de la semana elegida ---
-  const finSemana = (() => { const d = new Date(`${semanaRep}T12:00:00`); d.setDate(d.getDate() + 6); return d.toISOString().slice(0, 10); })();
+  // Lunes a viernes: lo programado en fin de semana no se reporta a Dirección.
+  const finSemana = (() => { const d = new Date(`${semanaRep}T12:00:00`); d.setDate(d.getDate() + 4); return d.toISOString().slice(0, 10); })();
   // Se reportan pagos: de una compra PPD van sus parcialidades, no el padre.
   const transSemana = transUnidad.filter((t) => t.dia && t.dia >= semanaRep && t.dia <= finSemana && !esPadrePPD(t));
   const filasTrans = transSemana.map((t) => {

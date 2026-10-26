@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.77.0";
+const APP_VERSION = "2.77.1";
 const CHANGELOG = [
+  { v: "2.77.1", desc: "Transacciones, compras PPD en acordeon: un clic en la fila de la compra muestra u oculta sus parcialidades, y un clic en cualquier otra transaccion la cierra; solo una compra abierta a la vez. Los clics en la casilla, botones, adjuntos y ligas no cuentan. La etiqueta PPD · n parc. lleva la flecha y tambien sirve de boton; el boton suelto de expandir se quito." },
   { v: "2.77.0", desc: "Transacciones, parcialidades PPD: las columnas generales de la parcialidad (de ID hasta antes de Importe) se unen en una sola celda con sangria amplia, con su folio, Parcialidad n de N y %, y debajo el pago programado, folio SAE y tipo de pago. Importe, status, fechas, adjuntos y acciones siguen alineados con los de la compra." },
   { v: "2.76.1", desc: "Reportes semanales a Direccion (Enviar a Direccion oficial y Reportes a Direccion): la semana va de lunes a viernes. Lo programado en sabado o domingo no se reporta." },
   { v: "2.76.0", desc: "Transacciones, compras PPD: nueva presentacion. Color propio (violeta) en lugar de la barra azul, que ya significa USD. La compra muestra bajo su total una barra de avance con Pagado y Saldo, y en el ID la etiqueta PPD con cuantas parcialidades tiene. Las parcialidades son filas compactas colgadas de un arbol en la columna # que solo muestran lo que cambia por pago (dia, importe, status, fecha, adjuntos, acciones); lo heredado de la compra -- proveedor, proyecto, zona, area, partida, categoria, SMI -- va vacio, y el concepto dice Parcialidad n de N y su %." },
@@ -9020,14 +9021,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const adjDe = (t) => resumenAdj.get(t.id) || null;
 
   const partidaDe = (t) => partidasUnidad.find((p) => p.id === t.partida_id);
-  /* Compras PPD cuyas parcialidades están contraídas en la lista. Por omisión
-     se ven: ahí están los pagos pendientes, no conviene esconderlos. */
-  const [ppdContraidas, setPpdContraidas] = useState(() => new Set());
-  const togglePPD = (id) => setPpdContraidas((prev) => {
-    const s = new Set(prev);
-    if (s.has(id)) s.delete(id); else s.add(id);
-    return s;
-  });
+  /* Compras PPD en acordeón: solo una muestra sus parcialidades a la vez. Un
+     clic en la fila de la compra la abre o la cierra; un clic en cualquier
+     otra transacción (que no sea una de sus parcialidades) la cierra. */
+  const [ppdAbierta, setPpdAbierta] = useState(null);
+  const togglePPD = (clave) => setPpdAbierta((prev) => (prev === clave ? null : clave));
+  // Los clics en controles de la fila (casilla, botones, ligas…) no cuentan.
+  const clicEnControl = (e) => !!e.target.closest("button, a, input, select, textarea, label, [role='button']");
 
   /* Compras PPD. Las hijas se buscan con canceladas incluidas: el número
      P<n> de una cancelada no se reutiliza, porque su folio ya existe. */
@@ -9350,27 +9350,23 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         const ppd = esPadrePPD(t) ? resumenPPD(t._ppdOriginal || t) : null;
         const nHijas = ppd ? (t._ppdHijas ?? hijasVisibles[t.id] ?? []).length : 0;
         const claveColapso = t._ppdKey || t.id;
-        const contraida = ppdContraidas.has(claveColapso);
+        const contraida = ppdAbierta !== claveColapso;
         return (
           <span style={{ display: "inline-flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-            {nHijas > 0 && (
-              <button type="button" onClick={() => togglePPD(claveColapso)}
-                title={contraida ? `Mostrar sus ${nHijas} parcialidad(es)` : "Ocultar sus parcialidades"}
-                style={{ background: "transparent", border: `1px solid ${T.border}`, borderRadius: 4, cursor: "pointer",
-                         color: T.textDim, fontSize: 10, lineHeight: 1, padding: "3px 5px", fontFamily: T.fontMono }}>
-                {contraida ? `▸ ${nHijas}` : "▾"}
-              </button>
-            )}
             <span style={{ color: T.accent, fontWeight: 600, whiteSpace: "nowrap" }}>
               {t.folio_transaccion || "—"}
             </span>
             {ppd && (
-              <span title={`Compra PPD en parcialidades\n${ppd.hijas.length} parcialidad(es) · ${fmtPct(ppd.pctAsignado)} asignado\n` +
-                           `Pagado: ${money(ppd.pagado, t.moneda)} · Saldo: ${money(ppd.saldo, t.moneda)}`}
+              <button type="button" disabled={!nHijas}
+                onClick={() => togglePPD(claveColapso)}
+                title={`Compra PPD en parcialidades\n${ppd.hijas.length} parcialidad(es) · ${fmtPct(ppd.pctAsignado)} asignado\n` +
+                       `Pagado: ${money(ppd.pagado, t.moneda)} · Saldo: ${money(ppd.saldo, t.moneda)}` +
+                       (nHijas ? `\n\nClic para ${contraida ? "ver" : "ocultar"} sus parcialidades` : "")}
                 style={{ fontSize: 10.5, fontFamily: T.fontMono, color: COLOR_PPD, border: `1px solid ${COLOR_PPD}66`,
-                         background: FONDO_PPD, borderRadius: 999, padding: "2px 8px", whiteSpace: "nowrap" }}>
-                PPD · {ppd.hijas.length} parc.
-              </span>
+                         background: contraida ? FONDO_PPD : `${COLOR_PPD}22`, borderRadius: 999, padding: "2px 8px",
+                         whiteSpace: "nowrap", cursor: nHijas ? "pointer" : "default" }}>
+                PPD · {ppd.hijas.length} parc.{nHijas ? (contraida ? " ▸" : " ▾") : ""}
+              </button>
             )}
             {esParcialidad(t) && (
               <span title={`Parcialidad ${t.num_parcialidad} de la compra PPD ${padreDe(t)?.folio_transaccion || ""} (${fmtPct(t.pct_pago)})`}>
@@ -9799,7 +9795,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
      transacciones sueltas. */
   const renderRowTr = (v, depth = 0, n) => {
     const hijas = esPadrePPD(v) ? (v._ppdHijas ?? hijasVisibles[v.id] ?? []) : [];
-    const abierta = hijas.length > 0 && !ppdContraidas.has(v._ppdKey || v.id);
+    const abierta = hijas.length > 0 && ppdAbierta === (v._ppdKey || v.id);
     const fila = renderFilaTr(v, depth, n, esPadrePPD(v) ? (abierta ? "padre" : "padre-cerrado") : null);
     if (!abierta) return fila;
     return [fila, ...hijas.map((h, i) => renderFilaTr(h, depth + 1, "", i === hijas.length - 1 ? "hija-ultima" : "hija"))];
@@ -9815,8 +9811,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     const nActivas = padreH ? hijasDe(padreH).filter((h) => !estaCancelada(h)).length : 0;
     return (
     <tr key={v._ppdKey || v.id} style={{ ...(esHija ? {} : estiloFilaUSD(t.moneda)),
-                            ...(estaCancelada(t) ? { opacity: 0.5 } : {}) }}
-      title={estaCancelada(t) ? `Cancelada: ${t.motivo_cancelacion || ""}` : undefined}>
+                            ...(estaCancelada(t) ? { opacity: 0.5 } : {}),
+                            ...(rolPPD === "padre" || rolPPD === "padre-cerrado" ? { cursor: "pointer" } : {}) }}
+      onClick={(e) => {
+        if (clicEnControl(e) || esHija) return;
+        if (rolPPD === "padre" || rolPPD === "padre-cerrado") togglePPD(v._ppdKey || v.id);
+        else if (ppdAbierta) setPpdAbierta(null);
+      }}
+      title={estaCancelada(t) ? `Cancelada: ${t.motivo_cancelacion || ""}`
+        : rolPPD === "padre-cerrado" ? "Clic para ver sus parcialidades"
+        : rolPPD === "padre" ? "Clic para ocultar sus parcialidades" : undefined}>
       <td style={{ ...celda, width: 36, textAlign: esHija ? "center" : "right", fontFamily: T.fontMono,
                    color: esHija ? COLOR_PPD : T.textFaint, fontSize: esHija ? 15 : 11, lineHeight: 1,
                    ...(esHija && estiloFilaUSD(t.moneda) ? { boxShadow: estiloFilaUSD(t.moneda).boxShadow } : {}) }}>

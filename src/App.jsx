@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.76.1";
+const APP_VERSION = "2.77.0";
 const CHANGELOG = [
+  { v: "2.77.0", desc: "Transacciones, parcialidades PPD: las columnas generales de la parcialidad (de ID hasta antes de Importe) se unen en una sola celda con sangria amplia, con su folio, Parcialidad n de N y %, y debajo el pago programado, folio SAE y tipo de pago. Importe, status, fechas, adjuntos y acciones siguen alineados con los de la compra." },
   { v: "2.76.1", desc: "Reportes semanales a Direccion (Enviar a Direccion oficial y Reportes a Direccion): la semana va de lunes a viernes. Lo programado en sabado o domingo no se reporta." },
   { v: "2.76.0", desc: "Transacciones, compras PPD: nueva presentacion. Color propio (violeta) en lugar de la barra azul, que ya significa USD. La compra muestra bajo su total una barra de avance con Pagado y Saldo, y en el ID la etiqueta PPD con cuantas parcialidades tiene. Las parcialidades son filas compactas colgadas de un arbol en la columna # que solo muestran lo que cambia por pago (dia, importe, status, fecha, adjuntos, acciones); lo heredado de la compra -- proveedor, proyecto, zona, area, partida, categoria, SMI -- va vacio, y el concepto dice Parcialidad n de N y su %." },
   { v: "2.75.2", desc: "Tipo de pago: nueva opcion Parcialidad, tambien en la edicion masiva. Las parcialidades nuevas de una compra PPD nacen con ese tipo de pago." },
@@ -994,6 +995,10 @@ const FONDO_PPD = "#F6F3FB";
 /* Columnas que una parcialidad hereda de su compra: en la lista van vacías. */
 const COLUMNAS_HEREDADAS_PPD = new Set(["smi", "folio", "partida", "proveedor", "id_sae_proveedor", "proyecto",
   "zona", "area", "categoria"]);
+/* Columnas propias de cada pago: en una parcialidad se muestran en su lugar;
+   lo que va antes de la primera de ellas se une en una sola celda. */
+const COLUMNAS_DEL_PAGO = new Set(["importe", "status", "fecha_pago", "enviado_pagos_at", "reportado_at",
+  "adjuntos", "updated_at"]);
 const estiloFilaUSD = (moneda) => monedaNorm(moneda) === "USD"
   ? { background: FONDO_USD, boxShadow: `inset 3px 0 0 ${T.accent}` } : undefined;
 const EtiquetaUSD = () => (
@@ -9820,17 +9825,37 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       <td style={{ ...celda, textAlign: "center" }}>
         <input type="checkbox" checked={seleccionadas.has(t.id)} onChange={() => toggleSeleccion(t.id)} />
       </td>
-      {columnasVisibles.map((c, i) => (
-        <td key={c.key} style={{ ...celda, ...(i === 0 && depth ? { paddingLeft: 10 + depth * 14 } : {}) }}>
-          {!esHija ? c.render(v)
-            : COLUMNAS_HEREDADAS_PPD.has(c.key) ? null
-            : c.key === "concepto_detallado" ? (
-              <span style={{ fontSize: 12, color: COLOR_PPD }}>
-                Parcialidad {t.num_parcialidad}{nActivas ? ` de ${nActivas}` : ""} · {fmtPct(t.pct_pago)}
-              </span>
-            ) : c.render(v)}
-        </td>
-      ))}
+      {!esHija ? columnasVisibles.map((c) => (
+        <td key={c.key} style={celda}>{c.render(v)}</td>
+      )) : (() => {
+        /* Parcialidad: el tramo inicial de columnas generales (hasta la
+           primera columna propia del pago) se une en UNA celda, con sangría
+           amplia: ahí va su identificación. Las columnas del pago (importe,
+           status, fechas, adjuntos) siguen alineadas con las de la compra. */
+        const iPago = columnasVisibles.findIndex((c) => COLUMNAS_DEL_PAGO.has(c.key));
+        const tramo = iPago < 0 ? columnasVisibles.length : iPago;
+        const resto = columnasVisibles.slice(tramo);
+        return [
+          tramo > 0 && (
+            <td key="__parcialidad" colSpan={tramo} style={{ ...celda, paddingLeft: 56 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 10, flexWrap: "wrap" }}>
+                <span style={{ color: T.accent, fontWeight: 600, whiteSpace: "nowrap" }}>{t.folio_transaccion || `P${t.num_parcialidad} (borrador)`}</span>
+                <span style={{ fontSize: 12.5, color: COLOR_PPD, fontWeight: 600 }}>
+                  Parcialidad {t.num_parcialidad}{nActivas ? ` de ${nActivas}` : ""} · {fmtPct(t.pct_pago)}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>
+                Pago programado {t.dia || "—"}
+                {t.folio_compra_sae ? ` · Folio SAE ${t.folio_compra_sae}` : ""}
+                {t.tipo_pago ? ` · ${t.tipo_pago}` : ""}
+              </div>
+            </td>
+          ),
+          ...resto.map((c) => (
+            <td key={c.key} style={celda}>{COLUMNAS_HEREDADAS_PPD.has(c.key) ? null : c.render(v)}</td>
+          )),
+        ];
+      })()}
       <td style={celda}>
         <div style={{ display: "flex", gap: 4 }}>
           {/* La SPP solo aplica a anticipos, y el marcador vive en Folio SAE.

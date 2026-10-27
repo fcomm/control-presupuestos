@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.79.0";
+const APP_VERSION = "2.79.1";
 const CHANGELOG = [
+  { v: "2.79.1", desc: "Reporte semanal a Direccion: de una compra PPD va solo la parcialidad que se paga, no la compra padre, que se leia como un segundo pago del mismo concepto. Aplica al enviar, al volver a descargar versiones que ya la llevaban (y en la version contra la que se compara, para que no salga como retirada) y en Seguimiento de pagos. Una parcialidad aun sin folio sale con el que le corresponde, <padre>-P<n>." },
   { v: "2.79.0", desc: "Reporte semanal a Direccion: se elige contra que version comparar. En Reportes a Direccion > Versiones enviadas, Comparar version X contra Y (por ejemplo la 4 contra la 2) descarga el PDF y el Excel de X con lo nuevo respecto a Y primero y resaltado. Al enviar desde Transacciones, Resaltar lo nuevo respecto a permite elegir la base (por omision la ultima enviada) o enviar sin comparar. En Seguimiento de pagos, Nuevas respecto a cambia la base de la tarjeta y las etiquetas. Un clic en vN sigue comparando contra la inmediata anterior." },
   { v: "2.78.0", desc: "Reporte semanal a Direccion: cada revision se compara contra la anterior de la misma semana. El PDF y el Excel abren con un bloque aparte, en verde, con lo NUEVO (lo que no venia en la revision anterior) y su total; debajo, en ambar, lo que cambio de importe, moneda o dia (antes y ahora), y en gris lo retirado. Despues va el reporte completo de la semana con lo nuevo y lo cambiado marcados en una columna propia. Al enviar, la confirmacion ya dice cuantas nuevas, con cambio y retiradas lleva. Re-descargar una version la reconstruye con su comparacion. En Seguimiento de pagos, tarjeta Nuevas vs vN para filtrar, y etiqueta Nueva / Cambio en cada fila. La v1 sale como siempre." },
   { v: "2.77.1", desc: "Transacciones, compras PPD en acordeon: un clic en la fila de la compra muestra u oculta sus parcialidades, y un clic en cualquier otra transaccion la cierra; solo una compra abierta a la vez. Los clics en la casilla, botones, adjuntos y ligas no cuentan. La etiqueta PPD · n parc. lleva la flecha y tambien sirve de boton; el boton suelto de expandir se quito." },
@@ -2259,6 +2260,16 @@ async function detalleRevisionAnteriorSemanal(compania, periodo, antesDe = null,
   if (e2) throw new Error(`al leer el detalle de la revisión ${cab[0].version}: ${e2.message}`);
   return { version: cab[0].version, filas: data || [] };
 }
+
+/* En el reporte semanal va el PAGO: de una compra PPD, sus parcialidades, no
+   la compra padre. Con ambas, Dirección ve dos renglones del mismo concepto y
+   los toma por dos pagos distintos. Se aplica también a versiones ya
+   enviadas que la llevaban, y a la base de comparación para que no salga
+   como "retirada". */
+const quitarPadresPPD = (filas, transacciones) => {
+  const padres = new Set(transacciones.filter(esPadrePPD).map((t) => String(t.id)));
+  return padres.size ? filas.filter((f) => !padres.has(String(f.origen_id))) : filas;
+};
 
 const totPorMonedaSem = (lista) => {
   const r = {};
@@ -9849,15 +9860,19 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   }, [unidad, periodoSem, recargaSem]);
 
   // Todas las de la semana, sin filtros.
-  const transDeLaSemana = transUnidad.filter((t) => !estaCancelada(t) && t.dia && t.dia >= semanaOf && t.dia <= finSemanaOf);
+  const transDeLaSemana = transUnidad.filter((t) => !estaCancelada(t) && !esPadrePPD(t) && t.dia && t.dia >= semanaOf && t.dia <= finSemanaOf);
 
   const enviarSemanalADireccion = async () => {
     if (!transDeLaSemana.length) { alert(`No hay transacciones del ${semanaOf} al ${finSemanaOf}.`); return; }
     const v = versionesSem.length + 1;
     const filas = transDeLaSemana.map((t) => {
         const p = partidas.find((x) => x.id === t.partida_id);
+        /* Una parcialidad sin folio todavía (borrador) lleva el que le
+           corresponde, <padre>-P<n>: en blanco se confundía con la compra. */
+        const padre = esParcialidad(t) ? transacciones.find((x) => x.id === t.transaccion_padre_id) : null;
+        const folio = t.folio_transaccion || (padre?.folio_transaccion ? `${padre.folio_transaccion}-P${t.num_parcialidad}` : "");
         return {
-          origen_id: t.id, folio: t.folio_transaccion || "", area: t.area || "Sin área",
+          origen_id: t.id, folio, area: t.area || "Sin área",
           categoria: t.categoria || "", rubro: p?.rubro || "", proyecto: t.proyecto || p?.proyecto || "",
           zona: t.zona || "", concepto: t.concepto_detallado || "", proveedor: t.proveedor || "",
           solicitante: t.solicitante || "", importe: Number(t.importe) || 0,
@@ -9870,7 +9885,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     try {
       const prev = baseSem === "0" ? null
         : await detalleRevisionAnteriorSemanal(unidad, periodoSem, null, baseSem ? Number(baseSem) : null);
-      if (prev) comparacion = compararVersionSemanal(filas, prev.filas, prev.version);
+      if (prev) comparacion = compararVersionSemanal(filas, quitarPadresPPD(prev.filas, transacciones), prev.version);
     } catch (err) {
       alert("No se pudo leer la revisión anterior para comparar: " + (err.message || err)); return;
     }
@@ -13515,7 +13530,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
     if (!rep || !detalle || rep.version <= 1 || vs === "0") return;
     let vivo = true;
     detalleRevisionAnteriorSemanal(rep.compania, rep.periodo, rep.version, vs ? Number(vs) : null)
-      .then((prev) => { if (vivo && prev) setComp(compararVersionSemanal(detalle, prev.filas, prev.version)); })
+      .then((prev) => { if (vivo && prev) setComp(compararVersionSemanal(quitarPadresPPD(detalle, transacciones), quitarPadresPPD(prev.filas, transacciones), prev.version)); })
       .catch((e) => console.error("Comparación con revisión anterior:", e));
     return () => { vivo = false; };
   }, [rep?.id, detalle, vs]);
@@ -13535,7 +13550,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
   if (!rep) return null;
 
   const porId = new Map(transacciones.map((t) => [String(t.id), t]));
-  const filas = (detalle || []).map((d) => {
+  const filas = quitarPadresPPD(detalle || [], transacciones).map((d) => {
     const t = porId.get(String(d.origen_id)) || null;
     const importeHoy = t ? Number(t.importe) || 0 : null;
     return {
@@ -14332,18 +14347,19 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
   /* `base`: versión contra la cual comparar; sin ella, la inmediata
      anterior. "0" descarga sin comparación. */
   const descargarVersion = async (r, base = null) => {
-    const { data, error } = await supabase.from("reportes_oficiales_detalle")
+    let { data, error } = await supabase.from("reportes_oficiales_detalle")
       .select("*").eq("reporte_id", r.id);
     if (error) { alert("No se pudo recuperar: " + error.message); return; }
     /* Se reconstruye con el MISMO formato con que se envió: si el semanal
        saliera aquí con el formato del presupuesto, la copia no coincidiría
        con la que Dirección tiene, y el archivo dejaría de servir de evidencia. */
     if (r.tipo === "transacciones") {
+      data = quitarPadresPPD(data || [], transaccionesTodas);
       let comparacion = null;
       try {
         const prev = base === "0" ? null
           : await detalleRevisionAnteriorSemanal(r.compania, r.periodo, r.version, base ? Number(base) : null);
-        if (prev) comparacion = compararVersionSemanal(data || [], prev.filas, prev.version);
+        if (prev) comparacion = compararVersionSemanal(data || [], quitarPadresPPD(prev.filas, transaccionesTodas), prev.version);
       } catch (err) { alert("No se pudo leer la revisión anterior; se descarga sin comparar. " + (err.message || err)); }
       generarPdfSemanal({ compania: r.compania, periodoIni: r.periodo_ini, periodoFin: r.periodo_fin,
         version: r.version, filas: data || [], gruposZona, comparacion });

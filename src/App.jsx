@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.78.0";
+const APP_VERSION = "2.79.0";
 const CHANGELOG = [
+  { v: "2.79.0", desc: "Reporte semanal a Direccion: se elige contra que version comparar. En Reportes a Direccion > Versiones enviadas, Comparar version X contra Y (por ejemplo la 4 contra la 2) descarga el PDF y el Excel de X con lo nuevo respecto a Y primero y resaltado. Al enviar desde Transacciones, Resaltar lo nuevo respecto a permite elegir la base (por omision la ultima enviada) o enviar sin comparar. En Seguimiento de pagos, Nuevas respecto a cambia la base de la tarjeta y las etiquetas. Un clic en vN sigue comparando contra la inmediata anterior." },
   { v: "2.78.0", desc: "Reporte semanal a Direccion: cada revision se compara contra la anterior de la misma semana. El PDF y el Excel abren con un bloque aparte, en verde, con lo NUEVO (lo que no venia en la revision anterior) y su total; debajo, en ambar, lo que cambio de importe, moneda o dia (antes y ahora), y en gris lo retirado. Despues va el reporte completo de la semana con lo nuevo y lo cambiado marcados en una columna propia. Al enviar, la confirmacion ya dice cuantas nuevas, con cambio y retiradas lleva. Re-descargar una version la reconstruye con su comparacion. En Seguimiento de pagos, tarjeta Nuevas vs vN para filtrar, y etiqueta Nueva / Cambio en cada fila. La v1 sale como siempre." },
   { v: "2.77.1", desc: "Transacciones, compras PPD en acordeon: un clic en la fila de la compra muestra u oculta sus parcialidades, y un clic en cualquier otra transaccion la cierra; solo una compra abierta a la vez. Los clics en la casilla, botones, adjuntos y ligas no cuentan. La etiqueta PPD · n parc. lleva la flecha y tambien sirve de boton; el boton suelto de expandir se quito." },
   { v: "2.77.0", desc: "Transacciones, parcialidades PPD: las columnas generales de la parcialidad (de ID hasta antes de Importe) se unen en una sola celda con sangria amplia, con su folio, Parcialidad n de N y %, y debajo el pago programado, folio SAE y tipo de pago. Importe, status, fechas, adjuntos y acciones siguen alineados con los de la compra." },
@@ -2243,12 +2244,14 @@ function compararVersionSemanal(actual, anterior, vsVersion) {
 }
 
 /* Detalle congelado de la revisión previa a `antesDe` (o de la última, si
-   no se indica). Devuelve null cuando no hay ninguna: la v1 no tiene contra
-   qué compararse. */
-async function detalleRevisionAnteriorSemanal(compania, periodo, antesDe = null) {
+   no se indica), o de la versión `exacta` cuando se elige a mano contra cuál
+   comparar (p. ej. la 4 contra la 2). Devuelve null cuando no hay ninguna:
+   la v1 no tiene contra qué compararse. */
+async function detalleRevisionAnteriorSemanal(compania, periodo, antesDe = null, exacta = null) {
   let q = supabase.from("reportes_oficiales").select("id, version")
     .eq("compania", compania).eq("tipo", "transacciones").eq("periodo", periodo);
-  if (antesDe) q = q.lt("version", antesDe);
+  if (exacta) q = q.eq("version", exacta);
+  else if (antesDe) q = q.lt("version", antesDe);
   const { data: cab, error } = await q.order("version", { ascending: false }).limit(1);
   if (error) throw new Error(`al leer la revisión anterior: ${error.message}`);
   if (!cab || !cab.length) return null;
@@ -9829,6 +9832,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [versionesSem, setVersionesSem] = useState([]);
   const [oficialSem, setOficialSem] = useState(false);
   const [recargaSem, setRecargaSem] = useState(0);
+  // Contra qué versión comparar al enviar: "" = la última enviada, "0" = sin comparar.
+  const [baseSem, setBaseSem] = useState("");
   /* La semana que se reporta a Dirección es de lunes a viernes: lo
      programado en sábado o domingo no se reporta (decisión de negocio). */
   const finSemanaOf = (() => { const d = new Date(`${semanaOf}T12:00:00`); d.setDate(d.getDate() + 4); return d.toISOString().slice(0, 10); })();
@@ -9863,7 +9868,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
        nuevo y se detecta a tiempo si falta o sobra algo. */
     let comparacion = null;
     try {
-      const prev = await detalleRevisionAnteriorSemanal(unidad, periodoSem);
+      const prev = baseSem === "0" ? null
+        : await detalleRevisionAnteriorSemanal(unidad, periodoSem, null, baseSem ? Number(baseSem) : null);
       if (prev) comparacion = compararVersionSemanal(filas, prev.filas, prev.version);
     } catch (err) {
       alert("No se pudo leer la revisión anterior para comparar: " + (err.message || err)); return;
@@ -11051,7 +11057,19 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 Del {semanaOf} al {finSemanaOf} · {transDeLaSemana.length} transacciones
                 {versionesSem.length ? ` · ${versionesSem.length} versión(es) enviada(s)` : " · sin enviar"}
               </div>
-              <div style={{ flex: 1 }} />
+              {versionesSem.length > 0 && (
+                <Field label="Resaltar lo nuevo respecto a">
+                  <Select value={versionesSem.some((r) => String(r.version) === baseSem) || baseSem === "0" ? baseSem : ""}
+                    onChange={(e) => setBaseSem(e.target.value)}>
+                    <option value="">La última enviada (v{Math.max(...versionesSem.map((r) => r.version))})</option>
+                    {[...versionesSem].sort((a, b) => b.version - a.version).slice(1).map((r) => (
+                      <option key={r.id} value={String(r.version)}>v{r.version} — {new Date(r.enviado_en).toLocaleDateString("es-MX")}</option>
+                    ))}
+                    <option value="0">Sin comparar</option>
+                  </Select>
+                </Field>
+              )}
+              <div style={{ flex: 1, minHeight: 8 }} />
               <Button onClick={enviarSemanalADireccion} disabled={oficialSem || !transDeLaSemana.length} style={{ width: "100%" }}>
                 {oficialSem ? "Enviando…" : `Enviar versión ${versionesSem.length + 1}`}
               </Button>
@@ -13486,17 +13504,21 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
   const [error, setError] = useState("");
   const [filtro, setFiltro] = useState("Todas");
   const [comp, setComp] = useState(null);
+  // "" = la inmediata anterior; "0" = sin comparar; o una versión elegida.
+  const [vsSel, setVsSel] = useState("");
+  const anteriores = rep ? ordenadas.filter((r) => r.version < rep.version) : [];
+  const vs = vsSel === "0" || anteriores.some((r) => String(r.version) === vsSel) ? vsSel : "";
 
-  // Contra la revisión anterior de la misma semana, para marcar lo nuevo.
+  // Contra la revisión elegida de la misma semana, para marcar lo nuevo.
   useEffect(() => {
     setComp(null);
-    if (!rep || !detalle || rep.version <= 1) return;
+    if (!rep || !detalle || rep.version <= 1 || vs === "0") return;
     let vivo = true;
-    detalleRevisionAnteriorSemanal(rep.compania, rep.periodo, rep.version)
+    detalleRevisionAnteriorSemanal(rep.compania, rep.periodo, rep.version, vs ? Number(vs) : null)
       .then((prev) => { if (vivo && prev) setComp(compararVersionSemanal(detalle, prev.filas, prev.version)); })
       .catch((e) => console.error("Comparación con revisión anterior:", e));
     return () => { vivo = false; };
-  }, [rep?.id, detalle]);
+  }, [rep?.id, detalle, vs]);
 
   useEffect(() => {
     if (!rep) { setDetalle(null); return; }
@@ -13666,6 +13688,14 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
             <Field label="Versión">
               <Select value={rep.id} onChange={(e) => setRepId(e.target.value)}>
                 {ordenadas.map((r) => <option key={r.id} value={r.id}>v{r.version} — {new Date(r.enviado_en).toLocaleDateString("es-MX")}</option>)}
+              </Select>
+            </Field>
+          )}
+          {anteriores.length > 0 && (
+            <Field label="Nuevas respecto a">
+              <Select value={vs} onChange={(e) => setVsSel(e.target.value)}>
+                {anteriores.map((r, i) => <option key={r.id} value={i === 0 ? "" : String(r.version)}>v{r.version}{i === 0 ? " (anterior)" : ""}</option>)}
+                <option value="0">Sin comparar</option>
               </Select>
             </Field>
           )}
@@ -14274,6 +14304,14 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
   const filas = esPresupuesto ? filasPresupuesto : filasTrans;
   const periodo = esPresupuesto ? `${mesRep} ${anioRep}` : `Semana ${semanaRep}`;
   const yaEnviados = reportes.filter((r) => r.tipo === (esPresupuesto ? "presupuesto" : "transacciones") && r.periodo === periodo);
+  /* Comparador libre entre dos versiones de la semana: por omisión la última
+     contra la anterior, pero se puede elegir cualquier par (la 4 contra la 2). */
+  const [cmpA, setCmpA] = useState("");
+  const [cmpB, setCmpB] = useState("");
+  const versOrd = yaEnviados.map((r) => r.version).sort((a, b) => b - a);
+  const verA = versOrd.includes(Number(cmpA)) ? Number(cmpA) : versOrd[0];
+  const opcB = versOrd.filter((v) => v < verA);
+  const verB = opcB.includes(Number(cmpB)) ? Number(cmpB) : opcB[0];
 
   const desviaciones = detectarDesviaciones(filas, reportado);
 
@@ -14291,7 +14329,9 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
     setRecarga((x) => x + 1);
   };
 
-  const descargarVersion = async (r) => {
+  /* `base`: versión contra la cual comparar; sin ella, la inmediata
+     anterior. "0" descarga sin comparación. */
+  const descargarVersion = async (r, base = null) => {
     const { data, error } = await supabase.from("reportes_oficiales_detalle")
       .select("*").eq("reporte_id", r.id);
     if (error) { alert("No se pudo recuperar: " + error.message); return; }
@@ -14301,7 +14341,8 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
     if (r.tipo === "transacciones") {
       let comparacion = null;
       try {
-        const prev = await detalleRevisionAnteriorSemanal(r.compania, r.periodo, r.version);
+        const prev = base === "0" ? null
+          : await detalleRevisionAnteriorSemanal(r.compania, r.periodo, r.version, base ? Number(base) : null);
         if (prev) comparacion = compararVersionSemanal(data || [], prev.filas, prev.version);
       } catch (err) { alert("No se pudo leer la revisión anterior; se descarga sin comparar. " + (err.message || err)); }
       generarPdfSemanal({ compania: r.compania, periodoIni: r.periodo_ini, periodoFin: r.periodo_fin,
@@ -14396,6 +14437,27 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
                 )}
               </span>
             ))}
+            {!esPresupuesto && versOrd.length > 1 && (
+              <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginTop: 14,
+                            paddingTop: 12, borderTop: `1px solid ${T.borderSoft}` }}>
+                <Field label="Comparar versión">
+                  <Select value={String(verA)} onChange={(e) => { setCmpA(e.target.value); setCmpB(""); }}>
+                    {versOrd.slice(0, -1).map((v) => <option key={v} value={String(v)}>v{v}</option>)}
+                  </Select>
+                </Field>
+                <Field label="Contra">
+                  <Select value={String(verB)} onChange={(e) => setCmpB(e.target.value)}>
+                    {opcB.map((v) => <option key={v} value={String(v)}>v{v}</option>)}
+                  </Select>
+                </Field>
+                <Button variant="ghost" onClick={() => descargarVersion(yaEnviados.find((r) => r.version === verA), String(verB))}>
+                  Descargar PDF y Excel
+                </Button>
+                <div style={{ fontSize: 11, color: T.textFaint, maxWidth: 360 }}>
+                  El reporte de la v{verA} con lo nuevo respecto a la v{verB} primero y resaltado.
+                </div>
+              </div>
+            )}
           </div>
         )}
       </Panel>

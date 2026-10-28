@@ -44,6 +44,7 @@ import os
 import sys
 import io as _io
 import mimetypes
+import re
 import base64
 from email.message import EmailMessage
 from datetime import datetime, timezone
@@ -356,59 +357,130 @@ def borrar_en_drive(drive, adj):
 # --------------------------------------------------------------------------
 # Correo
 # --------------------------------------------------------------------------
-def enviar_correo(gmail, para, asunto, cuerpo):
+def enviar_correo(gmail, para, asunto, cuerpo, adjuntos=()):
     """Texto plano a propósito: un acuse no necesita formato, y el texto llega
-       igual de bien a un cliente de correo viejo que a un teléfono."""
+       igual de bien a un cliente de correo viejo que a un teléfono.
+
+       `adjuntos` es una lista de (nombre, bytes, mime)."""
     msg = EmailMessage()
     msg["To"] = para
     msg["Subject"] = asunto
     if REMITENTE and REMITENTE != "me":
         msg["From"] = REMITENTE
     msg.set_content(cuerpo)
+    for nombre, contenido, mime in adjuntos:
+        principal, _, sub = (mime or "application/octet-stream").partition("/")
+        msg.add_attachment(contenido, maintype=principal, subtype=sub or "octet-stream",
+                           filename=nombre)
     gmail.users().messages().send(
         userId="me",
         body={"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}).execute()
 
 
-def acuses(gmail):
-    """Confirma la recepción a quien levantó una solicitud.
+# Cuánto se espera el PDF oficial antes de avisar que no llegó. El formulario
+# lo sube después de los demás archivos, así que unos minutos de diferencia
+# son normales; dos horas ya no.
+ESPERA_PDF_HORAS = 2
 
-       Solo las que ya tienen todos sus archivos en Drive: avisar antes
-       significaría que si alguien abre el expediente en ese momento, lo
-       encuentra a medias."""
+
+def adjuntos_de_solicitud(sid):
+    """Los de la solicitud y las specs de sus conceptos, sin los que se
+       quitaron. Las specs cuentan: también son archivos que el solicitante
+       mandó, y el acuse no debe salir mientras alguno siga en el búfer."""
+    propios = rest("GET", "adjuntos",
+                   params={"select": "id,nombre,categoria,estado,drive_file_id,mime",
+                           "entidad": "eq.solicitud", "entidad_id": f"eq.{sid}",
+                           "estado": "neq.por_borrar", "order": "subido_en.asc"}) or []
+    conceptos = rest("GET", "solicitud_conceptos",
+                     params={"select": "id", "solicitud_id": f"eq.{sid}"}) or []
+    specs = []
+    if conceptos:
+        ids = ",".join(c["id"] for c in conceptos)
+        specs = rest("GET", "adjuntos",
+                     params={"select": "id,nombre,categoria,estado,drive_file_id,mime",
+                             "entidad": "eq.solicitud_concepto", "entidad_id": f"in.({ids})",
+                             "estado": "neq.por_borrar", "order": "subido_en.asc"}) or []
+    return propios + specs
+
+
+def horas_desde(iso):
+    """PostgREST recorta los ceros finales de los microsegundos (".04676"), y
+       Python anterior a 3.11 solo acepta 3 o 6 dígitos. Se rellenan a 6."""
+    txt = str(iso).replace("Z", "+00:00")
+    txt = re.sub(r"\.(\d{1,6})", lambda m: "." + m.group(1).ljust(6, "0"), txt, count=1)
+    t = datetime.fromisoformat(txt)
+    return (datetime.now(timezone.utc) - t).total_seconds() / 3600
+
+
+def acuses(gmail, drive):
+    """Confirma la recepción a quien levantó una solicitud, con el PDF oficial
+       adjunto y la lista de lo que mandó.
+
+       Sale cuando todos sus archivos ya están en Drive Y el PDF oficial
+       también. El PDF es obligatorio: es el comprobante formal de lo que
+       pidió. Si no llega, el acuse espera, y pasado ESPERA_PDF_HORAS se avisa
+       una vez a ALERTA_CORREO para que alguien use "PDF al expediente".
+
+       Los archivos van por nombre, sin link: el expediente es solo de
+       Compras, y el solicitante ya los tiene porque él los subió."""
     pend = rest("GET", "solicitudes",
                 params={"select": "id,folio,unidad,correo_solicitante,nombre_solicitante,"
-                                  "descripcion_general,total,divisa,creado_en",
+                                  "descripcion_general,total,divisa,creado_en,acuse_alertado_en",
                         "acuse_enviado_en": "is.null",
                         "estado": "neq.cancelada",
                         "order": "creado_en.asc", "limit": "50"}) or []
     enviados = 0
     for s in pend:
-        sin_mover = rest("GET", "adjuntos",
-                         params={"select": "id", "entidad": "eq.solicitud",
-                                 "entidad_id": f"eq.{s['id']}",
-                                 "estado": "in.(en_transito,error)", "limit": "1"}) or []
-        if sin_mover:
-            continue
-
-        cuerpo = (
-            f"Hola {s.get('nombre_solicitante') or ''},\n\n"
-            f"Recibimos tu solicitud y quedó registrada con el folio {s['folio']}.\n\n"
-            f"  Qué pediste: {s.get('descripcion_general') or ''}\n"
-            f"  Importe estimado: ${float(s.get('total') or 0):,.2f} "
-            f"{'USD' if s.get('divisa') == 'USD' else 'MXN'}\n\n"
-            f"Administración la va a revisar. Si hace falta algo más, te buscamos.\n\n"
-            f"Cita el folio {s['folio']} para cualquier seguimiento.\n")
         try:
-            enviar_correo(gmail, s["correo_solicitante"],
-                          f"Solicitud {s['folio']} recibida", cuerpo)
+            adjs = adjuntos_de_solicitud(s["id"])
+            if any(a["estado"] in ("en_transito", "error") for a in adjs):
+                continue
+
+            pdf = next((a for a in adjs if a["categoria"] == "smi"
+                        and a["estado"] == "en_drive" and a.get("drive_file_id")), None)
+            if not pdf:
+                if (ALERTA_CORREO and not s.get("acuse_alertado_en")
+                        and horas_desde(s["creado_en"]) >= ESPERA_PDF_HORAS):
+                    enviar_correo(
+                        gmail, ALERTA_CORREO, f"{s['folio']}: falta el PDF oficial",
+                        f"La solicitud {s['folio']} lleva más de {ESPERA_PDF_HORAS} horas sin su PDF "
+                        f"oficial, y sin él no sale el acuse al solicitante.\n\n"
+                        f"Ábrela en la app y usa \"PDF al expediente\". El acuse sale solo en la "
+                        f"siguiente corrida después de que el PDF llegue a Drive.\n")
+                    requests.patch(f"{SUPABASE_URL}/rest/v1/solicitudes",
+                                   headers={**CAB, "Prefer": "return=minimal"},
+                                   params={"id": f"eq.{s['id']}"},
+                                   json={"acuse_alertado_en": datetime.now(timezone.utc).isoformat()},
+                                   timeout=60).raise_for_status()
+                    print(f"  {s['folio']}: sin PDF oficial, alerta -> {ALERTA_CORREO}")
+                continue
+
+            contenido = drive.files().get_media(fileId=pdf["drive_file_id"],
+                                                supportsAllDrives=True).execute()
+
+            suyos = [a["nombre"] for a in adjs if a["categoria"] != "smi"]
+            lista = ("Archivos que recibimos:\n" + "\n".join(f"  - {n}" for n in suyos) + "\n\n"
+                     if suyos else "")
+            cuerpo = (
+                f"Hola {s.get('nombre_solicitante') or ''},\n\n"
+                f"Recibimos tu solicitud y quedó registrada con el folio {s['folio']}.\n\n"
+                f"  Qué pediste: {s.get('descripcion_general') or ''}\n"
+                f"  Importe estimado: ${float(s.get('total') or 0):,.2f} "
+                f"{'USD' if s.get('divisa') == 'USD' else 'MXN'}\n\n"
+                f"{lista}"
+                f"Te adjuntamos el formato oficial de tu solicitud.\n\n"
+                f"Administración la va a revisar. Si hace falta algo más, te buscamos.\n\n"
+                f"Cita el folio {s['folio']} para cualquier seguimiento.\n")
+
+            enviar_correo(gmail, s["correo_solicitante"], f"Solicitud {s['folio']} recibida", cuerpo,
+                          adjuntos=[(pdf["nombre"], contenido, "application/pdf")])
             requests.patch(f"{SUPABASE_URL}/rest/v1/solicitudes",
                            headers={**CAB, "Prefer": "return=minimal"},
                            params={"id": f"eq.{s['id']}"},
                            json={"acuse_enviado_en": datetime.now(timezone.utc).isoformat()},
                            timeout=60).raise_for_status()
             enviados += 1
-            print(f"  acuse -> {s['correo_solicitante']} ({s['folio']})")
+            print(f"  acuse -> {s['correo_solicitante']} ({s['folio']}, con PDF)")
         except Exception as e:
             print(f"  No se pudo avisar de {s['folio']}: {e}")
     return enviados
@@ -538,7 +610,7 @@ def main():
             fallo(adj, e)
             fallidos += 1
 
-    enviados = acuses(gmail)
+    enviados = acuses(gmail, drive)
     alertados = alertar_atorados(gmail)
 
     print(f"Movidos {movidos}, en espera {pospuestos}, con error {fallidos}, "

@@ -322,8 +322,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.80.0";
+const APP_VERSION = "2.81.0";
 const CHANGELOG = [
+  { v: "2.81.0", desc: "Solicitudes > Parametros: nuevo bloque Avisos a Compras, con hasta dos correos por compania. Son quienes recibiran el aviso de cada SMI nueva con el link a su expediente. Se validan al guardar (formato, sin repetir) y la base rechaza cualquier valor que no sea un correo." },
+  { v: "2.80.1", desc: "PDF de la SMI: se quita el sello con el estado (ENTRADA, etc.) junto a los totales. Sin un proceso de aprobacion formal, en un documento oficial se leia como un dictamen que nadie emitio." },
   { v: "2.80.0", desc: "Solicitudes: una SMI en Por programar a pago se convierte en transaccion con el boton Convertir a transaccion. Abre + Nueva transaccion en Transacciones ya ligada a la SMI, con concepto, importe, moneda, proyecto, zona y solicitante precargados; Compras elige proveedor, cuenta y partida, y marca En parcialidades si asi se negocio. Al crearla, la SMI pasa sola a Agendado a pago. Una SMI da una sola transaccion: si se resolvio con dos proveedores, la segunda se hace con Duplicar, que conserva la liga y la carpeta de la SMI. Agendado a pago ya no se puede elegir a mano en el detalle. Crear transaccion sin partida ahora lo avisa en vez de no hacer nada." },
   { v: "2.79.1", desc: "Reporte semanal a Direccion: de una compra PPD va solo la parcialidad que se paga, no la compra padre, que se leia como un segundo pago del mismo concepto. Aplica al enviar, al volver a descargar versiones que ya la llevaban (y en la version contra la que se compara, para que no salga como retirada) y en Seguimiento de pagos. Una parcialidad aun sin folio sale con el que le corresponde, <padre>-P<n>." },
   { v: "2.79.0", desc: "Reporte semanal a Direccion: se elige contra que version comparar. En Reportes a Direccion > Versiones enviadas, Comparar version X contra Y (por ejemplo la 4 contra la 2) descarga el PDF y el Excel de X con lo nuevo respecto a Y primero y resaltado. Al enviar desde Transacciones, Resaltar lo nuevo respecto a permite elegir la base (por omision la ultima enviada) o enviar sin comparar. En Seguimiento de pagos, Nuevas respecto a cambia la base de la tarjeta y las etiquetas. Un clic en vN sigue comparando contra la inmediata anterior." },
@@ -17040,6 +17042,7 @@ function SolicitudesParametrosPanel({ unidad, session }) {
   const vacio = {
     formato_folio: "{n}P{aa}", ancho_consecutivo: 1, consecutivo_inicial: 1,
     reinicia_cada_anio: true, drive_carpeta_raiz: "", drive_carpeta_nombre: "",
+    correo_compras_1: "", correo_compras_2: "",
   };
   const [form, setForm] = useState(vacio);
   const [cargando, setCargando] = useState(true);
@@ -17057,7 +17060,10 @@ function SolicitudesParametrosPanel({ unidad, session }) {
           .from("solicitudes_parametros").select("*").eq("unidad", unidad).maybeSingle();
         if (e) throw e;
         if (!vivo) return;
-        setForm(data ? { ...vacio, ...data } : vacio);
+        // Los correos llegan null de la base; el input quiere cadena.
+        setForm(data ? { ...vacio, ...data,
+                         correo_compras_1: data.correo_compras_1 || "",
+                         correo_compras_2: data.correo_compras_2 || "" } : vacio);
         setExistia(!!data);
       } catch (err) {
         if (vivo) setError(err.message || String(err));
@@ -17079,8 +17085,18 @@ function SolicitudesParametrosPanel({ unidad, session }) {
   const choqueAnual = form.reinicia_cada_anio
     && !/\{aa\}|\{aaaa\}/.test(String(form.formato_folio || ""));
 
+  /* Minúsculas y sin espacios: Gmail no distingue mayúsculas, pero la
+     comparación de repetidos sí. */
+  const correoLimpio = (v) => String(v || "").trim().toLowerCase();
+  const c1 = correoLimpio(form.correo_compras_1);
+  const c2 = correoLimpio(form.correo_compras_2);
+  const correoMalo = [c1, c2].find((c) => c && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(c));
+  const correoRepetido = !!(c1 && c2 && c1 === c2);
+
   const guardar = async () => {
     if (sinConsecutivo) { alert("El formato tiene que incluir {n}, o todos los folios saldrían iguales."); return; }
+    if (correoMalo) { alert(`"${correoMalo}" no parece un correo válido.`); return; }
+    if (correoRepetido) { alert("Los dos correos de Compras son el mismo. Deja el segundo vacío."); return; }
     setGuardando(true);
     setError("");
     try {
@@ -17092,6 +17108,10 @@ function SolicitudesParametrosPanel({ unidad, session }) {
         reinicia_cada_anio: !!form.reinicia_cada_anio,
         drive_carpeta_raiz: String(form.drive_carpeta_raiz || "").trim(),
         drive_carpeta_nombre: String(form.drive_carpeta_nombre || "").trim(),
+        /* Si solo se llenó el segundo, sube al primero: así "hay un correo"
+           siempre significa que está en el primero. */
+        correo_compras_1: c1 || c2 || null,
+        correo_compras_2: c1 && c2 ? c2 : null,
         actualizado_en: new Date().toISOString(),
         ...(session?.user?.id ? { actualizado_por: session.user.id } : {}),
       };
@@ -17193,6 +17213,32 @@ function SolicitudesParametrosPanel({ unidad, session }) {
         <div style={{ marginTop: 12, maxWidth: 780, fontSize: 11.5, color: T.textFaint, lineHeight: 1.6 }}>
           Se guarda el id y no el enlace: el enlace se deriva del id, pero una carpeta movida o
           renombrada cambia de enlace y conserva el id.
+        </div>
+      </Panel>
+
+      <Panel
+        title="Avisos a Compras"
+        subtitle={`Quiénes reciben el aviso de cada SMI nueva de ${unidad}, con el link a su expediente. Hasta dos.`}
+        right={<Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : existia ? "Guardar" : "Crear"}</Button>}
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14, maxWidth: 780 }}>
+          {[["correo_compras_1", "Correo 1", c1], ["correo_compras_2", "Correo 2", c2]].map(([k, et, v]) => (
+            <Field key={k} label={et}>
+              <TextInput type="email" value={form[k]}
+                onChange={(e) => setForm({ ...form, [k]: e.target.value })}
+                placeholder="compras@osbog.com" />
+              {v && v === correoMalo && (
+                <span style={{ fontSize: 10.5, color: T.red, marginTop: 3 }}>No parece un correo válido</span>
+              )}
+            </Field>
+          ))}
+        </div>
+        {correoRepetido && (
+          <div style={{ marginTop: 8, fontSize: 11.5, color: T.red }}>Los dos correos son el mismo.</div>
+        )}
+        <div style={{ marginTop: 12, maxWidth: 780, fontSize: 11.5, color: T.textFaint, lineHeight: 1.6 }}>
+          Sin ningún correo, las SMI de {unidad} entran sin aviso. El link solo abre para quien
+          tenga acceso a la carpeta de Drive de arriba.
         </div>
       </Panel>
     </>
@@ -18243,13 +18289,12 @@ function pdfSolicitud(solicitud, conceptos, centroCosto) {
     },
   });
 
-  // ---- Estado y totales ----
+  // ---- Totales ----
+  /* Aquí iba un sello con el estado de la solicitud ("ENTRADA"). Se quitó:
+     sin un proceso de aprobación formal, el sello en un documento oficial se
+     leía como un dictamen que nadie emitió. Si algún día hay aprobaciones,
+     el lugar a la izquierda de los totales sigue libre. */
   const yTot = doc.lastAutoTable.finalY + 6;
-  const estado = etiquetaEstado(solicitud.estado).toUpperCase();
-  doc.setDrawColor(...ROJO); doc.setLineWidth(0.6);
-  doc.roundedRect(M + 6, yTot, 62, 12, 6, 6);
-  doc.setTextColor(...ROJO); doc.setFont(undefined, "bold"); doc.setFontSize(12);
-  doc.text(estado, M + 37, yTot + 8, { align: "center" });
   doc.setTextColor(20, 20, 20); doc.setFont(undefined, "normal");
 
   const filas = [

@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.81.0";
+const APP_VERSION = "2.82.0";
 const CHANGELOG = [
+  { v: "2.82.0", desc: "Captura de SMI (formulario publico y captura interna), conceptos: Unidad pasa a ser una lista de unidades estandar en lugar de texto libre. Cantidad y Precio estimado solo aceptan numeros, sin negativos, con hasta tres decimales; la coma se toma como punto. En la captura interna, Precio unitario se llama ahora Precio estimado, igual que en el formulario publico. Los conceptos ya guardados con una unidad fuera de la lista la conservan al editarse." },
   { v: "2.81.0", desc: "Solicitudes > Parametros: nuevo bloque Avisos a Compras, con hasta dos correos por compania. Son quienes recibiran el aviso de cada SMI nueva con el link a su expediente. Se validan al guardar (formato, sin repetir) y la base rechaza cualquier valor que no sea un correo." },
   { v: "2.80.1", desc: "PDF de la SMI: se quita el sello con el estado (ENTRADA, etc.) junto a los totales. Sin un proceso de aprobacion formal, en un documento oficial se leia como un dictamen que nadie emitio." },
   { v: "2.80.0", desc: "Solicitudes: una SMI en Por programar a pago se convierte en transaccion con el boton Convertir a transaccion. Abre + Nueva transaccion en Transacciones ya ligada a la SMI, con concepto, importe, moneda, proyecto, zona y solicitante precargados; Compras elige proveedor, cuenta y partida, y marca En parcialidades si asi se negocio. Al crearla, la SMI pasa sola a Agendado a pago. Una SMI da una sola transaccion: si se resolvio con dos proveedores, la segunda se hace con Duplicar, que conserva la liga y la carpeta de la SMI. Agendado a pago ya no se puede elegir a mano en el detalle. Crear transaccion sin partida ahora lo avisa en vez de no hacer nada." },
@@ -17267,6 +17268,43 @@ const conceptoBlank = () => ({
 
 const subtotalConcepto = (c) => (Number(c.cantidad) || 0) * (Number(c.precio_unitario) || 0);
 
+/* Unidades de los conceptos de una SMI. Lista fija y no catálogo: son
+   estándar, y con texto libre la misma unidad llegaba como "KG", "kg" y
+   "Kilos", que no se pueden sumar ni comparar. */
+const UNIDADES_MEDIDA = [
+  "Pza", "Servicio", "Juego", "Par", "Kit", "Caja", "Paquete", "Rollo", "Lote",
+  "Kg", "g", "Ton", "L", "mL", "Galón", "Cubeta", "Tambor",
+  "m", "cm", "mm", "m²", "m³", "Hora", "Día", "Mes",
+];
+
+/* Una unidad guardada antes de la lista ("KG") se reconoce si solo cambia
+   en mayúsculas; si no está, se respeta tal cual para no perderla al editar. */
+const unidadNormalizada = (v) =>
+  UNIDADES_MEDIDA.find((u) => u.toLowerCase() === String(v || "").trim().toLowerCase()) || String(v || "").trim();
+
+function SelectUnidad({ value, onChange }) {
+  const v = unidadNormalizada(value);
+  const fuera = v && !UNIDADES_MEDIDA.includes(v);
+  return (
+    <Select value={v} onChange={(e) => onChange(e.target.value)}>
+      {!v && <option value="">—</option>}
+      {fuera && <option value={v}>{v} (anterior)</option>}
+      {UNIDADES_MEDIDA.map((u) => <option key={u} value={u}>{u}</option>)}
+    </Select>
+  );
+}
+
+/* Cantidad y precio: solo dígitos y un punto, hasta tres decimales, sin
+   signo. Se filtra al teclear, no al guardar: un input type="number" acepta
+   "e", "-" y diez decimales, y el error se descubría ya en el PDF. La coma se
+   toma como punto porque es como muchos escriben decimales. */
+function limpiarDecimal3(v) {
+  let t = String(v ?? "").replace(/,/g, ".").replace(/[^0-9.]/g, "");
+  const i = t.indexOf(".");
+  if (i >= 0) t = t.slice(0, i + 1) + t.slice(i + 1).replace(/\./g, "").slice(0, 3);
+  return t;
+}
+
 /**
  * Totales de la solicitud.
  *
@@ -17344,8 +17382,11 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
           _k: c.id, _id: c.id,
           numero_parte: c.numero_parte || "", descripcion: c.descripcion || "",
           notas: c.notas || "", enlace: c.enlace || "",
-          cantidad: c.cantidad ?? "", unidad_medida: c.unidad_medida || "",
-          precio_unitario: c.precio_unitario ?? "",
+          /* La base guarda el precio con cuatro decimales ("104.5000"). Al
+             abrir para editar se muestra como número, ya sin ceros de más. */
+          cantidad: c.cantidad != null ? limpiarDecimal3(String(Number(c.cantidad))) : "",
+          unidad_medida: c.unidad_medida || "",
+          precio_unitario: c.precio_unitario != null ? limpiarDecimal3(String(Number(c.precio_unitario))) : "",
         }))
       : [conceptoBlank()]);
   const [guardando, setGuardando] = useState(false);
@@ -17436,7 +17477,7 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
             notas: String(c.notas).trim() || null,
             enlace: String(c.enlace).trim() || null,
             cantidad: Number(c.cantidad) || 0,
-            unidad_medida: String(c.unidad_medida).trim() || null,
+            unidad_medida: unidadNormalizada(c.unidad_medida) || null,
             precio_unitario: Number(c.precio_unitario) || 0,
             subtotal: Number(subtotalConcepto(c).toFixed(2)),
           };
@@ -17492,7 +17533,7 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
         notas: String(c.notas).trim() || null,
         enlace: String(c.enlace).trim() || null,
         cantidad: Number(c.cantidad) || 0,
-        unidad_medida: String(c.unidad_medida).trim() || null,
+        unidad_medida: unidadNormalizada(c.unidad_medida) || null,
         precio_unitario: Number(c.precio_unitario) || 0,
         subtotal: Number(subtotalConcepto(c).toFixed(2)),
       }));
@@ -17638,15 +17679,15 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
                 <TextInput value={c.numero_parte} onChange={(e) => setC(c._k, "numero_parte", e.target.value)} />
               </Field>
               <Field label="Cantidad">
-                <TextInput type="number" step="0.001" value={c.cantidad}
-                  onChange={(e) => setC(c._k, "cantidad", e.target.value)} />
+                <TextInput inputMode="decimal" value={c.cantidad}
+                  onChange={(e) => setC(c._k, "cantidad", limpiarDecimal3(e.target.value))} />
               </Field>
               <Field label="Unidad">
-                <TextInput value={c.unidad_medida} onChange={(e) => setC(c._k, "unidad_medida", e.target.value)} />
+                <SelectUnidad value={c.unidad_medida} onChange={(v) => setC(c._k, "unidad_medida", v)} />
               </Field>
-              <Field label="Precio unitario">
-                <TextInput type="number" step="0.0001" value={c.precio_unitario}
-                  onChange={(e) => setC(c._k, "precio_unitario", e.target.value)} />
+              <Field label="Precio estimado">
+                <TextInput inputMode="decimal" value={c.precio_unitario}
+                  onChange={(e) => setC(c._k, "precio_unitario", limpiarDecimal3(e.target.value))} />
               </Field>
               <Field label="Notas" style={{ gridColumn: "span 2" }}>
                 <TextInput value={c.notas} onChange={(e) => setC(c._k, "notas", e.target.value)} />
@@ -19146,7 +19187,7 @@ function SolicitudPublicaPage() {
           numero_parte: c.numero_parte, descripcion: String(c.descripcion).trim(),
           notas: c.notas, enlace: c.enlace,
           cantidad: Number(c.cantidad) || 0,
-          unidad_medida: c.unidad_medida,
+          unidad_medida: unidadNormalizada(c.unidad_medida) || null,
           precio_unitario: Number(c.precio_unitario) || 0,
         })),
       });
@@ -19194,7 +19235,7 @@ function SolicitudPublicaPage() {
           },
           conValor.map((c, i) => ({
             orden: i + 1, numero_parte: c.numero_parte, descripcion: c.descripcion,
-            notas: c.notas, cantidad: Number(c.cantidad) || 0, unidad_medida: c.unidad_medida,
+            notas: c.notas, cantidad: Number(c.cantidad) || 0, unidad_medida: unidadNormalizada(c.unidad_medida),
             precio_unitario: Number(c.precio_unitario) || 0, subtotal: subtotalConcepto(c),
           })),
           ""   // el centro de costo lo resuelve la bandeja al regenerarlo
@@ -19357,16 +19398,16 @@ function SolicitudPublicaPage() {
                   onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, numero_parte: e.target.value } : x))} />
               </Field>
               <Field label="Cantidad">
-                <TextInput type="number" step="0.001" value={c.cantidad}
-                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, cantidad: e.target.value } : x))} />
+                <TextInput inputMode="decimal" value={c.cantidad}
+                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, cantidad: limpiarDecimal3(e.target.value) } : x))} />
               </Field>
               <Field label="Unidad">
-                <TextInput value={c.unidad_medida}
-                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, unidad_medida: e.target.value } : x))} />
+                <SelectUnidad value={c.unidad_medida}
+                  onChange={(v) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, unidad_medida: v } : x))} />
               </Field>
               <Field label="Precio estimado">
-                <TextInput type="number" step="0.0001" value={c.precio_unitario}
-                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, precio_unitario: e.target.value } : x))} />
+                <TextInput inputMode="decimal" value={c.precio_unitario}
+                  onChange={(e) => setConceptos(conceptos.map((x) => x._k === c._k ? { ...x, precio_unitario: limpiarDecimal3(e.target.value) } : x))} />
               </Field>
               <Field label="Notas" style={{ gridColumn: "span 2" }}>
                 <TextInput value={c.notas}

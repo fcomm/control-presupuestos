@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.79.1";
+const APP_VERSION = "2.80.0";
 const CHANGELOG = [
+  { v: "2.80.0", desc: "Solicitudes: una SMI en Por programar a pago se convierte en transaccion con el boton Convertir a transaccion. Abre + Nueva transaccion en Transacciones ya ligada a la SMI, con concepto, importe, moneda, proyecto, zona y solicitante precargados; Compras elige proveedor, cuenta y partida, y marca En parcialidades si asi se negocio. Al crearla, la SMI pasa sola a Agendado a pago. Una SMI da una sola transaccion: si se resolvio con dos proveedores, la segunda se hace con Duplicar, que conserva la liga y la carpeta de la SMI. Agendado a pago ya no se puede elegir a mano en el detalle. Crear transaccion sin partida ahora lo avisa en vez de no hacer nada." },
   { v: "2.79.1", desc: "Reporte semanal a Direccion: de una compra PPD va solo la parcialidad que se paga, no la compra padre, que se leia como un segundo pago del mismo concepto. Aplica al enviar, al volver a descargar versiones que ya la llevaban (y en la version contra la que se compara, para que no salga como retirada) y en Seguimiento de pagos. Una parcialidad aun sin folio sale con el que le corresponde, <padre>-P<n>." },
   { v: "2.79.0", desc: "Reporte semanal a Direccion: se elige contra que version comparar. En Reportes a Direccion > Versiones enviadas, Comparar version X contra Y (por ejemplo la 4 contra la 2) descarga el PDF y el Excel de X con lo nuevo respecto a Y primero y resaltado. Al enviar desde Transacciones, Resaltar lo nuevo respecto a permite elegir la base (por omision la ultima enviada) o enviar sin comparar. En Seguimiento de pagos, Nuevas respecto a cambia la base de la tarjeta y las etiquetas. Un clic en vN sigue comparando contra la inmediata anterior." },
   { v: "2.78.0", desc: "Reporte semanal a Direccion: cada revision se compara contra la anterior de la misma semana. El PDF y el Excel abren con un bloque aparte, en verde, con lo NUEVO (lo que no venia en la revision anterior) y su total; debajo, en ambar, lo que cambio de importe, moneda o dia (antes y ahora), y en gris lo retirado. Despues va el reporte completo de la semana con lo nuevo y lo cambiado marcados en una columna propia. Al enviar, la confirmacion ya dice cuantas nuevas, con cambio y retiradas lleva. Re-descargar una version la reconstruye con su comparacion. En Seguimiento de pagos, tarjeta Nuevas vs vN para filtrar, y etiqueta Nueva / Cambio en cada fila. La v1 sale como siempre." },
@@ -10172,7 +10173,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         return;
       }
     }
-    if (!form.partida_id || !form.importe) return;
+    /* Antes regresaba en silencio: el botón no hacía nada y no decía por qué.
+       Con la conversión de SMI la partida llega vacía a propósito, así que
+       ahora es un caso normal y hay que decirlo. */
+    if (!form.partida_id) { alert("Elige la partida antes de crear la transacción."); return; }
+    if (!form.importe) { alert("Falta el importe."); return; }
+    const desdeSmi = !editId ? form._desdeSmi : null;
+    if (desdeSmi && transUnidad.some((x) => x.solicitud_id === form.solicitud_id && !estaCancelada(x)) && !confirm(
+      `La SMI ${desdeSmi.folio} ya tiene una transacción. ¿Crear otra de todos modos?`)) return;
     /* Convertir en compra PPD una transacción que ya se envió a Pagos: la
        compra deja de ser un pago (lo son sus parcialidades), así que pierde
        la marca de enviada. Pagos ya la tenía: hay que avisarles. */
@@ -10247,6 +10255,17 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       } else {
         const creada = await insertTransaccionBorrador(transaccionesApi, rest);
         transaccionId = creada.id;
+        /* La SMI pasa a Agendado a pago al existir su transacción, y solo si
+           seguía en Por programar a pago: si alguien la movió mientras tanto,
+           no se le pisa. La transacción ya quedó: si esto falla, se avisa y
+           se mueve a mano desde el detalle. */
+        if (desdeSmi) {
+          const { error: eSmi } = await supabase.from("solicitudes")
+            .update({ estado: "agendado_pago", revisado_en: new Date().toISOString(),
+                      ...(session?.user?.id ? { revisado_por: session.user.id } : {}) })
+            .eq("id", rest.solicitud_id).eq("estado", "por_programar_pago");
+          if (eSmi) alert(`La transacción se creó, pero la SMI ${desdeSmi.folio} no cambió de estado: ${eSmi.message}`);
+        }
       }
       await guardarNotaPrivada(transaccionId);
       setForm({ ...blank, partida_id: partidasUnidad[0]?.id || "" });
@@ -11157,6 +11176,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         >
           <AutoriaCaption record={form} perfilesApi={perfilesApi} />
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+            {!editId && form._desdeSmi && (
+              <div style={{ gridColumn: "span 4", background: T.panelAlt, border: `1px solid ${T.accent}55`,
+                            borderRadius: 8, padding: "10px 13px", fontSize: 12, color: T.textDim, lineHeight: 1.6 }}>
+                Viene de la SMI <b style={{ fontFamily: T.fontMono, color: T.accent }}>{form._desdeSmi.folio}</b>.
+                {form._desdeSmi.proveedorSugerido && <> Proveedor sugerido por quien la levantó: <b style={{ color: T.text }}>{form._desdeSmi.proveedorSugerido}</b>.</>}
+                <br />
+                Elige partida, proveedor y cuenta, y ajusta el importe a lo negociado. Si la compra va en
+                parcialidades, marca <b>En parcialidades</b>. Al crearla, la SMI pasa a Agendado a pago.
+              </div>
+            )}
             {esParcialidad(form) && (() => {
               const padre = padreDe(form);
               const r = padre ? resumenPPD(padre) : null;
@@ -18472,10 +18501,40 @@ const ESTADOS_SOLICITUD = [
   { value: "cancelada",       label: "Cancelada" },
 ];
 const COLUMNAS_TABLERO = ESTADOS_SOLICITUD.filter((e) => e.tablero);
+
+/* Lo que la SMI ya sabe, como punto de partida de su transacción. Una SMI da
+   UNA transacción; si al final se compró a dos proveedores, la segunda sale
+   de Duplicar, que conserva solicitud_id y con eso la carpeta de la SMI.
+
+   Lo que la SMI NO trae se deja para Compras a propósito:
+   - Partida vacía, no la primera de la lista: elegirla es el control, y una
+     preseleccionada se acepta sin mirar.
+   - Proveedor vacío: el de la SMI es una sugerencia en texto libre, y ligarla
+     al catálogo es justo lo que hace falta para tener RFC, cuenta e ID SAE.
+     Se muestra como referencia en el formulario.
+   - Sin desglose fiscal: lo de la SMI es previo a la negociación. El desglose
+     se confirma en la Solicitud de Pago, como en cualquier transacción.
+   - Parcialidades: no existen para quien pidió. Las decide Compras al
+     negociar y las marca en la casilla En parcialidades del formulario. */
+function semillaTransaccionDeSolicitud(s) {
+  return {
+    unidad_detectada: s.unidad,
+    solicitud_id: s.id,
+    smi: s.folio || "",
+    solicitante: s.nombre_solicitante || s.correo_solicitante || "",
+    proyecto: s.proyecto || "",
+    zona: s.zona || "",
+    concepto_detallado: s.descripcion_general || "",
+    importe: s.total !== null && s.total !== undefined ? String(s.total) : "",
+    moneda: s.divisa === "USD" ? "USD" : "MXP",
+    partida_id: "",
+    _desdeSmi: { folio: s.folio, proveedorSugerido: s.proveedor_sugerido || "" },
+  };
+}
 const etiquetaEstado = (v) =>
   (ESTADOS_SOLICITUD.find((e) => e.value === v) || { label: v }).label;
 
-function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEditar }) {
+function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEditar, onConvertir }) {
   const [conceptos, setConceptos] = useState(null);
   const [specs, setSpecs] = useState({});
   /* El centro de costo no está en la solicitud: vive en el catálogo de
@@ -18562,12 +18621,12 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
         title="Datos de la solicitud"
         right={
           <div style={{ display: "flex", gap: 8 }}>
-            {/* Una solicitud ya convertida no se edita: sus importes viven en
-                transacciones y cambiarlos aquí las dejaría desfasadas. */}
+            {/* Una solicitud ya convertida no se edita: su importe vive en la
+                transacción y cambiarlo aquí la dejaría desfasada. */}
             <Button
               onClick={() => onEditar(conceptos || [])}
-              disabled={!conceptos || solicitud.estado === "convertida"}
-              title={solicitud.estado === "convertida" ? "Ya se convirtió en transacciones" : undefined}
+              disabled={!conceptos || solicitud.estado === "agendado_pago"}
+              title={solicitud.estado === "agendado_pago" ? "Ya se convirtió en transacción" : undefined}
             >Editar</Button>
             <Button
               variant="ghost"
@@ -18686,7 +18745,10 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
         <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
           <Field label="Estado" style={{ maxWidth: 220 }}>
             <Select value={estado} onChange={(e) => setEstado(e.target.value)}>
-              {ESTADOS_SOLICITUD.map((e) => <option key={e.value} value={e.value}>{e.label}</option>)}
+              {/* Agendado a pago lo pone la conversión. Ofrecerlo aquí sería la
+                  misma puerta que el tablero ya tiene cerrada. */}
+              {ESTADOS_SOLICITUD.filter((e) => !e.soloSistema || e.value === solicitud.estado)
+                .map((e) => <option key={e.value} value={e.value}>{e.label}</option>)}
             </Select>
           </Field>
           <Field label="Notas de revisión" style={{ flex: 1, minWidth: 260 }}>
@@ -18707,6 +18769,16 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
           {guardando ? "Guardando…" : "Guardar y cerrar"}
         </Button>
         <Button variant="ghost" onClick={onVolver}>Cancelar</Button>
+        {/* Se mira el estado GUARDADO: convertir con un cambio de estado a
+            medio capturar dejaría la duda de cuál de los dos vale. */}
+        {solicitud.estado === "por_programar_pago" && onConvertir && (
+          <Button
+            style={{ marginLeft: "auto" }}
+            disabled={cambio}
+            title={cambio ? "Guarda o descarta los cambios antes de convertir" : "Abre + Nueva transacción ligada a esta SMI"}
+            onClick={() => onConvertir(solicitud)}
+          >Convertir a transacción</Button>
+        )}
         {/* Los adjuntos y el PDF se guardan al momento: implican un archivo
             que ya viajó. Decirlo evita que alguien cancele creyendo que
             deshace también eso. */}
@@ -19431,7 +19503,7 @@ function TableroSolicitudes({ filas, onMover, onAbrir }) {
   );
 }
 
-function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas = [] }) {
+function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas = [], onConvertir }) {
   const [sub, setSub] = useSessionState("ss-solicitudes-sub", "bandeja");
   const [capturando, setCapturando] = useState(false);
   const [abierta, setAbierta] = useState(null);
@@ -19557,6 +19629,7 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
           session={session}
           onVolver={() => setAbierta(null)}
           onEditar={(cs) => setEditando({ solicitud: abierta, conceptos: cs })}
+          onConvertir={onConvertir ? (s) => { setAbierta(null); onConvertir(semillaTransaccionDeSolicitud(s)); } : undefined}
           onCambiada={(s) => {
             setAbierta(s);
             setRecientes((r) => r.map((x) => (x.id === s.id ? s : x)));
@@ -21955,7 +22028,7 @@ export default function App() {
               unidadesPermitidas={miPerfil?.unidades_permitidas || []}
             />
           )}
-          {tab === "solicitudes" && <SolicitudesTab unidad={unidad} session={session} unidades={unidades} proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} zonas={zonas.map((z) => (typeof z === "string" ? z : z.nombre))} />}
+          {tab === "solicitudes" && <SolicitudesTab onConvertir={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} unidad={unidad} session={session} unidades={unidades} proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} zonas={zonas.map((z) => (typeof z === "string" ? z : z.nombre))} />}
           {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} clausulasApi={contratosClausulasApi} session={session} />}
           {tab === "catalogo" && <CatalogoTab key={catalogoVersion} listasSat={listasSat} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>

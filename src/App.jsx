@@ -322,8 +322,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.82.0";
+const APP_VERSION = "2.83.0";
 const CHANGELOG = [
+  { v: "2.83.0", desc: "Solicitudes, tablero: nueva columna Cancelada al final. Una SMI cancelada ya no desaparece del tablero: queda a la vista, atenuada, y se puede regresar a cualquier paso arrastrandola. Cancelar pide confirmacion, en el tablero y en el detalle; si la SMI ya estaba en Agendado a pago, avisa que su transaccion no se cancela sola. La columna Agendado a pago ya no dice que la conversion esta pendiente." },
   { v: "2.82.0", desc: "Captura de SMI (formulario publico y captura interna), conceptos: Unidad pasa a ser una lista de unidades estandar en lugar de texto libre. Cantidad y Precio estimado solo aceptan numeros, sin negativos, con hasta tres decimales; la coma se toma como punto. En la captura interna, Precio unitario se llama ahora Precio estimado, igual que en el formulario publico. Los conceptos ya guardados con una unidad fuera de la lista la conservan al editarse." },
   { v: "2.81.0", desc: "Solicitudes > Parametros: nuevo bloque Avisos a Compras, con hasta dos correos por compania. Son quienes recibiran el aviso de cada SMI nueva con el link a su expediente. Se validan al guardar (formato, sin repetir) y la base rechaza cualquier valor que no sea un correo." },
   { v: "2.80.1", desc: "PDF de la SMI: se quita el sello con el estado (ENTRADA, etc.) junto a los totales. Sin un proceso de aprobacion formal, en un documento oficial se leia como un dictamen que nadie emitio." },
@@ -18569,9 +18570,9 @@ function polizaVieja(t) {
    SOLICITUDES — DETALLE
 ---------------------------------------------------------------------- */
 
-/* `tablero` marca los cuatro pasos del flujo. Rechazada, cancelada y
-   convertida no son pasos sino desenlaces: se pueden elegir en el detalle,
-   pero no son columnas — una solicitud que llega ahí sale del tablero. */
+/* `tablero` marca las columnas: los pasos del flujo y, al final, Cancelada.
+   Rechazada sigue siendo un desenlace sin columna: se elige en el detalle y
+   la solicitud sale del tablero. */
 const ESTADOS_SOLICITUD = [
   { value: "entrada",         label: "Entrada",            tablero: true, quien: "Administración" },
   { value: "en_revision",     label: "En revisión",        tablero: true, quien: "Administración" },
@@ -18584,8 +18585,21 @@ const ESTADOS_SOLICITUD = [
      que hay pagos agendados sin que exista ninguna transacción detrás. */
   { value: "agendado_pago",   label: "Agendado a pago",    tablero: true, quien: "Pagos", soloSistema: true },
   { value: "rechazada",       label: "Rechazada" },
-  { value: "cancelada",       label: "Cancelada" },
+  /* En el tablero, al final: una cancelada sigue a la vista en vez de
+     desaparecer, por si se canceló por error o alguien pregunta por ella. */
+  { value: "cancelada",       label: "Cancelada", tablero: true, quien: "Nadie: está detenida" },
 ];
+
+/* Cancelar se confirma siempre. Si la SMI ya tenía transacción, esa no se
+   toca: cancelarla es decisión aparte, en Transacciones. */
+function confirmarCancelacionSmi(s) {
+  return confirm(
+    `¿Cancelar la solicitud ${s.folio}?\n\n` +
+    (s.estado === "agendado_pago"
+      ? "Ya se convirtió en transacción. Esa transacción NO se cancela con esto: cancélala aparte en Transacciones si corresponde.\n\n"
+      : "") +
+    "Queda en la columna Cancelada y se puede regresar a cualquier paso.");
+}
 const COLUMNAS_TABLERO = ESTADOS_SOLICITUD.filter((e) => e.tablero);
 
 /* Lo que la SMI ya sabe, como punto de partida de su transacción. Una SMI da
@@ -18674,6 +18688,7 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
   const descuadre = conceptos && Math.abs(sumaConceptos - Number(solicitud.subtotal || 0)) > 0.01;
 
   const guardar = async () => {
+    if (estado === "cancelada" && solicitud.estado !== "cancelada" && !confirmarCancelacionSmi(solicitud)) return;
     setGuardando(true);
     setError("");
     try {
@@ -19554,7 +19569,7 @@ function TableroSolicitudes({ filas, onMover, onAbrir }) {
             {!dela.length ? (
               <div style={{ fontSize: 11, color: T.textFaint, padding: "10px 2px", lineHeight: 1.5 }}>
                 {col.soloSistema
-                  ? "Aquí llegan solas al convertirse en transacción. Todavía no está esa parte."
+                  ? "Aquí llegan solas al convertirse en transacción."
                   : "Vacío"}
               </div>
             ) : dela.map((s) => (
@@ -19567,7 +19582,7 @@ function TableroSolicitudes({ filas, onMover, onAbrir }) {
                 style={{
                   background: T.panel, border: `1px solid ${T.border}`, borderRadius: 6,
                   padding: "8px 10px", marginBottom: 7, cursor: "grab",
-                  opacity: arrastrando?.id === s.id ? 0.4 : 1,
+                  opacity: arrastrando?.id === s.id ? 0.4 : s.estado === "cancelada" ? 0.6 : 1,
                 }}
               >
                 <div style={{ fontSize: 11.5, fontFamily: T.fontMono, color: T.accent }}>{s.folio}</div>
@@ -19647,6 +19662,7 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
   const hayFiltro = !!(q || filtroEstado || desde || hasta);
 
   const moverEstado = async (s, estado) => {
+    if (estado === "cancelada" && !confirmarCancelacionSmi(s)) return;
     /* Optimista: la tarjeta se mueve al soltarla y se corrige si la base
        rechaza. Esperar la respuesta para pintar haría que arrastrar se
        sintiera roto en una conexión lenta. */

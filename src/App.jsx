@@ -17,7 +17,17 @@ import { supabase } from "./supabaseClient";
 /* ----------------------------------------------------------------------
    TOKENS
 ---------------------------------------------------------------------- */
-const T = {
+/* ----------------------------------------------------------------------
+   TEMA CLARO / OSCURO — el mismo esquema que Control de Inventarios.
+   Las dos paletas tienen las mismas llaves y toda la app pinta desde T, así
+   que cambiar de tema es cambiar de objeto. Se escoge al cargar la página y
+   cambiarlo recarga: T se lee al pintar, y recargar es la única forma de que
+   ningún componente se quede con colores del tema anterior.
+   El default es el claro, el que la app ha tenido siempre.
+   Los PDF y los Excel NO siguen el tema: son documentos para imprimir y
+   mandar, y llevan sus propios colores.
+---------------------------------------------------------------------- */
+const PALETA_CLARA = {
   bg: "#F5F6F8",
   panel: "#FFFFFF",
   panelAlt: "#ECEEF1",
@@ -34,9 +44,78 @@ const T = {
   teal: "#1E8F73",
   red: "#C0483F",
   blue: "#3E6E8E",
+  onAccent: "#FFFFFF",      // letra sobre fondo `accent` (botón principal, pestaña activa)
+  /* Texto seleccionado: color propio. Con accentBg, que también pinta la fila
+     bajo el cursor y lo activo, la selección se perdía encima de una fila. */
+  sel: "#2F4A63",
+  selText: "#FFFFFF",
+  avisoBg: "#FDF8EF",       // fondo de los avisos con borde ámbar
+  fondoUsd: "#EEF4FB",      // renglones en dólares
+  ppd: "#6E56A0",           // compras en parcialidades
+  fondoPpd: "#F6F3FB",
+  niveles: ["#EEF1F4", "#F4F6F8", "#F8F9FB"],       // grupos anidados de tablas
+  tablaHead: "#D2D6DB",     // encabezado y total del reporte comparativo
+  tablaCelda: "#EEF0F2",
+  tablaNiveles: ["#DCE1E6", "#E6EAEE", "#EEF1F4"],
+  sombra: "rgba(0,0,0,0.18)",
+  esquema: "light",         // color-scheme de los controles nativos (fecha, select)
   fontUI: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
   fontMono: "ui-monospace, SFMono-Regular, 'SF Mono', Consolas, 'Liberation Mono', monospace",
 };
+
+/* Oscuro: el de Inventarios. Los acentos se aclaran porque un azul o un rojo
+   oscuros no se leen sobre fondo oscuro, y `accentDim` pasa a ser texto claro. */
+const PALETA_OSCURA = {
+  bg: "#16181A",
+  panel: "#1E2124",
+  panelAlt: "#2A2E31",
+  border: "#33373B",
+  borderSoft: "#2A2E31",
+  text: "#E7E5DF",
+  textDim: "#A2A6A9",
+  textFaint: "#6B7074",
+  accent: "#7FA7C9",
+  accentDim: "#B9D2E8",
+  accentBg: "#25313C",
+  amber: "#D9B264",
+  amberDim: "#E6C88A",
+  teal: "#7FB8A5",
+  red: "#E48A7D",
+  blue: "#8DB4DC",
+  onAccent: "#11161B",
+  sel: "#4F7CA3",
+  selText: "#FFFFFF",
+  avisoBg: "#2B261A",
+  fondoUsd: "#1F2A35",
+  ppd: "#B4A0DC",
+  fondoPpd: "#252235",
+  niveles: ["#2A2E31", "#25292C", "#212427"],
+  tablaHead: "#33383D",
+  tablaCelda: "#202326",
+  tablaNiveles: ["#30353A", "#2B3034", "#26292D"],
+  sombra: "rgba(0,0,0,0.55)",
+  esquema: "dark",
+  fontUI: "-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif",
+  fontMono: "ui-monospace, SFMono-Regular, 'SF Mono', Consolas, 'Liberation Mono', monospace",
+};
+
+const TEMA_CLAVE = "cp.tema";
+const TEMA = (() => { try { return window.localStorage.getItem(TEMA_CLAVE) || "claro"; } catch { return "claro"; } })();
+const T = TEMA === "oscuro" ? PALETA_OSCURA : PALETA_CLARA;
+
+/* El fondo de la página y los controles nativos se ponen aquí y no solo en el
+   estilo del panel principal: el formulario público y el login se pintan sin
+   él, y se verían con fondo blanco y calendarios claros en tema oscuro. */
+try {
+  document.documentElement.style.colorScheme = T.esquema;
+  document.documentElement.style.background = T.bg;
+  if (document.body) document.body.style.background = T.bg;
+} catch { /* sin DOM */ }
+
+function cambiarTema() {
+  try { window.localStorage.setItem(TEMA_CLAVE, TEMA === "oscuro" ? "claro" : "oscuro"); } catch { /* sin almacenamiento */ }
+  window.location.reload();
+}
 
 // NO hay categoría "Diversos", y es deliberado.
 //
@@ -322,8 +401,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.83.0";
+const APP_VERSION = "2.84.0";
 const CHANGELOG = [
+  { v: "2.84.0", desc: "Tema claro y oscuro, como en Control de Inventarios. Un boton en el encabezado, junto a Cerrar sesion, cambia entre los dos; la eleccion se recuerda en cada navegador y el default sigue siendo el claro. Toda la app pinta desde una sola paleta, asi que el cambio llega a todas las pantallas, al formulario publico y al login. Los colores que estaban fijos (avisos ambar, renglones en dolares, parcialidades, el reporte comparativo, la letra del boton principal) ya toman el color del tema, y los controles nativos (calendario, listas) se ven oscuros. El texto seleccionado tiene color propio. Los PDF y los Excel no cambian: son documentos para imprimir y mandar." },
   { v: "2.83.0", desc: "Solicitudes, tablero: nueva columna Cancelada al final. Una SMI cancelada ya no desaparece del tablero: queda a la vista, atenuada, y se puede regresar a cualquier paso arrastrandola. Cancelar pide confirmacion, en el tablero y en el detalle; si la SMI ya estaba en Agendado a pago, avisa que su transaccion no se cancela sola. La columna Agendado a pago ya no dice que la conversion esta pendiente." },
   { v: "2.82.0", desc: "Captura de SMI (formulario publico y captura interna), conceptos: Unidad pasa a ser una lista de unidades estandar en lugar de texto libre. Cantidad y Precio estimado solo aceptan numeros, sin negativos, con hasta tres decimales; la coma se toma como punto. En la captura interna, Precio unitario se llama ahora Precio estimado, igual que en el formulario publico. Los conceptos ya guardados con una unidad fuera de la lista la conservan al editarse." },
   { v: "2.81.0", desc: "Solicitudes > Parametros: nuevo bloque Avisos a Compras, con hasta dos correos por compania. Son quienes recibiran el aviso de cada SMI nueva con el link a su expediente. Se validan al guardar (formato, sin repetir) y la base rechaza cualquier valor que no sea un correo." },
@@ -997,10 +1077,10 @@ function equivalenteMXN(t, serie) {
 /* Las filas en dólares se distinguen a simple vista: fondo azul tenue y una
    barra en el borde izquierdo. Solo con el "USD" chico al final de la cifra
    se confundían con las de pesos. */
-const FONDO_USD = "#EEF4FB";
+const FONDO_USD = T.fondoUsd;
 /* Compras PPD: color propio para no confundirse con el azul de USD. */
-const COLOR_PPD = "#6E56A0";
-const FONDO_PPD = "#F6F3FB";
+const COLOR_PPD = T.ppd;
+const FONDO_PPD = T.fondoPpd;
 /* Columnas que una parcialidad hereda de su compra: en la lista van vacías. */
 const COLUMNAS_HEREDADAS_PPD = new Set(["smi", "folio", "partida", "proveedor", "id_sae_proveedor", "proyecto",
   "zona", "area", "categoria"]);
@@ -1011,7 +1091,7 @@ const COLUMNAS_DEL_PAGO = new Set(["importe", "status", "fecha_pago", "enviado_p
 const estiloFilaUSD = (moneda) => monedaNorm(moneda) === "USD"
   ? { background: FONDO_USD, boxShadow: `inset 3px 0 0 ${T.accent}` } : undefined;
 const EtiquetaUSD = () => (
-  <span style={{ fontSize: 9.5, fontWeight: 700, color: "#FFFFFF", background: T.accent, borderRadius: 4,
+  <span style={{ fontSize: 9.5, fontWeight: 700, color: T.onAccent, background: T.accent, borderRadius: 4,
                  padding: "1px 5px", marginLeft: 6, verticalAlign: "middle", letterSpacing: "0.04em" }}>USD</span>
 );
 
@@ -1484,7 +1564,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
                   decirlo, parece que faltan partidas — que es exactamente como
                   se reportó este comportamiento. */}
               {ocultasPorMoneda > 0 && (
-                <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "8px 11px", borderRadius: "0 6px 6px 0", fontSize: 11.5, marginBottom: 10 }}>
+                <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "8px 11px", borderRadius: "0 6px 6px 0", fontSize: 11.5, marginBottom: 10 }}>
                   Se ocultan <b>{ocultasPorMoneda}</b> partida(s) de otra moneda. Esta transacción está en <b>{moneda || "MXP"}</b>;
                   cambia la moneda del formulario si el gasto es en la otra.
                 </div>
@@ -1713,7 +1793,7 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
                 {editando.id ? "Editar proveedor" : "Nuevo proveedor"} — {unidad}
               </div>
               {avisoMaestro && (
-                <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "8px 11px",
+                <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "8px 11px",
                               borderRadius: "0 6px 6px 0", fontSize: 11.5, marginBottom: 12 }}>
                   {avisoMaestro}
                 </div>
@@ -3702,7 +3782,7 @@ function CategoriaCombo({ value, onChange, grupos }) {
         <div ref={refLista}
           style={{ position: "absolute", top: "calc(100% + 2px)", left: 0, minWidth: "100%", width: "max-content", maxWidth: 360,
                    maxHeight: 320, overflowY: "auto", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 6,
-                   boxShadow: "0 8px 24px rgba(0,0,0,0.18)", zIndex: 50, padding: "4px 0" }}>
+                   boxShadow: `0 8px 24px ${T.sombra}`, zIndex: 50, padding: "4px 0" }}>
           {!q && opcion("", "— Sin categoría —", false)}
           {filtrados.map((g) => (
             <div key={g.label}>
@@ -3727,7 +3807,7 @@ function Select(props) {
 
 function Button({ children, variant = "primary", style, ...rest }) {
   const styles = {
-    primary: { background: T.accent, color: "#FFFFFF", border: `1px solid ${T.accent}` },
+    primary: { background: T.accent, color: T.onAccent, border: `1px solid ${T.accent}` },
     ghost: { background: "transparent", color: T.textDim, border: `1px solid ${T.border}` },
     danger: { background: "transparent", color: T.red, border: `1px solid ${T.red}44` },
   };
@@ -3775,9 +3855,9 @@ function Pill({ children, tone = "dim" }) {
   const tones = {
     dim: { color: T.textDim, background: T.panelAlt, border: `1px solid ${T.border}` },
     accent: { color: T.accentDim, background: T.accentBg, border: `1px solid ${T.accent}55` },
-    amber: { color: T.amberDim, background: "#B8791C1A", border: `1px solid ${T.amberDim}` },
-    teal: { color: T.teal, background: "#1E8F731A", border: `1px solid #1E8F7355` },
-    red: { color: T.red, background: "#C0483F1A", border: `1px solid #C0483F55` },
+    amber: { color: T.amberDim, background: `${T.amber}1A`, border: `1px solid ${T.amberDim}` },
+    teal: { color: T.teal, background: `${T.teal}1A`, border: `1px solid ${T.teal}55` },
+    red: { color: T.red, background: `${T.red}1A`, border: `1px solid ${T.red}55` },
   };
   return (
     <span style={{
@@ -3909,7 +3989,7 @@ function useRangoMeses(clave, aniosConDatos, porDefecto = "ytd") {
               style={{ padding: "5px 10px", borderRadius: 999, cursor: "pointer", fontSize: 11.5, fontFamily: T.fontUI,
                        border: `1px solid ${activo ? T.accent : T.border}`,
                        background: activo ? T.accent : "transparent",
-                       color: activo ? "#FFFFFF" : T.textDim }}>
+                       color: activo ? T.onAccent : T.textDim }}>
               {a.label}
             </button>
           );
@@ -3959,7 +4039,7 @@ function Dashboard(props) {
             <button key={s.id} onClick={() => setSub(s.id)}
               style={{ padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
                        background: sub === s.id ? T.accent : "transparent",
-                       color: sub === s.id ? "#FFFFFF" : T.textDim,
+                       color: sub === s.id ? T.onAccent : T.textDim,
                        fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI }}>
               {s.label}
             </button>
@@ -5592,7 +5672,7 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
   const levelColor = GROUP_LEVEL_COLORS[depth % GROUP_LEVEL_COLORS.length];
   // La jerarquía visual baja de intensidad mientras más profundo el nivel:
   // fondo más oscuro y texto más grande/grueso arriba, más sutil abajo.
-  const bgShade = ["#EEF1F4", "#F4F6F8", "#F8F9FB"][Math.min(depth, 2)];
+  const bgShade = T.niveles[Math.min(depth, 2)];
   const valueFontSize = [13, 12, 11.5][Math.min(depth, 2)];
   const valueFontWeight = [700, 600, 600][Math.min(depth, 2)];
   const labelFontSize = [12, 11, 10.5][Math.min(depth, 2)];
@@ -5810,7 +5890,7 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
               una clasificación obligaría a rehacerlo, y casi siempre es más
               fácil corregirla después desde la tabla. */}
           {preview.rows.some((r) => r._avisoClasificacion) && (
-            <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
+            <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
               <b>Hay filas cuyo rubro o categoría no existe en el catálogo</b>
               Se van a importar de todas formas, pero conviene revisarlas: el Dashboard agrupa por rubro,
               y un rubro inventado queda fuera de todos los cortes.
@@ -6390,7 +6470,7 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
         : "Revisa cada cifra antes de generar: el desglose fiscal se deduce del importe pagado y solo es exacto si corresponde al esquema elegido"}
       onClose={onClose} width={900} cerrarAlHacerClicFuera={false}>
       {importeDistinto && (
-        <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 14, lineHeight: 1.5 }}>
+        <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 14, lineHeight: 1.5 }}>
           <b>La parcialidad tiene registrado otro importe.</b>{" "}
           Tiene {money(t.importe, t.moneda)}, pero el {Number(pctPago) || 0}% del total de la compra da {money(aPagar, t.moneda)}.
           {t.status === "Pagado"
@@ -6399,7 +6479,7 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
         </div>
       )}
       {faltantes.length > 0 && (
-        <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 14 }}>
+        <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 14 }}>
           <b>La solicitud va a salir incompleta</b>
           Falta: {faltantes.join(" · ")}. Puedes generarla igual y completar a mano,
           pero conviene corregirlo en la app para que la próxima salga sola.
@@ -6497,7 +6577,7 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
                     onChange={(e) => setPctPago(e.target.value)} />
                 )}
               </div>
-              <div style={{ ...filaStyle, borderBottom: "none", background: "#1E8F730F" }}>
+              <div style={{ ...filaStyle, borderBottom: "none", background: `${T.teal}0F` }}>
                 <span style={{ fontWeight: 700 }}>{padre ? "Pago de la parcialidad" : "Total a pagar"}</span>
                 <span style={{ ...cifra, fontSize: 15, fontWeight: 700, color: T.teal }}>${num(aPagar)}</span>
               </div>
@@ -6670,12 +6750,12 @@ function EditarSolicitudPagoModal({ solicitud, onClose, session, onGuardado }) {
         <div style={{ display: "flex", gap: 6 }}>
           <button type="button" onClick={() => setFormato("pdf")}
             style={{ padding: "6px 12px", borderRadius: 6, border: `1px solid ${T.border}`, cursor: "pointer",
-                     background: formato === "pdf" ? T.accent : "transparent", color: formato === "pdf" ? "#FFF" : T.textDim }}>
+                     background: formato === "pdf" ? T.accent : "transparent", color: formato === "pdf" ? T.onAccent : T.textDim }}>
             PDF
           </button>
           <button type="button" onClick={() => setFormato("excel")}
             style={{ padding: "6px 12px", borderRadius: 6, border: `1px solid ${T.border}`, cursor: "pointer",
-                     background: formato === "excel" ? T.accent : "transparent", color: formato === "excel" ? "#FFF" : T.textDim }}>
+                     background: formato === "excel" ? T.accent : "transparent", color: formato === "excel" ? T.onAccent : T.textDim }}>
             Excel
           </button>
         </div>
@@ -8466,7 +8546,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
             )}
           </div>
           {preview.desajustes > 0 && (
-            <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
+            <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
               <b>{preview.desajustes} fila(s) traen un folio de partida en otra moneda</b>
               No se vincularon a propósito: comparar un gasto en una moneda contra un presupuesto
               en otra no significa nada, y si la partida tiene prorrateo el importe se reparte entre
@@ -10733,7 +10813,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             style={{
               padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
               background: subTx === st.id ? T.accent : "transparent",
-              color: subTx === st.id ? "#FFFFFF" : T.textDim,
+              color: subTx === st.id ? T.onAccent : T.textDim,
               fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
             }}
           >{st.label}</button>
@@ -12547,7 +12627,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               </div>
             </div>
             {!previewPDF.ancho.cabe && (
-              <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "8px 12px", borderRadius: "0 6px 6px 0", fontSize: 12 }}>
+              <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "8px 12px", borderRadius: "0 6px 6px 0", fontSize: 12 }}>
                 <b>La tabla se pasa del ancho de la hoja</b> (~{previewPDF.ancho.usado} pt contra {previewPDF.ancho.disponible} disponibles).
                 Las columnas se aprietan y el texto se parte. Quita algunas en "Columnas del PDF".
               </div>
@@ -13040,7 +13120,7 @@ function ZonasPanel({ zonasApi, transacciones = [], unidad }) {
       </div>
 
       {!zonasApi.rows.length && (
-        <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
+        <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
           <b>La tabla de zonas está vacía</b>
           Mientras tanto el selector usa la lista de respaldo. Corre la migración
           <code style={{ fontFamily: T.fontMono, margin: "0 4px" }}>06-catalogo-zonas.sql</code>
@@ -13049,7 +13129,7 @@ function ZonasPanel({ zonasApi, transacciones = [], unidad }) {
       )}
 
       {huerfanas.length > 0 && (
-        <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
+        <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 12 }}>
           <b>Zonas en uso que no están en el catálogo</b>
           Aparecen en transacciones pero nadie las dio de alta, así que no salen en el selector:
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
@@ -13242,7 +13322,7 @@ function RubrosPanel({ rubrosApi, categoriasApi, partidas = [], transacciones = 
       subtitle={`${rubros.length} rubros · ${categoriasApi.rows.length} categorías — alimentan Partidas y Transacciones`}
     >
       {!rubrosApi.rows.length && (
-        <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 14 }}>
+        <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12, marginBottom: 14 }}>
           <b>El catálogo de la base está vacío</b>
           Mientras tanto se usa la lista del código. Corre
           <code style={{ fontFamily: T.fontMono, margin: "0 4px" }}>16-catalogo-editable.sql</code>
@@ -14120,8 +14200,8 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
       `${titulo}.xlsx`.replace(/[\\/:*?"<>|]/g, "-"));
   };
 
-  const th = { ...thStyle, textAlign: "center", background: "#D2D6DB", color: T.text, fontSize: 12, textTransform: "none", letterSpacing: 0, padding: "10px" };
-  const td = { ...tdStyle, fontSize: 13, background: "#EEF0F2" };
+  const th = { ...thStyle, textAlign: "center", background: T.tablaHead, color: T.text, fontSize: 12, textTransform: "none", letterSpacing: 0, padding: "10px" };
+  const td = { ...tdStyle, fontSize: 13, background: T.tablaCelda };
   const num = { ...td, fontFamily: T.fontMono, textAlign: "right", whiteSpace: "nowrap" };
 
   return (
@@ -14210,7 +14290,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
               ) : x.tipo === "titulo" ? (
                 <tr key={`t${i}`} onClick={() => alternarGrupo(x.ruta)} style={{ cursor: "pointer" }}
                   title={x.cerrado ? "Expandir grupo" : "Contraer grupo"}>
-                  <td colSpan={5} style={{ ...td, background: ["#DCE1E6", "#E6EAEE", "#EEF1F4"][Math.min(x.depth, 2)],
+                  <td colSpan={5} style={{ ...td, background: T.tablaNiveles[Math.min(x.depth, 2)],
                   fontWeight: 700, fontSize: [12.5, 12, 11.5][Math.min(x.depth, 2)], paddingLeft: 10 + x.depth * 22 }}>
                   <span style={{ color: T.textFaint, fontSize: 10, marginRight: 8 }}>{x.cerrado ? "▶" : "▼"}</span>
                   {x.texto} <span style={{ fontWeight: 400, color: T.textFaint }}>({x.n})</span></td></tr>
@@ -14249,11 +14329,11 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
             {filas.length > 0 && (
               <tfoot>
                 <tr>
-                  <td style={{ ...num, fontWeight: 700, background: "#D2D6DB" }}>{m(tot.estimada)}</td>
-                  <td style={{ ...td, textAlign: "center", fontWeight: 700, background: "#D2D6DB" }}>TOTAL</td>
-                  <td style={{ ...num, fontWeight: 700, background: "#D2D6DB" }}>{m(tot.real)}</td>
-                  <td style={{ ...num, fontWeight: 700, background: "#D2D6DB", color: colorDif(tot.real - tot.estimada) }}>{m(tot.real - tot.estimada)}</td>
-                  <td style={{ ...num, fontWeight: 700, background: "#D2D6DB", color: colorDif(tot.real - tot.estimada) }}>{pct(tot.real - tot.estimada, tot.estimada)}</td>
+                  <td style={{ ...num, fontWeight: 700, background: T.tablaHead }}>{m(tot.estimada)}</td>
+                  <td style={{ ...td, textAlign: "center", fontWeight: 700, background: T.tablaHead }}>TOTAL</td>
+                  <td style={{ ...num, fontWeight: 700, background: T.tablaHead }}>{m(tot.real)}</td>
+                  <td style={{ ...num, fontWeight: 700, background: T.tablaHead, color: colorDif(tot.real - tot.estimada) }}>{m(tot.real - tot.estimada)}</td>
+                  <td style={{ ...num, fontWeight: 700, background: T.tablaHead, color: colorDif(tot.real - tot.estimada) }}>{pct(tot.real - tot.estimada, tot.estimada)}</td>
                 </tr>
               </tfoot>
             )}
@@ -14431,7 +14511,7 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
           <button key={x.id} onClick={() => setSub(x.id)}
             style={{ padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
                      background: sub === x.id ? T.accent : "transparent",
-                     color: sub === x.id ? "#FFFFFF" : T.textDim,
+                     color: sub === x.id ? T.onAccent : T.textDim,
                      fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI }}>
             {x.label}
           </button>
@@ -14524,7 +14604,7 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
         {cargando ? (
           <div style={{ color: T.textFaint, fontSize: 12.5, padding: 20, textAlign: "center" }}>Cargando…</div>
         ) : !reportado.length ? (
-          <div style={{ borderLeft: `3px solid ${T.amber}`, background: "#FDF8EF", padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12 }}>
+          <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "10px 13px", borderRadius: "0 6px 6px 0", fontSize: 12 }}>
             <b>Todavía no hay línea base</b>
             Registra el primer reporte oficial para que la app pueda distinguir lo planeado de lo imprevisto.
             Antes de eso, todo sería imprevisto y no diría nada.
@@ -15599,7 +15679,7 @@ function PreguntaSiNo({ numero, texto, valor, onChange, apagado, preestablecida 
             style={{
               padding: "5px 17px", borderRadius: 5, border: "none", cursor: "pointer",
               background: valor === v ? fondo : "transparent",
-              color: valor === v ? "#FFFFFF" : T.textFaint,
+              color: valor === v ? T.onAccent : T.textFaint,
               fontWeight: 600, fontSize: 12, fontFamily: T.fontUI, lineHeight: 1.3,
             }}
           >{etiqueta}</button>
@@ -15627,7 +15707,7 @@ function BloqueCompuerta({ n, titulo, salida, estado, children }) {
     }}>
       <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 9 }}>
         <span style={{
-          fontSize: 11, fontWeight: 700, color: decide ? "#FFFFFF" : T.textDim,
+          fontSize: 11, fontWeight: 700, color: decide ? T.onAccent : T.textDim,
           background: decide ? T.accent : T.panelAlt, borderRadius: 4,
           padding: "2px 7px", flexShrink: 0,
         }}>{n}</span>
@@ -16941,7 +17021,7 @@ function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, inst
             style={{
               padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
               background: sub === sc.id ? T.accent : "transparent",
-              color: sub === sc.id ? "#FFFFFF" : T.textDim,
+              color: sub === sc.id ? T.onAccent : T.textDim,
               fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
             }}
           >
@@ -19690,7 +19770,7 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
             style={{
               padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
               background: sub === s.id ? T.accent : "transparent",
-              color: sub === s.id ? "#FFFFFF" : T.textDim,
+              color: sub === s.id ? T.onAccent : T.textDim,
               fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
             }}
           >{s.label}</button>
@@ -19764,7 +19844,7 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
                 style={{
                   padding: "5px 14px", borderRadius: 5, border: "none", cursor: "pointer",
                   background: vista === v ? T.accent : "transparent",
-                  color: vista === v ? "#FFFFFF" : T.textDim,
+                  color: vista === v ? T.onAccent : T.textDim,
                   fontWeight: 600, fontSize: 12, fontFamily: T.fontUI,
                 }}>{et}</button>
             ))}
@@ -19781,7 +19861,7 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
                 fontSize: 12, fontWeight: 600,
                 border: `1px solid ${!filtroEstado ? T.accent : T.border}`,
                 background: !filtroEstado ? T.accent : T.panel,
-                color: !filtroEstado ? "#FFFFFF" : T.textDim,
+                color: !filtroEstado ? T.onAccent : T.textDim,
               }}
             >Todas {recientes.filter(enRango).length}</button>
             {porEstado.filter((e) => e.n > 0 || e.value === filtroEstado).map((e) => (
@@ -19793,7 +19873,7 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
                   fontSize: 12, fontWeight: 600,
                   border: `1px solid ${filtroEstado === e.value ? T.accent : T.border}`,
                   background: filtroEstado === e.value ? T.accent : T.panel,
-                  color: filtroEstado === e.value ? "#FFFFFF" : T.textDim,
+                  color: filtroEstado === e.value ? T.onAccent : T.textDim,
                 }}
               >{e.label} {e.n}</button>
             ))}
@@ -19921,7 +20001,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
             style={{
               padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
               background: sub === sc.id ? T.accent : "transparent",
-              color: sub === sc.id ? "#FFFFFF" : T.textDim,
+              color: sub === sc.id ? T.onAccent : T.textDim,
               fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
             }}
           >
@@ -21822,7 +21902,7 @@ function VehiculosTab({ vehiculos, vehiculosApi, mantenimientos, mantenimientosA
               style={{
                 padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
                 background: sub === s.id ? T.accent : "transparent",
-                color: sub === s.id ? "#FFFFFF" : T.textDim,
+                color: sub === s.id ? T.onAccent : T.textDim,
                 fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
               }}
             >
@@ -22045,8 +22125,9 @@ export default function App() {
         details > summary::-webkit-details-marker { display: none; }
         details > summary:before { content: '▸ '; color: ${T.textFaint}; }
         details[open] > summary:before { content: '▾ '; }
-        select, input { color-scheme: light; }
-        ::selection { background: ${T.accentBg}; }
+        select, input, textarea { color-scheme: ${T.esquema}; }
+        html, body { background: ${T.bg}; color-scheme: ${T.esquema}; }
+        ::selection { background: ${T.sel}; color: ${T.selText}; }
         table tbody tr:nth-child(even) > td { background-color: ${T.bg}; }
       `}</style>
 
@@ -22074,7 +22155,7 @@ export default function App() {
                 style={{
                   padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
                   background: unidad === u ? T.accent : "transparent",
-                  color: unidad === u ? "#FFFFFF" : T.textDim,
+                  color: unidad === u ? T.onAccent : T.textDim,
                   fontWeight: 700, fontSize: 12.5, fontFamily: T.fontMono,
                 }}
               >
@@ -22087,6 +22168,12 @@ export default function App() {
           <span style={{ fontSize: 11.5, color: T.textFaint }}>
             {perfilesApi.rows.find((p) => p.id === session.user.id)?.nombre || session.user.email}
           </span>
+          <button onClick={cambiarTema}
+            title="Cambiar entre tema claro y oscuro (se recuerda en este navegador)"
+            style={{ fontSize: 12, color: T.textDim, border: `1px solid ${T.border}`, background: "none",
+                     borderRadius: 5, padding: "3px 8px", cursor: "pointer", fontFamily: T.fontUI }}>
+            {TEMA === "oscuro" ? "Tema claro" : "Tema oscuro"}
+          </button>
           <Button variant="ghost" onClick={() => supabase.auth.signOut()}>Cerrar sesión</Button>
         </div>
       </div>

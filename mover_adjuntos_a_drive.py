@@ -357,7 +357,7 @@ def borrar_en_drive(drive, adj):
 # --------------------------------------------------------------------------
 # Correo
 # --------------------------------------------------------------------------
-def enviar_correo(gmail, para, asunto, cuerpo, adjuntos=()):
+def enviar_correo(gmail, para, asunto, cuerpo, adjuntos=(), responder_a=None):
     """Texto plano a propósito: un acuse no necesita formato, y el texto llega
        igual de bien a un cliente de correo viejo que a un teléfono.
 
@@ -367,6 +367,8 @@ def enviar_correo(gmail, para, asunto, cuerpo, adjuntos=()):
     msg["Subject"] = asunto
     if REMITENTE and REMITENTE != "me":
         msg["From"] = REMITENTE
+    if responder_a:
+        msg["Reply-To"] = responder_a
     msg.set_content(cuerpo)
     for nombre, contenido, mime in adjuntos:
         principal, _, sub = (mime or "application/octet-stream").partition("/")
@@ -483,6 +485,65 @@ def acuses(gmail, drive):
             print(f"  acuse -> {s['correo_solicitante']} ({s['folio']}, con PDF)")
         except Exception as e:
             print(f"  No se pudo avisar de {s['folio']}: {e}")
+    return enviados
+
+
+def avisos_compras(gmail):
+    """Avisa a Compras de cada SMI nueva, con el link a su expediente.
+
+       Sale después del acuse al solicitante y no antes: el acuse ya espera a
+       que todos los archivos y el PDF estén en Drive, así que cuando Compras
+       abre el link, el expediente está completo.
+
+       Los destinatarios son los dos correos de la compañía en Solicitudes >
+       Parámetros. Si una compañía no tiene ninguno, sus SMI se quedan sin
+       marcar y salen en cuanto se capture un correo.
+
+       Reply-To es el solicitante: si Compras contesta, le contesta a él."""
+    pend = rest("GET", "solicitudes",
+                params={"select": "id,folio,unidad,correo_solicitante,nombre_solicitante,"
+                                  "descripcion_general,proyecto,total,divisa,drive_folder_id",
+                        "aviso_compras_enviado_en": "is.null",
+                        "acuse_enviado_en": "not.is.null",
+                        "drive_folder_id": "not.is.null",
+                        "estado": "neq.cancelada",
+                        "order": "creado_en.asc", "limit": "50"}) or []
+    if not pend:
+        return 0
+
+    params = rest("GET", "solicitudes_parametros",
+                  params={"select": "unidad,correo_compras_1,correo_compras_2"}) or []
+    correos = {p["unidad"]: [c for c in (p.get("correo_compras_1"), p.get("correo_compras_2")) if c]
+               for p in params}
+
+    enviados = 0
+    for s in pend:
+        para = correos.get(s["unidad"]) or []
+        if not para:
+            continue
+        try:
+            enlace = f"https://drive.google.com/drive/folders/{s['drive_folder_id']}"
+            quien = s.get("nombre_solicitante") or s.get("correo_solicitante") or ""
+            cuerpo = (
+                f"Entró la solicitud {s['folio']}.\n\n"
+                f"  Quién la pide: {quien} <{s.get('correo_solicitante') or ''}>\n"
+                f"  Qué pide: {s.get('descripcion_general') or ''}\n"
+                + (f"  Proyecto: {s['proyecto']}\n" if s.get("proyecto") else "")
+                + f"  Importe estimado: ${float(s.get('total') or 0):,.2f} "
+                  f"{'USD' if s.get('divisa') == 'USD' else 'MXN'}\n\n"
+                f"Expediente (PDF oficial y archivos):\n{enlace}\n\n"
+                f"Si respondes este correo, le llega a quien la levantó.\n")
+            enviar_correo(gmail, ", ".join(para), f"Nueva solicitud {s['folio']}", cuerpo,
+                          responder_a=s.get("correo_solicitante") or None)
+            requests.patch(f"{SUPABASE_URL}/rest/v1/solicitudes",
+                           headers={**CAB, "Prefer": "return=minimal"},
+                           params={"id": f"eq.{s['id']}"},
+                           json={"aviso_compras_enviado_en": datetime.now(timezone.utc).isoformat()},
+                           timeout=60).raise_for_status()
+            enviados += 1
+            print(f"  aviso a Compras -> {', '.join(para)} ({s['folio']})")
+        except Exception as e:
+            print(f"  No se pudo avisar a Compras de {s['folio']}: {e}")
     return enviados
 
 
@@ -611,10 +672,14 @@ def main():
             fallidos += 1
 
     enviados = acuses(gmail, drive)
+    # Después de los acuses: así una SMI cuyo acuse sale en esta corrida
+    # también avisa a Compras en la misma, sin esperar quince minutos más.
+    avisados = avisos_compras(gmail)
     alertados = alertar_atorados(gmail)
 
     print(f"Movidos {movidos}, en espera {pospuestos}, con error {fallidos}, "
-          f"a la papelera {borrados}, acuses {enviados}, alertas {alertados}.")
+          f"a la papelera {borrados}, acuses {enviados}, avisos a Compras {avisados}, "
+          f"alertas {alertados}.")
 
 
 if __name__ == "__main__":

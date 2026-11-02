@@ -401,8 +401,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.84.0";
+const APP_VERSION = "2.85.0";
 const CHANGELOG = [
+  { v: "2.85.0", desc: "Todas las fechas se muestran como dd/mm/aa: tablas, encabezados de grupo, tablero de solicitudes, avisos, PDF y Excel. Las que llevan hora, como dd/mm/aa hh:mm. En los Excel las fechas son fechas de verdad con ese formato, no texto, asi que siguen ordenando y filtrando. La base sigue guardando ISO y los filtros y el orden no cambian. Los contratos conservan la fecha con letra. Los campos para capturar fecha los dibuja el navegador y siguen su propio formato." },
   { v: "2.84.0", desc: "Tema claro y oscuro, como en Control de Inventarios. Un boton en el encabezado, junto a Cerrar sesion, cambia entre los dos; la eleccion se recuerda en cada navegador y el default sigue siendo el claro. Toda la app pinta desde una sola paleta, asi que el cambio llega a todas las pantallas, al formulario publico y al login. Los colores que estaban fijos (avisos ambar, renglones en dolares, parcialidades, el reporte comparativo, la letra del boton principal) ya toman el color del tema, y los controles nativos (calendario, listas) se ven oscuros. El texto seleccionado tiene color propio. Los PDF y los Excel no cambian: son documentos para imprimir y mandar." },
   { v: "2.83.0", desc: "Solicitudes, tablero: nueva columna Cancelada al final. Una SMI cancelada ya no desaparece del tablero: queda a la vista, atenuada, y se puede regresar a cualquier paso arrastrandola. Cancelar pide confirmacion, en el tablero y en el detalle; si la SMI ya estaba en Agendado a pago, avisa que su transaccion no se cancela sola. La columna Agendado a pago ya no dice que la conversion esta pendiente." },
   { v: "2.82.0", desc: "Captura de SMI (formulario publico y captura interna), conceptos: Unidad pasa a ser una lista de unidades estandar en lugar de texto libre. Cantidad y Precio estimado solo aceptan numeros, sin negativos, con hasta tres decimales; la coma se toma como punto. En la captura interna, Precio unitario se llama ahora Precio estimado, igual que en el formulario publico. Los conceptos ya guardados con una unidad fuera de la lista la conservan al editarse." },
@@ -1111,7 +1112,88 @@ function ImporteConEquivalente({ t, serie }) {
   );
 }
 
-const fechaCorta = (iso) => { const [y, m, d] = String(iso).split("-"); return `${d}/${m}/${y}`; };
+/* ----------------------------------------------------------------------
+   FECHAS: toda la app muestra dd/mm/aa.
+   La base guarda y la app compara en ISO (2026-10-06): ordena bien como
+   texto y no depende del navegador. El formato es solo para mostrar, así
+   que se aplica en el último momento y nunca se guarda.
+   Las celdas de tablas, los encabezados de grupo, los PDF (autoTabla) y los
+   Excel (escribirExcel) se convierten solos: cualquier texto que sea
+   EXACTAMENTE una fecha ISO sale como dd/mm/aa. Lo que se arma a mano
+   (avisos, títulos) usa fmtFecha.
+   No aplica a los contratos, que llevan la fecha con letra (fechaLarga).
+---------------------------------------------------------------------- */
+const RE_FECHA_ISO = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2})(?::\d{2}(?:\.\d+)?)?(Z|[+-]\d{2}(?::?\d{2})?)?)?$/;
+const esFechaIso = (v) => typeof v === "string" && RE_FECHA_ISO.test(v.trim());
+const dos = (n) => String(n).padStart(2, "0");
+
+/* Un timestamp ("2026-10-28 16:00:39+00") es un instante: se pasa a la hora
+   local antes de tomar el día, o lo de la noche saldría con el día siguiente.
+   Una fecha sola ("2026-10-06") es un día y se toma tal cual. */
+function aFechaLocal(v) {
+  if (v instanceof Date) return isNaN(v) ? null : v;
+  const t = String(v ?? "").trim();
+  const m = RE_FECHA_ISO.exec(t);
+  if (!m) return null;
+  if (m[4] === undefined) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  // Postgres manda la zona como "+00"; Date solo entiende "+00:00".
+  const d = new Date(t.replace(" ", "T").replace(/([+-]\d{2})$/, "$1:00"));
+  return isNaN(d) ? null : d;
+}
+function fmtFecha(v) {
+  if (v === null || v === undefined || v === "") return "";
+  const d = aFechaLocal(v);
+  if (!d) return String(v);
+  return `${dos(d.getDate())}/${dos(d.getMonth() + 1)}/${String(d.getFullYear()).slice(-2)}`;
+}
+function fmtFechaHora(v) {
+  if (v === null || v === undefined || v === "") return "";
+  const d = aFechaLocal(v);
+  if (!d) return String(v);
+  return `${fmtFecha(d)} ${dos(d.getHours())}:${dos(d.getMinutes())}`;
+}
+/* Para celdas y valores que pueden ser fecha o no: si es una fecha ISO la
+   formatea, y cualquier otra cosa (texto, número, JSX) pasa sin tocarse. */
+const mostrarFecha = (v) => (esFechaIso(v) ? (v.trim().length > 10 ? fmtFechaHora(v) : fmtFecha(v)) : v);
+const fechaCorta = fmtFecha;
+
+/* autoTable con las fechas en dd/mm/aa. Se cambia el texto de la celda y no
+   el dato: los encabezados no se tocan y el hook propio de cada tabla, si
+   lo tiene, se sigue ejecutando. */
+function autoTabla(doc, opciones) {
+  const propio = opciones.didParseCell;
+  return autoTable(doc, {
+    ...opciones,
+    didParseCell: (d) => {
+      if (d.section !== "head") {
+        const raw = d.cell.raw && typeof d.cell.raw === "object" && "content" in d.cell.raw ? d.cell.raw.content : d.cell.raw;
+        if (esFechaIso(raw)) d.cell.text = [String(mostrarFecha(raw))];
+      }
+      if (propio) propio(d);
+    },
+  });
+}
+
+/* Excel: las fechas salen como fecha DE VERDAD con formato dd/mm/aa, no como
+   texto. Así se ven igual que en la app pero en Excel siguen ordenando y
+   filtrando como fechas. Se construyen en UTC porque ExcelJS escribe el Date
+   en UTC: con la hora local, un día podía recorrerse al anterior. */
+async function escribirExcel(wb) {
+  wb.eachSheet((ws) => {
+    ws.eachRow({ includeEmpty: false }, (row) => {
+      row.eachCell({ includeEmpty: false }, (cell) => {
+        if (!esFechaIso(cell.value)) return;
+        const d = aFechaLocal(cell.value);
+        if (!d) return;
+        const conHora = cell.value.trim().length > 10;
+        cell.value = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate(),
+                                       conHora ? d.getHours() : 0, conHora ? d.getMinutes() : 0));
+        cell.numFmt = conHora ? "dd/mm/yy hh:mm" : "dd/mm/yy";
+      });
+    });
+  });
+  return wb.xlsx.writeBuffer();
+}
 
 function IndicadorTipoCambio() {
   const serie = useTiposCambio();
@@ -2040,7 +2122,7 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, et
   doc.setFontSize(17).setFont(undefined, "bold");
   doc.text(String(version), M + anchoU - 12, 52, { align: "right" });
   doc.setFontSize(7.5).setFont(undefined, "normal");
-  doc.text(new Date().toLocaleDateString("es-MX"), M + anchoU - 138, 52);
+  doc.text(fmtFecha(new Date()), M + anchoU - 138, 52);
   doc.setTextColor(107, 119, 133).setFont(undefined, "normal");
   doc.text(
     `${filas.length} registros   ·   ` +
@@ -2080,7 +2162,7 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, et
     filas.forEach((f) => body.push(filaDe(f)));
   }
 
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: 84,
     head: [esPres
       ? ["Folio", "Concepto", "Rubro", "Categoría", "Proyecto", "Importe"]
@@ -2136,7 +2218,7 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
   tit.font = { bold: true, size: 14, name: "Calibri" };
   fusionar(tit);
   // La revisión dentro del archivo, no solo en su nombre.
-  const rev = ws.addRow([`${periodo}   ·   REVISIÓN ${version}   ·   enviado el ${new Date().toLocaleDateString("es-MX")}`]);
+  const rev = ws.addRow([`${periodo}   ·   REVISIÓN ${version}   ·   enviado el ${fmtFecha(new Date())}`]);
   rev.font = { bold: true, size: 11, color: { argb: AZUL }, name: "Calibri" };
   fusionar(rev);
   const sub = ws.addRow([`${filas.length} registros   ·   ${fmtTot(tot)}`]);
@@ -2233,7 +2315,7 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
     wd.autoFilter = { from: { row: 3, column: 1 }, to: { row: 3, column: TX.length } };
   }
 
-  const buf = await wbx.xlsx.writeBuffer();
+  const buf = await escribirExcel(wbx);
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -2426,7 +2508,7 @@ function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas, g
     doc.setFont(undefined, "normal");
     y += 50;
     if (nuevas.length) {
-      autoTable(doc, {
+      autoTabla(doc, {
         startY: y,
         head: [["Día", "Zona", "Proveedor", "Concepto", "Área", "Solicitante", "Importe", "Mon."]],
         body: nuevas.slice().sort((a, b) => String(a.dia || "").localeCompare(String(b.dia || "")))
@@ -2442,11 +2524,11 @@ function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas, g
     }
     if (modificadas.length) {
       tituloSec(`CAMBIARON RESPECTO A LA REVISIÓN ${vsVersion} · ${modificadas.length}`, AMBAR);
-      autoTable(doc, {
+      autoTabla(doc, {
         startY: y,
         head: [["Día", "Zona", "Proveedor", "Concepto", "Qué cambió", "Antes", "Ahora", "Mon."]],
         body: modificadas.map((f) => [f.dia || "", f.zona || "", f.proveedor || "", f.concepto || "", f._queCambio,
-          `${f._antes.dia !== f.dia ? `${f._antes.dia || ""}  ` : ""}$${numMx(f._antes.importe)}${(f._antes.moneda || "MXP") !== (f.moneda || "MXP") ? ` ${f._antes.moneda || "MXP"}` : ""}`,
+          `${f._antes.dia !== f.dia ? `${fmtFecha(f._antes.dia)}  ` : ""}$${numMx(f._antes.importe)}${(f._antes.moneda || "MXP") !== (f.moneda || "MXP") ? ` ${f._antes.moneda || "MXP"}` : ""}`,
           `$${numMx(f.importe)}`, f.moneda || "MXP"]),
         styles: { fontSize: 7.5, cellPadding: 3.5, fillColor: AMBAR_S },
         alternateRowStyles: { fillColor: AMBAR_S },
@@ -2458,7 +2540,7 @@ function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas, g
     }
     if (retiradas.length) {
       tituloSec(`RETIRADOS — venían en la revisión ${vsVersion} y ya no están · ${retiradas.length}`, [107, 119, 133]);
-      autoTable(doc, {
+      autoTabla(doc, {
         startY: y,
         head: [["Día", "Zona", "Proveedor", "Concepto", "Importe", "Mon."]],
         body: retiradas.map((f) => [f.dia || "", f.zona || "", f.proveedor || "", f.concepto || "", `$${numMx(f.importe)}`, f.moneda || "MXP"]),
@@ -2502,7 +2584,7 @@ function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas, g
     .slice()
     .sort((a, b) => String(a.zona || "").localeCompare(String(b.zona || "")) || String(a.dia || "").localeCompare(String(b.dia || "")));
   const etiquetaCambio = (f) => (f._cambio === "nueva" ? "NUEVO" : f._cambio === "modificada" ? "CAMBIÓ" : "");
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: y,
     head: [[...(comparacion ? ["Rev."] : []), "Día", "Zona", "Área", "Proveedor", "Concepto", "Categoría", "Solicitante", "Importe", "Mon."]],
     body: ordenTabla.map((f) => [...(comparacion ? [etiquetaCambio(f)] : []), f.dia || "", f.zona || "", f.area || "", f.proveedor || "", f.concepto || "",
@@ -2563,7 +2645,7 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
   tit.font = { bold: true, size: 14, name: "Calibri" };
   ws.mergeCells(tit.number, 1, tit.number, COLS.length);
   if (version) {
-    const rv = ws.addRow([`REVISIÓN ${version}   ·   enviado el ${new Date().toLocaleDateString("es-MX")}`]);
+    const rv = ws.addRow([`REVISIÓN ${version}   ·   enviado el ${fmtFecha(new Date())}`]);
     rv.font = { bold: true, size: 11, color: { argb: AZUL }, name: "Calibri" };
     ws.mergeCells(rv.number, 1, rv.number, COLS.length);
   }
@@ -2738,7 +2820,7 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
   wp.views = [{ state: "frozen", ySplit: 1 }];
   wp.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: PL.length } };
 
-  const buf = await wbx.xlsx.writeBuffer();
+  const buf = await escribirExcel(wbx);
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -4322,7 +4404,7 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
                   <tr key={t.id}>
                     <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.accent, whiteSpace: "nowrap" }}>{t.folio_transaccion || "—"}</td>
                     <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{mes ? `${mes} ${anio}` : "—"}</td>
-                    <td style={{ ...tdStyle, fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{t.dia || "—"}</td>
+                    <td style={{ ...tdStyle, fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{fmtFecha(t.dia) || "—"}</td>
                     <td style={tdStyle}>{t.proveedor || "—"}</td>
                     <td style={{ ...tdStyle, color: T.textDim }}>{t.concepto_detallado || "—"}</td>
                     <td style={tdStyle}>{categoriaDe(t)}</td>
@@ -4805,26 +4887,13 @@ function AvisosFlotantes({ avisos }) {
 // (registros capturados antes de activar usuarios).
 // Formatea un timestamp de Supabase (ISO) a algo legible en es-MX.
 function formatFechaHora(iso) {
-  if (!iso) return "";
-  try {
-    return new Date(iso).toLocaleString("es-MX", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
-  } catch {
-    return "";
-  }
+  return fmtFechaHora(iso);
 }
 
 // Versión corta (sin año, sin "p.m." completo) para celdas angostas donde el
 // formato completo se encima con la columna de al lado.
 function formatFechaCorta(iso) {
-  if (!iso) return "";
-  try {
-    const d = new Date(iso);
-    const fecha = d.toLocaleDateString("es-MX", { day: "2-digit", month: "short" });
-    const hora = d.toLocaleTimeString("es-MX", { hour: "numeric", minute: "2-digit", hour12: true }).replace(/\s?[ap]\.?\s?m\.?/i, (m) => m.trim()[0].toLowerCase());
-    return `${fecha}, ${hora}`;
-  } catch {
-    return "";
-  }
+  return fmtFechaHora(iso);
 }
 
 function AutoriaCaption({ record, perfilesApi }) {
@@ -5503,7 +5572,7 @@ function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth, resolve
             {puedeAbrir
               ? <span style={{ color: T.textFaint, fontSize: 10 }}>{isCollapsed ? "▶" : "▼"}</span>
               : <span style={{ width: 10 }} />}
-            {entry.value}
+            {mostrarFecha(entry.value)}
             {puedeAbrir && <span style={{ color: T.textFaint, fontSize: 10.5 }}>({filas.length})</span>}
           </td>
           {meses.map((m) => <td key={m} style={cellStyle}>{entry.child.mesSums[m] ? money(entry.child.mesSums[m], mon) : "—"}</td>)}
@@ -5533,7 +5602,7 @@ function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth, resolve
       out.push(
         <tr key={groupPath} onClick={() => toggleGroup(groupPath)} style={{ cursor: "pointer", background: T.panelAlt }}>
           <td style={{ ...tdStyle, paddingLeft: 14 + depth * 22, fontWeight: 600, display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ color: T.textFaint, fontSize: 10 }}>{isCollapsed ? "▶" : "▼"}</span>{entry.value}
+            <span style={{ color: T.textFaint, fontSize: 10 }}>{isCollapsed ? "▶" : "▼"}</span>{mostrarFecha(entry.value)}
           </td>
           {meses.map((m) => <td key={m} style={{ ...cellStyle, fontWeight: 600 }}>{entry.child.mesSums[m] ? money(entry.child.mesSums[m], mon) : "—"}</td>)}
           <td style={{ ...cellStyle, fontWeight: 600 }}>{money(entry.child.total, mon)}</td>
@@ -5710,7 +5779,7 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
             <span style={{ color: T.textFaint, fontSize: depth === 0 ? 11 : 9.5, width: 12, flexShrink: 0 }}>{isCollapsed ? "▶" : "▼"}</span>
             <span style={{ fontSize: labelFontSize, fontWeight: labelFontWeight, color: labelColor, textTransform: "uppercase", letterSpacing: "0.04em", flexShrink: 0 }}>{fieldLabels[node.key] || node.key}</span>
             <Pill tone={pillTone}>
-              <span style={{ fontSize: valueFontSize, fontWeight: valueFontWeight, fontFamily: T.fontUI, letterSpacing: 0 }}>{entry.value}</span>
+              <span style={{ fontSize: valueFontSize, fontWeight: valueFontWeight, fontFamily: T.fontUI, letterSpacing: 0 }}>{mostrarFecha(entry.value)}</span>
             </Pill>
             <span style={{ fontSize: 10.5, color: T.textFaint, background: T.panel, borderRadius: 999, padding: "1px 7px", flexShrink: 0 }}>{entry.count}</span>
             {!enColumna && (
@@ -5788,7 +5857,7 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
     notas.getCell("A1").font = { bold: true };
     notas.getColumn(1).width = 90;
 
-    const buffer = await wbx.xlsx.writeBuffer();
+    const buffer = await escribirExcel(wbx);
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -6023,8 +6092,8 @@ async function generarExcelSPP(r) {
     return row;
   };
   dato("Folio", `${r.folio}-${r.revision || 1}`);
-  dato("Fecha Elaboracion", r.fecha_elaboracion);
-  dato("Fecha de Pago", r.fecha_pago || "");
+  dato("Fecha Elaboracion", fmtFecha(r.fecha_elaboracion));
+  dato("Fecha de Pago", fmtFecha(r.fecha_pago));
   dato("Zona", r.zona);
   dato("Proyecto", r.proyecto);
   if (r.centro_costo) dato(String(r.centro_costo).includes("·") ? "Centros de costo (prorrateo)" : "Centro de costo", r.centro_costo);
@@ -6094,7 +6163,7 @@ async function generarExcelSPP(r) {
   const fcl = dato("Cuenta CLABE", String(r.clabe || ""));
   fcl.getCell(2).numFmt = "@";
 
-  const buf = await wbx.xlsx.writeBuffer();
+  const buf = await escribirExcel(wbx);
   const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -6143,7 +6212,7 @@ function generarPdfSPP(r) {
     if (e2) doc.text(String(v2 || "—"), M + A / 2, y + 13);
     y += 28;
   };
-  filaDoble("Fecha de elaboración", r.fecha_elaboracion, "Fecha de pago", r.fecha_pago);
+  filaDoble("Fecha de elaboración", fmtFecha(r.fecha_elaboracion), "Fecha de pago", fmtFecha(r.fecha_pago));
   filaDoble("Zona", r.zona, "Proyecto", r.proyecto);
   filaDoble("Responsable de proyecto", r.responsable, "Solicitante", r.solicitante);
   filaDoble("Lugar de adquisición", r.lugar_adquisicion, "Proveedor ASPEL-SAE", r.proveedor_sae);
@@ -6170,7 +6239,7 @@ function generarPdfSPP(r) {
   y += 16;
 
   // --- Concepto y desglose ---
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: y,
     head: [["PARTIDA", "DESCRIPCIÓN DE PRODUCTOS O SERVICIOS", "CANT.", "P.U.", "SUBTOTAL"]],
     body: [[1, r.descripcion || "", r.cantidad, num(r.precio_unitario), num(r.subtotal)]],
@@ -6838,7 +6907,7 @@ function SolicitudesPagoListaPanel({ unidad, session }) {
                   <React.Fragment key={s.folio}>
                     <tr style={{ borderTop: `1px solid ${T.borderSoft}` }}>
                       <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{s.folio}</td>
-                      <td style={tdStyle}>{s.fecha_elaboracion}</td>
+                      <td style={tdStyle}>{fmtFecha(s.fecha_elaboracion)}</td>
                       <td style={tdStyle}>{s.proveedor || "—"}</td>
                       <td style={tdStyle}>{s.proyecto || "—"}</td>
                       <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(s.total_a_pagar, s.moneda === "Dólares" ? "USD" : "MXP")}</td>
@@ -7304,7 +7373,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         });
       });
     });
-    const buf = await wbx.xlsx.writeBuffer();
+    const buf = await escribirExcel(wbx);
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -7492,7 +7561,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
 
       if (revision) {
         // La revisión dentro del archivo, no solo en su nombre.
-        const rr = ws.addRow([`REVISIÓN ${revision}   ·   enviado el ${new Date().toLocaleDateString("es-MX")}`]);
+        const rr = ws.addRow([`REVISIÓN ${revision}   ·   enviado el ${fmtFecha(new Date())}`]);
         rr.font = { bold: true, size: 11, color: { argb: "FF3E5C76" }, name: "Calibri" };
         fusionar(rr);
       }
@@ -7598,7 +7667,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         }
       }
 
-      const buf = await wbx.xlsx.writeBuffer();
+      const buf = await escribirExcel(wbx);
       const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -7766,7 +7835,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           });
           return cel;
         });
-        autoTable(doc, {
+        autoTabla(doc, {
           startY: y,
           head: [[titulo, titulo.startsWith("Gasto ejercido") ? "Transacc." : "Partidas",
                   ...monedas.map((m) => `Importe ${m}`)]],
@@ -7912,7 +7981,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             )}
           </td>
           {columnasVisibles.map((c, i) => (
-            <td key={c.key} style={i === 0 && depth ? { ...tdStyle, paddingLeft: 14 + depth * 26 } : tdStyle}>{c.render(p)}</td>
+            <td key={c.key} style={i === 0 && depth ? { ...tdStyle, paddingLeft: 14 + depth * 26 } : tdStyle}>{mostrarFecha(c.render(p))}</td>
           ))}
           <td style={tdStyle}>
             <div style={{ display: "flex", gap: 4 }}>
@@ -8456,7 +8525,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
     notas.getCell("A1").font = { bold: true };
     notas.getColumn(1).width = 90;
 
-    const buffer = await wbx.xlsx.writeBuffer();
+    const buffer = await escribirExcel(wbx);
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -8569,7 +8638,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
                   const candidatas = r.unidad_detectada ? partidas.filter((p) => p.unidad === r.unidad_detectada) : partidas;
                   return (
                     <tr key={r.id}>
-                      <td style={tdStyle}>{r.dia}</td>
+                      <td style={tdStyle}>{fmtFecha(r.dia)}</td>
                       <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{r.folio_original || <span style={{ color: T.amber }}>(sin folio)</span>}</td>
                       <td style={tdStyle}>{r.proveedor}</td>
                       <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{money(r.importe, r.moneda)}</td>
@@ -9025,7 +9094,7 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
                           {preview.nuevas.map((f) => (
                             <tr key={`${f.sheetId}-${f.numeroFila}`} style={{ borderTop: `1px solid ${T.borderSoft}` }}>
                               <td style={{ ...tdStyle, color: T.textFaint }}>{f.hoja}</td>
-                              <td style={tdStyle}>{f.registro.dia}</td>
+                              <td style={tdStyle}>{fmtFecha(f.registro.dia)}</td>
                               <td style={tdStyle}>{f.registro.proveedor || "—"}</td>
                               <td style={tdStyle}>{f.registro.concepto_detallado || "—"}</td>
                               <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(f.registro.importe, f.registro.moneda)}</td>
@@ -9611,7 +9680,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const onColDropSV = (e, targetKey) => { e.preventDefault(); if (dragKeyRefSV.current) { moveColumnSV(dragKeyRefSV.current, targetKey); dragKeyRefSV.current = null; } };
   const renderRowSinVinc = (t, depth = 0) => (
     <tr key={t.id}>
-      {columnasSV.map((c) => <td key={c.key} style={{ ...tdStyle, paddingLeft: depth ? 14 + depth * 26 : undefined }}>{c.render(t)}</td>)}
+      {columnasSV.map((c) => <td key={c.key} style={{ ...tdStyle, paddingLeft: depth ? 14 + depth * 26 : undefined }}>{mostrarFecha(c.render(t))}</td>)}
       <td style={tdStyle}>
         <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
         {/* Mismo criterio que el formulario: solo partidas de la moneda de ESTA
@@ -10095,7 +10164,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       ws.views = [{ state: "frozen", ySplit: 4 }];
       if (!groupKeys.length) ws.autoFilter = { from: { row: 4, column: 1 }, to: { row: 4, column: COLS.length } };
 
-      const buf = await wbx.xlsx.writeBuffer();
+      const buf = await escribirExcel(wbx);
       const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
@@ -10155,7 +10224,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         <input type="checkbox" checked={seleccionadas.has(t.id)} onChange={() => toggleSeleccion(t.id)} />
       </td>
       {!esHija ? columnasVisibles.map((c) => (
-        <td key={c.key} style={celda}>{c.render(v)}</td>
+        <td key={c.key} style={celda}>{mostrarFecha(c.render(v))}</td>
       )) : (() => {
         /* Parcialidad: el tramo inicial de columnas generales (hasta la
            primera columna propia del pago) se une en UNA celda, con sangría
@@ -10174,14 +10243,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 </span>
               </div>
               <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>
-                Pago programado {t.dia || "—"}
+                Pago programado {fmtFecha(t.dia) || "—"}
                 {t.folio_compra_sae ? ` · Folio SAE ${t.folio_compra_sae}` : ""}
                 {t.tipo_pago ? ` · ${t.tipo_pago}` : ""}
               </div>
             </td>
           ),
           ...resto.map((c) => (
-            <td key={c.key} style={celda}>{COLUMNAS_HEREDADAS_PPD.has(c.key) ? null : c.render(v)}</td>
+            <td key={c.key} style={celda}>{COLUMNAS_HEREDADAS_PPD.has(c.key) ? null : mostrarFecha(c.render(v))}</td>
           )),
         ];
       })()}
@@ -10430,7 +10499,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     if (!confirm(
       `Duplicar al mes siguiente:\n\n` +
       `  ${t.concepto_detallado || t.proveedor || "Transacción"} — ${money(t.importe, t.moneda)}\n` +
-      `  Día de pago programado: ${t.dia} → ${nuevoDia}\n` +
+      `  Día de pago programado: ${fmtFecha(t.dia)} → ${fmtFecha(nuevoDia)}\n` +
       `  ${textoPartida}\n\n` +
       `La copia nace como borrador: sin folio, No Pagado, sin fecha de pago, sin folios de SAE ni factura, sin referencia y sin adjuntos.\n\n¿Continuar?`
     )) return;
@@ -11181,7 +11250,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     onChange={(e) => setBaseSem(e.target.value)}>
                     <option value="">La última enviada (v{Math.max(...versionesSem.map((r) => r.version))})</option>
                     {[...versionesSem].sort((a, b) => b.version - a.version).slice(1).map((r) => (
-                      <option key={r.id} value={String(r.version)}>v{r.version} — {new Date(r.enviado_en).toLocaleDateString("es-MX")}</option>
+                      <option key={r.id} value={String(r.version)}>v{r.version} — {fmtFecha(r.enviado_en)}</option>
                     ))}
                     <option value="0">Sin comparar</option>
                   </Select>
@@ -11619,7 +11688,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                                 <tr key={h.id} onClick={() => startEdit(h)} style={{ cursor: "pointer", opacity: estaCancelada(h) ? 0.5 : 1 }}
                                     title="Abrir la parcialidad">
                                   <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.accent }}>{h.folio_transaccion || `P${h.num_parcialidad} (borrador)`}</td>
-                                  <td style={tdStyle}>{h.dia || "—"}</td>
+                                  <td style={tdStyle}>{fmtFecha(h.dia) || "—"}</td>
                                   <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{fmtPct(h.pct_pago)}</td>
                                   <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{money(h.importe, h.moneda)}</td>
                                   <td style={tdStyle}>{estaCancelada(h) ? <Pill tone="dim">Cancelada</Pill>
@@ -11965,7 +12034,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     // que necesito?— con datos del archivo real.
     const ocultas = COLUMNAS_EXCEL.filter((c) => excelVis.hidden.has(c.key));
     const muestra = filasOrdenadas.slice(0, 3)
-      .map((f, i) => `  ${i + 1}. ` + columnasExcel.slice(0, 5).map((c) => String(c.get(f) ?? "—")).join(" · "))
+      .map((f, i) => `  ${i + 1}. ` + columnasExcel.slice(0, 5).map((c) => String(mostrarFecha(c.get(f)) ?? "—")).join(" · "))
       .join("\n");
     const okExcel = confirm(
       `Se va a descargar un Excel con:\n\n` +
@@ -12103,7 +12172,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       }
     });
 
-    const buffer = await wbx.xlsx.writeBuffer();
+    const buffer = await escribirExcel(wbx);
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     return { blob, inicio, fin };
   };
@@ -12192,7 +12261,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           doc.setTextColor(120);
           doc.text(grupo, 30, cursorY + 16);
 
-          autoTable(doc, {
+          autoTabla(doc, {
             startY: cursorY + 28,
             head: [columnasPDF.map((c) => c.label)],
             body: filasGrupo.map((f) => columnasPDF.map((c) => c.get(f))),
@@ -12319,7 +12388,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       `\n\nOJO: con ${columnasPDF.length} columnas la tabla del PDF se pasa del ancho de la hoja ` +
       `(~${ancho.usado} pt contra ${ancho.disponible}). Considera quitar algunas en "Columnas".`;
     const confirmado = confirm(
-      `Enviar a Pagos — ${unidad}, ${fecha}\n\n` +
+      `Enviar a Pagos — ${unidad}, ${fmtFecha(fecha)}\n\n` +
       `  ${trans.length} transacción(es):  ${totalesTxt}\n` +
       (aRegistrar.length ? `  ${aRegistrar.length} en borrador: se registran (folio y expediente)\n` : "") +
       (aPoliza.length ? `  ${aPoliza.length} REG por generar o rehacer\n` : "") +
@@ -12808,7 +12877,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
     ws.views = [{ state: "frozen", ySplit: hr.number }];
     ws.autoFilter = { from: { row: hr.number, column: 1 }, to: { row: hr.number, column: colsXls.length } };
 
-    const buffer = await wbx.xlsx.writeBuffer();
+    const buffer = await escribirExcel(wbx);
     const blob = new Blob([buffer], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -12868,7 +12937,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
       // Las mismas columnas que están a la vista, y en el mismo orden: si el
       // PDF mostrara otras, la tabla dejaría de servir para revisar lo que se
       // va a enviar.
-      autoTable(doc, {
+      autoTabla(doc, {
         startY: 58,
         head: [columnas.map((c) => c.label)],
         body: filasOrdenadas.map((f) => columnas.map((c) => (c.pdf ? c.pdf(f) : ""))),
@@ -13728,7 +13797,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
         C2.forEach((c, i) => { if (c[3]) row.getCell(i + 1).numFmt = '"$"#,##0.00'; });
       });
     }
-    const buf = await wbx.xlsx.writeBuffer();
+    const buf = await escribirExcel(wbx);
     descargarBlob(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
       `Seguimiento pagos ${unidad} ${rangoSemana(rep.periodo_ini, rep.periodo_fin)} v${rep.version}.xlsx`);
   };
@@ -13743,7 +13812,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
     doc.setFontSize(15).setFont(undefined, "bold").setTextColor(35, 42, 49);
     doc.text(`Seguimiento del ejercido — ${unidad} ${rango}`, M, 38);
     doc.setFontSize(9.5).setFont(undefined, "normal").setTextColor(107, 119, 133);
-    doc.text(`Reporte semanal a Dirección, versión ${rep.version} enviada el ${new Date(rep.enviado_en).toLocaleDateString("es-MX")}`
+    doc.text(`Reporte semanal a Dirección, versión ${rep.version} enviada el ${fmtFecha(rep.enviado_en)}`
       + `   ·   estado al ${formatFechaHora(new Date().toISOString())}`, M, 54);
 
     const estados = ["Pagada", "No ejercido", "Cancelada", "Eliminada"].filter((e) => por(e).length || e === "Pagada" || e === "No ejercido");
@@ -13760,7 +13829,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
       doc.setFont(undefined, "normal");
     });
 
-    autoTable(doc, {
+    autoTabla(doc, {
       startY: 126,
       head: [["Día", "Folio", "Proveedor", "Concepto", "Reportado", "Hoy", "Estado", "Fecha pago"]],
       body: filas.map((f) => [f.d.dia || "", f.d.folio || "", f.d.proveedor || "", f.d.concepto || "",
@@ -13785,7 +13854,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
       doc.setFontSize(11).setFont(undefined, "bold").setTextColor(35, 42, 49);
       doc.text(`Pagadas en la semana sin haberse reportado · ${noReportadas.length}`, M, doc.lastAutoTable.finalY + 26);
       doc.setFont(undefined, "normal");
-      autoTable(doc, {
+      autoTabla(doc, {
         startY: doc.lastAutoTable.finalY + 34,
         head: [["Día", "Folio", "Proveedor", "Concepto", "Importe", "Fecha pago"]],
         body: noReportadas.map((t) => [t.dia, t.folio_transaccion || "", t.proveedor || "", t.concepto_detallado || "",
@@ -13815,7 +13884,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
           {ordenadas.length > 1 && (
             <Field label="Versión">
               <Select value={rep.id} onChange={(e) => setRepId(e.target.value)}>
-                {ordenadas.map((r) => <option key={r.id} value={r.id}>v{r.version} — {new Date(r.enviado_en).toLocaleDateString("es-MX")}</option>)}
+                {ordenadas.map((r) => <option key={r.id} value={r.id}>v{r.version} — {fmtFecha(r.enviado_en)}</option>)}
               </Select>
             </Field>
           )}
@@ -13881,7 +13950,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
                 {visibles.map((f) => (
                   <tr key={f.d.id || f.d.origen_id}
                     style={f.cambio === "nueva" ? { background: "rgba(30,143,115,0.08)" } : undefined}>
-                    <td style={tdStyle}>{f.d.dia || "—"}</td>
+                    <td style={tdStyle}>{fmtFecha(f.d.dia) || "—"}</td>
                     <td style={{ ...tdStyle, fontFamily: T.fontMono }}>
                       {f.d.folio || "—"}
                       {f.cambio === "nueva" && <span style={{ marginLeft: 6 }}><Pill tone="teal">Nueva</Pill></span>}
@@ -13918,12 +13987,12 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
                 <tbody>
                   {noReportadas.map((t) => (
                     <tr key={t.id}>
-                      <td style={tdStyle}>{t.dia}</td>
+                      <td style={tdStyle}>{fmtFecha(t.dia)}</td>
                       <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{t.folio_transaccion || "—"}</td>
                       <td style={tdStyle}>{t.proveedor || "—"}</td>
                       <td style={{ ...tdStyle, color: T.textDim }}>{t.concepto_detallado || "—"}</td>
                       <td style={{ ...tdStyle, fontFamily: T.fontMono, textAlign: "right" }}>{money(t.importe, t.moneda)}</td>
-                      <td style={tdStyle}>{t.fecha_pago || "—"}</td>
+                      <td style={tdStyle}>{fmtFecha(t.fecha_pago) || "—"}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -14125,10 +14194,10 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     doc.setFontSize(14).setFont(undefined, "bold").setTextColor(35, 42, 49);
     doc.text(titulo, M, 40);
     doc.setFontSize(9).setFont(undefined, "normal").setTextColor(107, 119, 133);
-    doc.text(`Estimada: versión ${rep.version} enviada el ${new Date(rep.enviado_en).toLocaleDateString("es-MX")}   ·   `
+    doc.text(`Estimada: versión ${rep.version} enviada el ${fmtFecha(rep.enviado_en)}   ·   `
       + `Real ${soloPagado ? "(solo pagado)" : "(transacciones vinculadas, sin canceladas)"} al ${formatFechaHora(new Date().toISOString())}   ·   ${moneda}`
       + (q ? `   ·   búsqueda: "${buscar.trim()}"` : ""), M, 56);
-    autoTable(doc, {
+    autoTabla(doc, {
       startY: 70,
       head: [encabezado],
       body: cuerpoTabla.map((x) => x.tipo === "tx"
@@ -14164,7 +14233,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     const ws = wbx.addWorksheet("Presupuesto vs real");
     ws.columns = [{ width: 16 }, { width: 50 }, { width: 16 }, { width: 16 }, { width: 14 }, { width: 22 }];
     const t = ws.addRow([titulo]); t.font = { bold: true, size: 13 };
-    ws.addRow([`Estimada: versión ${rep.version} enviada el ${new Date(rep.enviado_en).toLocaleDateString("es-MX")} · Real al ${formatFechaHora(new Date().toISOString())} · ${moneda}`]);
+    ws.addRow([`Estimada: versión ${rep.version} enviada el ${fmtFecha(rep.enviado_en)} · Real al ${formatFechaHora(new Date().toISOString())} · ${moneda}`]);
     ws.addRow([]);
     const hr = ws.addRow([...encabezado, "Área"]);
     formatearHojaDatos(ws, hr, 6);
@@ -14195,7 +14264,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
     tr.font = { bold: true };
     [1, 3, 4].forEach((i) => { tr.getCell(i).numFmt = fmtNum; });
     tr.getCell(5).numFmt = "0.0%";
-    const buf = await wbx.xlsx.writeBuffer();
+    const buf = await escribirExcel(wbx);
     descargarBlob(new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" }),
       `${titulo}.xlsx`.replace(/[\\/:*?"<>|]/g, "-"));
   };
@@ -14234,7 +14303,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
           {periodos.map((p) => <option key={p}>{p}</option>)}</Select></Field>
         {versiones.length > 1 && (
           <Field label="Versión"><Select value={rep?.id || ""} onChange={(e) => setRepId(e.target.value)}>
-            {versiones.map((r) => <option key={r.id} value={r.id}>v{r.version} — {new Date(r.enviado_en).toLocaleDateString("es-MX")}</option>)}
+            {versiones.map((r) => <option key={r.id} value={r.id}>v{r.version} — {fmtFecha(r.enviado_en)}</option>)}
           </Select></Field>
         )}
         <Field label="Área"><Select value={area} onChange={(e) => setArea(e.target.value)} style={{ minWidth: 200 }}>
@@ -14303,7 +14372,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
                   <td style={{ ...num, fontWeight: 700, color: colorDif(x.t.real - x.t.estimada) }}>{pct(x.t.real - x.t.estimada, x.t.estimada)}</td>
                 </tr>
               ) : ((r) => (
-                <tr key={r.clave} title={r.txs.map((t) => `${t.dia || ""}  ${t.proveedor || ""}  ${money(t.importe, t.moneda)}${t.status === "Pagado" ? "" : " (sin pagar)"}`).join("\n") || "Sin transacciones"}>
+                <tr key={r.clave} title={r.txs.map((t) => `${fmtFecha(t.dia)}  ${t.proveedor || ""}  ${money(t.importe, t.moneda)}${t.status === "Pagado" ? "" : " (sin pagar)"}`).join("\n") || "Sin transacciones"}>
                   <td style={num}>{m(r.estimada)}</td>
                   <td style={{ ...td, textAlign: "center" }}>
                     {r.txs.length > 0 && (
@@ -14552,7 +14621,7 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
                   title="Volver a descargar los documentos, tal como se enviaron"
                   style={{ background: "transparent", border: "none", padding: 0,
                            color: T.accent, cursor: "pointer", fontFamily: T.fontMono, fontSize: 11.5 }}>
-                  v{r.version} ({new Date(r.enviado_en).toLocaleDateString("es-MX")}, {r.n_registros} reg.)
+                  v{r.version} ({fmtFecha(r.enviado_en)}, {r.n_registros} reg.)
                 </button>
                 {/* Solo la ÚLTIMA se puede deshacer: borrar una intermedia
                     dejaría huecos y haría dudar si faltó un envío. */}
@@ -14636,7 +14705,7 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
                     <div style={{ fontSize: 11.5, color: T.textDim, marginTop: 6 }}>
                       {items.slice(0, 4).map((x, i) => (
                         <div key={i}>
-                          {x.dia ? `${x.dia} · ` : ""}{x.proveedor ? `${x.proveedor} · ` : ""}{x.concepto || "—"}
+                          {x.dia ? `${fmtFecha(x.dia)} · ` : ""}{x.proveedor ? `${x.proveedor} · ` : ""}{x.concepto || "—"}
                           {x.solicitante ? ` · solicitó ${x.solicitante}` : ""}
                         </div>
                       ))}
@@ -14930,7 +14999,7 @@ function ParametrosPanel({ unidad, parametrosApi, session, hayDatosUnidad }) {
   const guardar = async () => {
     if (!desde) { alert("Indica desde cuándo rige esta versión."); return; }
     if (versiones.some((v) => String(v.vigente_desde) === desde)) {
-      alert(`Ya existe una versión que rige desde el ${desde}. Elige otra fecha.`);
+      alert(`Ya existe una versión que rige desde el ${fmtFecha(desde)}. Elige otra fecha.`);
       return;
     }
     if (vigente && !cambiados.length) {
@@ -14938,10 +15007,10 @@ function ParametrosPanel({ unidad, parametrosApi, session, hayDatosUnidad }) {
       return;
     }
     const resumen = vigente
-      ? `Se va a crear una versión nueva vigente desde ${desde}, con ${cambiados.length} valor(es) distinto(s):\n\n` +
+      ? `Se va a crear una versión nueva vigente desde ${fmtFecha(desde)}, con ${cambiados.length} valor(es) distinto(s):\n\n` +
         cambiados.map((c) => `  ${c.label}: ${formatParametro(vigente[c.key] ?? c.def, c.tipo)} → ${formatParametro(form[c.key], c.tipo)}`).join("\n") +
         `\n\nLa versión anterior NO se borra: los instrumentos ya emitidos la conservan.\n\n¿Continuar?`
-      : `Se va a crear la primera versión de parámetros de ${unidad}, vigente desde ${desde}.\n\n¿Continuar?`;
+      : `Se va a crear la primera versión de parámetros de ${unidad}, vigente desde ${fmtFecha(desde)}.\n\n¿Continuar?`;
     if (!confirm(resumen)) return;
 
     setGuardando(true);
@@ -14984,7 +15053,7 @@ function ParametrosPanel({ unidad, parametrosApi, session, hayDatosUnidad }) {
       {vigente && !abierto && (
         <>
           <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
-            Rige desde {vigente.vigente_desde}
+            Rige desde {fmtFecha(vigente.vigente_desde)}
             {versiones.length > 1 ? ` · ${versiones.length} versiones en total` : ""}
           </div>
           {GRUPOS_PARAMETROS.map((g) => (
@@ -15019,7 +15088,7 @@ function ParametrosPanel({ unidad, parametrosApi, session, hayDatosUnidad }) {
             </Field>
             <div style={{ fontSize: 12, color: T.textDim, paddingBottom: 9 }}>
               {vigente
-                ? `La versión del ${vigente.vigente_desde} se conserva intacta.`
+                ? `La versión del ${fmtFecha(vigente.vigente_desde)} se conserva intacta.`
                 : "Primera versión de esta unidad."}
             </div>
           </div>
@@ -15066,7 +15135,7 @@ function ParametrosPanel({ unidad, parametrosApi, session, hayDatosUnidad }) {
           <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 8 }}>Historial</div>
           {versiones.map((v) => (
             <div key={v.id} style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 12, color: T.textDim, padding: "5px 0" }}>
-              <span style={{ fontFamily: T.fontMono }}>{v.vigente_desde}</span>
+              <span style={{ fontFamily: T.fontMono }}>{fmtFecha(v.vigente_desde)}</span>
               {v.id === vigente?.id && <Pill>vigente</Pill>}
               {String(v.vigente_desde) > hoy && <Pill>programada</Pill>}
               <span style={{ color: T.textFaint }}>
@@ -16469,7 +16538,7 @@ function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, 
               )}
               <div style={{ fontSize: 12.5, color: T.textDim, marginTop: 8, lineHeight: 1.55 }}>{decision.ruta}</div>
               <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10 }}>
-                Umbrales vigentes desde {parametros.vigente_desde}. Se guardan con el instrumento.
+                Umbrales vigentes desde {fmtFecha(parametros.vigente_desde)}. Se guardan con el instrumento.
               </div>
             </div>
           </Panel>
@@ -18293,7 +18362,7 @@ function pdfSolicitud(solicitud, conceptos, centroCosto) {
   const money = (n) => `$ ${numMx(n)}`;
 
   // ---- Encabezado con los datos de control del formato ----
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: M,
     margin: { left: M, right: M },
     theme: "grid",
@@ -18343,7 +18412,7 @@ function pdfSolicitud(solicitud, conceptos, centroCosto) {
 
   // ---- Identificación, en tres bloques ----
   const et = { fontStyle: "bold", fillColor: [252, 238, 238], cellWidth: 20 };
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: doc.lastAutoTable.finalY + 5,
     margin: { left: M, right: M },
     theme: "grid",
@@ -18369,7 +18438,7 @@ function pdfSolicitud(solicitud, conceptos, centroCosto) {
   linea(doc.lastAutoTable.finalY + 2.5);
 
   // ---- Descripción y justificación ----
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: doc.lastAutoTable.finalY + 5,
     margin: { left: M, right: M },
     theme: "plain",
@@ -18384,7 +18453,7 @@ function pdfSolicitud(solicitud, conceptos, centroCosto) {
   linea(doc.lastAutoTable.finalY + 2.5);
 
   // ---- Conceptos ----
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: doc.lastAutoTable.finalY + 5,
     margin: { left: M, right: M },
     theme: "grid",
@@ -18427,7 +18496,7 @@ function pdfSolicitud(solicitud, conceptos, centroCosto) {
     [{ content: "Total Estimado:", styles: { fontStyle: "bold" } },
      { content: money(solicitud.total), styles: { fontStyle: "bold" } }],
   ];
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: yTot,
     margin: { left: M + ancho - 78, right: M },
     theme: "grid",
@@ -18462,7 +18531,7 @@ function pdfPoliza(t, { partida, centroCosto, razonSocial, idSae } = {}) {
   const ancho = doc.internal.pageSize.getWidth() - M * 2;
   const money = (n) => `$ ${numMx(n)} ${t.moneda === "USD" ? "USD" : "MXN"}`;
 
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: M,
     margin: { left: M, right: M },
     theme: "grid",
@@ -18490,7 +18559,7 @@ function pdfPoliza(t, { partida, centroCosto, razonSocial, idSae } = {}) {
     { content: c, styles: et }, d || "—",
   ];
 
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: doc.lastAutoTable.finalY + 4,
     margin: { left: M, right: M },
     theme: "grid",
@@ -18514,7 +18583,7 @@ function pdfPoliza(t, { partida, centroCosto, razonSocial, idSae } = {}) {
     ],
   });
 
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: doc.lastAutoTable.finalY + 5,
     margin: { left: M, right: M },
     theme: "plain",
@@ -18526,7 +18595,7 @@ function pdfPoliza(t, { partida, centroCosto, razonSocial, idSae } = {}) {
   });
 
   const y = doc.lastAutoTable.finalY + 6;
-  autoTable(doc, {
+  autoTabla(doc, {
     startY: y,
     margin: { left: M + ancho - 82, right: M },
     theme: "grid",
@@ -20141,7 +20210,7 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
     ].forEach((t) => notas.addRow([t]));
     notas.getRow(1).font = { bold: true, size: 13 };
 
-    const buf = await wbx.xlsx.writeBuffer();
+    const buf = await escribirExcel(wbx);
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -20573,7 +20642,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi, lis
       });
     });
     if (!wbx.worksheets.length) { alert("No hay proveedores que exportar."); return; }
-    const buf = await wbx.xlsx.writeBuffer();
+    const buf = await escribirExcel(wbx);
     const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");

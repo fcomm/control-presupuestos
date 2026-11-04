@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.88.0";
+const APP_VERSION = "2.89.0";
 const CHANGELOG = [
+  { v: "2.89.0", desc: "Transacciones agrupadas: cada encabezado de grupo tiene una casilla para seleccionar todas sus transacciones de un clic, incluidas las de subgrupos colapsados y las de otras paginas. Si el grupo ya estaba completo, la casilla las quita; si tiene solo algunas, se ve a medias. Lo seleccionado fuera del grupo no se toca, asi que se pueden juntar varios grupos y despues usar Editar, Registrar o Enviar a Pagos sobre todo." },
   { v: "2.88.0", desc: "Partidas, transacciones vinculadas (al desplegar una partida): el encabezado dice a que partida pertenecen, con su folio, y cada transaccion muestra su folio (o 'borrador' si aun no se registra). El listado tiene mas sangria y un conector para que se lea como subnivel de la partida." },
   { v: "2.87.0", desc: "Partidas, boton + (crear transaccion a partir de la partida): el formulario llega con el Concepto de pago igual al nombre de la partida y el Importe igual al monto estimado de la partida, ademas de proyecto, zona y moneda. La categoria vieja de la partida solo se hereda si es del rubro." },
   { v: "2.86.0", desc: "La partida define el rubro y la transaccion la categoria. Partidas ya no tiene campo Categoria (formulario, tabla y Excel): lo especifico lo dice su concepto. En Transacciones, la categoria solo se elige entre las del rubro de su partida; la regla aplica a transacciones nuevas y a las que se les cambia categoria o partida, y las historicas fuera de rubro se pueden guardar mientras no se toquen. Se marcan en rojo en la columna Categoria y aparecen con el nuevo filtro Clasificacion > Fuera de rubro o sin clasificar, junto con las de partidas No Clasificado, que no tienen restriccion porque son las que hay que reclasificar. El gasto imprevisto se detecta por area y rubro (antes area y categoria), y el comparativo de presupuesto agrupa por Rubro. El catalogo de respaldo del codigo ya incluye los cambios de la revision." },
@@ -5783,7 +5784,11 @@ function sumaGrupoPorMoneda(filas, campo) {
 
 /* `resumen(filas)` opcional: lo que se muestra a la derecha del encabezado del
    grupo. Sin él, la suma por moneda del campo que traiga el árbol. */
-function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}, counter = { n: 0 }, resumen = null, posResumen = null) {
+/* `seleccion` (opcional) = { ids: Set, alternar(filas) }. Con ella, cada
+   encabezado de grupo lleva una casilla que selecciona o quita TODAS las
+   filas del grupo, también las de subgrupos colapsados y las de otras
+   páginas: el grupo es la unidad, no lo que se ve. */
+function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}, counter = { n: 0 }, resumen = null, posResumen = null, seleccion = null) {
   if (node.type === "rows") return node.rows.map((r) => renderRowTr(r, depth, ++counter.n));
   const campoSuma = node.sumField || null;
   let out = [];
@@ -5825,6 +5830,20 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            {seleccion && (() => {
+              const filas = filasDeNodo(entry.child);
+              const n = filas.filter((r) => seleccion.ids.has(r.id)).length;
+              const todas = filas.length > 0 && n === filas.length;
+              return (
+                <input type="checkbox" checked={todas}
+                  /* A medias se ve como "–": el grupo tiene unas sí y otras no. */
+                  ref={(el) => { if (el) el.indeterminate = n > 0 && !todas; }}
+                  onClick={(e) => e.stopPropagation()}
+                  onChange={() => seleccion.alternar(filas)}
+                  title={todas ? `Quitar las ${filas.length} de este grupo` : `Seleccionar las ${filas.length} de este grupo`}
+                  style={{ flexShrink: 0, cursor: "pointer" }} />
+              );
+            })()}
             <span style={{ color: T.textFaint, fontSize: depth === 0 ? 11 : 9.5, width: 12, flexShrink: 0 }}>{isCollapsed ? "▶" : "▼"}</span>
             <span style={{ fontSize: labelFontSize, fontWeight: labelFontWeight, color: labelColor, textTransform: "uppercase", letterSpacing: "0.04em", flexShrink: 0 }}>{fieldLabels[node.key] || node.key}</span>
             <Pill tone={pillTone}>
@@ -5849,7 +5868,7 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
         )}
       </tr>
     );
-    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels, counter, resumen, posResumen));
+    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels, counter, resumen, posResumen, seleccion));
   });
   return out;
 }
@@ -10621,6 +10640,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   };
 
   const toggleSeleccion = (id) => setSeleccionadas((prev) => alternarEnSet(prev, id));
+  /* Casilla de un grupo: si ya estaban todas, las quita; si no, agrega las
+     que falten. No toca lo seleccionado fuera del grupo. */
+  const alternarGrupoSeleccion = (filas) => setSeleccionadas((prev) => {
+    const ids = filas.map((t) => t.id);
+    const next = new Set(prev);
+    if (ids.length && ids.every((id) => prev.has(id))) ids.forEach((id) => next.delete(id));
+    else ids.forEach((id) => next.add(id));
+    return next;
+  });
   const toggleSeleccionTodas = () => {
     const idsVisibles = transOrdenadas.map((t) => t.id);
     const todasSeleccionadas = idsVisibles.length > 0 && idsVisibles.every((id) => seleccionadas.has(id));
@@ -11141,7 +11169,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               {groupKeys.length
                 ? buildGroupedTrs(pagTrans.agrupado, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr,
                     Object.fromEntries(GROUP_OPCIONES_TRANS.map((o) => [o.value, o.label])), { n: pagTrans.offset }, resumenImportePorMoneda,
-                    posColumna(columnasVisibles, "importe"))
+                    posColumna(columnasVisibles, "importe"), { ids: seleccionadas, alternar: alternarGrupoSeleccion })
                 : pagTrans.filas.map((t, i) => renderRowTr(t, 0, pagTrans.offset + i + 1))}
               {!transUnidad.length && (
                 <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones aún</td></tr>

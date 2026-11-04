@@ -134,18 +134,21 @@ const RUBROS_RESPALDO = [
   { rubro: "Materiales e Insumos", categorias: ["Material eléctrico","Material mecánico","Ferretería","Instrumentación","Tubería y conexiones","Consumibles industriales","Consumibles de oficina","Papelería","EPP","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación"] },
   { rubro: "Equipos y Herramientas", categorias: ["Herramienta menor","Herramienta especializada","Equipos de medición","Equipos de cómputo","Equipos de comunicación","Maquinaria","Mobiliario","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación"] },
   { rubro: "Productos Químicos", categorias: ["Productos químicos de operación","Reactivos","Solventes","Aditivos","Químicos de laboratorio","Importación y logística","Aranceles e impuestos de importación","Permisos regulatorios de importación"] },
-  { rubro: "Servicios de Mantenimiento", categorias: ["Mantenimiento vehicular","Mantenimiento de equipos","Mantenimiento de instalaciones","Calibración","Reparaciones"] },
-  { rubro: "Servicios Operativos", categorias: ["Arrendamientos","Maniobras","Transporte y logística","Fletes","Servicios de campo","Laboratorios","Servicios especializados"] },
+  { rubro: "Servicios de Mantenimiento", categorias: ["Mantenimiento de equipos","Mantenimiento de instalaciones","Calibración","Reparaciones"] },
+  { rubro: "Servicios Operativos", categorias: ["Arrendamientos","Maniobras","Transporte y logística","Servicios de campo","Laboratorios","Servicios especializados"] },
   { rubro: "Servicios Administrativos", categorias: ["Mensajería","Limpieza","Vigilancia","Capacitación","Consultoría","Honorarios profesionales","Reclutamiento"] },
   { rubro: "Servicios Básicos", categorias: ["Energía eléctrica","Agua","Telefonía fija","Telefonía móvil","Internet","Gas","Recolección de residuos"] },
-  { rubro: "Tecnologías de Información", categorias: ["Software","Licencias","Suscripciones","Hosting","Telecomunicaciones","Desarrollo de software","Servicios en la nube","Ciberseguridad"] },
-  { rubro: "Vehículos", categorias: ["Combustible","Casetas","Refacciones","Accesorios","Seguros","Verificación","Tenencias","Placas","Permisos vehiculares","Llantas","Lubricantes"] },
+  { rubro: "Tecnologías de Información", categorias: ["Software","Licencias de Software","Suscripciones","Hosting","Telecomunicaciones","Desarrollo de software","Servicios en la nube","Ciberseguridad"] },
+  { rubro: "Vehículos", categorias: ["Mantenimiento vehicular","Combustible","Casetas","Refacciones","Accesorios","Seguros","Verificación","Tenencias","Placas","Permisos vehiculares","Llantas","Lubricantes"] },
   { rubro: "Viajes y Viáticos", categorias: ["Hospedaje","Boletos de avión","Transporte terrestre","Alimentación","Renta de vehículos","Viáticos diversos"] },
   { rubro: "Promoción e Imagen", categorias: ["Publicidad","Merchandising","Eventos","Material publicitario","Uniformes corporativos"] },
-  { rubro: "Cumplimiento Legal", categorias: ["Permisos regulatorios","Licencias","Certificaciones","Estudios","Trámites gubernamentales","Auditorías"] },
-  { rubro: "Gastos Financieros e Impuestos", categorias: ["Comisiones bancarias","Derechos","Impuestos","Gastos notariales","Seguros","Fianzas"] },
+  { rubro: "Cumplimiento Legal", categorias: ["Permisos regulatorios","Licencias de Funcionamiento","Certificaciones","Estudios","Trámites gubernamentales","Auditorías"] },
+  { rubro: "Gastos Financieros e Impuestos", categorias: ["Comisiones bancarias","Derechos","Impuestos","Gastos notariales","Seguros No Vehiculares","Fianzas"] },
   { rubro: "Nómina y Personal", categorias: ["Sueldos y salarios","Prestaciones de ley","Prestaciones adicionales","Cuotas IMSS/Infonavit","Impuesto sobre nómina (ISN)","Finiquitos y liquidaciones","Bonos y comisiones"] },
   { rubro: "Otros", categorias: ["Gastos extraordinarios","Donativos"] },
+  /* Sin categorías a propósito: es la marca de una partida que mezcla rubros
+     y hay que reclasificar. Sus transacciones no tienen restricción. */
+  { rubro: "No Clasificado", categorias: [] },
 ];
 
 const UNIDADES_BASE = ["OSB", "CTM", "ISE"];
@@ -364,6 +367,44 @@ function aplicarCatalogo(rubrosRows, categoriasRows) {
   recalcularCategoriasTodas();
 }
 
+/* ----------------------------------------------------------------------
+   CATEGORÍA DENTRO DEL RUBRO
+   La partida es el sobre de dinero y define el RUBRO; la transacción es el
+   gasto real y define la CATEGORÍA, que tiene que ser una de ese rubro.
+   La regla aplica hacia adelante: una transacción nueva, o una a la que se
+   le cambia la categoría o la partida. Las históricas que ya estaban fuera
+   se quedan como están y se ven con el filtro "Fuera de rubro".
+   Una partida "No Clasificado" (o con un rubro que no existe en el
+   catálogo) no restringe: ella misma es la que hay que reclasificar.
+---------------------------------------------------------------------- */
+const RUBRO_NO_CLASIFICADO = "No Clasificado";
+const igualTxt = (a, b) => String(a || "").trim().toLowerCase() === String(b || "").trim().toLowerCase();
+
+/* Categorías permitidas para una transacción de esta partida; null = sin
+   restricción. */
+function categoriasPermitidas(partida) {
+  if (!partida) return null;
+  if (igualTxt(partida.rubro, RUBRO_NO_CLASIFICADO)) return null;
+  const r = RUBROS.find((x) => igualTxt(x.rubro, partida.rubro));
+  return r ? r.categorias : null;
+}
+
+/* "ok" | "fuera" (categoría de otro rubro) | "sin_clasificar" (la partida
+   no tiene un rubro real). Sin partida no aplica. */
+function estadoRubro(t, partida) {
+  if (!partida) return "ok";
+  const perm = categoriasPermitidas(partida);
+  if (perm === null) return "sin_clasificar";
+  const cat = String(t.categoria || "").trim();
+  if (!cat) return "ok";
+  return perm.some((c) => igualTxt(c, cat)) ? "ok" : "fuera";
+}
+
+/* El rubro de una categoría según el catálogo, para lo que no tiene
+   partida. Si la categoría vive en varios rubros, el primero. */
+const rubroDeCategoria = (cat) =>
+  (cat && RUBROS.find((r) => r.categorias.some((c) => igualTxt(c, cat)))?.rubro) || "";
+
 const MESES = ["Enero","Febrero","Marzo","Abril","Mayo","Junio","Julio","Agosto","Septiembre","Octubre","Noviembre","Diciembre"];
 
 /**
@@ -401,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.85.0";
+const APP_VERSION = "2.86.0";
 const CHANGELOG = [
+  { v: "2.86.0", desc: "La partida define el rubro y la transaccion la categoria. Partidas ya no tiene campo Categoria (formulario, tabla y Excel): lo especifico lo dice su concepto. En Transacciones, la categoria solo se elige entre las del rubro de su partida; la regla aplica a transacciones nuevas y a las que se les cambia categoria o partida, y las historicas fuera de rubro se pueden guardar mientras no se toquen. Se marcan en rojo en la columna Categoria y aparecen con el nuevo filtro Clasificacion > Fuera de rubro o sin clasificar, junto con las de partidas No Clasificado, que no tienen restriccion porque son las que hay que reclasificar. El gasto imprevisto se detecta por area y rubro (antes area y categoria), y el comparativo de presupuesto agrupa por Rubro. El catalogo de respaldo del codigo ya incluye los cambios de la revision." },
   { v: "2.85.0", desc: "Todas las fechas se muestran como dd/mm/aa: tablas, encabezados de grupo, tablero de solicitudes, avisos, PDF y Excel. Las que llevan hora, como dd/mm/aa hh:mm. En los Excel las fechas son fechas de verdad con ese formato, no texto, asi que siguen ordenando y filtrando. La base sigue guardando ISO y los filtros y el orden no cambian. Los contratos conservan la fecha con letra. Los campos para capturar fecha los dibuja el navegador y siguen su propio formato." },
   { v: "2.84.0", desc: "Tema claro y oscuro, como en Control de Inventarios. Un boton en el encabezado, junto a Cerrar sesion, cambia entre los dos; la eleccion se recuerda en cada navegador y el default sigue siendo el claro. Toda la app pinta desde una sola paleta, asi que el cambio llega a todas las pantallas, al formulario publico y al login. Los colores que estaban fijos (avisos ambar, renglones en dolares, parcialidades, el reporte comparativo, la letra del boton principal) ya toman el color del tema, y los controles nativos (calendario, listas) se ven oscuros. El texto seleccionado tiene color propio. Los PDF y los Excel no cambian: son documentos para imprimir y mandar." },
   { v: "2.83.0", desc: "Solicitudes, tablero: nueva columna Cancelada al final. Una SMI cancelada ya no desaparece del tablero: queda a la vista, atenuada, y se puede regresar a cualquier paso arrastrandola. Cancelar pide confirmacion, en el tablero y en el detalle; si la SMI ya estaba en Agendado a pago, avisa que su transaccion no se cancela sola. La columna Agendado a pago ya no dice que la conversion esta pendiente." },
@@ -1508,10 +1550,9 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
       const anio = Number(nuevaPartida.anio) || new Date().getFullYear();
       const existingFolios = partidas.filter((p) => p.unidad === unidad).map((p) => p.folio);
       const folio = autoFolio(unidad, nuevaPartida.mes, anio, existingFolios);
-      const categoriaDefault = RUBROS.find((r) => r.rubro === nuevaPartida.rubro)?.categorias?.[0] || "";
       const creada = await partidasApi.insert({
         id: uid(), unidad, mes: nuevaPartida.mes, anio, smi: "", concepto: nuevaPartida.concepto.trim(),
-        rubro: nuevaPartida.rubro, categoria: categoriaDefault, proyecto: nuevaPartida.proyecto.trim(),
+        rubro: nuevaPartida.rubro, proyecto: nuevaPartida.proyecto.trim(),
         monto_estimado: Number(nuevaPartida.monto_estimado) || 0, moneda: nuevaPartida.moneda, folio,
       });
       setNuevaPartida(nuevaPartidaBlank);
@@ -2883,20 +2924,26 @@ async function registrarReporteOficial({ compania, tipo, periodo, periodoIni, pe
 /**
  * Detecta lo que se está gastando sin haberlo reportado.
  *
- * La comparación es por ÁREA + CATEGORÍA, no por monto: el objetivo es
+ * La comparación es por ÁREA + RUBRO (antes área + categoría), no por monto:
+ * la partida ya no lleva categoría, y el plan se piensa por rubro. El
+ * objetivo es
  * fomentar planeación —saber de antemano en qué se va a gastar— no
  * controlar cuánto. Y va por área porque a quien se le pide atención es al
  * área: que Mantenimiento haya reportado "Llantas" no cubre a
  * Deshidratación gastando en llantas.
  */
 function detectarDesviaciones(registros, reportado) {
-  const base = new Set(reportado.map((r) => `${nh(r.area)}|${nh(r.categoria)}`));
+  /* Lo sin partida no trae rubro: se toma el de su categoría. Los reportes
+     viejos también guardaban el rubro, así que la comparación vale para
+     ellos sin migrar nada. */
+  const rubroDe = (r) => nh(String(r.rubro || "").trim() || rubroDeCategoria(r.categoria));
+  const base = new Set(reportado.map((r) => `${nh(r.area)}|${rubroDe(r)}`));
   return registros.filter((r) => {
-    const cat = nh(r.categoria);
-    // Sin categoría no se puede juzgar: se omite en vez de acusar de algo
-    // que quizá sí estaba planeado.
-    if (!cat) return false;
-    return !base.has(`${nh(r.area)}|${cat}`);
+    const rub = rubroDe(r);
+    // Sin rubro no se puede juzgar: se omite en vez de acusar de algo que
+    // quizá sí estaba planeado.
+    if (!rub) return false;
+    return !base.has(`${nh(r.area)}|${rub}`);
   });
 }
 
@@ -7230,7 +7277,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     const anios = partidas.filter((p) => p.unidad === unidad).map((p) => p.anio).filter(Boolean);
     return anios.length ? Math.max(...anios) : new Date().getFullYear();
   })();
-  const blank = { unidad, mes: "Agosto", anio: anioDefault, smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: RUBROS[0].categorias[0], proyecto: marcadores[0] || "", zona: "", monto_estimado: "", moneda: "MXP", folio: "" };
+  const blank = { unidad, mes: "Agosto", anio: anioDefault, smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: "", proyecto: marcadores[0] || "", zona: "", monto_estimado: "", moneda: "MXP", folio: "" };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -7330,7 +7377,6 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       { header: "Año",       width: 7,  get: (p) => p.anio,               col: "anio" },
       { header: "Concepto",  width: 50, get: (p) => p.concepto,           col: "concepto" },
       { header: "Rubro",     width: 26, get: (p) => p.rubro,              col: "rubro" },
-      { header: "Categoria", width: 30, get: (p) => p.categoria,          col: "categoria" },
       { header: "Zona",      width: 16, get: (p) => p.zona || "",         col: "zona" },
       { header: "Proyecto",  width: 17, get: (p) => p.proyecto || "",     col: "proyecto" },
       { header: "Moneda",    width: 9,  get: (p) => p.moneda || "MXP" },
@@ -7398,7 +7444,6 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     { key: "anio",        header: "Año",         width: 8,  get: (p) => p.anio },
     { key: "concepto",    header: "Concepto",    width: 52, fija: true, get: (p) => p.concepto, izq: true },
     { key: "rubro",       header: "Rubro",       width: 26, get: (p) => p.rubro, izq: true },
-    { key: "categoria",   header: "Categoría",   width: 30, get: (p) => p.categoria || "", izq: true },
     { key: "zona",        header: "Zona",        width: 16, get: (p) => p.zona || "Cualquiera" },
     // El grupo como columna aparte: en una tabla plana permite filtrar por
     // "Zona Norte" sin perder de vista la zona real de cada partida.
@@ -7696,7 +7741,6 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       ),
     },
     { key: "rubro", label: "Rubro", render: (p) => <Pill>{p.rubro}</Pill> },
-    { key: "categoria", label: "Categoría", render: (p) => <span style={{ color: T.textDim }}>{p.categoria}</span> },
     { key: "zona", label: "Zona", render: (p) => p.zona ? <Pill>{p.zona}</Pill> : <span style={{ color: T.textFaint }}>Cualquiera</span> },
     { key: "proyecto", label: "Proyecto", render: (p) => p.proyecto },
     { key: "folio", label: "Folio", render: (p) => <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{p.folio || "—"}</span> },
@@ -8361,34 +8405,12 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
               <TextInput value={form.folio} onChange={(e) => setForm({ ...form, folio: e.target.value })} placeholder="Vacío = se asigna automático" />
             </Field>
             <Field label="Rubro">
-              <Select value={form.rubro} onChange={(e) => setForm({ ...form, rubro: e.target.value, categoria: RUBROS.find(r=>r.rubro===e.target.value).categorias[0] })}>
+              <Select value={form.rubro} onChange={(e) => setForm({ ...form, rubro: e.target.value })}>
                 {RUBROS.map((r) => <option key={r.rubro}>{r.rubro}</option>)}
               </Select>
             </Field>
-            <Field label="Categoría">
-              <Select value={form.categoria} onChange={(e) => setForm({ ...form, categoria: e.target.value })}>
-                {categoriasDisponibles.map((c) => <option key={c}>{c}</option>)}
-              </Select>
-              {/* Se sugiere, no se impone: quien captura sabe cosas que el
-                  concepto no dice. Solo aparece cuando difiere de lo elegido. */}
-              {(() => {
-                const sug = sugerirCategoria(form.concepto, categoriasDisponibles);
-                if (!sug || sug === form.categoria) return null;
-                return (
-                  <button
-                    type="button"
-                    onClick={() => setForm({ ...form, categoria: sug })}
-                    style={{
-                      marginTop: 5, background: "transparent", border: "none", padding: 0,
-                      color: T.accent, fontSize: 11.5, cursor: "pointer", textAlign: "left",
-                      fontFamily: T.fontUI,
-                    }}
-                  >
-                    Por el concepto, quizá sea <b>{sug}</b> — usar
-                  </button>
-                );
-              })()}
-            </Field>
+            {/* La partida ya no lleva categoría: la elige cada transacción dentro
+                de este rubro. Lo específico de la partida lo dice su concepto. */}
             <Field label="Concepto" style={{ gridColumn: "span 2" }}>
               <TextInput value={form.concepto} onChange={(e) => setForm({ ...form, concepto: e.target.value })} placeholder="Ej. Servicio energía eléctrica base admtva" />
             </Field>
@@ -9514,6 +9536,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     // Gral" de grupo como opciones propias, no como comodín de "sin filtro").
     if (filtros.proyecto && (t.proyecto || "") !== filtros.proyecto) return false;
     if (filtros.moneda && (t.moneda || "MXP") !== filtros.moneda) return false;
+    if (filtros.rubro === "revisar" && estadoRubro(t, partidaDe(t)) === "ok") return false;
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const partida = partidaDe(t);
@@ -9523,8 +9546,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtroAdj !== "Todos" || (filtros.canceladas || "ocultar") !== "ocultar" || (filtros.registro || "Todas") !== "Todas" || filtros.proyecto || filtros.moneda;
-  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", adjuntos: "Todos", canceladas: "ocultar", registro: "Todas", proyecto: "", moneda: "" });
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtroAdj !== "Todos" || (filtros.canceladas || "ocultar") !== "ocultar" || (filtros.registro || "Todas") !== "Todas" || filtros.proyecto || filtros.moneda || filtros.rubro === "revisar";
+  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", adjuntos: "Todos", canceladas: "ocultar", registro: "Todas", proyecto: "", moneda: "", rubro: "" });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
@@ -9810,7 +9833,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         </span>
       ),
     },
-    { key: "categoria", label: "Categoría", render: (t) => t.categoria ? <Pill>{t.categoria}</Pill> : <span style={{ color: T.textFaint }}>—</span> },
+    { key: "categoria", label: "Categoría", render: (t) => {
+      const er = estadoRubro(t, partidaDe(t));
+      if (!t.categoria) return <span style={{ color: T.textFaint }}>—</span>;
+      if (er === "fuera") return (
+        <span title={`No pertenece al rubro ${partidaDe(t)?.rubro} de su partida`}><Pill tone="red">{t.categoria} ⚠</Pill></span>
+      );
+      return <Pill>{t.categoria}</Pill>;
+    } },
     { key: "importe", label: "Importe", render: (t) => (t._ppdTotal != null ? (
         /* Copia de una compra PPD dentro de un grupo: vale lo de ese grupo. */
         <span title={t._ppdPorAsignar ? "Parte de la compra que aún no tiene parcialidad"
@@ -10330,6 +10360,20 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
        Con la conversión de SMI la partida llega vacía a propósito, así que
        ahora es un caso normal y hay que decirlo. */
     if (!form.partida_id) { alert("Elige la partida antes de crear la transacción."); return; }
+    {
+      const pSel = partidasUnidad.find((x) => x.id === form.partida_id);
+      const perm = categoriasPermitidas(pSel);
+      const cat = String(form.categoria || "").trim();
+      if (perm && cat && !perm.some((c) => igualTxt(c, cat))) {
+        const orig = editId ? transUnidad.find((x) => x.id === editId) : null;
+        const tocada = !orig || !igualTxt(orig.categoria, cat) || orig.partida_id !== form.partida_id;
+        if (tocada) {
+          alert(`La categoría «${cat}» no pertenece al rubro ${pSel.rubro} de la partida.\n\n` +
+                `Elige una categoría de ${pSel.rubro}, o carga la transacción a una partida del rubro correcto.`);
+          return;
+        }
+      }
+    }
     if (!form.importe) { alert("Falta el importe."); return; }
     const desdeSmi = !editId ? form._desdeSmi : null;
     if (desdeSmi && transUnidad.some((x) => x.solicitud_id === form.solicitud_id && !estaCancelada(x)) && !confirm(
@@ -10941,6 +10985,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 <option value="solo">Solo canceladas</option>
               </Select>
             </Field>
+            <Field label="Clasificación" style={{ flex: "1 1 130px" }}>
+              <Select value={filtros.rubro || ""} onChange={(e) => setFiltros({ ...filtros, rubro: e.target.value })} style={{ width: "100%" }}
+                title="Fuera de rubro: categoría de otro rubro que el de su partida. También las de partidas No Clasificado.">
+                <option value="">Todas</option>
+                <option value="revisar">Fuera de rubro o sin clasificar</option>
+              </Select>
+            </Field>
             <Field label="Registro" style={{ flex: "1 1 120px" }}>
               <Select value={filtros.registro || "Todas"} onChange={(e) => setFiltros({ ...filtros, registro: e.target.value })} style={{ width: "100%" }}>
                 <option value="Todas">Todas</option>
@@ -11489,12 +11540,32 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 onChange={(e) => setForm({ ...form, importe: e.target.value })} placeholder="0.00" />
             </Field>
             <Field label="Categoría del gasto">
-              {/* Las opciones salen del rubro de la partida vinculada, pero NO
-                  se restringe a él: con datos reales, 39 de 228 transacciones
-                  tenían la categoría correcta para el gasto y una partida de
-                  otro rubro. La discrepancia es información, no error. */}
+              {/* Solo categorías del rubro de la partida (ver CATEGORÍA DENTRO
+                  DEL RUBRO). Antes se ofrecían todas, y una partida de un rubro
+                  terminaba pagando gastos de otro. Si la transacción ya traía
+                  una de fuera, se muestra para no perderla, marcada. */}
               {(() => {
                 const p = partidasUnidad.find((x) => x.id === form.partida_id);
+                const perm = categoriasPermitidas(p);
+                if (perm) {
+                  const actual = String(form.categoria || "").trim();
+                  const fuera = actual && !perm.some((c) => igualTxt(c, actual));
+                  const gruposR = [
+                    { label: p.rubro, destacado: true, cats: perm },
+                    ...(fuera ? [{ label: "Actual, fuera del rubro", cats: [actual] }] : []),
+                  ];
+                  return (
+                    <>
+                      <CategoriaCombo value={form.categoria || ""} grupos={gruposR}
+                        onChange={(c) => setForm((f) => ({ ...f, categoria: c }))} />
+                      {fuera && (
+                        <span style={{ fontSize: 10.5, color: T.red, marginTop: 3 }}>
+                          «{actual}» no es de {p.rubro}. Se puede guardar así mientras no la cambies.
+                        </span>
+                      )}
+                    </>
+                  );
+                }
                 const delRubro = p ? (RUBROS.find((r) => r.rubro === p.rubro)?.categorias || []) : [];
                 /* El resto se agrupa POR RUBRO. En una lista plana son casi
                    cien opciones sin estructura, y encontrar la correcta
@@ -11514,7 +11585,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               })()}
               {(() => {
                 const p = partidasUnidad.find((x) => x.id === form.partida_id);
-                const cats = p ? (RUBROS.find((r) => r.rubro === p.rubro)?.categorias || []) : CATEGORIAS_TODAS;
+                const cats = categoriasPermitidas(p) || CATEGORIAS_TODAS;
                 const sug = sugerirCategoria(form.concepto_detallado, cats);
                 if (!sug || sug === form.categoria) return null;
                 return (
@@ -14012,7 +14083,8 @@ const GROUP_OPCIONES_COMPARATIVO = [
   { value: "resultado", label: "Resultado (sobre / subejercicio)" },
   { value: "origen", label: "Origen (plan / agregadas)" },
   { value: "area", label: "Área" },
-  { value: "categoria", label: "Categoría" },
+  { value: "rubro", label: "Rubro" },
+  { value: "categoria", label: "Categoría (partidas anteriores)" },
 ];
 
 /**
@@ -14083,7 +14155,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
 
   const renglones = (detalle || []).map((d) => {
     const txs = txDe(d.origen_id);
-    return { clave: `r-${d.id || d.origen_id}`, area: areaDe(d.area, txs), folio: d.folio, origen: "plan", categoria: d.categoria || "",
+    return { clave: `r-${d.id || d.origen_id}`, area: areaDe(d.area, txs), folio: d.folio, origen: "plan", categoria: d.categoria || "", rubro: d.rubro || "Sin rubro",
              partida: d.concepto || "—", moneda: monedaDe(d.moneda),
              estimada: Number(d.importe) || 0, real: txs.reduce((a, t) => a + (Number(t.importe) || 0), 0), txs };
   });
@@ -14098,13 +14170,13 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
       const real = txs.reduce((a, t) => a + (Number(t.importe) || 0), 0);
       /* Lo que se estimó al crearla va como referencia, no como Estimada: la
          desviación se mide contra el plan enviado, y en él no estaba. */
-      if (real) renglones.push({ clave: `p-${p.id}`, area: areaDe("", txs), folio: p.folio, origen: "agregada", categoria: p.categoria || "",
+      if (real) renglones.push({ clave: `p-${p.id}`, area: areaDe("", txs), folio: p.folio, origen: "agregada", categoria: p.categoria || "", rubro: p.rubro || "Sin rubro",
         partida: `${p.concepto || "—"} (no presupuestada)`, moneda: monedaDe(p.moneda), estimada: 0, real, txs,
         refCreacion: Number(p.monto_estimado) || 0 });
     });
   const prefijoMes = `${anioPer}-${String(MESES.indexOf(mesPer) + 1).padStart(2, "0")}`;
   transacciones.filter((t) => t.unidad_detectada === unidad && !t.partida_id && cuenta(t) && String(t.dia || "").startsWith(prefijoMes))
-    .forEach((t) => renglones.push({ clave: `t-${t.id}`, area: t.area || "Sin área", folio: t.folio_transaccion || "", origen: "sinpartida", categoria: t.categoria || "",
+    .forEach((t) => renglones.push({ clave: `t-${t.id}`, area: t.area || "Sin área", folio: t.folio_transaccion || "", origen: "sinpartida", categoria: t.categoria || "", rubro: rubroDeCategoria(t.categoria) || "Sin rubro",
       partida: `${t.concepto_detallado || t.proveedor || "—"} (sin partida)`, moneda: monedaDe(t.moneda),
       estimada: 0, real: Number(t.importe) || 0, txs: [t] }));
 

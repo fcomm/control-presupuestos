@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.89.0";
+const APP_VERSION = "2.90.0";
 const CHANGELOG = [
+  { v: "2.90.0", desc: "Eliminar partida: las transacciones canceladas ya no cuentan como transacciones vinculadas. Una partida que solo tiene canceladas se elimina con una confirmacion que lo explica; las canceladas se quedan sin partida, con su folio, motivo y expediente. La ventana de reasignar solo aparece cuando hay transacciones vigentes. Las canceladas sin partida no aparecen en la lista Sin vincular." },
   { v: "2.89.0", desc: "Transacciones agrupadas: cada encabezado de grupo tiene una casilla para seleccionar todas sus transacciones de un clic, incluidas las de subgrupos colapsados y las de otras paginas. Si el grupo ya estaba completo, la casilla las quita; si tiene solo algunas, se ve a medias. Lo seleccionado fuera del grupo no se toca, asi que se pueden juntar varios grupos y despues usar Editar, Registrar o Enviar a Pagos sobre todo." },
   { v: "2.88.0", desc: "Partidas, transacciones vinculadas (al desplegar una partida): el encabezado dice a que partida pertenecen, con su folio, y cada transaccion muestra su folio (o 'borrador' si aun no se registra). El listado tiene mas sangria y un conector para que se lea como subnivel de la partida." },
   { v: "2.87.0", desc: "Partidas, boton + (crear transaccion a partir de la partida): el formulario llega con el Concepto de pago igual al nombre de la partida y el Importe igual al monto estimado de la partida, ademas de proyecto, zona y moneda. La categoria vieja de la partida solo se hereda si es del rubro." },
@@ -8187,15 +8188,30 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
      `transacciones` (aquí llegan solo las vigentes) pero siguen apuntando a la
      partida con su folio. */
   const [reasignando, setReasignando] = useState(null);
-  const remove = (id) => {
+  const remove = async (id) => {
     const p = partidasUnidad.find((x) => x.id === id);
     const vinculadas = (transaccionesApi?.rows || transacciones).filter((t) => t.partida_id === id);
-    if (vinculadas.length) {
+    /* Las canceladas no cuentan como "tiene transacciones": no se ven en el
+       cajón de la partida y no son gasto. Antes bloqueaban el borrado y
+       pedían reasignar algo que el usuario no veía. Solo si hay vigentes se
+       abre la reasignación. */
+    const vigentes = vinculadas.filter((t) => !t.cancelada_en);
+    const canceladas = vinculadas.filter((t) => t.cancelada_en);
+    if (vigentes.length) {
       setReasignando({ partida: p, vinculadas });
       return;
     }
-    if (!confirm(`¿Eliminar la partida "${p?.concepto || id}" (folio ${p?.folio || "—"})? Esto no se puede deshacer.`)) return;
-    partidasApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
+    const nota = canceladas.length
+      ? `\n\nSolo tiene ${canceladas.length} transacción(es) cancelada(s) (${canceladas.map((t) => t.folio_transaccion || "borrador").join(", ")}). ` +
+        `Se quedan sin partida, pero conservan su folio, su motivo de cancelación y su expediente.`
+      : "";
+    if (!confirm(`¿Eliminar la partida "${p?.concepto || id}" (folio ${p?.folio || "—"})? Esto no se puede deshacer.${nota}`)) return;
+    try {
+      for (const t of canceladas) await transaccionesApi.update(t.id, { partida_id: null });
+      await partidasApi.remove(id);
+    } catch (err) {
+      alert("No se pudo eliminar: " + (err.message || err));
+    }
   };
 
   const pagPartidas = usePaginacion("partidas", partidasOrdenadasVistaBase,
@@ -9416,7 +9432,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
      (proveedor_id); con el proveedor solo como texto no hay de dónde sacarlo. */
   const idSaePorProveedor = new Map(proveedoresApi.rows.map((p) => [p.id, (p.id_sae || "").trim()]));
   const idSaeProv = (t) => (t.proveedor_id && idSaePorProveedor.get(t.proveedor_id)) || "";
-  const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad);
+  /* Una cancelada sin partida no es trabajo pendiente: no se vincula a nada.
+     Pasa cuando se elimina una partida que solo tenía canceladas. */
+  const sinVincular = transacciones.filter((t) => !t.partida_id && t.unidad_detectada === unidad && !t.cancelada_en);
 
   const [filtros, setFiltros] = useSessionState("ss-transacciones-filtros", { texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", proyecto: "", moneda: "" });
   const [sort, setSort] = usePrefState("pref-transacciones-sort", { key: "dia", dir: "desc" }, sanearSort(["dia","folio_transaccion","partida","proveedor","id_sae_proveedor","proyecto","zona","area","concepto_detallado","importe","status","fecha_pago","updated_at"]));

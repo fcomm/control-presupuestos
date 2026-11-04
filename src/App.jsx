@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.87.0";
+const APP_VERSION = "2.88.0";
 const CHANGELOG = [
+  { v: "2.88.0", desc: "Partidas, transacciones vinculadas (al desplegar una partida): el encabezado dice a que partida pertenecen, con su folio, y cada transaccion muestra su folio (o 'borrador' si aun no se registra). El listado tiene mas sangria y un conector para que se lea como subnivel de la partida." },
   { v: "2.87.0", desc: "Partidas, boton + (crear transaccion a partir de la partida): el formulario llega con el Concepto de pago igual al nombre de la partida y el Importe igual al monto estimado de la partida, ademas de proyecto, zona y moneda. La categoria vieja de la partida solo se hereda si es del rubro." },
   { v: "2.86.0", desc: "La partida define el rubro y la transaccion la categoria. Partidas ya no tiene campo Categoria (formulario, tabla y Excel): lo especifico lo dice su concepto. En Transacciones, la categoria solo se elige entre las del rubro de su partida; la regla aplica a transacciones nuevas y a las que se les cambia categoria o partida, y las historicas fuera de rubro se pueden guardar mientras no se toquen. Se marcan en rojo en la columna Categoria y aparecen con el nuevo filtro Clasificacion > Fuera de rubro o sin clasificar, junto con las de partidas No Clasificado, que no tienen restriccion porque son las que hay que reclasificar. El gasto imprevisto se detecta por area y rubro (antes area y categoria), y el comparativo de presupuesto agrupa por Rubro. El catalogo de respaldo del codigo ya incluye los cambios de la revision." },
   { v: "2.85.0", desc: "Todas las fechas se muestran como dd/mm/aa: tablas, encabezados de grupo, tablero de solicitudes, avisos, PDF y Excel. Las que llevan hora, como dd/mm/aa hh:mm. En los Excel las fechas son fechas de verdad con ese formato, no texto, asi que siguen ordenando y filtrando. La base sigue guardando ISO y los filtros y el orden no cambian. Los contratos conservan la fecha con letra. Los campos para capturar fecha los dibuja el navegador y siguen su propio formato." },
@@ -8066,11 +8067,17 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                 el resumen en minúsculas evita el choque con los encabezados de
                 columna y las píldoras de agrupamiento, que ya usan mayúsculas. */}
             <td colSpan={columnasVisibles.length + 3} style={{ padding: 0, background: T.panelAlt, borderBottom: `1px solid ${T.border}` }}>
-              <div style={{ padding: "10px 14px 12px 40px" }}>
+              {/* Sangría de 76 px (antes 40) y un conector ↳: el cajón se lee
+                  como subnivel de la partida y no como otra fila de la tabla. */}
+              <div style={{ padding: "10px 14px 12px 76px", position: "relative" }}>
+                <span aria-hidden style={{ position: "absolute", left: 50, top: 12, color: T.accent, fontSize: 15, lineHeight: 1 }}>↳</span>
                 <div style={{ borderLeft: `3px solid ${T.accent}`, borderRadius: "0 6px 6px 0", background: T.panel, boxShadow: "0 1px 2px rgba(35,42,49,0.06)", overflow: "hidden" }}>
                   <div style={{ display: "flex", alignItems: "baseline", gap: 8, padding: "8px 12px 6px", borderBottom: `1px solid ${T.borderSoft}` }}>
                     <span style={{ fontSize: 12, fontWeight: 600, color: T.text }}>
                       {transDeEsta.length === 1 ? "1 transacción vinculada" : `${transDeEsta.length} transacciones vinculadas`}
+                    </span>
+                    <span style={{ fontSize: 11.5, color: T.textDim }}>
+                      a la partida <b style={{ fontFamily: T.fontMono, color: T.accent }}>{p.folio || "—"}</b>
                     </span>
                     <span style={{ fontSize: 11.5, color: T.textFaint, fontFamily: T.fontMono }}>
                       {[...new Set(transDeEsta.map((t) => t.moneda || "MXP"))]
@@ -8082,7 +8089,11 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                     <tbody>
                       {transDeEsta.map((t, idx) => (
                         <tr key={t.id}>
-                          <td style={{ ...tdStyle, padding: "7px 12px", width: "32%", color: T.text, borderBottom: idx === transDeEsta.length - 1 ? "none" : `1px solid ${T.borderSoft}` }}>
+                          <td style={{ ...tdStyle, padding: "7px 12px", width: 120, whiteSpace: "nowrap", fontFamily: T.fontMono, fontSize: 11, color: T.textDim, borderBottom: idx === transDeEsta.length - 1 ? "none" : `1px solid ${T.borderSoft}` }}
+                            title={`Partida ${p.folio || "—"}`}>
+                            {t.folio_transaccion || <span style={{ color: T.textFaint }}>borrador</span>}
+                          </td>
+                          <td style={{ ...tdStyle, padding: "7px 12px", width: "30%", color: T.text, borderBottom: idx === transDeEsta.length - 1 ? "none" : `1px solid ${T.borderSoft}` }}>
                             {t.proveedor || "—"}
                           </td>
                           <td style={{ ...tdStyle, padding: "7px 12px", color: T.textDim, borderBottom: idx === transDeEsta.length - 1 ? "none" : `1px solid ${T.borderSoft}` }}>

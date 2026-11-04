@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.86.0";
+const APP_VERSION = "2.87.0";
 const CHANGELOG = [
+  { v: "2.87.0", desc: "Partidas, boton + (crear transaccion a partir de la partida): el formulario llega con el Concepto de pago igual al nombre de la partida y el Importe igual al monto estimado de la partida, ademas de proyecto, zona y moneda. La categoria vieja de la partida solo se hereda si es del rubro." },
   { v: "2.86.0", desc: "La partida define el rubro y la transaccion la categoria. Partidas ya no tiene campo Categoria (formulario, tabla y Excel): lo especifico lo dice su concepto. En Transacciones, la categoria solo se elige entre las del rubro de su partida; la regla aplica a transacciones nuevas y a las que se les cambia categoria o partida, y las historicas fuera de rubro se pueden guardar mientras no se toquen. Se marcan en rojo en la columna Categoria y aparecen con el nuevo filtro Clasificacion > Fuera de rubro o sin clasificar, junto con las de partidas No Clasificado, que no tienen restriccion porque son las que hay que reclasificar. El gasto imprevisto se detecta por area y rubro (antes area y categoria), y el comparativo de presupuesto agrupa por Rubro. El catalogo de respaldo del codigo ya incluye los cambios de la revision." },
   { v: "2.85.0", desc: "Todas las fechas se muestran como dd/mm/aa: tablas, encabezados de grupo, tablero de solicitudes, avisos, PDF y Excel. Las que llevan hora, como dd/mm/aa hh:mm. En los Excel las fechas son fechas de verdad con ese formato, no texto, asi que siguen ordenando y filtrando. La base sigue guardando ISO y los filtros y el orden no cambian. Los contratos conservan la fecha con letra. Los campos para capturar fecha los dibuja el navegador y siguen su propio formato." },
   { v: "2.84.0", desc: "Tema claro y oscuro, como en Control de Inventarios. Un boton en el encabezado, junto a Cerrar sesion, cambia entre los dos; la eleccion se recuerda en cada navegador y el default sigue siendo el claro. Toda la app pinta desde una sola paleta, asi que el cambio llega a todas las pantallas, al formulario publico y al login. Los colores que estaban fijos (avisos ambar, renglones en dolares, parcialidades, el reporte comparativo, la letra del boton principal) ya toman el color del tema, y los controles nativos (calendario, listas) se ven oscuros. El texto seleccionado tiene color propio. Los PDF y los Excel no cambian: son documentos para imprimir y mandar." },
@@ -8038,13 +8039,16 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                     partida_id: p.id,
                     proyecto: p.proyecto || "",
                     zona: p.zona || "",
-                    categoria: p.categoria || "",
+                    /* La categoría vieja de la partida solo se hereda si es
+                       del rubro: la partida ya no la define (2.86). */
+                    categoria: (categoriasPermitidas(p) || []).some((c) => igualTxt(c, p.categoria)) ? p.categoria : "",
                     moneda: p.moneda || "MXP",
-                    // El importe se deja en blanco a propósito: una
-                    // transacción registra lo que de verdad se pagó, y
-                    // precargar aquí el monto_estimado de la partida
-                    // arriesgaría que alguien confundiera una estimación
-                    // con un pago real y la dejara sin corregir.
+                    /* Concepto e importe salen de la partida, como pidió Paco
+                       (2.87). Antes el importe se dejaba en blanco para no
+                       confundir una estimación con un pago; ahora llega
+                       precargado y se ajusta a lo que de verdad se paga. */
+                    concepto_detallado: p.concepto || "",
+                    importe: Number(p.monto_estimado) ? String(p.monto_estimado) : "",
                   })}
                 />
               )}

@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.91.0";
+const APP_VERSION = "2.92.0";
 const CHANGELOG = [
+  { v: "2.92.0", desc: "Transacciones mensuales. Casilla Mensual al editar una transaccion (icono de repeticion junto al folio y boton Solo mensuales para filtrarlas). Boton Clonar mensuales: eliges el mes que cierra y lista sus mensuales para clonarlas al siguiente, revisando cada una: nuevo dia (mismo dia del mes; si no existe, el ultimo) e importe editables, y la partida equivalente del mes nuevo (mismo concepto). Si no existe, se crea una sola por partida original, con el mismo nombre (si trae el mes escrito, se cambia) y con presupuesto propuesto igual a la suma de lo que se le vincula, editable. Los clones nacen como borrador, heredan la marca y guardan de cual salieron: los ya clonados aparecen como tales y no se repiten. Si el mes o el concepto de la transaccion traen el mes escrito, tambien se actualiza. Duplicar ya no hereda la marca; Duplicar al mes siguiente queda ligado como clon. Requiere 66-transacciones-mensuales.sql" },
   { v: "2.91.0", desc: "Aviso de transacciones con partida de un mes anterior: antes de generar el presupuesto mensual, el reporte semanal a Direccion y el envio a Pagos, si alguna transaccion no pagada esta programada en un mes posterior al de su partida (un gasto que se fue posponiendo), aparece un dialogo con esas transacciones y la partida equivalente de su mes (mismo concepto; si no hay, se sugiere por rubro y proyecto sin marcar). Se puede reasignar las marcadas y generar, generar sin cambios o cancelar. Quedan fuera lo pagado y las compras PPD. En Transacciones > Alertas, un recuadro nuevo con todas las de la compania en esa situacion para reasignarlas en cualquier momento." },
   { v: "2.90.0", desc: "Eliminar partida: las transacciones canceladas ya no cuentan como transacciones vinculadas. Una partida que solo tiene canceladas se elimina con una confirmacion que lo explica; las canceladas se quedan sin partida, con su folio, motivo y expediente. La ventana de reasignar solo aparece cuando hay transacciones vigentes. Las canceladas sin partida no aparecen en la lista Sin vincular." },
   { v: "2.89.0", desc: "Transacciones agrupadas: cada encabezado de grupo tiene una casilla para seleccionar todas sus transacciones de un clic, incluidas las de subgrupos colapsados y las de otras paginas. Si el grupo ya estaba completo, la casilla las quita; si tiene solo algunas, se ve a medias. Lo seleccionado fuera del grupo no se toca, asi que se pueden juntar varios grupos y despues usar Editar, Registrar o Enviar a Pagos sobre todo." },
@@ -984,6 +985,7 @@ const CAMPOS_SISTEMA_TRANSACCION = new Set([
   "created_at", "updated_at", "created_by", "updated_by",
   "cancelada_en", "cancelada_por", "motivo_cancelacion", "historial_cancelacion",
   "anticipo_cerrado_en", "anticipo_cerrado_por", "anticipo_nota_cierre",
+  "clonada_de",
 ]);
 
 const estaCancelada = (t) => !!t?.cancelada_en;
@@ -3261,6 +3263,256 @@ function useRevisionPartidasMes({ partidas, transacciones, transaccionesApi }) {
 
   const dialogo = dlg ? <DialogoPartidaMesAnterior casos={dlg.casos} que={dlg.que} onResolver={onResolver} /> : null;
   return { revisar, dialogo };
+}
+
+/* ----------------------------------------------------------------------
+   TRANSACCIONES MENSUALES: CLONADO AL CIERRE DE MES
+   La marca `es_mensual` solo IDENTIFICA; nada se genera solo (la marca de
+   Recurrente en Partidas se retiró en la 1.63.0 justo por crear copias no
+   deseadas). Al cierre, este diálogo lista las mensuales del mes que cierra
+   y las clona al siguiente, revisadas una por una. Cada clon guarda de cuál
+   salió (`clonada_de`): así no se repite aunque se abra dos veces, y hereda
+   la marca para el mes que sigue.
+   Requiere 66-transacciones-mensuales.sql
+   ---------------------------------------------------------------------- */
+
+/* Mismo día del mes siguiente; si no existe (31 → noviembre), el último. */
+const mismoDiaMesSig = (iso) => {
+  const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+  const ny = m === 12 ? y + 1 : y, nm = m === 12 ? 1 : m + 1;
+  const ultimo = new Date(ny, nm, 0).getDate();
+  return `${ny}-${String(nm).padStart(2, "0")}-${String(Math.min(d, ultimo)).padStart(2, "0")}`;
+};
+
+/* "Renta oficina Noviembre" → "Renta oficina Diciembre"; si va con año
+   ("Diciembre 2026") y cambia de año, también. Respeta MAYÚSCULAS. */
+function reemplazarMesTexto(texto, idxOrigen, idxDestino) {
+  if (!texto || idxOrigen === null || idxOrigen === idxDestino) return texto;
+  const mo = MESES[idxOrigen % 12], md = MESES[idxDestino % 12];
+  const ao = Math.floor(idxOrigen / 12), ad = Math.floor(idxDestino / 12);
+  const L = "A-Za-zÁÉÍÓÚÜáéíóúüÑñ";
+  const re = new RegExp(`(^|[^${L}])(${mo})(?:(\\s+(?:del?\\s+)?)(${ao}))?(?![${L}])`, "gi");
+  return String(texto).replace(re, (m0, pre, mes, sep, anio) => {
+    const caso = mes === mes.toUpperCase() ? md.toUpperCase() : mes[0] === mes[0].toLowerCase() ? md.toLowerCase() : md;
+    return pre + caso + (anio ? sep + ad : "");
+  });
+}
+
+const esClonableMensual = (t) => !!t?.es_mensual && !estaCancelada(t) && !esPadrePPD(t) && !esParcialidad(t);
+
+function ClonarMensualesDialog({ transacciones, partidas, partidasApi, transaccionesApi, onClose }) {
+  const hoy = new Date();
+  const [origen, setOrigen] = useState(hoy.getFullYear() * 12 + hoy.getMonth());
+  const destino = origen + 1;
+  const mesO = MESES[origen % 12], anioO = Math.floor(origen / 12);
+  const mesD = MESES[destino % 12], anioD = Math.floor(destino / 12);
+  const [sel, setSel] = useState({});
+  const [montos, setMontos] = useState({});
+  const [ocupado, setOcupado] = useState(false);
+  useEffect(() => { setSel({}); setMontos({}); }, [origen]);
+
+  const clones = new Map();
+  transacciones.forEach((x) => { if (x.clonada_de && !estaCancelada(x)) clones.set(String(x.clonada_de), x); });
+
+  const filas = transacciones
+    .filter((t) => esClonableMensual(t) && idxMesDia(t.dia) === origen)
+    .sort((a, b) => String(a.dia).localeCompare(String(b.dia)))
+    .map((t) => {
+      const original = t.partida_id ? partidas.find((p) => p.id === t.partida_id) || null : null;
+      let equivalente = null, conceptoNuevo = null;
+      if (original) {
+        conceptoNuevo = reemplazarMesTexto(original.concepto, idxMesPartida(original) ?? origen, destino);
+        const objetivo = new Set([normTxtPartida(original.concepto), normTxtPartida(conceptoNuevo)]);
+        equivalente = partidas.find((p) => p.unidad === original.unidad && p.mes === mesD && Number(p.anio) === anioD
+          && mismaMoneda(p.moneda, original.moneda) && objetivo.has(normTxtPartida(p.concepto))) || null;
+      }
+      return { t, original, equivalente, conceptoNuevo, clon: clones.get(String(t.id)) || null };
+    });
+
+  const val = (f) => ({ marcada: !f.clon, dia: mismoDiaMesSig(f.t.dia), importe: String(f.t.importe ?? ""), ...(sel[f.t.id] || {}) });
+  const fijar = (id, cambios) => setSel((prev) => ({ ...prev, [id]: { ...(prev[id] || {}), ...cambios } }));
+  const pendientes = filas.filter((f) => !f.clon);
+  const marcadas = pendientes.filter((f) => val(f).marcada);
+
+  /* Una partida nueva por partida original, aunque varias mensuales cuelguen
+     de ella. El monto propuesto es la suma de lo que se le va a vincular. */
+  const porOriginal = new Map();
+  marcadas.forEach((f) => {
+    if (!f.original || f.equivalente) return;
+    const e = porOriginal.get(f.original.id) || { original: f.original, concepto: f.conceptoNuevo, suma: 0, n: 0 };
+    e.suma += Number(val(f).importe) || 0; e.n += 1;
+    porOriginal.set(f.original.id, e);
+  });
+  const nuevas = [...porOriginal.values()];
+  const montoDe = (e) => montos[e.original.id] ?? String(Math.round(e.suma * 100) / 100);
+
+  const clonar = async () => {
+    if (marcadas.some((f) => !val(f).dia || !(Number(val(f).importe) > 0))) {
+      alert("Hay renglones marcados sin día de pago o con importe en cero."); return;
+    }
+    const fuera = marcadas.filter((f) => idxMesDia(val(f).dia) !== destino);
+    if (!confirm(`Se van a crear ${marcadas.length} transacción(es) como borrador para ${mesD} ${anioD}` +
+      (nuevas.length ? `, y ${nuevas.length} partida(s) nueva(s) en ese mes` : "") + "." +
+      (fuera.length ? `\n\nOJO: ${fuera.length} quedarán programadas fuera de ${mesD} ${anioD} por la fecha que les pusiste.` : "") +
+      "\n\n¿Continuar?")) return;
+    setOcupado(true);
+    let hechas = 0;
+    const creadas = {};
+    try {
+      for (const e of nuevas) {
+        const u = e.original.unidad;
+        const existentes = [...partidas.filter((p) => p.unidad === u).map((p) => p.folio),
+          ...Object.values(creadas).filter((c) => c.unidad === u).map((c) => c.folio)];
+        creadas[e.original.id] = await partidasApi.insert({
+          id: uid(), unidad: u, mes: mesD, anio: anioD, smi: "",
+          concepto: e.concepto, rubro: e.original.rubro, categoria: e.original.categoria,
+          proyecto: e.original.proyecto, zona: e.original.zona || "",
+          monto_estimado: Number(montoDe(e)) || 0, moneda: e.original.moneda,
+          folio: autoFolio(u, mesD, anioD, existentes),
+        });
+      }
+      for (const f of marcadas) {
+        const v = val(f);
+        const partidaId = f.equivalente?.id || (f.original ? creadas[f.original.id]?.id : null) || null;
+        // Lo del sistema ya lo quita camposEditablesTransaccion; aquí lo propio
+        // de cada pago, igual que Duplicar al mes siguiente.
+        await insertTransaccionBorrador(transaccionesApi, {
+          ...camposEditablesTransaccion(f.t), ...SIN_LIGA_PPD,
+          concepto_detallado: reemplazarMesTexto(f.t.concepto_detallado, origen, destino),
+          dia: v.dia, importe: Number(v.importe), partida_id: partidaId,
+          status: "No Pagado", fecha_pago: null,
+          folio_compra_sae: "", folio_factura: "", referencia_pago: "",
+          es_mensual: true, clonada_de: f.t.id,
+        });
+        hechas += 1;
+      }
+      alert(`Listo: ${hechas} transacción(es) clonada(s) a ${mesD} ${anioD}` +
+        (nuevas.length ? ` y ${nuevas.length} partida(s) creada(s).` : "."));
+      onClose();
+    } catch (err) {
+      alert(`Se detuvo después de ${hechas} de ${marcadas.length}: ${err.message || err}\n\n` +
+        "Lo ya creado se queda; al volver a abrir el diálogo aparece como ya clonado y puedes terminar el resto.");
+    } finally { setOcupado(false); }
+  };
+
+  const th = { ...thStyle, textAlign: "left" };
+  const anios = [anioO - 1, anioO, anioO + 1];
+  return (
+    <Modal width={1180} cerrarAlHacerClicFuera={false} onClose={() => { if (!ocupado) onClose(); }}
+      title="Clonar transacciones mensuales al mes siguiente"
+      subtitle="Las marcadas como Mensual del mes que cierra. Los clones nacen como borrador: sin folio, No Pagado, sin fecha de pago, folios de SAE ni factura, referencia ni adjuntos.">
+      <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
+        <Field label="Mes que cierra">
+          <Select value={String(origen % 12)} onChange={(e) => setOrigen(anioO * 12 + Number(e.target.value))}>
+            {MESES.map((m, i) => <option key={m} value={String(i)}>{m}</option>)}
+          </Select>
+        </Field>
+        <Field label="Año">
+          <Select value={String(anioO)} onChange={(e) => setOrigen(Number(e.target.value) * 12 + (origen % 12))}>
+            {anios.map((a) => <option key={a} value={String(a)}>{a}</option>)}
+          </Select>
+        </Field>
+        <div style={{ fontSize: 13, paddingBottom: 8 }}>→ se clonan a <b>{mesD} {anioD}</b></div>
+      </div>
+
+      {!filas.length ? (
+        <div style={{ fontSize: 12.5, color: T.textDim, padding: "18px 4px" }}>
+          No hay transacciones marcadas como Mensual con día de pago en {mesO} {anioO}. Se marcan con la casilla
+          “Mensual” al editar la transacción; la marca pasa sola a cada clon.
+        </div>
+      ) : (
+        <div style={{ overflowX: "auto", maxHeight: "48vh", overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 8 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr>
+                <th style={{ ...th, width: 30 }}>
+                  <input type="checkbox" disabled={!pendientes.length}
+                    checked={pendientes.length > 0 && pendientes.every((f) => val(f).marcada)}
+                    onChange={(e) => setSel((prev) => {
+                      const n = { ...prev };
+                      pendientes.forEach((f) => { n[f.t.id] = { ...(n[f.t.id] || {}), marcada: e.target.checked }; });
+                      return n;
+                    })} />
+                </th>
+                <th style={th}>Folio</th><th style={th}>Proveedor · concepto</th><th style={th}>Día actual</th>
+                <th style={th}>Nuevo día</th><th style={{ ...th, textAlign: "right" }}>Importe</th><th style={th}>Partida en {mesD}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filas.map((f) => {
+                const v = val(f);
+                const partidaTxt = f.clon ? null
+                  : f.equivalente ? <span>{f.equivalente.concepto}</span>
+                  : f.original ? <span style={{ color: T.amber }}>Nueva: {f.conceptoNuevo}</span>
+                  : <span style={{ color: T.textFaint }}>Sin partida (la original tampoco tiene)</span>;
+                return (
+                  <tr key={f.t.id} style={{ opacity: f.clon ? 0.55 : 1, background: !f.clon && v.marcada ? T.accentBg : undefined }}>
+                    <td style={tdStyle}>
+                      <input type="checkbox" disabled={!!f.clon} checked={!f.clon && v.marcada}
+                        onChange={(e) => fijar(f.t.id, { marcada: e.target.checked })} />
+                    </td>
+                    <td style={{ ...tdStyle, fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{f.t.folio_transaccion || "(borrador)"}</td>
+                    <td style={tdStyle}>
+                      <div>{f.t.proveedor || "—"}</div>
+                      <div style={{ fontSize: 11, color: T.textDim }}>{reemplazarMesTexto(f.t.concepto_detallado, origen, destino) || "—"}</div>
+                    </td>
+                    <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{fmtFecha(f.t.dia)}</td>
+                    <td style={tdStyle}>
+                      {f.clon ? <span style={{ fontSize: 11 }}>Ya clonada · {fmtFecha(f.clon.dia)}{f.clon.folio_transaccion ? ` · ${f.clon.folio_transaccion}` : ""}</span>
+                        : <TextInput type="date" value={v.dia} style={{ width: 140 }} onChange={(e) => fijar(f.t.id, { dia: e.target.value })} />}
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: "right" }}>
+                      {f.clon ? "" : (
+                        <span style={{ display: "inline-flex", gap: 4, alignItems: "center" }}>
+                          <TextInput type="number" step="0.01" value={v.importe} style={{ width: 120, textAlign: "right" }}
+                            onChange={(e) => fijar(f.t.id, { importe: e.target.value })} />
+                          <span style={{ fontSize: 10.5, color: T.textFaint }}>{f.t.moneda || "MXP"}</span>
+                        </span>
+                      )}
+                    </td>
+                    <td style={{ ...tdStyle, minWidth: 200 }}>{partidaTxt}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {nuevas.length > 0 && (
+        <div style={{ marginTop: 14, border: `1px solid ${T.amber}55`, borderRadius: 8, padding: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: T.amber, marginBottom: 4 }}>
+            Partidas que se crean en {mesD} {anioD}
+          </div>
+          <div style={{ fontSize: 11, color: T.textDim, marginBottom: 10 }}>
+            No existen todavía en ese mes. Se propone como presupuesto la suma de lo que se les va a vincular; ajústalo si la
+            partida cubre más gasto. Si el presupuesto de {mesD} ya se envió a Dirección, saldrán como no presupuestado.
+          </div>
+          {nuevas.map((e) => (
+            <div key={e.original.id} style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", padding: "4px 0" }}>
+              <div style={{ flex: "1 1 280px", fontSize: 12.5 }}>
+                {e.concepto}
+                <span style={{ fontSize: 11, color: T.textFaint }}> · {[e.original.rubro, e.original.proyecto].filter(Boolean).join(" · ")} · {e.n} transacción(es)</span>
+              </div>
+              <TextInput type="number" step="0.01" value={montoDe(e)} style={{ width: 140, textAlign: "right" }}
+                onChange={(ev) => setMontos((prev) => ({ ...prev, [e.original.id]: ev.target.value }))} />
+              <span style={{ fontSize: 11, color: T.textFaint }}>{e.original.moneda || "MXP"}</span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", alignItems: "center", marginTop: 16, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, fontSize: 11.5, color: T.textDim }}>
+          {marcadas.length} por clonar{filas.length - pendientes.length ? ` · ${filas.length - pendientes.length} ya clonada(s)` : ""}
+        </div>
+        <Button variant="ghost" disabled={ocupado} onClick={onClose}>Cancelar</Button>
+        <Button disabled={ocupado || !marcadas.length} onClick={clonar}>
+          {ocupado ? "Clonando…" : `Clonar ${marcadas.length}`}
+        </Button>
+      </div>
+    </Modal>
+  );
 }
 
 /* Recuadro de Transacciones > Alertas: todas las de la compañía en esta
@@ -9815,6 +10067,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     if (filtros.proyecto && (t.proyecto || "") !== filtros.proyecto) return false;
     if (filtros.moneda && (t.moneda || "MXP") !== filtros.moneda) return false;
     if (filtros.rubro === "revisar" && estadoRubro(t, partidaDe(t)) === "ok") return false;
+    if (filtros.mensual && !t.es_mensual) return false;
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const partida = partidaDe(t);
@@ -9824,8 +10077,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtroAdj !== "Todos" || (filtros.canceladas || "ocultar") !== "ocultar" || (filtros.registro || "Todas") !== "Todas" || filtros.proyecto || filtros.moneda || filtros.rubro === "revisar";
-  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", adjuntos: "Todos", canceladas: "ocultar", registro: "Todas", proyecto: "", moneda: "", rubro: "" });
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtroAdj !== "Todos" || (filtros.canceladas || "ocultar") !== "ocultar" || (filtros.registro || "Todas") !== "Todas" || filtros.proyecto || filtros.moneda || filtros.rubro === "revisar" || !!filtros.mensual;
+  const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", adjuntos: "Todos", canceladas: "ocultar", registro: "Todas", proyecto: "", moneda: "", rubro: "", mensual: false });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
     importe: (r) => Number(r.importe) || 0,
@@ -10031,6 +10284,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <span style={{ color: T.accent, fontWeight: 600, whiteSpace: "nowrap" }}>
               {t.folio_transaccion || "—"}
             </span>
+            {t.es_mensual && <span title="Mensual: se clona al cierre de mes con 🔁 Clonar mensuales">🔁</span>}
             {ppd && (
               <button type="button" disabled={!nHijas}
                 onClick={() => togglePPD(claveColapso)}
@@ -10798,6 +11052,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     return `${ny}-${String(nm).padStart(2, "0")}-${String(Math.min(d, ultimo)).padStart(2, "0")}`;
   };
   const [duplicandoSig, setDuplicandoSig] = useState(null);
+  const [clonandoMensuales, setClonandoMensuales] = useState(false);
 
   /* Atajo para los pagos que se repiten: la misma transacción, un mes
      después, ligada a la partida equivalente de ese mes —o a una nueva, si no
@@ -10855,6 +11110,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         dia: nuevoDia, partida_id: partidaId,
         status: "No Pagado", fecha_pago: null,
         folio_compra_sae: "", folio_factura: "", referencia_pago: "",
+        ...("es_mensual" in t ? { clonada_de: t.id } : {}),
       });
       alert(`Listo: transacción creada para el ${nuevoDia}` +
         (original && !equivalente ? `, con su partida nueva en ${mesSig} ${ny}.` : "."));
@@ -10873,8 +11129,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     // nueva, y comprometerse con ella es una decisión aparte.
     const { id, folio_transaccion, registrada_en, created_by, updated_by, updated_at, created_at, reportado_at, ...resto } = t;
     const limpio = Object.fromEntries(Object.entries(resto).filter(([k]) => !k.startsWith("_")));
+    // La marca Mensual tampoco: heredarla abriría una segunda serie.
     setForm({ ...limpio, ...SIN_LIGA_PPD, ...(esParcialidad(t) ? { pct_pago: null } : {}),
-              status: "No Pagado", fecha_pago: "", folio_compra_sae: "", folio_factura: "", referencia_pago: "" });
+              status: "No Pagado", fecha_pago: "", folio_compra_sae: "", folio_factura: "", referencia_pago: "",
+              ...("es_mensual" in t ? { es_mensual: false } : {}), ...("clonada_de" in t ? { clonada_de: null } : {}) });
     setEditId(null);
     setNotaPrivada("");
     setModalOpen(true);
@@ -11335,6 +11593,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               onToggle={colVisibility.toggle}
               onShowAll={colVisibility.showAll}
             />
+            <Button variant={filtros.mensual ? undefined : "ghost"} onClick={() => setFiltros({ ...filtros, mensual: !filtros.mensual })}
+              title="Ver solo las transacciones marcadas como Mensual">🔁 Solo mensuales</Button>
+            <Button variant="ghost" onClick={() => setClonandoMensuales(true)}
+              title="Clonar las mensuales del mes que cierra al mes siguiente">🔁 Clonar mensuales…</Button>
+            {clonandoMensuales && (
+              <ClonarMensualesDialog transacciones={transUnidad} partidas={partidas} partidasApi={partidasApi}
+                transaccionesApi={transaccionesApi} onClose={() => setClonandoMensuales(false)} />
+            )}
           </div>
         </div>
 
@@ -11735,6 +12001,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <Field label="Día de Pago Programado">
               <TextInput type="date" value={form.dia} onChange={(e) => setForm({ ...form, dia: e.target.value })} />
             </Field>
+            {!esPadrePPD(form) && !esParcialidad(form) && (
+              <Field label="Se repite">
+                <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, minHeight: 34, cursor: "pointer", color: T.text }}
+                  title="Las mensuales se clonan al mes siguiente al cierre, con 🔁 Clonar mensuales">
+                  <input type="checkbox" checked={!!form.es_mensual} onChange={(e) => setForm({ ...form, es_mensual: e.target.checked })} />
+                  🔁 Mensual
+                </div>
+              </Field>
+            )}
             <Field label="Solicitante">
               <TextInput value={form.solicitante} onChange={(e) => setForm({ ...form, solicitante: e.target.value })} />
             </Field>

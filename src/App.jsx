@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.90.0";
+const APP_VERSION = "2.91.0";
 const CHANGELOG = [
+  { v: "2.91.0", desc: "Aviso de transacciones con partida de un mes anterior: antes de generar el presupuesto mensual, el reporte semanal a Direccion y el envio a Pagos, si alguna transaccion no pagada esta programada en un mes posterior al de su partida (un gasto que se fue posponiendo), aparece un dialogo con esas transacciones y la partida equivalente de su mes (mismo concepto; si no hay, se sugiere por rubro y proyecto sin marcar). Se puede reasignar las marcadas y generar, generar sin cambios o cancelar. Quedan fuera lo pagado y las compras PPD. En Transacciones > Alertas, un recuadro nuevo con todas las de la compania en esa situacion para reasignarlas en cualquier momento." },
   { v: "2.90.0", desc: "Eliminar partida: las transacciones canceladas ya no cuentan como transacciones vinculadas. Una partida que solo tiene canceladas se elimina con una confirmacion que lo explica; las canceladas se quedan sin partida, con su folio, motivo y expediente. La ventana de reasignar solo aparece cuando hay transacciones vigentes. Las canceladas sin partida no aparecen en la lista Sin vincular." },
   { v: "2.89.0", desc: "Transacciones agrupadas: cada encabezado de grupo tiene una casilla para seleccionar todas sus transacciones de un clic, incluidas las de subgrupos colapsados y las de otras paginas. Si el grupo ya estaba completo, la casilla las quita; si tiene solo algunas, se ve a medias. Lo seleccionado fuera del grupo no se toca, asi que se pueden juntar varios grupos y despues usar Editar, Registrar o Enviar a Pagos sobre todo." },
   { v: "2.88.0", desc: "Partidas, transacciones vinculadas (al desplegar una partida): el encabezado dice a que partida pertenecen, con su folio, y cada transaccion muestra su folio (o 'borrador' si aun no se registra). El listado tiene mas sangria y un conector para que se lea como subnivel de la partida." },
@@ -3073,6 +3074,218 @@ function PillAnticipo({ seg }) {
       + (seg.mesCerrado ? ". El mes del pago ya cerró: sin CFDI se pierden la deducción y el IVA acreditable." : ".")}>
       <Pill tone={seg.mesCerrado ? "red" : "amber"}>ANT sin XML{seg.dias != null ? ` · ${seg.dias} d` : ""}</Pill>
     </span>
+  );
+}
+
+/* ----------------------------------------------------------------------
+   TRANSACCIONES PROGRAMADAS EN UN MES CON PARTIDA DE UN MES ANTERIOR
+   Un gasto que se pospone de mes en mes conserva la partida del mes en que
+   se capturó: compromete un presupuesto que ya cerró y no aparece en el del
+   mes en que de verdad se va a pagar. No se bloquea al guardar: se revisa
+   justo antes de generar los reportes (presupuesto mensual, semanal a
+   Dirección y envío a Pagos), con la opción de pasarlas a la partida
+   equivalente de su mes, y queda a la vista en Transacciones > Alertas.
+   Fuera: lo pagado (es histórico) y las compras PPD —padre e hijas—, que
+   comprometen en el mes de la compra aunque se paguen después.
+   ---------------------------------------------------------------------- */
+const idxMesPartida = (p) => {
+  const m = MESES.indexOf(p?.mes);
+  return m < 0 || !p?.anio ? null : Number(p.anio) * 12 + m;
+};
+const idxMesDia = (dia) => {
+  const s = String(dia || "");
+  return /^\d{4}-\d{2}/.test(s) ? Number(s.slice(0, 4)) * 12 + Number(s.slice(5, 7)) - 1 : null;
+};
+const normTxtPartida = (v) => String(v || "").trim().toLowerCase()
+  .normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ");
+
+/* La equivalente es la partida del mes de la transacción con el MISMO
+   concepto (misma compañía y moneda): esa se propone ya marcada. Si no hay,
+   y una sola comparte rubro y proyecto, se propone sin marcar: es una
+   suposición y la confirma quien revisa. */
+function casosPartidaMesAnterior(transacciones, partidas) {
+  const porId = new Map(partidas.map((p) => [p.id, p]));
+  return transacciones.flatMap((t) => {
+    if (!t || estaCancelada(t) || t.status === "Pagado" || esPadrePPD(t) || esParcialidad(t)) return [];
+    const p = porId.get(t.partida_id);
+    if (!p) return [];
+    const mp = idxMesPartida(p), mt = idxMesDia(t.dia);
+    if (mp === null || mt === null || mp >= mt) return [];
+    const mes = MESES[mt % 12], anio = Math.floor(mt / 12);
+    const opciones = partidas.filter((x) => x.unidad === p.unidad && x.mes === mes && Number(x.anio) === anio
+      && mismaMoneda(x.moneda, t.moneda));
+    let sugerida = opciones.find((x) => normTxtPartida(x.concepto) === normTxtPartida(p.concepto)) || null;
+    const porConcepto = !!sugerida;
+    if (!sugerida) {
+      const mismas = opciones.filter((x) => normTxtPartida(x.rubro) === normTxtPartida(p.rubro)
+        && normTxtPartida(x.proyecto) === normTxtPartida(p.proyecto));
+      if (mismas.length === 1) sugerida = mismas[0];
+    }
+    return [{ t, p, mes, anio, opciones, sugerida, porConcepto }];
+  }).sort((a, b) => String(a.t.dia).localeCompare(String(b.t.dia)));
+}
+
+function DialogoPartidaMesAnterior({ casos, que, onResolver }) {
+  const [eleccion, setEleccion] = useState(() => Object.fromEntries(casos.map((c) => [c.t.id, c.sugerida?.id || ""])));
+  const [marcadas, setMarcadas] = useState(() => new Set(casos.filter((c) => c.sugerida && c.porConcepto).map((c) => c.t.id)));
+  const [ocupado, setOcupado] = useState(false);
+  const aMover = casos.filter((c) => marcadas.has(c.t.id) && eleccion[c.t.id]);
+  const alternar = (id) => setMarcadas((prev) => {
+    const n = new Set(prev);
+    if (n.has(id)) n.delete(id); else if (eleccion[id]) n.add(id);
+    return n;
+  });
+  const resolver = async (accion) => {
+    if (ocupado) return;
+    setOcupado(true);
+    try { await onResolver(accion, Object.fromEntries(aMover.map((c) => [c.t.id, eleccion[c.t.id]]))); }
+    finally { setOcupado(false); }
+  };
+  const th = { ...thStyle, textAlign: "left" };
+  return (
+    <Modal width={1100} zIndex={1200} cerrarAlHacerClicFuera={false} onClose={() => resolver("cancelar")}
+      title={`${casos.length} transacción(es) con partida de un mes anterior`}
+      subtitle={"Están programadas para pagarse en un mes, pero comprometen el presupuesto de un mes que ya pasó: " +
+        "no aparecen en el presupuesto del mes en que se van a pagar. Las marcadas se pasan a la partida elegida."}>
+      <div style={{ overflowX: "auto", maxHeight: "55vh", overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th style={{ ...th, width: 30 }}>
+                <input type="checkbox" checked={casos.some((c) => eleccion[c.t.id]) && casos.filter((c) => eleccion[c.t.id]).every((c) => marcadas.has(c.t.id))}
+                  onChange={(e) => setMarcadas(e.target.checked ? new Set(casos.filter((c) => eleccion[c.t.id]).map((c) => c.t.id)) : new Set())} />
+              </th>
+              <th style={th}>Folio</th><th style={th}>Proveedor</th><th style={th}>Día de pago</th>
+              <th style={{ ...th, textAlign: "right" }}>Importe</th><th style={th}>Partida actual</th><th style={th}>Pasar a</th>
+            </tr>
+          </thead>
+          <tbody>
+            {casos.map((c) => (
+              <tr key={c.t.id} style={{ background: marcadas.has(c.t.id) ? T.accentBg : undefined }}>
+                <td style={tdStyle}>
+                  <input type="checkbox" disabled={!eleccion[c.t.id]} checked={marcadas.has(c.t.id)} onChange={() => alternar(c.t.id)} />
+                </td>
+                <td style={{ ...tdStyle, fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{c.t.folio_transaccion || "(borrador)"}</td>
+                <td style={tdStyle}>{c.t.proveedor || "—"}</td>
+                <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{fmtFecha(c.t.dia)}</td>
+                <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" }}>
+                  ${numMx(c.t.importe)} {c.t.moneda || "MXP"}
+                </td>
+                <td style={tdStyle}>
+                  <div>{c.p.concepto || c.p.folio || "—"}</div>
+                  <div style={{ fontSize: 11, color: T.amber }}>{c.p.mes} {c.p.anio}</div>
+                </td>
+                <td style={{ ...tdStyle, minWidth: 240 }}>
+                  {c.opciones.length ? (
+                    <Select value={eleccion[c.t.id]} style={{ width: "100%" }}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setEleccion((prev) => ({ ...prev, [c.t.id]: v }));
+                        setMarcadas((prev) => { const n = new Set(prev); if (v) n.add(c.t.id); else n.delete(c.t.id); return n; });
+                      }}>
+                      <option value="">— Dejarla donde está —</option>
+                      {c.opciones.map((x) => <option key={x.id} value={x.id}>{x.concepto || x.folio}{x.proyecto ? ` · ${x.proyecto}` : ""}</option>)}
+                    </Select>
+                  ) : (
+                    <span style={{ fontSize: 11, color: T.textFaint }}>No hay partidas de {c.mes} {c.anio} en {c.t.moneda || "MXP"}</span>
+                  )}
+                  {c.sugerida && !c.porConcepto && eleccion[c.t.id] === c.sugerida.id && (
+                    <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>Sugerida por rubro y proyecto: confírmala.</div>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", alignItems: "center", marginTop: 16, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, fontSize: 11.5, color: T.textDim }}>
+          {aMover.length} de {casos.length} marcada(s) para reasignar.
+        </div>
+        <Button variant="ghost" disabled={ocupado} onClick={() => resolver("cancelar")}>{que ? "Cancelar" : "Cerrar"}</Button>
+        {que && <Button variant="ghost" disabled={ocupado} onClick={() => resolver("seguir")}>Generar sin cambios</Button>}
+        <Button disabled={ocupado || !aMover.length} onClick={() => resolver("reasignar")}>
+          {ocupado ? "Reasignando…" : `Reasignar ${aMover.length}${que ? " y generar" : ""}`}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+/* revisar(lista, que, continuar) → Promise<boolean>: true = generar ya.
+   Si se reasigna, el reporte NO sigue en la misma llamada —trae las
+   transacciones de antes del cambio—: se vuelve a lanzar con `continuar`
+   en cuanto la vista refleja las partidas nuevas. */
+function useRevisionPartidasMes({ partidas, transacciones, transaccionesApi }) {
+  const [dlg, setDlg] = useState(null);
+  const pendiente = useRef(null);
+  useEffect(() => {
+    const p = pendiente.current;
+    if (!p) return;
+    const listo = [...p.esperado].every(([id, pid]) => transacciones.find((t) => t.id === id)?.partida_id === pid);
+    if (listo) { pendiente.current = null; clearTimeout(p.timer); p.continuar?.(); }
+  }, [transacciones]);
+
+  const revisar = (lista, que, continuar) => {
+    const casos = casosPartidaMesAnterior(lista, partidas);
+    if (!casos.length) return Promise.resolve(true);
+    return new Promise((resolve) => setDlg({ casos, que, continuar, resolve }));
+  };
+
+  const onResolver = async (accion, cambios) => {
+    const { resolve, continuar } = dlg;
+    if (accion !== "reasignar") { setDlg(null); resolve(accion === "seguir"); return; }
+    const esperado = new Map(Object.entries(cambios));
+    // Antes de escribir: si la vista se actualiza durante las escrituras,
+    // el efecto ya tiene qué esperar.
+    const pend = { esperado, continuar };
+    pend.timer = setTimeout(() => {
+      if (pendiente.current !== pend) return;
+      pendiente.current = null;
+      if (continuar) alert("Las transacciones se reasignaron, pero la vista aún no se actualiza. Vuelve a generar el reporte.");
+    }, 10000);
+    pendiente.current = pend;
+    try {
+      for (const [id, pid] of esperado) {
+        const nueva = partidas.find((x) => x.id === pid);
+        await transaccionesApi.update(id, { partida_id: pid, ...(nueva ? { unidad_detectada: nueva.unidad } : {}) });
+      }
+    } catch (err) {
+      pendiente.current = null; clearTimeout(pend.timer);
+      alert("No se pudo reasignar: " + (err.message || err) + "\n\nNo se generó el reporte; revisa y vuelve a intentar.");
+      setDlg(null); resolve(false); return;
+    }
+    setDlg(null);
+    resolve(false);
+  };
+
+  const dialogo = dlg ? <DialogoPartidaMesAnterior casos={dlg.casos} que={dlg.que} onResolver={onResolver} /> : null;
+  return { revisar, dialogo };
+}
+
+/* Recuadro de Transacciones > Alertas: todas las de la compañía en esta
+   situación, para limpiarlas sin esperar a generar un reporte. */
+function AlertaPartidaMesAnterior({ partidas, transacciones, transaccionesApi }) {
+  const rev = useRevisionPartidasMes({ partidas, transacciones, transaccionesApi });
+  const casos = casosPartidaMesAnterior(transacciones, partidas);
+  const tot = {};
+  casos.forEach((c) => { const m = monedaNorm(c.t.moneda); tot[m] = (tot[m] || 0) + (Number(c.t.importe) || 0); });
+  return (
+    <Panel title="Programadas con partida de un mes anterior"
+      subtitle="No pagadas cuyo día de pago cae en un mes posterior al de su partida: comprometen un presupuesto ya cerrado y no aparecen en el de su mes.">
+      {!casos.length ? (
+        <div style={{ fontSize: 12, color: T.textDim }}>Ninguna. Todas las transacciones por pagar están en una partida de su mes.</div>
+      ) : (
+        <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+          <div style={{ fontSize: 13 }}>
+            <b>{casos.length}</b> transacción(es) ·{" "}
+            <span style={{ fontFamily: T.fontMono }}>{Object.entries(tot).map(([m, v]) => `$${numMx(v)} ${m}`).join("  ·  ")}</span>
+          </div>
+          <Button onClick={() => rev.revisar(transacciones, null, null)}>Revisar y reasignar</Button>
+        </div>
+      )}
+      {rev.dialogo}
+    </Panel>
   );
 }
 
@@ -7511,8 +7724,19 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   // permitiría distinguir lo no presupuestado de lo que el filtro ocultó.
   const partidasDelMesOf = partidasUnidad.filter((p) => p.mes === mesOf && Number(p.anio) === Number(anioOf));
 
-  const enviarADireccion = async () => {
+  const revPartidasOf = useRevisionPartidasMes({ partidas, transacciones, transaccionesApi });
+  const enviarOfRef = useRef(null);
+  const enviarADireccion = async (revisado = false) => {
     if (!partidasDelMesOf.length) { alert(`No hay partidas en ${periodoOf}.`); return; }
+    // Lo que se paga este mes pero sigue en una partida de un mes anterior
+    // no aparecería en este presupuesto.
+    if (revisado !== true) {
+      const im = Number(anioOf) * 12 + MESES.indexOf(mesOf);
+      const seguir = await revPartidasOf.revisar(
+        transacciones.filter((t) => t.unidad_detectada === unidad && idxMesDia(t.dia) === im),
+        `el presupuesto de ${periodoOf}`, () => enviarOfRef.current(true));
+      if (!seguir) return;
+    }
     const v = versionesOf.length + 1;
     if (!confirm(
       `Se va a enviar a Dirección la versión ${v} del presupuesto de ${periodoOf}, ` +
@@ -7544,6 +7768,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       alert("No se pudo enviar: " + (err.message || err));
     } finally { setOficialOcupado(false); }
   };
+  enviarOfRef.current = enviarADireccion;
   const [conDetalle, setConDetalle] = usePrefState("pref-partidas-reporte-detalle", false);
   const txDe = (p) => transacciones
     .filter((t) => t.partida_id === p.id)
@@ -8366,7 +8591,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                   {versionesOf.length ? ` · ${versionesOf.length} versión(es) enviada(s)` : " · sin enviar"}
                 </div>
                 <div style={{ flex: 1 }} />
-                <Button onClick={enviarADireccion} disabled={oficialOcupado || !partidasDelMesOf.length} style={{ width: "100%" }}>
+                {revPartidasOf.dialogo}
+                <Button onClick={() => enviarADireccion()} disabled={oficialOcupado || !partidasDelMesOf.length} style={{ width: "100%" }}>
                   {oficialOcupado ? "Enviando…" : `Enviar versión ${versionesOf.length + 1}`}
                 </Button>
               </div>
@@ -10098,8 +10324,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   // Todas las de la semana, sin filtros.
   const transDeLaSemana = transUnidad.filter((t) => !estaCancelada(t) && !esPadrePPD(t) && t.dia && t.dia >= semanaOf && t.dia <= finSemanaOf);
 
-  const enviarSemanalADireccion = async () => {
+  const revPartidasSem = useRevisionPartidasMes({ partidas, transacciones, transaccionesApi });
+  const enviarSemRef = useRef(null);
+  const enviarSemanalADireccion = async (revisado = false) => {
     if (!transDeLaSemana.length) { alert(`No hay transacciones del ${semanaOf} al ${finSemanaOf}.`); return; }
+    if (revisado !== true) {
+      const seguir = await revPartidasSem.revisar(transDeLaSemana,
+        `el reporte semanal del ${semanaOf} al ${finSemanaOf}`, () => enviarSemRef.current(true));
+      if (!seguir) return;
+    }
     const v = versionesSem.length + 1;
     const filas = transDeLaSemana.map((t) => {
         const p = partidas.find((x) => x.id === t.partida_id);
@@ -11299,6 +11532,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
           <AlertaSatDashboard unidad={unidad} proveedores={proveedoresApi.rows}
             transacciones={transUnidad.filter((t) => !estaCancelada(t))} listasSat={listasSat} />
+          <AlertaPartidaMesAnterior partidas={partidas} transaccionesApi={transaccionesApi}
+            transacciones={transUnidad.filter((t) => !estaCancelada(t))} />
           <AlertaAnticiposDashboard unidad={unidad} transacciones={transacciones} onAbrir={startEdit} />
         </div>
       )}
@@ -11369,7 +11604,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 </Field>
               )}
               <div style={{ flex: 1, minHeight: 8 }} />
-              <Button onClick={enviarSemanalADireccion} disabled={oficialSem || !transDeLaSemana.length} style={{ width: "100%" }}>
+              {revPartidasSem.dialogo}
+              <Button onClick={() => enviarSemanalADireccion()} disabled={oficialSem || !transDeLaSemana.length} style={{ width: "100%" }}>
                 {oficialSem ? "Enviando…" : `Enviar versión ${versionesSem.length + 1}`}
               </Button>
             </div>
@@ -12463,7 +12699,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
    *
    * Requiere 52-envios-pagos.sql
    */
-  const enviarAPagos = async () => {
+  const revPartidasPag = useRevisionPartidasMes({ partidas, transacciones, transaccionesApi });
+  const enviarPagRef = useRef(null);
+  const enviarAPagos = async (revisado = false) => {
     if (!filasOrdenadas.length) {
       alert("No hay transacciones en el filtro actual para enviar.");
       return;
@@ -12489,6 +12727,11 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     const aRegistrar = trans.filter((t) => pendienteDeRegistro(t));
     const aPoliza = trans.filter((t) => !pendienteDeRegistro(t) && (!t.poliza_generada_en || polizaVieja(t)));
     const yaEnviadas = trans.filter((t) => t.enviado_pagos_at).length;
+    if (revisado !== true) {
+      const seguir = await revPartidasPag.revisar(trans, `el envío a Pagos del ${fmtFecha(fecha)}`,
+        () => enviarPagRef.current(true));
+      if (!seguir) return;
+    }
 
     const porMoneda = {};
     filasOrdenadas.forEach((f) => {
@@ -12615,6 +12858,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       setGenerandoReporte(false);
     }
   };
+  enviarPagRef.current = enviarAPagos;
   const totalMXN = filasOrdenadas.filter((f) => f.moneda === "MXP").reduce((s, f) => s + f.importe, 0);
   const totalUSD = filasOrdenadas.filter((f) => f.moneda === "USD").reduce((s, f) => s + f.importe, 0);
   const sinProveedorVinculado = filas.filter((f) => !f._vinculadoProveedor && f.proveedor).length;
@@ -12733,7 +12977,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
                   <Button variant="ghost" onClick={vistaPreviaPDF} disabled={generandoReporte} style={{ flex: 1 }}>
                     Vista previa
                   </Button>
-                  <Button onClick={enviarAPagos} disabled={generandoReporte} style={{ flex: 1 }}>
+                  {revPartidasPag.dialogo}
+                  <Button onClick={() => enviarAPagos()} disabled={generandoReporte} style={{ flex: 1 }}>
                     {generandoReporte ? "Enviando…" : "Enviar a Pagos"}
                   </Button>
                 </div>

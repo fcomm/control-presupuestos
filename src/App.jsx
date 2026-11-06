@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.94.1";
+const APP_VERSION = "2.95.0";
 const CHANGELOG = [
+  { v: "2.95.0", desc: "La comparacion entre versiones del presupuesto mensual se mueve a Partidas > Exportar y reportes, tarjeta Comparar versiones enviadas: por omision la version mas reciente contra la anterior, con opcion de elegir otro par, del mes elegido en Enviar a Direccion. Descarga el PDF y el Excel con lo nuevo, lo que cambio y lo retirado, y el Excel con todas las transacciones vinculadas a esas partidas (estado de hoy). En Reportes a Direccion > Presupuesto mensual se quita el selector Comparar version; un clic en vN sigue descargandola comparada contra la anterior, con sus transacciones" },
   { v: "2.94.1", desc: "Fix: el Excel del presupuesto mensual que se vuelve a descargar desde Reportes a Direccion (un clic en vN o Comparar version X contra Y) salia sin la hoja de Transacciones, porque al enviar solo se congelan las partidas. Ahora lleva las transacciones vinculadas hoy a las partidas de esa version, y la hoja dice estado al <fecha> para que no se confunda con lo enviado" },
   { v: "2.94.0", desc: "Presupuesto mensual a Direccion: misma comparacion entre versiones que el semanal. Al enviar desde Partidas, Resaltar lo nuevo respecto a elige la base (por omision la ultima enviada, otra version o sin comparar) y la confirmacion dice cuantas partidas nuevas, con cambio y retiradas lleva. El PDF ejecutivo abre con lo NUEVO en verde, lo que cambio en ambar (importe, moneda, concepto, proyecto, rubro o zona, con su valor anterior) y lo retirado en gris; despues va el reporte completo. El Excel abre con una hoja de cambios y en la hoja del presupuesto colorea las partidas nuevas y cambiadas. En Reportes a Direccion > Presupuesto mensual, Comparar version X contra Y descarga la X con lo nuevo respecto a la Y, y un clic en vN compara contra la anterior. Se compara contra lo congelado en cada envio, no contra el estado de hoy. De paso: el boton PDF ejecutivo de Partidas recibia el clic como si fuera la lista de partidas y no generaba nada" },
   { v: "2.93.2", desc: "Fix Dashboard, panel Presupuestado vs. pagado real: al desplegar un concepto aparecian ~10 renglones con el mismo nombre. No eran 10 registros: era UNA partida o transaccion marcada Todos (o Grupo Gral) repartida entre los proyectos, y como el agrupamiento no incluia Proyecto, todas las fracciones caian juntas. Ahora el detalle vuelve a juntar las fracciones por registro de origen y dice entre cuantos proyectos se reparte; si el concepto tiene un solo registro ya no se despliega. Los totales no cambian" },
@@ -2644,6 +2645,38 @@ function dibujarCambiosPresupuestoPdf(doc, comparacion, { y, M, ancho, altoPag }
   y += 8;
   titulo("REPORTE COMPLETO DEL MES — incluye lo nuevo", [35, 42, 49]);
   return y + 4;
+}
+
+/* Vuelve a descargar una versión enviada del presupuesto mensual (PDF y
+   Excel), comparada contra otra: por omisión la inmediata anterior, `base`
+   para elegirla, "0" para no comparar. Se usa desde Partidas › Exportar y
+   reportes y desde Reportes a Dirección.
+   Las transacciones NO se congelan al enviar, solo las partidas: el Excel
+   lleva las vinculadas HOY a las partidas de esa versión, y la hoja lo dice. */
+async function descargarPresupuestoComparado({ reporte: r, detalle = null, base = null, transacciones = [] }) {
+  let data = detalle;
+  if (!data) {
+    const { data: d, error } = await supabase.from("reportes_oficiales_detalle").select("*").eq("reporte_id", r.id);
+    if (error) throw new Error(`no se pudo leer la versión ${r.version}: ${error.message}`);
+    data = d || [];
+  }
+  let comparacion = null;
+  try {
+    const prev = base === "0" ? null
+      : await detalleRevisionAnterior(r.compania, "presupuesto", r.periodo, r.version, base ? Number(base) : null);
+    if (prev) comparacion = compararVersionPresupuesto(data, prev.filas, prev.version);
+  } catch (err) { alert("No se pudo leer la versión anterior; se descarga sin comparar. " + (err.message || err)); }
+  generarPdfOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data, comparacion });
+  await new Promise((res) => setTimeout(res, 900));
+  const porPartida = new Map(data.map((f) => [String(f.origen_id), f]));
+  const txs = transacciones
+    .filter((t) => porPartida.has(String(t.partida_id)))
+    .map((t) => { const f = porPartida.get(String(t.partida_id)); return { ...t, _folio: f.folio || "", _partida: f.concepto || "" }; })
+    .sort((x, y) => String(x._folio).localeCompare(String(y._folio)) || String(x.dia || "").localeCompare(String(y.dia || "")));
+  await generarExcelOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo,
+    version: r.version, filas: data, transacciones: txs, comparacion,
+    notaTransacciones: `estado al ${fmtFecha(new Date())}` });
+  return comparacion;
 }
 
 /* Hoja de cambios del presupuesto mensual. Se crea ANTES que las demás
@@ -8237,6 +8270,11 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   // Contra qué versión resaltar lo nuevo: "" la última enviada, "0" sin comparar.
   const [baseOf, setBaseOf] = useState("");
   const periodoOf = `${mesOf} ${anioOf}`;
+  /* Comparar dos versiones YA enviadas del mes elegido. Por omisión, la
+     última contra la anterior. */
+  const [cmpVerOf, setCmpVerOf] = useState("");
+  const [cmpBaseOf, setCmpBaseOf] = useState("");
+  const [comparandoOf, setComparandoOf] = useState(false);
 
   useEffect(() => {
     let vivo = true;
@@ -8308,6 +8346,20 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     } finally { setOficialOcupado(false); }
   };
   enviarOfRef.current = enviarADireccion;
+  const versOfDesc = versionesOf.map((r) => r.version).sort((a, b) => b - a);
+  const cmpA = versOfDesc.includes(Number(cmpVerOf)) ? Number(cmpVerOf) : versOfDesc[0];
+  const cmpOpcB = versOfDesc.filter((v) => v < cmpA);
+  const cmpB = cmpOpcB.includes(Number(cmpBaseOf)) ? Number(cmpBaseOf) : cmpOpcB[0];
+  const descargarComparacionOf = async () => {
+    const r = versionesOf.find((x) => x.version === cmpA);
+    if (!r || !cmpB) return;
+    setComparandoOf(true);
+    try {
+      await descargarPresupuestoComparado({ reporte: r, base: String(cmpB), transacciones });
+    } catch (err) {
+      alert("No se pudo descargar la comparación. Revisa tu conexión e inténtalo de nuevo. Detalle: " + (err.message || err));
+    } finally { setComparandoOf(false); }
+  };
   const [conDetalle, setConDetalle] = usePrefState("pref-partidas-reporte-detalle", false);
   const txDe = (p) => transacciones
     .filter((t) => t.partida_id === p.id)
@@ -9166,6 +9218,44 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                 <Button onClick={() => enviarADireccion()} disabled={oficialOcupado || !partidasDelMesOf.length} style={{ width: "100%" }}>
                   {oficialOcupado ? "Enviando…" : `Enviar versión ${versionesOf.length + 1}`}
                 </Button>
+              </div>
+
+              <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
+                            display: "flex", flexDirection: "column" }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Comparar versiones enviadas</div>
+                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, marginBottom: 10 }}>
+                  PDF y Excel de una versión ya enviada, con lo nuevo, lo que cambió y lo retirado
+                  respecto a otra. El Excel incluye todas las transacciones de esas partidas.
+                </div>
+                <div style={{ fontSize: 11, color: T.textFaint, marginBottom: 10 }}>
+                  {periodoOf} · el mes elegido en «Enviar a Dirección»
+                </div>
+                {versOfDesc.length < 2 ? (
+                  <div style={{ fontSize: 11.5, color: T.textDim }}>
+                    {versOfDesc.length === 0
+                      ? `Todavía no se ha enviado ninguna versión de ${periodoOf}.`
+                      : `Solo hay una versión enviada de ${periodoOf}; hace falta una segunda para comparar.`}
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <Field label="Versión" style={{ flex: 1 }}>
+                        <Select value={String(cmpA)} onChange={(e) => { setCmpVerOf(e.target.value); setCmpBaseOf(""); }}>
+                          {versOfDesc.slice(0, -1).map((v) => <option key={v} value={String(v)}>v{v}{v === versOfDesc[0] ? " (la más reciente)" : ""}</option>)}
+                        </Select>
+                      </Field>
+                      <Field label="Contra" style={{ flex: 1 }}>
+                        <Select value={String(cmpB)} onChange={(e) => setCmpBaseOf(e.target.value)}>
+                          {cmpOpcB.map((v) => <option key={v} value={String(v)}>v{v}{v === cmpA - 1 ? " (la anterior)" : ""}</option>)}
+                        </Select>
+                      </Field>
+                    </div>
+                    <div style={{ flex: 1, minHeight: 10 }} />
+                    <Button onClick={descargarComparacionOf} disabled={comparandoOf} style={{ width: "100%" }}>
+                      {comparandoOf ? "Preparando…" : `Descargar v${cmpA} vs v${cmpB}`}
+                    </Button>
+                  </>
+                )}
               </div>
 
               <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
@@ -15521,26 +15611,7 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
       await generarExcelSemanal({ compania: r.compania, periodoIni: r.periodo_ini, periodoFin: r.periodo_fin,
         version: r.version, filas: data || [], gruposZona, comparacion });
     } else {
-      let comparacion = null;
-      try {
-        const prev = base === "0" ? null
-          : await detalleRevisionAnterior(r.compania, "presupuesto", r.periodo, r.version, base ? Number(base) : null);
-        if (prev) comparacion = compararVersionPresupuesto(data || [], prev.filas, prev.version);
-      } catch (err) { alert("No se pudo leer la versión anterior; se descarga sin comparar. " + (err.message || err)); }
-      generarPdfOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [], comparacion });
-      await new Promise((res) => setTimeout(res, 900));
-      /* Las transacciones NO se congelan al enviar, solo las partidas. Antes
-         la copia vuelta a descargar salía sin hoja de transacciones, y se
-         leía como si se hubieran perdido. Ahora va con las vinculadas HOY a
-         las partidas de esa versión, y la hoja dice que es el estado de hoy. */
-      const porPartida = new Map((data || []).map((f) => [String(f.origen_id), f]));
-      const txs = transacciones
-        .filter((t) => porPartida.has(String(t.partida_id)))
-        .map((t) => { const f = porPartida.get(String(t.partida_id)); return { ...t, _folio: f.folio || "", _partida: f.concepto || "" }; })
-        .sort((x, y) => String(x._folio).localeCompare(String(y._folio)) || String(x.dia || "").localeCompare(String(y.dia || "")));
-      await generarExcelOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo,
-        version: r.version, filas: data || [], transacciones: txs, comparacion,
-        notaTransacciones: `estado al ${fmtFecha(new Date())}` });
+      await descargarPresupuestoComparado({ reporte: r, detalle: data || [], base, transacciones });
     }
   };
 
@@ -15621,7 +15692,13 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
                 )}
               </span>
             ))}
-            {versOrd.length > 1 && (
+            {esPresupuesto && versOrd.length > 1 && (
+              <div style={{ fontSize: 11.5, color: T.textFaint, marginTop: 12 }}>
+                Un clic en una versión la descarga con los cambios respecto a la anterior.
+                Para comparar otras versiones, ve a Partidas › Exportar y reportes › Comparar versiones enviadas.
+              </div>
+            )}
+            {!esPresupuesto && versOrd.length > 1 && (
               <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginTop: 14,
                             paddingTop: 12, borderTop: `1px solid ${T.borderSoft}` }}>
                 <Field label="Comparar versión">

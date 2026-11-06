@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.97.1";
+const APP_VERSION = "2.97.2";
 const CHANGELOG = [
+  { v: "2.97.2", desc: "Transacciones > General: la barra de filtros se reacomoda en una sola fila. Buscar y las fechas tienen ancho fijo (antes se estiraban a media pantalla), y a la derecha, tras un separador, van Agrupado, Contraer todo, Columnas, Solo mensuales y Clonar mensuales" },
   { v: "2.97.1", desc: "Transacciones > General: se quitan los filtros Direccion, Pagos, Canceladas, Clasificacion, Registro, Adjuntos, Proyecto y Moneda, que no se usaban. Quedan Buscar, Desde, Hasta y Solo mensuales. Lo que hubiera quedado elegido en esos filtros se ignora, para que ninguno siga escondiendo transacciones sin verse. Las canceladas siguen ocultas" },
   { v: "2.97.0", desc: "Transacciones > Importar / Exportar se organiza con una barra lateral plegable a la izquierda: Importar de Google Sheets, Solicitudes de Pago generadas, Exportar transacciones, Carga masiva y Reporte de Pagos son secciones aparte, y se ve una a la vez. Al plegarla quedan solo las iniciales, con el nombre al pasar el raton. Las secciones se quedan montadas al cambiar de una a otra, asi que no se pierde la conexion con Google ni lo capturado. Por omision abre en Reporte de Pagos" },
   { v: "2.96.0", desc: "El Reporte de Pagos deja de ser pestana del menu y pasa a Transacciones > Importar / Exportar, al final de la seccion, con sus propios filtros, KPIs, tabla y Enviar a Pagos sin cambios. Recibe las transacciones sin las canceladas, igual que antes" },
@@ -11933,8 +11934,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               ya quedaron. Antes vivían once controles en una sola fila que
               se envolvía sin orden aparente; separarlas por propósito hace
               más fácil encontrar cada una. */}
+          {/* Una sola fila: a la izquierda qué se ve (búsqueda y fechas), a la
+              derecha cómo se ve. Con solo tres filtros, dejar que crecieran a
+              todo lo ancho estiraba las fechas hasta media pantalla. */}
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <Field label="Buscar" style={{ flex: "2 1 170px" }}>
+            <Field label="Buscar" style={{ flex: "0 1 300px" }}>
               <TextInput
                 value={filtros.texto}
                 onChange={(e) => setFiltros({ ...filtros, texto: e.target.value })}
@@ -11942,15 +11946,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 style={{ width: "100%" }}
               />
             </Field>
-            <Field label="Desde" style={{ flex: "1 1 118px" }}>
+            <Field label="Desde" style={{ flex: "0 0 150px" }}>
               <TextInput type="date" value={filtros.fechaDesde} onChange={(e) => setFiltros({ ...filtros, fechaDesde: e.target.value })} />
             </Field>
-            <Field label="Hasta" style={{ flex: "1 1 118px" }}>
+            <Field label="Hasta" style={{ flex: "0 0 150px" }}>
               <TextInput type="date" value={filtros.fechaHasta} onChange={(e) => setFiltros({ ...filtros, fechaHasta: e.target.value })} />
             </Field>
             {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
-          </div>
-          <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div aria-hidden="true" style={{ width: 1, height: 34, background: T.border, margin: "0 6px" }} />
             <GroupByControl
               options={GROUP_OPCIONES_TRANS}
               value={groupBys}

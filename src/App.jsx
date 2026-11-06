@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.96.0";
+const APP_VERSION = "2.97.0";
 const CHANGELOG = [
+  { v: "2.97.0", desc: "Transacciones > Importar / Exportar se organiza con una barra lateral plegable a la izquierda: Importar de Google Sheets, Solicitudes de Pago generadas, Exportar transacciones, Carga masiva y Reporte de Pagos son secciones aparte, y se ve una a la vez. Al plegarla quedan solo las iniciales, con el nombre al pasar el raton. Las secciones se quedan montadas al cambiar de una a otra, asi que no se pierde la conexion con Google ni lo capturado. Por omision abre en Reporte de Pagos" },
   { v: "2.96.0", desc: "El Reporte de Pagos deja de ser pestana del menu y pasa a Transacciones > Importar / Exportar, al final de la seccion, con sus propios filtros, KPIs, tabla y Enviar a Pagos sin cambios. Recibe las transacciones sin las canceladas, igual que antes" },
   { v: "2.95.3", desc: "Se quitan del menu las pestanas Reporte Pagos Direccion y Reportes a Direccion. El envio y la comparacion del presupuesto mensual siguen en Partidas, y el envio del semanal en Transacciones. El codigo de ambas pestanas se conserva por si hay que volver a mostrarlas" },
   { v: "2.95.2", desc: "Partidas > Exportar y reportes: se quitan las tarjetas Reporte Excel, Presupuesto Mensual (PDF) y Exportar datos. Quedan solo Enviar a Direccion (oficial) y Comparar versiones enviadas. El Excel oficial conserva las columnas que estaban elegidas" },
@@ -7742,8 +7743,11 @@ function EditarSolicitudPagoModal({ solicitud, onClose, session, onGuardado }) {
  * expandir, nunca se borran — es evidencia de lo que se le envió a Pagos en
  * cada momento, igual que los reportes oficiales.
  */
-function SolicitudesPagoListaPanel({ unidad, session }) {
-  const [abierto, setAbierto] = useState(false);
+function SolicitudesPagoListaPanel({ unidad, session, fijo = false }) {
+  // `fijo`: siempre abierto y sin botón para plegarlo (lo usa la barra
+  // lateral de Importar / Exportar, que ya hace de selector).
+  const [abiertoLocal, setAbierto] = useState(false);
+  const abierto = fijo || abiertoLocal;
   const [filas, setFilas] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [expandido, setExpandido] = useState(null);
@@ -7775,10 +7779,12 @@ function SolicitudesPagoListaPanel({ unidad, session }) {
     /* Como item de una fila flexible: cerrado ocupa lo que mide, y al
        abrirse toma el renglón completo en vez de quedar apretado a media
        pantalla junto al otro. */
-    <div style={{ marginBottom: 16, flexBasis: abierto ? "100%" : "auto" }}>
-      <Button variant={abierto ? "primary" : "ghost"} onClick={() => setAbierto(!abierto)}>
-        Solicitudes de Pago generadas {abierto ? "▲" : "▼"}
-      </Button>
+    <div style={{ marginBottom: fijo ? 0 : 16, flexBasis: abierto ? "100%" : "auto" }}>
+      {!fijo && (
+        <Button variant={abierto ? "primary" : "ghost"} onClick={() => setAbierto(!abierto)}>
+          Solicitudes de Pago generadas {abierto ? "▲" : "▼"}
+        </Button>
+      )}
 
       {abierto && (
         <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 14, marginTop: 10 }}>
@@ -9710,8 +9716,11 @@ function cruzarCatalogoPago(valor, catalogo) {
  * cuenta que no coincide exactamente se deja sin vincular, con aviso, en
  * vez de forzar la coincidencia más parecida.
  */
-function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
-  const [abierto, setAbierto] = useState(false);
+function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi, fijo = false }) {
+  // `fijo`: siempre abierto y sin botón para plegarlo (lo usa la barra
+  // lateral de Importar / Exportar, que ya hace de selector).
+  const [abiertoLocal, setAbierto] = useState(false);
+  const abierto = fijo || abiertoLocal;
   const [hojas, setHojas] = useState([]);
   const [cargandoConfig, setCargandoConfig] = useState(true);
   const [gsiListo, setGsiListo] = useState(!!window.google?.accounts?.oauth2);
@@ -9984,10 +9993,12 @@ function ImportadorSheetsPanel({ unidad, proveedoresApi, cuentasApi }) {
     /* Como item de una fila flexible: cerrado ocupa lo que mide, y al
        abrirse toma el renglón completo en vez de quedar apretado a media
        pantalla junto al otro. */
-    <div style={{ marginBottom: 16, flexBasis: abierto ? "100%" : "auto" }}>
-      <Button variant={abierto ? "primary" : "ghost"} onClick={() => setAbierto(!abierto)}>
-        Importar de Google Sheets {abierto ? "▲" : "▼"}
-      </Button>
+    <div style={{ marginBottom: fijo ? 0 : 16, flexBasis: abierto ? "100%" : "auto" }}>
+      {!fijo && (
+        <Button variant={abierto ? "primary" : "ghost"} onClick={() => setAbierto(!abierto)}>
+          Importar de Google Sheets {abierto ? "▲" : "▼"}
+        </Button>
+      )}
 
       {abierto && (
         <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 14, marginTop: 10 }}>
@@ -10288,6 +10299,17 @@ const SUBS_TRANSACCIONES = [
   { id: "anticipos", label: "Anticipos" },
   { id: "alertas",   label: "Alertas" },
   { id: "io",        label: "Importar / Exportar" },
+];
+
+// Secciones de Transacciones › Importar / Exportar, en la barra lateral.
+// `corto` es lo que se ve con la barra plegada (el nombre completo sale al
+// pasar el ratón).
+const SECCIONES_TX_IO = [
+  { id: "sheets",      label: "Importar de Google Sheets",     corto: "GS" },
+  { id: "solicitudes", label: "Solicitudes de Pago generadas", corto: "SP" },
+  { id: "exportar",    label: "Exportar transacciones",        corto: "EX" },
+  { id: "masiva",      label: "Carga masiva",                  corto: "CM" },
+  { id: "reporte",     label: "Reporte de Pagos",              corto: "RP" },
 ];
 
 function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO, gruposZona = {}, seedTransaccion, onSeedConsumido, listasSat }) {
@@ -10973,6 +10995,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   // El Reporte de Pagos (antes pestaña propia) trabaja sin las canceladas,
   // igual que cuando App se las pasaba ya filtradas.
   const transaccionesVigentesTx = useMemo(() => transacciones.filter((t) => !estaCancelada(t)), [transacciones]);
+  const [seccionIo, setSeccionIo] = useSessionState("ss-trans-io-seccion", "reporte");
+  const [ioPlegado, setIoPlegado] = useSessionState("ss-trans-io-plegado", false);
 
   /* -------- Reporte semanal oficial a Dirección -------- */
   const [semanaOf, setSemanaOf] = useState(lunesDe(new Date().toISOString().slice(0, 10)));
@@ -12224,11 +12248,57 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         </div>
       )}
 
-      {subTx === "io" && (<>
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 10, alignItems: "flex-start" }}>
-          <ImportadorSheetsPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
-          <SolicitudesPagoListaPanel unidad={unidad} session={session} />
-        </div>
+      {subTx === "io" && (
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start", flexWrap: "wrap" }}>
+          {/* Barra lateral: cada herramienta es una sección aparte. Antes todo
+              iba apilado y el Reporte de Pagos quedaba hasta abajo. */}
+          <nav style={{
+            width: ioPlegado ? 46 : 224, flexShrink: 0, background: T.panel, border: `1px solid ${T.border}`,
+            borderRadius: 8, padding: 6, display: "flex", flexDirection: "column", gap: 2,
+            position: "sticky", top: 12, transition: "width 120ms ease",
+          }}>
+            <button
+              onClick={() => setIoPlegado(!ioPlegado)}
+              title={ioPlegado ? "Mostrar los nombres" : "Ocultar los nombres"}
+              style={{
+                alignSelf: ioPlegado ? "center" : "flex-end", border: "none", background: "transparent",
+                color: T.textFaint, cursor: "pointer", fontSize: 14, padding: "4px 8px", fontFamily: T.fontUI,
+              }}
+            >{ioPlegado ? "»" : "«"}</button>
+            {SECCIONES_TX_IO.map((sec) => {
+              const activa = seccionIo === sec.id;
+              return (
+                <button
+                  key={sec.id}
+                  onClick={() => setSeccionIo(sec.id)}
+                  title={sec.label}
+                  style={{
+                    textAlign: ioPlegado ? "center" : "left", padding: ioPlegado ? "8px 0" : "8px 10px",
+                    borderRadius: 6, border: "none", cursor: "pointer", fontFamily: T.fontUI,
+                    background: activa ? T.accent : "transparent", color: activa ? T.onAccent : T.textDim,
+                    fontWeight: activa ? 700 : 500, fontSize: ioPlegado ? 11 : 12.5,
+                    whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis",
+                  }}
+                >{ioPlegado ? sec.corto : sec.label}</button>
+              );
+            })}
+          </nav>
+
+          <div style={{ flex: "1 1 520px", minWidth: 0, display: "flex", flexDirection: "column", gap: 16 }}>
+            {/* Todas las secciones se quedan montadas y solo se ocultan: así no
+                se pierde la conexión con Google ni lo que se estaba capturando
+                al ir de una a otra. */}
+            <div style={{ display: seccionIo === "sheets" ? "block" : "none" }}>
+              <Panel title="Importar de Google Sheets" subtitle="Trae las solicitudes de pago capturadas en las hojas de Google configuradas para esta compañía.">
+                <ImportadorSheetsPanel fijo unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
+              </Panel>
+            </div>
+            <div style={{ display: seccionIo === "solicitudes" ? "block" : "none" }}>
+              <Panel title="Solicitudes de Pago generadas" subtitle="Las Solicitudes de Pago que ya se generaron en esta compañía.">
+                <SolicitudesPagoListaPanel fijo unidad={unidad} session={session} />
+              </Panel>
+            </div>
+            <div style={{ display: seccionIo === "exportar" ? "block" : "none" }}>
         <Panel
           title="Exportar transacciones"
           subtitle={`La salida respeta los filtros de la pestaña General: ${transFiltradas.length} de ${transUnidad.length} transacciones.`}
@@ -12298,21 +12368,18 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </div>
           </div>
         </Panel>
-
-      <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />
-
-      {/* Reporte de Pagos: antes era una pestaña del menú principal (v2.96.0).
-          Tiene sus propios filtros; no usa los de la pestaña General. */}
-      <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 18, marginTop: 4 }}>
-        <div style={{ fontSize: 15, fontWeight: 700, color: T.text }}>Reporte de Pagos</div>
-        <div style={{ fontSize: 11.5, color: T.textDim, marginTop: 3, marginBottom: 14 }}>
-          Lo que se envía a Pagos. Tiene sus propios filtros: no usa los de la pestaña General.
+            </div>
+            <div style={{ display: seccionIo === "masiva" ? "block" : "none" }}>
+              <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />
+            </div>
+            <div style={{ display: seccionIo === "reporte" ? "block" : "none" }}>
+              <ReportePagosTab listasSat={listasSat} gruposZona={gruposZona} unidad={unidad} partidas={partidas}
+                transacciones={transaccionesVigentesTx} transaccionesApi={transaccionesApi}
+                proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
+            </div>
+          </div>
         </div>
-        <ReportePagosTab listasSat={listasSat} gruposZona={gruposZona} unidad={unidad} partidas={partidas}
-          transacciones={transaccionesVigentesTx} transaccionesApi={transaccionesApi}
-          proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
-      </div>
-      </>)}
+      )}
 
       {editandoMasivo && (
         <EditarMasivoModal

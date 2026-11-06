@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.97.2";
+const APP_VERSION = "2.98.0";
 const CHANGELOG = [
+  { v: "2.98.0", desc: "Una transaccion Pagada ya no se puede modificar. Al abrirla (desde Transacciones o desde Partidas) los campos salen desactivados, con un aviso y el boton Cambiar a No Pagado para editar: el cambio de status es el paso que la desbloquea. La edicion masiva se salta las pagadas (avisando cuales), salvo que el cambio sea precisamente quitarles el Pagado. Siguen abiertos el expediente (archivos), la nota privada y las marcas de proceso (registro, envio a Pagos, poliza). Borrar y cancelar ya pedian lo mismo" },
   { v: "2.97.2", desc: "Transacciones > General: la barra de filtros se reacomoda en una sola fila. Buscar y las fechas tienen ancho fijo (antes se estiraban a media pantalla), y a la derecha, tras un separador, van Agrupado, Contraer todo, Columnas, Solo mensuales y Clonar mensuales" },
   { v: "2.97.1", desc: "Transacciones > General: se quitan los filtros Direccion, Pagos, Canceladas, Clasificacion, Registro, Adjuntos, Proyecto y Moneda, que no se usaban. Quedan Buscar, Desde, Hasta y Solo mensuales. Lo que hubiera quedado elegido en esos filtros se ignora, para que ninguno siga escondiendo transacciones sin verse. Las canceladas siguen ocultas" },
   { v: "2.97.0", desc: "Transacciones > Importar / Exportar se organiza con una barra lateral plegable a la izquierda: Importar de Google Sheets, Solicitudes de Pago generadas, Exportar transacciones, Carga masiva y Reporte de Pagos son secciones aparte, y se ve una a la vez. Al plegarla quedan solo las iniciales, con el nombre al pasar el raton. Las secciones se quedan montadas al cambiar de una a otra, asi que no se pierde la conexion con Google ni lo capturado. Por omision abre en Reporte de Pagos" },
@@ -6923,6 +6924,47 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
  *
  * Devuelve true si se puede borrar.
  */
+/* Una transacción PAGADA no se modifica: lo pagado ya salió del banco y ya
+   se reportó. Para corregirla hay que pasarla primero a No Pagado, que deja
+   claro que se está tocando un pago registrado (misma regla que para
+   borrarla o cancelarla). Siguen abiertos el expediente (archivos), la nota
+   privada y las marcas de proceso: registro, envío a Pagos, póliza. */
+const bloqueadaPorPago = (original, form) =>
+  !!original && original.status === "Pagado" && (form ? form.status === "Pagado" : true);
+
+function AvisoBloqueoPago({ onDesbloquear }) {
+  return (
+    <div style={{
+      gridColumn: "span 4", background: `${T.amber}14`, border: `1px solid ${T.amber}66`, borderRadius: 8,
+      padding: "11px 13px", fontSize: 12.5, color: T.text, lineHeight: 1.55,
+      display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap",
+    }}>
+      <div style={{ flex: "1 1 320px" }}>
+        <b>🔒 Esta transacción ya está pagada y no se puede modificar.</b>
+        <div style={{ color: T.textDim, marginTop: 2 }}>
+          Si hay que corregir algo, primero cámbiale el status a No Pagado: así queda claro que se está
+          modificando un pago que ya estaba registrado. Los archivos del expediente sí se pueden agregar.
+        </div>
+      </div>
+      <Button type="button" variant="ghost" onClick={onDesbloquear}>Cambiar a No Pagado para editar</Button>
+    </div>
+  );
+}
+
+/* Contenedor que desactiva todos los campos que lleva dentro (un fieldset
+   deshabilitado lo hace solo, con todo y botones) y conserva la rejilla de
+   4 columnas del formulario. */
+function CamposBloqueables({ bloqueado, children }) {
+  return (
+    <fieldset disabled={bloqueado} style={{
+      gridColumn: "span 4", display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12,
+      border: "none", padding: 0, margin: 0, minWidth: 0, opacity: bloqueado ? 0.6 : 1,
+    }}>
+      {children}
+    </fieldset>
+  );
+}
+
 function puedeBorrarTransaccion(t) {
   if (!t || t.status !== "Pagado") return true;
   alert(
@@ -7972,6 +8014,7 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
 
   const submit = async (e) => {
     e.preventDefault();
+    if (bloqueadaPorPago(transaccion, form)) { onClose(); return; }
     if (form.status === "Pagado" && !form.fecha_pago) {
       alert("Para marcar esta transacción como Pagada, primero indica la Fecha de Pago.");
       return;
@@ -8007,6 +8050,10 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
       cerrarAlHacerClicFuera={false}
     >
       <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        {bloqueadaPorPago(transaccion, form) && (
+          <AvisoBloqueoPago onDesbloquear={() => setForm({ ...form, status: "No Pagado" })} />
+        )}
+        <CamposBloqueables bloqueado={bloqueadaPorPago(transaccion, form)}>
         {/* Cambiar de partida desde aquí: es donde se nota que una transacción
             está en la partida equivocada. Solo se ofrecen las de su moneda. */}
         <Field label="Partida" style={{ gridColumn: "span 4" }}>
@@ -8112,6 +8159,7 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
             <TextInput type="date" value={form.fecha_pago || ""} onChange={(e) => setForm({ ...form, fecha_pago: e.target.value })} required />
           </Field>
         )}
+        </CamposBloqueables>
         <div style={{ gridColumn: "span 4", display: "flex", gap: 10, marginTop: 4 }}>
           <Button type="submit" disabled={saving}>{saving ? "Guardando…" : "Guardar cambios"}</Button>
           <Button type="button" variant="ghost" onClick={onClose}>Cancelar</Button>
@@ -11315,6 +11363,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
 
   const submit = async (e) => {
     e.preventDefault();
+    /* Pagada y sin pasarla a No Pagado: no se toca la transacción. Solo se
+       guarda la nota privada, que es de quien edita, no del pago. */
+    const origBloqueo = editId ? transUnidad.find((x) => x.id === editId) : null;
+    if (bloqueadaPorPago(origBloqueo, form)) {
+      try { await guardarNotaPrivada(editId); } catch (err) { alert("No se pudo guardar tu nota: " + (err.message || err)); return; }
+      setEditId(null); setNotaPrivada(""); setModalOpen(false);
+      return;
+    }
     const padrePPD = esParcialidad(form) ? padreDe(form) : null;
     if (esParcialidad(form)) {
       if (!padrePPD) { alert("No encuentro la compra PPD de esta parcialidad."); return; }
@@ -11683,6 +11739,20 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
      pantalla: transaccionesApi.update es lo que mantiene el caché local en
      sincronía, y un update por lote contra Supabase lo dejaría desfasado. */
   const aplicarMasivo = async (parche) => {
+    /* Las pagadas no se modifican, salvo que el cambio sea justamente
+       quitarles el Pagado: ese es el paso que las desbloquea. */
+    const quitaPagado = !!parche.status && parche.status !== "Pagado";
+    const pagadasSel = quitaPagado ? [] : [...seleccionadas]
+      .map((id) => transUnidad.find((x) => x.id === id)).filter((t) => bloqueadaPorPago(t));
+    if (pagadasSel.length && pagadasSel.length === seleccionadas.size) {
+      alert(`Las ${pagadasSel.length} transacciones seleccionadas están pagadas y no se pueden modificar.\n\n` +
+            "Si hay que corregirlas, primero cámbiales el status a No Pagado (puedes hacerlo aquí mismo, con Status).");
+      return;
+    }
+    if (pagadasSel.length && !confirm(
+      `${pagadasSel.length} de las seleccionadas están pagadas y NO se van a modificar: ` +
+      `${pagadasSel.map((t) => t.folio_transaccion || t.proveedor).join(", ")}.\n\n` +
+      `El cambio se aplica solo a las otras ${seleccionadas.size - pagadasSel.length}. ¿Continuar?`)) return;
     if (parche.status === "Pagado"
         && [...seleccionadas].some((id) => estaCancelada(transUnidad.find((x) => x.id === id)))) {
       alert("Hay transacciones canceladas en la selección: una cancelada no se puede marcar como Pagada. Quítalas de la selección.");
@@ -11692,6 +11762,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     try {
       for (const id of seleccionadas) {
         const t = transUnidad.find((x) => x.id === id);
+        if (pagadasSel.some((x) => x.id === id)) continue;
         let p = parche;
         /* Al pasar a Pagado, cada transacción en USD sin tipo de cambio toma
            el del DOF de SU fecha de pago. Al dejar de estar pagada, se borra. */
@@ -12377,6 +12448,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         >
           <AutoriaCaption record={form} perfilesApi={perfilesApi} />
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+            {(() => {
+              const orig = editId ? transUnidad.find((x) => x.id === editId) : null;
+              return bloqueadaPorPago(orig, form)
+                ? <AvisoBloqueoPago onDesbloquear={() => setForm({ ...form, status: "No Pagado" })} />
+                : null;
+            })()}
+            <CamposBloqueables bloqueado={bloqueadaPorPago(editId ? transUnidad.find((x) => x.id === editId) : null, form)}>
             {!editId && form._desdeSmi && (
               <div style={{ gridColumn: "span 4", background: T.panelAlt, border: `1px solid ${T.accent}55`,
                             borderRadius: 8, padding: "10px 13px", fontSize: 12, color: T.textDim, lineHeight: 1.6 }}>
@@ -12709,6 +12787,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 </Field>
               );
             })()}
+            </CamposBloqueables>
             <Field label="🔒 Tu nota privada (solo tú la ves)" style={{ gridColumn: "span 4" }}>
               <TextInput value={notaPrivada} onChange={(e) => setNotaPrivada(e.target.value)} placeholder="Recordatorios, pendientes, contexto — nadie más puede ver esto" />
             </Field>

@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.93.1";
+const APP_VERSION = "2.93.2";
 const CHANGELOG = [
+  { v: "2.93.2", desc: "Fix Dashboard, panel Presupuestado vs. pagado real: al desplegar un concepto aparecian ~10 renglones con el mismo nombre. No eran 10 registros: era UNA partida o transaccion marcada Todos (o Grupo Gral) repartida entre los proyectos, y como el agrupamiento no incluia Proyecto, todas las fracciones caian juntas. Ahora el detalle vuelve a juntar las fracciones por registro de origen y dice entre cuantos proyectos se reparte; si el concepto tiene un solo registro ya no se despliega. Los totales no cambian" },
   { v: "2.93.1", desc: "Dashboard, panel Presupuestado vs. pagado real: al desplegar un concepto, cada renglon de Pagado real ya no repite el concepto (que es el nombre del grupo y dejaba renglones identicos); ahora muestra fecha de pago, proveedor y folio de factura (o folio SAE), ordenados por fecha de pago. Ademas, el ultimo nivel del agrupamiento arranca contraido: los conceptos muestran su total y su numero de registros, y el detalle se abre con un clic. Expandir todo abre tambien el detalle" },
   { v: "2.93.0", desc: "Nueva pestana Herramientas, con dos herramientas para PDF que trabajan solo en el navegador (los archivos no se suben ni se guardan en la base). Unir PDF: se arrastran o eligen varios PDF, se ven con miniatura, paginas y tamano, se reordenan arrastrando o con flechas, se pueden ver completos y se descargan como un solo PDF con el nombre que se escriba. Separar PDF: se sube un PDF de varias paginas, se ven sus miniaturas, se marcan las paginas a descargar y se baja un ZIP con un PDF por pagina. Los PDF danados o protegidos con contrasena se marcan en rojo con un mensaje que dice que hacer, y se excluyen. Requiere instalar pdf-lib (npm install pdf-lib); se carga solo al usar estas herramientas" },
   { v: "2.92.0", desc: "Transacciones mensuales. Casilla Mensual al editar una transaccion (icono de repeticion junto al folio y boton Solo mensuales para filtrarlas). Boton Clonar mensuales: eliges el mes que cierra y lista sus mensuales para clonarlas al siguiente, revisando cada una: nuevo dia (mismo dia del mes; si no existe, el ultimo) e importe editables, y la partida equivalente del mes nuevo (mismo concepto). Si no existe, se crea una sola por partida original, con el mismo nombre (si trae el mes escrito, se cambia) y con presupuesto propuesto igual a la suma de lo que se le vincula, editable. Los clones nacen como borrador, heredan la marca y guardan de cual salieron: los ya clonados aparecen como tales y no se repiten. Si el mes o el concepto de la transaccion traen el mes escrito, tambien se actualiza. Duplicar ya no hereda la marca; Duplicar al mes siguiente queda ligado como clon. Requiere 66-transacciones-mensuales.sql" },
@@ -5220,7 +5221,8 @@ function ResumenComparativoPanel({
 
   let partidasResueltas = partidasMoneda.flatMap((p) =>
     resolverProrrateo(p.proyecto, proyectosUnidad).map(({ proyecto, fraccion }) => ({
-      ...p, proyecto, moneda: monedaDe(p),
+      ...p, proyecto, moneda: monedaDe(p), _origenId: p.id,
+      _detalle: [p.folio ? `Folio ${p.folio}` : null, p.concepto || null].filter(Boolean).join(" · "),
       monto_estimado: (Number(p.monto_estimado) || 0) * fraccion, _columna: columnaDePptado(p),
     }))
   );
@@ -5244,7 +5246,7 @@ function ResumenComparativoPanel({
     const p = partidaDe(t);
     return resolverProrrateo(p.proyecto, proyectosUnidad).map(({ proyecto, fraccion }) => ({
       proyecto, rubro: p.rubro, concepto: t.concepto_detallado || t.proveedor || "—",
-      _detalle: detalleTransaccion(t),
+      _detalle: detalleTransaccion(t), _origenId: t.id, _esPago: true,
       // Se copian de la partida para que las dos tablas puedan agruparse por
       // los mismos campos; la transacción no los trae por su cuenta.
       categoria: p.categoria, zona: p.zona || t.zona || "",
@@ -6056,6 +6058,31 @@ function collectLeafGroupPaths(node, path = "") {
    confundirse con las rutas de los grupos que se cerraron. */
 const llaveDetalleAbierto = (ruta) => `${ruta}#abierto`;
 
+/* Una partida o transacción marcada "Todos" (o "<Grupo> Gral") se reparte
+   entre proyectos ANTES de agrupar: cada proyecto recibe su fracción. Si el
+   agrupamiento no incluye Proyecto, todas esas fracciones caen en el mismo
+   grupo y se veían como diez registros distintos del mismo concepto, cuando
+   en realidad eran UNO solo partido en diez. Para el detalle se vuelven a
+   juntar por registro de origen; los subtotales no cambian. */
+function fusionarFragmentosProrrateo(filas) {
+  const porOrigen = new Map();
+  const salida = [];
+  filas.forEach((r) => {
+    if (r._origenId == null) { salida.push(r); return; }
+    const previa = porOrigen.get(r._origenId);
+    if (!previa) {
+      const copia = { ...r, _partes: 1 };
+      porOrigen.set(r._origenId, copia);
+      salida.push(copia);
+      return;
+    }
+    previa._partes += 1;
+    if (previa.monto_estimado != null) previa.monto_estimado = (Number(previa.monto_estimado) || 0) + (Number(r.monto_estimado) || 0);
+    if (previa.importe != null) previa.importe = (Number(previa.importe) || 0) + (Number(r.importe) || 0);
+  });
+  return salida;
+}
+
 // Groups rows by a fixed key path (e.g. ['proyecto','rubro','concepto']) and, at every
 // level, also sums the montoKey broken out per month — used by the pivot/resumen view.
 function pivotearPorMes(rows, keys, meses, montoKey = "monto_estimado", colKey = "mes") {
@@ -6107,8 +6134,10 @@ function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth, resolve
       // los registros que contiene. Antes se dibujaba como hoja muerta: con
       // "Concepto" al final no se notaba —cada hoja era un registro— pero al
       // agrupar solo por Rubro, sus partidas quedaban inalcanzables.
-      const filas = entry.child.rows || [];
-      const puedeAbrir = filas.length > 1 || (filas.length === 1 && String(filas[0].concepto || "") !== String(entry.value));
+      const filas = fusionarFragmentosProrrateo(entry.child.rows || []);
+      // Un pago suelto también se abre: su renglón dice cuándo, a quién y con
+      // qué factura se pagó, que el nombre del concepto no dice.
+      const puedeAbrir = filas.length > 1 || (filas.length === 1 && (filas[0]._esPago || String(filas[0].concepto || "") !== String(entry.value)));
       const isCollapsed = !collapsed.has(llaveDetalleAbierto(groupPath));
       out.push(
         <tr
@@ -6129,7 +6158,8 @@ function buildPivotTrs(node, path, collapsed, toggleGroup, meses, depth, resolve
       );
       if (puedeAbrir && !isCollapsed) {
         filas.forEach((r, i) => {
-          const etiqueta = r._detalle || r.concepto || r.proveedor || "—";
+          const etiqueta = (r._detalle || r.concepto || r.proveedor || "—")
+            + (r._partes > 1 ? ` · repartido entre ${r._partes} proyectos` : "");
           out.push(
             <tr key={`${groupPath}#${i}`}>
               <td style={{ ...tdStyle, paddingLeft: 14 + (depth + 1) * 22, color: T.textDim, fontSize: 12 }}>

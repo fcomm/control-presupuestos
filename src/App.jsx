@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.92.0";
+const APP_VERSION = "2.93.0";
 const CHANGELOG = [
+  { v: "2.93.0", desc: "Nueva pestana Herramientas, con dos herramientas para PDF que trabajan solo en el navegador (los archivos no se suben ni se guardan en la base). Unir PDF: se arrastran o eligen varios PDF, se ven con miniatura, paginas y tamano, se reordenan arrastrando o con flechas, se pueden ver completos y se descargan como un solo PDF con el nombre que se escriba. Separar PDF: se sube un PDF de varias paginas, se ven sus miniaturas, se marcan las paginas a descargar y se baja un ZIP con un PDF por pagina. Los PDF danados o protegidos con contrasena se marcan en rojo con un mensaje que dice que hacer, y se excluyen. Requiere instalar pdf-lib (npm install pdf-lib); se carga solo al usar estas herramientas" },
   { v: "2.92.0", desc: "Transacciones mensuales. Casilla Mensual al editar una transaccion (icono de repeticion junto al folio y boton Solo mensuales para filtrarlas). Boton Clonar mensuales: eliges el mes que cierra y lista sus mensuales para clonarlas al siguiente, revisando cada una: nuevo dia (mismo dia del mes; si no existe, el ultimo) e importe editables, y la partida equivalente del mes nuevo (mismo concepto). Si no existe, se crea una sola por partida original, con el mismo nombre (si trae el mes escrito, se cambia) y con presupuesto propuesto igual a la suma de lo que se le vincula, editable. Los clones nacen como borrador, heredan la marca y guardan de cual salieron: los ya clonados aparecen como tales y no se repiten. Si el mes o el concepto de la transaccion traen el mes escrito, tambien se actualiza. Duplicar ya no hereda la marca; Duplicar al mes siguiente queda ligado como clon. Requiere 66-transacciones-mensuales.sql" },
   { v: "2.91.0", desc: "Aviso de transacciones con partida de un mes anterior: antes de generar el presupuesto mensual, el reporte semanal a Direccion y el envio a Pagos, si alguna transaccion no pagada esta programada en un mes posterior al de su partida (un gasto que se fue posponiendo), aparece un dialogo con esas transacciones y la partida equivalente de su mes (mismo concepto; si no hay, se sugiere por rubro y proyecto sin marcar). Se puede reasignar las marcadas y generar, generar sin cambios o cancelar. Quedan fuera lo pagado y las compras PPD. En Transacciones > Alertas, un recuadro nuevo con todas las de la compania en esa situacion para reasignarlas en cualquier momento." },
   { v: "2.90.0", desc: "Eliminar partida: las transacciones canceladas ya no cuentan como transacciones vinculadas. Una partida que solo tiene canceladas se elimina con una confirmacion que lo explica; las canceladas se quedan sin partida, con su folio, motivo y expediente. La ventana de reasignar solo aparece cuando hay transacciones vigentes. Las canceladas sin partida no aparecen en la lista Sin vincular." },
@@ -21476,6 +21477,707 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi, lis
 }
 
 /* ----------------------------------------------------------------------
+   HERRAMIENTAS — Unir PDF y Separar PDF
+   Todo ocurre en el navegador: los archivos se leen en memoria, se procesan
+   con pdf-lib y se descargan. Nada se sube a Supabase ni a ningún servidor.
+   pdf-lib se carga solo al usar estas herramientas (import dinámico), para
+   no hacer más pesada la carga del resto de la app.
+   Las vistas previas las dibuja pdfjs-dist, que la app ya usaba.
+---------------------------------------------------------------------- */
+const SUBS_HERRAMIENTAS = [
+  { id: "unir", label: "Unir PDF" },
+  { id: "separar", label: "Separar PDF" },
+];
+
+let _pdfLibPromesa = null;
+const cargarPdfLib = () => {
+  if (!_pdfLibPromesa) {
+    _pdfLibPromesa = import("pdf-lib").catch((e) => { _pdfLibPromesa = null; throw e; });
+  }
+  return _pdfLibPromesa;
+};
+
+/* Mensajes para quien usa la herramienta: qué pasó y qué hacer. */
+const MSG_PDF = {
+  noPdf: "Este archivo no es un PDF. Aquí solo se aceptan archivos PDF; quítalo de la lista.",
+  protegido: "Este PDF está protegido con contraseña o tiene restricciones. Ábrelo en tu computadora, guárdalo (o imprímelo como PDF) sin protección y vuelve a subirlo.",
+  danado: "Este PDF está dañado o incompleto y no se puede leer. Pide que te lo vuelvan a enviar o descárgalo otra vez y vuelve a subirlo.",
+  vacio: "Este PDF no tiene páginas. Revisa que sea el archivo correcto.",
+  sinLibreria: "No se pudo cargar la herramienta de PDF. Revisa tu conexión a internet y vuelve a abrir esta pestaña (o recarga la página).",
+};
+
+const esArchivoPdf = (file) =>
+  file && (file.type === "application/pdf" || /\.pdf$/i.test(file.name || ""));
+
+const quitarExtensionPdf = (nombre) => String(nombre || "").replace(/\.pdf$/i, "");
+
+/* Windows no acepta \ / : * ? " < > | en un nombre de archivo, ni que
+   termine en punto o espacio. */
+const nombreArchivoSeguro = (s, respaldo) => {
+  const limpio = String(s || "")
+    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[. ]+$/, "");
+  return limpio || respaldo;
+};
+
+const descargarArchivo = (blob, nombre) => {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = nombre;
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
+
+/* Lee el archivo y confirma con pdf-lib que se puede usar. Devuelve
+   { bytes, paginas } o lanza un Error cuyo `codigo` es una llave de MSG_PDF. */
+async function leerPdfParaHerramienta(file) {
+  const falla = (codigo) => Object.assign(new Error(MSG_PDF[codigo]), { codigo });
+  if (!esArchivoPdf(file)) throw falla("noPdf");
+  let lib;
+  try { lib = await cargarPdfLib(); } catch { throw falla("sinLibreria"); }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let doc;
+  try {
+    doc = await lib.PDFDocument.load(bytes, { updateMetadata: false });
+  } catch (e) {
+    if (/encrypt/i.test(String(e?.message || ""))) throw falla("protegido");
+    throw falla("danado");
+  }
+  const paginas = doc.getPageCount();
+  if (!paginas) throw falla("vacio");
+  return { bytes, paginas };
+}
+
+/* Dibuja páginas con pdf.js como imágenes. OJO: pdf.js se queda con el
+   buffer que recibe (lo transfiere al worker), por eso se le pasa una copia. */
+const abrirPdfVista = (bytes) => pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+
+async function dibujarPagina(docVista, numero, ancho) {
+  const pagina = await docVista.getPage(numero);
+  const base = pagina.getViewport({ scale: 1 });
+  const escala = (ancho / base.width) * Math.min(window.devicePixelRatio || 1, 2);
+  const vp = pagina.getViewport({ scale: escala });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(vp.width);
+  canvas.height = Math.ceil(vp.height);
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#FFFFFF";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  await pagina.render({ canvasContext: ctx, viewport: vp }).promise;
+  const url = canvas.toDataURL("image/jpeg", 0.82);
+  pagina.cleanup();
+  canvas.width = 0; canvas.height = 0;
+  return { url, proporcion: base.height / base.width };
+}
+
+/* Deja respirar al navegador entre páginas, para que la pantalla no se
+   congele con archivos grandes. */
+const pausaUI = () => new Promise((r) => setTimeout(r, 0));
+
+/* Zona para arrastrar archivos o elegirlos desde la computadora. */
+function ZonaCargaPdf({ multiple, onArchivos, compacta, texto, deshabilitada }) {
+  const ref = useRef(null);
+  const [encima, setEncima] = useState(false);
+  const traeArchivos = (e) => Array.from(e.dataTransfer?.types || []).includes("Files");
+  return (
+    <div
+      onDragOver={(e) => { if (!traeArchivos(e) || deshabilitada) return; e.preventDefault(); setEncima(true); }}
+      onDragLeave={() => setEncima(false)}
+      onDrop={(e) => {
+        if (!traeArchivos(e)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        setEncima(false);
+        if (deshabilitada) return;
+        const lista = Array.from(e.dataTransfer.files || []);
+        if (lista.length) onArchivos(multiple ? lista : lista.slice(0, 1));
+      }}
+      style={{
+        border: `1.5px dashed ${encima ? T.accent : T.border}`,
+        background: encima ? T.accentBg : T.panelAlt,
+        borderRadius: 8,
+        padding: compacta ? "14px 16px" : "34px 20px",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        flexDirection: compacta ? "row" : "column", gap: compacta ? 14 : 10,
+        textAlign: "center", flexWrap: "wrap",
+        opacity: deshabilitada ? 0.6 : 1,
+      }}
+    >
+      <div style={{ fontSize: compacta ? 12.5 : 13.5, color: T.text, fontWeight: compacta ? 500 : 600 }}>
+        {encima ? "Suelta los archivos aquí" : texto}
+      </div>
+      <Button variant={compacta ? "ghost" : "primary"} disabled={deshabilitada} onClick={() => ref.current?.click()}>
+        {multiple ? "Elegir archivos" : "Elegir archivo"}
+      </Button>
+      <input
+        ref={ref} type="file" accept="application/pdf,.pdf" multiple={multiple}
+        style={{ display: "none" }}
+        onChange={(e) => {
+          const lista = Array.from(e.target.files || []);
+          e.target.value = "";
+          if (lista.length) onArchivos(lista);
+        }}
+      />
+    </div>
+  );
+}
+
+/* Ventana para ver todas las páginas de un PDF en grande. */
+function VistaPdfModal({ nombre, bytes, paginas, onClose }) {
+  const [imagenes, setImagenes] = useState([]);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let vivo = true;
+    let docVista = null;
+    (async () => {
+      try {
+        docVista = await abrirPdfVista(bytes);
+        for (let n = 1; n <= docVista.numPages && vivo; n++) {
+          const img = await dibujarPagina(docVista, n, 640);
+          if (!vivo) break;
+          setImagenes((prev) => [...prev, img]);
+          await pausaUI();
+        }
+      } catch {
+        if (vivo) setError("No se pudo mostrar la vista previa de este PDF. Aun así puedes usarlo: las páginas se copian tal cual al archivo final.");
+      }
+    })();
+    return () => { vivo = false; if (docVista) docVista.destroy(); };
+  }, [bytes]);
+  return (
+    <Modal title={nombre} subtitle={`${paginas} ${paginas === 1 ? "página" : "páginas"}`} onClose={onClose} width={720}>
+      {error && <div style={{ fontSize: 12.5, color: T.red, marginBottom: 12 }}>{error}</div>}
+      <div style={{ display: "flex", flexDirection: "column", gap: 14, alignItems: "center" }}>
+        {imagenes.map((img, i) => (
+          <div key={i} style={{ width: "100%", maxWidth: 640 }}>
+            <img src={img.url} alt={`Página ${i + 1}`}
+              style={{ width: "100%", display: "block", border: `1px solid ${T.border}`, borderRadius: 4, background: "#FFFFFF" }} />
+            <div style={{ fontSize: 11, color: T.textFaint, textAlign: "center", marginTop: 4 }}>Página {i + 1}</div>
+          </div>
+        ))}
+        {!error && imagenes.length < paginas && (
+          <div style={{ fontSize: 12, color: T.textDim, padding: 12 }}>
+            Cargando página {imagenes.length + 1} de {paginas}…
+          </div>
+        )}
+      </div>
+    </Modal>
+  );
+}
+
+function MiniaturaPdf({ url, ancho = 54, proporcion = 1.294, estado }) {
+  return (
+    <div style={{
+      width: ancho, height: Math.round(ancho * Math.min(proporcion || 1.294, 1.6)), flexShrink: 0,
+      border: `1px solid ${estado === "error" ? `${T.red}66` : T.border}`, borderRadius: 3,
+      background: url ? "#FFFFFF" : T.panelAlt, overflow: "hidden",
+      display: "flex", alignItems: "center", justifyContent: "center",
+    }}>
+      {url
+        ? <img src={url} alt="" style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }} />
+        : <span style={{ fontSize: 10, color: estado === "error" ? T.red : T.textFaint }}>{estado === "error" ? "✕" : "PDF"}</span>}
+    </div>
+  );
+}
+
+/* ---------------------------- UNIR PDF ---------------------------- */
+function UnirPdfPanel() {
+  const [items, setItems] = useState([]);
+  const [nombreFinal, setNombreFinal] = useState("");
+  const [arrastrando, setArrastrando] = useState(null);
+  const [sobre, setSobre] = useState(null);
+  const [verItem, setVerItem] = useState(null);
+  const [proceso, setProceso] = useState(null); // { hecho, total } mientras une
+  const [aviso, setAviso] = useState(null);     // { tono: "teal" | "red", texto }
+
+  const agregar = async (archivos) => {
+    setAviso(null);
+    const nuevos = archivos.map((f) => ({
+      id: uid(), file: f, nombre: f.name, tamano: f.size, estado: "leyendo",
+      paginas: 0, error: "", bytes: null, miniatura: null,
+    }));
+    setItems((prev) => [...prev, ...nuevos]);
+    // Uno por uno: con muchos archivos grandes, leerlos todos a la vez
+    // puede agotar la memoria del navegador.
+    for (const it of nuevos) {
+      const actualizar = (cambios) => setItems((prev) => prev.map((x) => (x.id === it.id ? { ...x, ...cambios } : x)));
+      let datos;
+      try {
+        datos = await leerPdfParaHerramienta(it.file);
+      } catch (e) {
+        actualizar({ estado: "error", error: e.codigo ? e.message : MSG_PDF.danado });
+        continue;
+      }
+      actualizar({ estado: "ok", bytes: datos.bytes, paginas: datos.paginas });
+      try {
+        const docVista = await abrirPdfVista(datos.bytes);
+        const img = await dibujarPagina(docVista, 1, 54);
+        docVista.destroy();
+        actualizar({ miniatura: img });
+      } catch {
+        // Sin miniatura no pasa nada: el archivo se puede unir igual.
+      }
+    }
+  };
+
+  const mover = (id, hacia) => {
+    setItems((prev) => {
+      const i = prev.findIndex((x) => x.id === id);
+      const j = i + hacia;
+      if (i < 0 || j < 0 || j >= prev.length) return prev;
+      const copia = [...prev];
+      [copia[i], copia[j]] = [copia[j], copia[i]];
+      return copia;
+    });
+  };
+  const moverA = (idOrigen, idDestino) => {
+    if (!idOrigen || idOrigen === idDestino) return;
+    setItems((prev) => {
+      const desde = prev.findIndex((x) => x.id === idOrigen);
+      const hasta = prev.findIndex((x) => x.id === idDestino);
+      if (desde < 0 || hasta < 0) return prev;
+      // Bajando, queda después del archivo sobre el que se soltó;
+      // subiendo, antes. Así se siente igual en las dos direcciones.
+      const sin = prev.filter((x) => x.id !== idOrigen);
+      const destino = sin.findIndex((x) => x.id === idDestino);
+      sin.splice(desde < hasta ? destino + 1 : destino, 0, prev[desde]);
+      return sin;
+    });
+  };
+  const quitar = (id) => { setAviso(null); setItems((prev) => prev.filter((x) => x.id !== id)); };
+
+  const validos = items.filter((x) => x.estado === "ok");
+  const conError = items.filter((x) => x.estado === "error");
+  const leyendo = items.some((x) => x.estado === "leyendo");
+  const totalPaginas = validos.reduce((s, x) => s + x.paginas, 0);
+  const sugerido = validos.length ? `${quitarExtensionPdf(validos[0].nombre)} (unido)` : "Documento unido";
+  const nombreDescarga = `${nombreArchivoSeguro(quitarExtensionPdf(nombreFinal), nombreArchivoSeguro(sugerido, "Documento unido"))}.pdf`;
+
+  const unir = async () => {
+    setAviso(null);
+    if (validos.length < 2) {
+      setAviso({ tono: "red", texto: "Agrega al menos dos PDF que se puedan leer para unirlos." });
+      return;
+    }
+    let lib;
+    try { lib = await cargarPdfLib(); } catch { setAviso({ tono: "red", texto: MSG_PDF.sinLibreria }); return; }
+    setProceso({ hecho: 0, total: validos.length });
+    let actual = "";
+    try {
+      const final = await lib.PDFDocument.create();
+      for (let i = 0; i < validos.length; i++) {
+        actual = validos[i].nombre;
+        const origen = await lib.PDFDocument.load(validos[i].bytes, { updateMetadata: false });
+        const copias = await final.copyPages(origen, origen.getPageIndices());
+        copias.forEach((p) => final.addPage(p));
+        setProceso({ hecho: i + 1, total: validos.length });
+        await pausaUI();
+      }
+      actual = "";
+      final.setTitle(quitarExtensionPdf(nombreDescarga));
+      const salida = await final.save();
+      descargarArchivo(new Blob([salida], { type: "application/pdf" }), nombreDescarga);
+      setAviso({
+        tono: "teal",
+        texto: `Listo: se descargó «${nombreDescarga}» con ${totalPaginas} ${totalPaginas === 1 ? "página" : "páginas"}. Búscalo en tu carpeta de Descargas.`
+          + (conError.length ? ` No se incluyeron ${conError.length === 1 ? "el archivo marcado" : `los ${conError.length} archivos marcados`} en rojo.` : ""),
+      });
+    } catch {
+      setAviso({
+        tono: "red",
+        texto: actual
+          ? `No se pudo copiar «${actual}» al archivo final. Quítalo de la lista y vuelve a intentar; si lo necesitas, pide que te lo reenvíen.`
+          : "No se pudo crear el archivo final. Si son muchos archivos o muy pesados, intenta unirlos en grupos más pequeños.",
+      });
+    } finally {
+      setProceso(null);
+    }
+  };
+
+  const ocupado = !!proceso;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Panel
+        title="Unir PDF"
+        subtitle="Junta varios PDF en uno solo, en el orden que elijas."
+        right={items.length > 0 && (
+          <Button variant="ghost" disabled={ocupado} onClick={() => { setItems([]); setAviso(null); }}>Quitar todos</Button>
+        )}
+      >
+        <ZonaCargaPdf
+          multiple
+          compacta={items.length > 0}
+          deshabilitada={ocupado}
+          texto={items.length ? "Arrastra aquí más PDF para agregarlos al final" : "Arrastra aquí tus PDF"}
+          onArchivos={agregar}
+        />
+
+        {items.length > 0 && (
+          <>
+            <div style={{ fontSize: 11.5, color: T.textDim, margin: "16px 0 8px" }}>
+              Arrastra los archivos para cambiar el orden, o usa las flechas. El de arriba va primero.
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {items.map((it, idx) => {
+                const err = it.estado === "error";
+                const esDestino = sobre === it.id && arrastrando && arrastrando !== it.id;
+                return (
+                  <div
+                    key={it.id}
+                    draggable={!ocupado}
+                    onDragStart={(e) => { setArrastrando(it.id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", it.id); }}
+                    onDragOver={(e) => { if (!arrastrando) return; e.preventDefault(); if (sobre !== it.id) setSobre(it.id); }}
+                    onDrop={(e) => { if (!arrastrando) return; e.preventDefault(); moverA(arrastrando, it.id); setArrastrando(null); setSobre(null); }}
+                    onDragEnd={() => { setArrastrando(null); setSobre(null); }}
+                    style={{
+                      display: "flex", alignItems: "center", gap: 12, padding: "8px 10px",
+                      borderRadius: 8,
+                      border: `1px solid ${err ? `${T.red}66` : esDestino ? T.accent : T.borderSoft}`,
+                      background: err ? `${T.red}12` : esDestino ? T.accentBg : T.panel,
+                      opacity: arrastrando === it.id ? 0.45 : 1,
+                      cursor: ocupado ? "default" : "grab",
+                    }}
+                  >
+                    <span aria-hidden="true" style={{ color: T.textFaint, fontSize: 14, userSelect: "none" }}>⠿</span>
+                    <span style={{ width: 22, textAlign: "right", fontSize: 12, fontFamily: T.fontMono, color: err ? T.red : T.textDim }}>
+                      {err ? "—" : validos.findIndex((v) => v.id === it.id) + 1 || "·"}
+                    </span>
+                    <MiniaturaPdf url={it.miniatura?.url} proporcion={it.miniatura?.proporcion} estado={it.estado} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, color: err ? T.red : T.text, wordBreak: "break-word" }}>{it.nombre}</div>
+                      <div style={{ fontSize: 11.5, color: err ? T.red : T.textDim, marginTop: 3 }}>
+                        {it.estado === "leyendo" && "Revisando el archivo…"}
+                        {it.estado === "ok" && `${it.paginas} ${it.paginas === 1 ? "página" : "páginas"} · ${pesoLegible(it.tamano)}`}
+                        {err && it.error}
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                      {it.estado === "ok" && (
+                        <Button variant="ghost" style={{ padding: "5px 10px" }} onClick={() => setVerItem(it)}>Ver</Button>
+                      )}
+                      <IconButton icon="↑" label="Subir" disabled={ocupado || idx === 0} onClick={() => mover(it.id, -1)} />
+                      <IconButton icon="↓" label="Bajar" disabled={ocupado || idx === items.length - 1} onClick={() => mover(it.id, 1)} />
+                      <IconButton icon="✕" label="Quitar de la lista" tone={T.red} disabled={ocupado} onClick={() => quitar(it.id)} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </Panel>
+
+      {items.length > 0 && (
+        <Panel title="Archivo final">
+          <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
+            <Field label="Nombre del archivo" style={{ flex: "1 1 320px", maxWidth: 520 }}>
+              <TextInput value={nombreFinal} placeholder={sugerido} disabled={ocupado}
+                onChange={(e) => setNombreFinal(e.target.value)} />
+            </Field>
+            <Button disabled={ocupado || leyendo || validos.length < 2} onClick={unir}>
+              {ocupado ? `Uniendo ${proceso.hecho} de ${proceso.total}…` : "Unir y descargar"}
+            </Button>
+          </div>
+          <div style={{ fontSize: 11.5, color: T.textDim, marginTop: 10 }}>
+            {leyendo
+              ? "Espera a que se terminen de revisar los archivos."
+              : validos.length < 2
+                ? "Necesitas al menos dos PDF que se puedan leer."
+                : `Se unirán ${validos.length} archivos, ${totalPaginas} páginas en total. Se descargará como «${nombreDescarga}».`}
+            {conError.length > 0 && !leyendo && (
+              <span style={{ color: T.red }}>
+                {" "}{conError.length === 1 ? "El archivo en rojo no se incluirá." : `Los ${conError.length} archivos en rojo no se incluirán.`}
+              </span>
+            )}
+          </div>
+          {aviso && (
+            <div style={{
+              marginTop: 12, fontSize: 12.5, padding: "10px 12px", borderRadius: 6,
+              color: aviso.tono === "red" ? T.red : T.teal,
+              background: aviso.tono === "red" ? `${T.red}12` : `${T.teal}14`,
+              border: `1px solid ${aviso.tono === "red" ? `${T.red}55` : `${T.teal}55`}`,
+            }}>{aviso.texto}</div>
+          )}
+        </Panel>
+      )}
+
+      {verItem && (
+        <VistaPdfModal nombre={verItem.nombre} bytes={verItem.bytes} paginas={verItem.paginas} onClose={() => setVerItem(null)} />
+      )}
+    </div>
+  );
+}
+
+/* --------------------------- SEPARAR PDF --------------------------- */
+function SepararPdfPanel() {
+  const [archivo, setArchivo] = useState(null); // { nombre, tamano, bytes, paginas }
+  const [estado, setEstado] = useState("vacio"); // vacio | leyendo | ok | error
+  const [error, setError] = useState("");
+  const [miniaturas, setMiniaturas] = useState([]);
+  const [seleccion, setSeleccion] = useState(() => new Set());
+  const [prefijo, setPrefijo] = useState("");
+  const [proceso, setProceso] = useState(null);
+  const [aviso, setAviso] = useState(null);
+  const [ver, setVer] = useState(false);
+  const turno = useRef(0);
+
+  const cargar = async (lista) => {
+    const file = lista[0];
+    if (!file) return;
+    const miTurno = ++turno.current;
+    setAviso(null); setError(""); setMiniaturas([]); setArchivo(null); setSeleccion(new Set());
+    setEstado("leyendo");
+    let datos;
+    try {
+      datos = await leerPdfParaHerramienta(file);
+    } catch (e) {
+      if (turno.current !== miTurno) return;
+      setArchivo({ nombre: file.name, tamano: file.size });
+      setError(e.codigo ? e.message : MSG_PDF.danado);
+      setEstado("error");
+      return;
+    }
+    if (turno.current !== miTurno) return;
+    setArchivo({ nombre: file.name, tamano: file.size, bytes: datos.bytes, paginas: datos.paginas });
+    setSeleccion(new Set(Array.from({ length: datos.paginas }, (_, i) => i)));
+    setPrefijo("");
+    setEstado("ok");
+    let docVista = null;
+    try {
+      docVista = await abrirPdfVista(datos.bytes);
+      for (let n = 1; n <= docVista.numPages; n++) {
+        if (turno.current !== miTurno) break;
+        const img = await dibujarPagina(docVista, n, 118);
+        if (turno.current !== miTurno) break;
+        setMiniaturas((prev) => [...prev, img]);
+        await pausaUI();
+      }
+    } catch {
+      // Sin vistas previas se puede separar igual.
+    } finally {
+      if (docVista) docVista.destroy();
+    }
+  };
+
+  const quitarArchivo = () => {
+    turno.current++;
+    setArchivo(null); setEstado("vacio"); setError(""); setMiniaturas([]);
+    setSeleccion(new Set()); setAviso(null); setPrefijo("");
+  };
+
+  useEffect(() => () => { turno.current++; }, []);
+
+  const paginas = archivo?.paginas || 0;
+  const digitos = String(paginas).length < 2 ? 2 : String(paginas).length;
+  const base = nombreArchivoSeguro(quitarExtensionPdf(prefijo) || quitarExtensionPdf(archivo?.nombre), "Documento");
+  const nombrePagina = (i) => `${base} - pag ${String(i + 1).padStart(digitos, "0")}.pdf`;
+  const nombreZip = `${base} - paginas.zip`;
+  const ocupado = !!proceso;
+
+  const alternar = (i) => {
+    if (ocupado) return;
+    setSeleccion((prev) => { const s = new Set(prev); if (s.has(i)) s.delete(i); else s.add(i); return s; });
+  };
+
+  const separar = async () => {
+    setAviso(null);
+    const indices = [...seleccion].sort((a, b) => a - b);
+    if (!indices.length) {
+      setAviso({ tono: "red", texto: "No hay páginas seleccionadas. Marca al menos una página para descargarla." });
+      return;
+    }
+    let lib;
+    try { lib = await cargarPdfLib(); } catch { setAviso({ tono: "red", texto: MSG_PDF.sinLibreria }); return; }
+    setProceso({ hecho: 0, total: indices.length });
+    try {
+      const origen = await lib.PDFDocument.load(archivo.bytes, { updateMetadata: false });
+      const zip = new JSZip();
+      for (let k = 0; k < indices.length; k++) {
+        const i = indices[k];
+        const nuevo = await lib.PDFDocument.create();
+        const [pag] = await nuevo.copyPages(origen, [i]);
+        nuevo.addPage(pag);
+        zip.file(nombrePagina(i), await nuevo.save());
+        setProceso({ hecho: k + 1, total: indices.length });
+        await pausaUI();
+      }
+      const blob = await zip.generateAsync({ type: "blob" });
+      descargarArchivo(blob, nombreZip);
+      setAviso({
+        tono: "teal",
+        texto: `Listo: se descargó «${nombreZip}» con ${indices.length} ${indices.length === 1 ? "archivo" : "archivos"}, uno por página. Búscalo en tu carpeta de Descargas y ábrelo (o usa “Extraer todo”) para ver los PDF.`,
+      });
+    } catch {
+      setAviso({ tono: "red", texto: "No se pudo separar el PDF. Si es muy pesado, intenta seleccionar menos páginas a la vez; si el problema sigue, pide que te reenvíen el archivo." });
+    } finally {
+      setProceso(null);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <Panel
+        title="Separar PDF"
+        subtitle="Convierte cada página de un PDF en un archivo aparte y descárgalos juntos en un ZIP."
+        right={archivo && <Button variant="ghost" disabled={ocupado} onClick={quitarArchivo}>Quitar archivo</Button>}
+      >
+        {!archivo && estado !== "leyendo" && (
+          <ZonaCargaPdf texto="Arrastra aquí el PDF que quieres separar" onArchivos={cargar} />
+        )}
+        {estado === "leyendo" && <div style={{ fontSize: 12.5, color: T.textDim }}>Revisando el archivo…</div>}
+
+        {archivo && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", borderRadius: 8,
+            border: `1px solid ${estado === "error" ? `${T.red}66` : T.borderSoft}`,
+            background: estado === "error" ? `${T.red}12` : T.panel,
+          }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 12.5, fontWeight: 600, color: estado === "error" ? T.red : T.text, wordBreak: "break-word" }}>{archivo.nombre}</div>
+              <div style={{ fontSize: 11.5, color: estado === "error" ? T.red : T.textDim, marginTop: 3 }}>
+                {estado === "error" ? error : `${paginas} ${paginas === 1 ? "página" : "páginas"} · ${pesoLegible(archivo.tamano)}`}
+              </div>
+            </div>
+            {estado === "ok" && <Button variant="ghost" style={{ padding: "5px 10px" }} onClick={() => setVer(true)}>Ver en grande</Button>}
+            {estado === "error" && <Button variant="ghost" onClick={quitarArchivo}>Elegir otro archivo</Button>}
+          </div>
+        )}
+
+        {estado === "ok" && paginas === 1 && (
+          <div style={{ fontSize: 12.5, color: T.amberDim, background: T.avisoBg, border: `1px solid ${T.amber}55`, borderRadius: 6, padding: "10px 12px", marginTop: 12 }}>
+            Este PDF tiene una sola página, así que no hay nada que separar. Elige un PDF de varias páginas.
+          </div>
+        )}
+
+        {estado === "ok" && paginas > 1 && (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "16px 0 10px", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 11.5, color: T.textDim, flex: 1, minWidth: 220 }}>
+                Haz clic en una página para incluirla o quitarla. Las marcadas se descargan, cada una como un PDF.
+              </span>
+              <Button variant="ghost" style={{ padding: "5px 10px" }} disabled={ocupado}
+                onClick={() => setSeleccion(new Set(Array.from({ length: paginas }, (_, i) => i)))}>Marcar todas</Button>
+              <Button variant="ghost" style={{ padding: "5px 10px" }} disabled={ocupado}
+                onClick={() => setSeleccion(new Set())}>Desmarcar todas</Button>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(132px, 1fr))", gap: 10 }}>
+              {Array.from({ length: paginas }, (_, i) => {
+                const marcada = seleccion.has(i);
+                const img = miniaturas[i];
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => alternar(i)}
+                    aria-pressed={marcada}
+                    style={{
+                      display: "flex", flexDirection: "column", alignItems: "center", gap: 6,
+                      padding: 6, borderRadius: 8, cursor: ocupado ? "default" : "pointer",
+                      border: `${marcada ? 2 : 1}px solid ${marcada ? T.accent : T.border}`,
+                      background: marcada ? T.accentBg : T.panel,
+                      margin: marcada ? 0 : 1, fontFamily: T.fontUI,
+                    }}
+                  >
+                    <MiniaturaPdf url={img?.url} proporcion={img?.proporcion} ancho={118} />
+                    <span style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11.5, color: marcada ? T.accentDim : T.textDim, fontWeight: marcada ? 700 : 500 }}>
+                      <input type="checkbox" checked={marcada} readOnly tabIndex={-1} style={{ margin: 0, pointerEvents: "none" }} />
+                      Página {i + 1}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+      </Panel>
+
+      {estado === "ok" && paginas > 1 && (
+        <Panel title="Descarga">
+          <div style={{ display: "flex", gap: 14, alignItems: "flex-end", flexWrap: "wrap" }}>
+            <Field label="Nombre de los archivos" style={{ flex: "1 1 320px", maxWidth: 520 }}>
+              <TextInput value={prefijo} placeholder={quitarExtensionPdf(archivo.nombre)} disabled={ocupado}
+                onChange={(e) => setPrefijo(e.target.value)} />
+            </Field>
+            <Button disabled={ocupado || !seleccion.size} onClick={separar}>
+              {ocupado ? `Separando ${proceso.hecho} de ${proceso.total}…` : "Separar y descargar ZIP"}
+            </Button>
+          </div>
+          <div style={{ fontSize: 11.5, color: T.textDim, marginTop: 10 }}>
+            {seleccion.size
+              ? `Se descargará «${nombreZip}» con ${seleccion.size} ${seleccion.size === 1 ? "archivo" : "archivos"}: ${nombrePagina([...seleccion].sort((a, b) => a - b)[0])}${seleccion.size > 1 ? ", …" : ""}`
+              : "Marca al menos una página."}
+          </div>
+          {aviso && (
+            <div style={{
+              marginTop: 12, fontSize: 12.5, padding: "10px 12px", borderRadius: 6,
+              color: aviso.tono === "red" ? T.red : T.teal,
+              background: aviso.tono === "red" ? `${T.red}12` : `${T.teal}14`,
+              border: `1px solid ${aviso.tono === "red" ? `${T.red}55` : `${T.teal}55`}`,
+            }}>{aviso.texto}</div>
+          )}
+        </Panel>
+      )}
+
+      {ver && archivo?.bytes && (
+        <VistaPdfModal nombre={archivo.nombre} bytes={archivo.bytes} paginas={paginas} onClose={() => setVer(false)} />
+      )}
+    </div>
+  );
+}
+
+function HerramientasTab() {
+  const [sub, setSub] = useSessionState("ss-herramientas-sub", "unir");
+  /* Si un PDF se suelta fuera de la zona de carga, el navegador lo abre en
+     lugar de la app y se pierde lo que estaba en pantalla. Mientras esta
+     pestaña está abierta, esos archivos sueltos se ignoran. */
+  useEffect(() => {
+    const ignorar = (e) => {
+      if (Array.from(e.dataTransfer?.types || []).includes("Files")) e.preventDefault();
+    };
+    window.addEventListener("dragover", ignorar);
+    window.addEventListener("drop", ignorar);
+    return () => {
+      window.removeEventListener("dragover", ignorar);
+      window.removeEventListener("drop", ignorar);
+    };
+  }, []);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, flexWrap: "wrap" }}>
+          {SUBS_HERRAMIENTAS.map((sh) => (
+            <button
+              key={sh.id}
+              onClick={() => setSub(sh.id)}
+              style={{
+                padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
+                background: sub === sh.id ? T.accent : "transparent",
+                color: sub === sh.id ? T.onAccent : T.textDim,
+                fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
+              }}
+            >
+              {sh.label}
+            </button>
+          ))}
+        </div>
+        <span style={{ fontSize: 11.5, color: T.textFaint, maxWidth: 560 }}>
+          Los archivos se procesan en tu computadora: no se suben a la plataforma ni se guardan.
+          Si cambias de pestaña principal, la lista se borra.
+        </span>
+      </div>
+      {/* Las dos herramientas se quedan montadas: cambiar entre Unir y
+          Separar no debe perder los archivos que ya se cargaron. */}
+      <div style={{ display: sub === "unir" ? "block" : "none" }}><UnirPdfPanel /></div>
+      <div style={{ display: sub === "separar" ? "block" : "none" }}><SepararPdfPanel /></div>
+    </div>
+  );
+}
+
+/* ----------------------------------------------------------------------
    ROOT APP
 ---------------------------------------------------------------------- */
 // Sesión de Supabase Auth — undefined mientras carga, null si no hay sesión.
@@ -22812,6 +23514,7 @@ export default function App() {
     { id: "vehiculos", label: "Vehículos" },
     { id: "solicitudes", label: "Solicitudes" },
     { id: "contratos", label: "Contratos" },
+    { id: "herramientas", label: "Herramientas" },
     { id: "catalogo", label: "Catálogo" },
   ];
 
@@ -22941,6 +23644,7 @@ export default function App() {
           )}
           {tab === "solicitudes" && <SolicitudesTab onConvertir={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} unidad={unidad} session={session} unidades={unidades} proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} zonas={zonas.map((z) => (typeof z === "string" ? z : z.nombre))} />}
           {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} clausulasApi={contratosClausulasApi} session={session} />}
+          {tab === "herramientas" && <HerramientasTab />}
           {tab === "catalogo" && <CatalogoTab key={catalogoVersion} listasSat={listasSat} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
         </>
       )}

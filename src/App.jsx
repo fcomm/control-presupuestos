@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.97.0";
+const APP_VERSION = "2.97.1";
 const CHANGELOG = [
+  { v: "2.97.1", desc: "Transacciones > General: se quitan los filtros Direccion, Pagos, Canceladas, Clasificacion, Registro, Adjuntos, Proyecto y Moneda, que no se usaban. Quedan Buscar, Desde, Hasta y Solo mensuales. Lo que hubiera quedado elegido en esos filtros se ignora, para que ninguno siga escondiendo transacciones sin verse. Las canceladas siguen ocultas" },
   { v: "2.97.0", desc: "Transacciones > Importar / Exportar se organiza con una barra lateral plegable a la izquierda: Importar de Google Sheets, Solicitudes de Pago generadas, Exportar transacciones, Carga masiva y Reporte de Pagos son secciones aparte, y se ve una a la vez. Al plegarla quedan solo las iniciales, con el nombre al pasar el raton. Las secciones se quedan montadas al cambiar de una a otra, asi que no se pierde la conexion con Google ni lo capturado. Por omision abre en Reporte de Pagos" },
   { v: "2.96.0", desc: "El Reporte de Pagos deja de ser pestana del menu y pasa a Transacciones > Importar / Exportar, al final de la seccion, con sus propios filtros, KPIs, tabla y Enviar a Pagos sin cambios. Recibe las transacciones sin las canceladas, igual que antes" },
   { v: "2.95.3", desc: "Se quitan del menu las pestanas Reporte Pagos Direccion y Reportes a Direccion. El envio y la comparacion del presupuesto mensual siguen en Partidas, y el envio del semanal en Transacciones. El codigo de ambas pestanas se conserva por si hay que volver a mostrarlas" },
@@ -10486,26 +10487,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const transFiltradas = transUnidad.filter((t) => {
     if (filtros.fechaDesde && (!t.dia || t.dia < filtros.fechaDesde)) return false;
     if (filtros.fechaHasta && (!t.dia || t.dia > filtros.fechaHasta)) return false;
-    if (filtros.reportado === "Reportado" && !t.reportado_at) return false;
-    if (filtros.reportado === "No reportado" && t.reportado_at) return false;
-    if (filtros.enviadoPagos === "Enviado" && !t.enviado_pagos_at) return false;
-    if (filtros.enviadoPagos === "No enviado" && t.enviado_pagos_at) return false;
-    // Ocultas por omisión: una cancelada no es trabajo pendiente.
-    const verCanc = filtros.canceladas || "ocultar";
-    if (verCanc === "ocultar" && estaCancelada(t)) return false;
-    if (verCanc === "solo" && !estaCancelada(t)) return false;
-    // No registradas = borradores: sin folio o sin fecha de registro.
-    const verReg = filtros.registro || "Todas";
-    if (verReg === "registradas" && pendienteDeRegistro(t)) return false;
-    if (verReg === "borradores" && !pendienteDeRegistro(t)) return false;
-    if (filtroAdj === "ninguno" && adjDe(t)) return false;
-    if (filtroAdj.startsWith("sin:") && adjDe(t)?.[filtroAdj.slice(4)]) return false;
-    // Coincidencia exacta con el marcador guardado en la transacción — el
-    // mismo texto que se eligió al capturarla (incluye "Todos" y los "<X>
-    // Gral" de grupo como opciones propias, no como comodín de "sin filtro").
-    if (filtros.proyecto && (t.proyecto || "") !== filtros.proyecto) return false;
-    if (filtros.moneda && (t.moneda || "MXP") !== filtros.moneda) return false;
-    if (filtros.rubro === "revisar" && estadoRubro(t, partidaDe(t)) === "ok") return false;
+    /* v2.97.1: se quitaron los filtros Dirección, Pagos, Canceladas,
+       Clasificación, Registro, Adjuntos, Proyecto y Moneda (no se usaban).
+       Sus valores pueden seguir guardados en la sesión de quien ya los había
+       usado: se IGNORAN a propósito, para que no quede un filtro invisible
+       escondiendo transacciones. Las canceladas siguen ocultas, como estaba
+       por omisión: una cancelada no es trabajo pendiente. */
+    if (estaCancelada(t)) return false;
     if (filtros.mensual && !t.es_mensual) return false;
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
@@ -10516,7 +10504,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     }
     return true;
   });
-  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || filtros.reportado !== "Todos" || filtros.enviadoPagos !== "Todos" || filtroAdj !== "Todos" || (filtros.canceladas || "ocultar") !== "ocultar" || (filtros.registro || "Todas") !== "Todas" || filtros.proyecto || filtros.moneda || filtros.rubro === "revisar" || !!filtros.mensual;
+  const filtrosActivos = filtros.texto.trim() || filtros.fechaDesde || filtros.fechaHasta || !!filtros.mensual;
   const limpiarFiltros = () => setFiltros({ texto: "", fechaDesde: "", fechaHasta: "", reportado: "Todos", enviadoPagos: "Todos", adjuntos: "Todos", canceladas: "ocultar", registro: "Todas", proyecto: "", moneda: "", rubro: "", mensual: false });
 
   const transOrdenadas = sortRows(transFiltradas, sort, {
@@ -11959,62 +11947,6 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </Field>
             <Field label="Hasta" style={{ flex: "1 1 118px" }}>
               <TextInput type="date" value={filtros.fechaHasta} onChange={(e) => setFiltros({ ...filtros, fechaHasta: e.target.value })} />
-            </Field>
-            <Field label="Dirección" style={{ flex: "1 1 108px" }}>
-              <Select value={filtros.reportado} onChange={(e) => setFiltros({ ...filtros, reportado: e.target.value })} style={{ width: "100%" }}>
-                <option>Todos</option>
-                <option value="Reportado">Reportado</option>
-                <option>No reportado</option>
-              </Select>
-            </Field>
-            <Field label="Pagos" style={{ flex: "1 1 108px" }}>
-              <Select value={filtros.enviadoPagos} onChange={(e) => setFiltros({ ...filtros, enviadoPagos: e.target.value })} style={{ width: "100%" }}>
-                <option>Todos</option>
-                <option>Enviado</option>
-                <option>No enviado</option>
-              </Select>
-            </Field>
-            <Field label="Canceladas" style={{ flex: "1 1 108px" }}>
-              <Select value={filtros.canceladas || "ocultar"} onChange={(e) => setFiltros({ ...filtros, canceladas: e.target.value })} style={{ width: "100%" }}>
-                <option value="ocultar">Ocultarlas</option>
-                <option value="mostrar">Mostrarlas</option>
-                <option value="solo">Solo canceladas</option>
-              </Select>
-            </Field>
-            <Field label="Clasificación" style={{ flex: "1 1 130px" }}>
-              <Select value={filtros.rubro || ""} onChange={(e) => setFiltros({ ...filtros, rubro: e.target.value })} style={{ width: "100%" }}
-                title="Fuera de rubro: categoría de otro rubro que el de su partida. También las de partidas No Clasificado.">
-                <option value="">Todas</option>
-                <option value="revisar">Fuera de rubro o sin clasificar</option>
-              </Select>
-            </Field>
-            <Field label="Registro" style={{ flex: "1 1 120px" }}>
-              <Select value={filtros.registro || "Todas"} onChange={(e) => setFiltros({ ...filtros, registro: e.target.value })} style={{ width: "100%" }}>
-                <option value="Todas">Todas</option>
-                <option value="registradas">Registradas</option>
-                <option value="borradores">No registradas</option>
-              </Select>
-            </Field>
-            <Field label="Adjuntos" style={{ flex: "1 1 120px" }}>
-              <Select value={filtroAdj} onChange={(e) => setFiltros({ ...filtros, adjuntos: e.target.value })} style={{ width: "100%" }}>
-                <option value="Todos">Todos</option>
-                {[...MARCAS_ADJUNTO_TRANSACCION, MARCA_REP].map((m) => (
-                  <option key={m.campo} value={`sin:${m.campo}`}>Sin {m.largo.split(" (")[0]}</option>
-                ))}
-                <option value="ninguno">Sin ningún adjunto</option>
-              </Select>
-            </Field>
-            <Field label="Proyecto" style={{ flex: "1.4 1 140px" }}>
-              <Select value={filtros.proyecto} onChange={(e) => setFiltros({ ...filtros, proyecto: e.target.value })} style={{ width: "100%" }}>
-                <option value="">Todos los proyectos</option>
-                {marcadoresProyecto.map((p) => <option key={p} value={p}>{p}</option>)}
-              </Select>
-            </Field>
-            <Field label="Moneda" style={{ flex: "0.8 1 78px" }}>
-              <Select value={filtros.moneda} onChange={(e) => setFiltros({ ...filtros, moneda: e.target.value })} style={{ width: "100%" }}>
-                <option value="">Todas</option>
-                {monedasDisponibles.map((m) => <option key={m} value={m}>{m}</option>)}
-              </Select>
             </Field>
             {filtrosActivos && <Button variant="ghost" onClick={limpiarFiltros}>Limpiar filtros</Button>}
           </div>

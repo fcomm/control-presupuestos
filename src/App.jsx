@@ -442,8 +442,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.95.1";
+const APP_VERSION = "2.95.3";
 const CHANGELOG = [
+  { v: "2.95.3", desc: "Se quitan del menu las pestanas Reporte Pagos Direccion y Reportes a Direccion. El envio y la comparacion del presupuesto mensual siguen en Partidas, y el envio del semanal en Transacciones. El codigo de ambas pestanas se conserva por si hay que volver a mostrarlas" },
+  { v: "2.95.2", desc: "Partidas > Exportar y reportes: se quitan las tarjetas Reporte Excel, Presupuesto Mensual (PDF) y Exportar datos. Quedan solo Enviar a Direccion (oficial) y Comparar versiones enviadas. El Excel oficial conserva las columnas que estaban elegidas" },
   { v: "2.95.1", desc: "Presupuesto mensual comparado: el reporte vuelve a abrir con el total del presupuesto por moneda, y en el mismo recuadro el total de la revision contra la que se compara y la diferencia; despues van las diferencias (nuevo, cambio, retirado) y luego el reporte completo. Aplica al PDF ejecutivo al enviar, al PDF y a la hoja de cambios del Excel de Comparar versiones enviadas" },
   { v: "2.95.0", desc: "La comparacion entre versiones del presupuesto mensual se mueve a Partidas > Exportar y reportes, tarjeta Comparar versiones enviadas: por omision la version mas reciente contra la anterior, con opcion de elegir otro par, del mes elegido en Enviar a Direccion. Descarga el PDF y el Excel con lo nuevo, lo que cambio y lo retirado, y el Excel con todas las transacciones vinculadas a esas partidas (estado de hoy). En Reportes a Direccion > Presupuesto mensual se quita el selector Comparar version; un clic en vN sigue descargandola comparada contra la anterior, con sus transacciones" },
   { v: "2.94.1", desc: "Fix: el Excel del presupuesto mensual que se vuelve a descargar desde Reportes a Direccion (un clic en vN o Comparar version X contra Y) salia sin la hoja de Transacciones, porque al enviar solo se congelan las partidas. Ahora lleva las transacciones vinculadas hoy a las partidas de esa version, y la hoja dice estado al <fecha> para que no se confunda con lo enviado" },
@@ -9193,54 +9195,10 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8,
                         padding: 14, marginBottom: 16 }}>
             <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
-              Todas las salidas respetan los filtros de arriba —
-              {filtrosActivos ? ` ${partidasFiltradas.length} de ${partidasUnidad.length} partidas` : ` las ${partidasUnidad.length} partidas`}
-              {groupKeys.length ? `, agrupadas por ${groupBys.map((g) => (GROUP_OPCIONES.find((o) => o.value === g.field) || {}).label || g.field).join(" > ")}` : ""}.
+              Reportes oficiales a Dirección. Toman todas las partidas del mes elegido en cada tarjeta, sin importar los filtros de arriba.
             </div>
 
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
-
-              <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13 }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Reporte Excel</div>
-                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
-                  Respeta el agrupamiento de la vista, con subtotal por grupo y por moneda.
-                  Para revisar o compartir el presupuesto.
-                </div>
-                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
-                  <ColumnVisibilityControl
-                    columns={COLUMNAS_REPORTE_PARTIDAS}
-                    hidden={repVis.hidden} onToggle={repVis.toggle} onShowAll={repVis.showAll}
-                    etiqueta="Columnas"
-                  />
-                  {conDetalle && (
-                    <ColumnVisibilityControl
-                      columns={COLUMNAS_DETALLE_TX}
-                      hidden={detVis.hidden} onToggle={detVis.toggle} onShowAll={detVis.showAll}
-                      etiqueta="Cols. transacciones"
-                    />
-                  )}
-                </div>
-                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: T.textDim, cursor: "pointer", marginBottom: 10 }}>
-                  <input type="checkbox" checked={conDetalle} onChange={(e) => setConDetalle(e.target.checked)} />
-                  Agregar hoja con las transacciones
-                </label>
-                <Button onClick={generarReporteExcel} disabled={generandoReporteXls} style={{ width: "100%" }}>
-                  {generandoReporteXls ? "Generando…" : "Generar Excel"}
-                </Button>
-              </div>
-
-              <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
-                            display: "flex", flexDirection: "column" }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Presupuesto Mensual (PDF)</div>
-                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
-                  Resumen ejecutivo: totales por moneda y cortes por rubro, proyecto y zona.
-                  No lista partidas — para Dirección.
-                </div>
-                <div style={{ flex: 1 }} />
-                <Button onClick={generarReportePDF} disabled={generandoPDF} style={{ width: "100%" }}>
-                  {generandoPDF ? "Generando…" : "Generar PDF"}
-                </Button>
-              </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 12 }}>
 
               {/* El reporte oficial se separa del resto: no es un archivo más,
                   es el acto que fija la línea base. Por eso lleva su propio mes
@@ -9320,19 +9278,6 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                 )}
               </div>
 
-              <div style={{ background: T.panel, border: `1px solid ${T.borderSoft}`, borderRadius: 8, padding: 13,
-                            display: "flex", flexDirection: "column" }}>
-                <div style={{ fontSize: 12.5, fontWeight: 700 }}>Exportar datos</div>
-                <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
-                  Listado plano sin formato, con el encabezado en la primera fila.
-                  Es lo que lee el preparador de transacciones.
-                </div>
-                <div style={{ flex: 1 }} />
-                <div style={{ display: "flex", gap: 6 }}>
-                  <Button variant="ghost" onClick={() => exportarExcel(false)} style={{ flex: 1 }}>Solo {unidad}</Button>
-                  <Button variant="ghost" onClick={() => exportarExcel(true)} style={{ flex: 1 }}>Las 3</Button>
-                </div>
-              </div>
             </div>
           </div>
         )}
@@ -23980,8 +23925,9 @@ export default function App() {
     { id: "partidas", label: "Partidas" },
     { id: "transacciones", label: "Transacciones" },
     { id: "reporte", label: "Reporte de Pagos" },
-    { id: "reporte-direccion", label: "Reporte Pagos Dirección" },
-    { id: "reportes-direccion", label: "Reportes a Dirección" },
+    /* "Reporte Pagos Dirección" y "Reportes a Dirección" salen del menú
+       (v2.95.3). Su código se conserva: volver a mostrarlas es agregar aquí
+       sus entradas, ids "reporte-direccion" y "reportes-direccion". */
     { id: "vehiculos", label: "Vehículos" },
     { id: "solicitudes", label: "Solicitudes" },
     { id: "contratos", label: "Contratos" },

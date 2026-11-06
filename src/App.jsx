@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.95.0";
+const APP_VERSION = "2.95.1";
 const CHANGELOG = [
+  { v: "2.95.1", desc: "Presupuesto mensual comparado: el reporte vuelve a abrir con el total del presupuesto por moneda, y en el mismo recuadro el total de la revision contra la que se compara y la diferencia; despues van las diferencias (nuevo, cambio, retirado) y luego el reporte completo. Aplica al PDF ejecutivo al enviar, al PDF y a la hoja de cambios del Excel de Comparar versiones enviadas" },
   { v: "2.95.0", desc: "La comparacion entre versiones del presupuesto mensual se mueve a Partidas > Exportar y reportes, tarjeta Comparar versiones enviadas: por omision la version mas reciente contra la anterior, con opcion de elegir otro par, del mes elegido en Enviar a Direccion. Descarga el PDF y el Excel con lo nuevo, lo que cambio y lo retirado, y el Excel con todas las transacciones vinculadas a esas partidas (estado de hoy). En Reportes a Direccion > Presupuesto mensual se quita el selector Comparar version; un clic en vN sigue descargandola comparada contra la anterior, con sus transacciones" },
   { v: "2.94.1", desc: "Fix: el Excel del presupuesto mensual que se vuelve a descargar desde Reportes a Direccion (un clic en vN o Comparar version X contra Y) salia sin la hoja de Transacciones, porque al enviar solo se congelan las partidas. Ahora lleva las transacciones vinculadas hoy a las partidas de esa version, y la hoja dice estado al <fecha> para que no se confunda con lo enviado" },
   { v: "2.94.0", desc: "Presupuesto mensual a Direccion: misma comparacion entre versiones que el semanal. Al enviar desde Partidas, Resaltar lo nuevo respecto a elige la base (por omision la ultima enviada, otra version o sin comparar) y la confirmacion dice cuantas partidas nuevas, con cambio y retiradas lleva. El PDF ejecutivo abre con lo NUEVO en verde, lo que cambio en ambar (importe, moneda, concepto, proyecto, rubro o zona, con su valor anterior) y lo retirado en gris; despues va el reporte completo. El Excel abre con una hoja de cambios y en la hoja del presupuesto colorea las partidas nuevas y cambiadas. En Reportes a Direccion > Presupuesto mensual, Comparar version X contra Y descarga la X con lo nuevo respecto a la Y, y un clic en vN compara contra la anterior. Se compara contra lo congelado en cada envio, no contra el estado de hoy. De paso: el boton PDF ejecutivo de Partidas recibia el clic como si fuera la lista de partidas y no generaba nada" },
@@ -2188,7 +2189,9 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, et
     M, 70
   );
   const yTabla = comparacion
-    ? dibujarCambiosPresupuestoPdf(doc, comparacion, { y: 84, M, ancho: 792 - M * 2, altoPag: 612 })
+    ? dibujarCambiosPresupuestoPdf(doc, comparacion, {
+        y: dibujarTotalesComparadosPdf(doc, comparacion, version, { y: 84, M, ancho: 792 - M * 2 }),
+        M, ancho: 792 - M * 2, altoPag: 612 })
     : 84;
 
   /* Respeta el agrupamiento de la pestaña de origen. Los FILTROS no se
@@ -2566,7 +2569,45 @@ function compararVersionPresupuesto(actual, anterior, vsVersion) {
     nuevas: filas.filter((f) => f._cambio === "nueva"),
     modificadas: filas.filter((f) => f._cambio === "modificada"),
     retiradas: anterior.filter((p) => !usadas.has(p)),
+    // Totales de una y otra revisión: el reporte abre con ellos.
+    totalActual: totPorMonedaSem(actual),
+    totalAnterior: totPorMonedaSem(anterior),
   };
+}
+
+/* Por moneda: total de esta revisión, el de la revisión contra la que se
+   compara y la diferencia. Nunca se suman monedas entre sí. */
+const totalesComparados = (comparacion) => {
+  const monedas = [...new Set([...Object.keys(comparacion.totalActual), ...Object.keys(comparacion.totalAnterior)])].sort();
+  return monedas.map((m) => {
+    const actual = comparacion.totalActual[m] || 0, antes = comparacion.totalAnterior[m] || 0;
+    return { moneda: m, actual, antes, dif: actual - antes };
+  });
+};
+// Guion ASCII: las fuentes estándar de jsPDF no traen el signo menos (−).
+const textoDiferencia = (d) => (Math.abs(d) < 0.005 ? "sin cambio" : `${d > 0 ? "+" : "-"}$${numMx(Math.abs(d))}`);
+
+/* Recuadros con el total del presupuesto al inicio del PDF comparado: la
+   primera pregunta sigue siendo cuánto es en total, y enseguida cuánto
+   cambió respecto a la revisión anterior. Devuelve la `y` siguiente. */
+function dibujarTotalesComparadosPdf(doc, comparacion, version, { y, M, ancho }) {
+  const filas = totalesComparados(comparacion);
+  const gap = 16;
+  const w = Math.min(260, (ancho - gap * (filas.length - 1)) / Math.max(filas.length, 1));
+  filas.forEach((t, i) => {
+    const x = M + i * (w + gap);
+    const usd = t.moneda === "USD";
+    doc.setFillColor(usd ? 30 : 62, usd ? 143 : 92, usd ? 115 : 118);
+    doc.rect(x, y, w, 62, "F");
+    doc.setTextColor(255).setFontSize(8.5).setFont(undefined, "normal");
+    doc.text(`TOTAL DEL PRESUPUESTO ${t.moneda} — REVISIÓN ${version}`, x + 12, y + 15);
+    doc.setFontSize(16).setFont(undefined, "bold");
+    doc.text(`$${numMx(t.actual)}`, x + 12, y + 35);
+    doc.setFontSize(8).setFont(undefined, "normal");
+    doc.text(`Revisión ${comparacion.vsVersion}: $${numMx(t.antes)}   ·   diferencia: ${textoDiferencia(t.dif)}`, x + 12, y + 52);
+  });
+  doc.setTextColor(35, 42, 49);
+  return y + 62 + 18;
 }
 
 const textoResumenCambios = (comparacion, sustantivo = "partida") =>
@@ -2697,7 +2738,20 @@ function hojaCambiosPresupuestoExcel(wbx, comparacion, { compania, periodo, vers
 
   const t = ws.addRow([`Presupuesto mensual — ${compania} — ${periodo} — REVISIÓN ${version}`]);
   t.font = { bold: true, size: 14, name: "Calibri" }; fusion(t);
-  const s = ws.addRow([`Cambios respecto a la revisión ${vsVersion}: ${nuevas.length} nueva(s), ${modificadas.length} con cambio, ${retiradas.length} retirada(s). El presupuesto completo está en la hoja siguiente.`]);
+  ws.addRow([]);
+  /* Primero el total del presupuesto, como en el reporte normal; después,
+     cuánto cambió y por qué. */
+  totalesComparados(comparacion).forEach((tt) => {
+    const r = ws.addRow([`TOTAL DEL PRESUPUESTO ${tt.moneda}:  $${numMx(tt.actual)}`]); fusion(r);
+    r.font = { bold: true, size: 13, name: "Calibri", color: { argb: "FF232A31" } };
+    r.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } };
+    r.height = 22;
+    const d = ws.addRow([`Revisión ${vsVersion}: $${numMx(tt.antes)}   ·   diferencia: ${textoDiferencia(tt.dif)}`]); fusion(d);
+    d.font = { size: 10.5, name: "Calibri", color: { argb: "FF4A5560" } };
+    d.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } };
+  });
+  ws.addRow([]);
+  const s = ws.addRow([`Diferencias respecto a la revisión ${vsVersion}: ${nuevas.length} nueva(s), ${modificadas.length} con cambio, ${retiradas.length} retirada(s). El presupuesto completo está en la hoja siguiente.`]);
   s.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" }; fusion(s);
   ws.addRow([]);
 
@@ -8712,20 +8766,28 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       }
       // Los totales van arriba y en grande: son la respuesta a la primera
       // pregunta, y quien lo lee no debería tener que buscarlos.
-      let y = comparacion
-        ? dibujarCambiosPresupuestoPdf(doc, comparacion, { y: 76, M: 30, ancho: anchoUtil, altoPag: 792 })
-        : 76;
+      let y = 76;
+      const altoCaja = comparacion ? 60 : 46;
       monedas.forEach((m, i) => {
         const x = 30 + i * 270;
         doc.setFillColor(m === "USD" ? 30 : 62, m === "USD" ? 143 : 92, m === "USD" ? 115 : 118);
-        doc.rect(x, y, 250, 46, "F");
+        doc.rect(x, y, 250, altoCaja, "F");
         doc.setTextColor(255);
         doc.setFontSize(9);
         doc.text(`TOTAL ${m}`, x + 12, y + 17);
         doc.setFontSize(16);
         doc.text(money(totales[m], m), x + 12, y + 37);
+        if (comparacion) {
+          // Contra cuánto se comparó, dentro de la misma caja del total.
+          const antes = comparacion.totalAnterior[m] || 0;
+          doc.setFontSize(8);
+          doc.text(`Revisión ${comparacion.vsVersion}: $${numMx(antes)}   ·   ${textoDiferencia((totales[m] || 0) - antes)}`, x + 12, y + 51);
+        }
       });
-      y += 68;
+      y += altoCaja + 22;
+      /* Después del total, las diferencias contra la revisión anterior; el
+         resumen ejecutivo completo sigue debajo. */
+      if (comparacion) y = dibujarCambiosPresupuestoPdf(doc, comparacion, { y, M: 30, ancho: anchoUtil, altoPag: 792 });
 
       const seccion = (titulo, filas) => {
         if (!filas.length) return;

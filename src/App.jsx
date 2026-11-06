@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.94.0";
+const APP_VERSION = "2.94.1";
 const CHANGELOG = [
+  { v: "2.94.1", desc: "Fix: el Excel del presupuesto mensual que se vuelve a descargar desde Reportes a Direccion (un clic en vN o Comparar version X contra Y) salia sin la hoja de Transacciones, porque al enviar solo se congelan las partidas. Ahora lleva las transacciones vinculadas hoy a las partidas de esa version, y la hoja dice estado al <fecha> para que no se confunda con lo enviado" },
   { v: "2.94.0", desc: "Presupuesto mensual a Direccion: misma comparacion entre versiones que el semanal. Al enviar desde Partidas, Resaltar lo nuevo respecto a elige la base (por omision la ultima enviada, otra version o sin comparar) y la confirmacion dice cuantas partidas nuevas, con cambio y retiradas lleva. El PDF ejecutivo abre con lo NUEVO en verde, lo que cambio en ambar (importe, moneda, concepto, proyecto, rubro o zona, con su valor anterior) y lo retirado en gris; despues va el reporte completo. El Excel abre con una hoja de cambios y en la hoja del presupuesto colorea las partidas nuevas y cambiadas. En Reportes a Direccion > Presupuesto mensual, Comparar version X contra Y descarga la X con lo nuevo respecto a la Y, y un clic en vN compara contra la anterior. Se compara contra lo congelado en cada envio, no contra el estado de hoy. De paso: el boton PDF ejecutivo de Partidas recibia el clic como si fuera la lista de partidas y no generaba nada" },
   { v: "2.93.2", desc: "Fix Dashboard, panel Presupuestado vs. pagado real: al desplegar un concepto aparecian ~10 renglones con el mismo nombre. No eran 10 registros: era UNA partida o transaccion marcada Todos (o Grupo Gral) repartida entre los proyectos, y como el agrupamiento no incluia Proyecto, todas las fracciones caian juntas. Ahora el detalle vuelve a juntar las fracciones por registro de origen y dice entre cuantos proyectos se reparte; si el concepto tiene un solo registro ya no se despliega. Los totales no cambian" },
   { v: "2.93.1", desc: "Dashboard, panel Presupuestado vs. pagado real: al desplegar un concepto, cada renglon de Pagado real ya no repite el concepto (que es el nombre del grupo y dejaba renglones identicos); ahora muestra fecha de pago, proveedor y folio de factura (o folio SAE), ordenados por fecha de pago. Ademas, el ultimo nivel del agrupamiento arranca contraido: los conceptos muestran su total y su numero de registros, y el detalle se abre con un clic. Expandir todo abre tambien el detalle" },
@@ -2252,7 +2253,7 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, et
  * sin detalle porque es para leerse, y el Excel lleva las transacciones
  * vinculadas en hoja aparte porque es para analizarse.
  */
-async function generarExcelOficial({ compania, tipo, periodo, version, filas, transacciones, grupos, etiqueta = (x) => x, comparacion = null }) {
+async function generarExcelOficial({ compania, tipo, periodo, version, filas, transacciones, grupos, etiqueta = (x) => x, comparacion = null, notaTransacciones = "" }) {
   const esPres = tipo === "presupuesto";
   const wbx = new ExcelJS.Workbook();
   if (comparacion) {
@@ -2294,6 +2295,7 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
   rev.font = { bold: true, size: 11, color: { argb: AZUL }, name: "Calibri" };
   fusionar(rev);
   const sub = ws.addRow([`${filas.length} registros   ·   ${fmtTot(tot)}`
+    + (esPres && transacciones && transacciones.length ? "   ·   el detalle de transacciones está en la hoja «Transacciones»" : "")
     + (comparacion ? `   ·   en verde lo nuevo y en ámbar lo que cambió respecto a la revisión ${comparacion.vsVersion}` : "")]);
   sub.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" };
   fusionar(sub);
@@ -2366,7 +2368,7 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
     ];
     const wd = wbx.addWorksheet("Transacciones");
     wd.columns = TX.map((c) => ({ width: c.w }));
-    const t2 = wd.addRow([`Transacciones vinculadas — ${compania} — ${periodo} — REVISIÓN ${version}`]);
+    const t2 = wd.addRow([`Transacciones vinculadas — ${compania} — ${periodo} — REVISIÓN ${version}${notaTransacciones ? ` — ${notaTransacciones}` : ""}`]);
     t2.font = { bold: true, size: 12, name: "Calibri" };
     wd.mergeCells(t2.number, 1, t2.number, TX.length);
     wd.addRow([]);
@@ -15527,10 +15529,18 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
       } catch (err) { alert("No se pudo leer la versión anterior; se descarga sin comparar. " + (err.message || err)); }
       generarPdfOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [], comparacion });
       await new Promise((res) => setTimeout(res, 900));
-      // Sin hoja de transacciones al reconstruir: solo se congeló lo reportado,
-      // y las transacciones de hoy no son las que existían entonces.
+      /* Las transacciones NO se congelan al enviar, solo las partidas. Antes
+         la copia vuelta a descargar salía sin hoja de transacciones, y se
+         leía como si se hubieran perdido. Ahora va con las vinculadas HOY a
+         las partidas de esa versión, y la hoja dice que es el estado de hoy. */
+      const porPartida = new Map((data || []).map((f) => [String(f.origen_id), f]));
+      const txs = transacciones
+        .filter((t) => porPartida.has(String(t.partida_id)))
+        .map((t) => { const f = porPartida.get(String(t.partida_id)); return { ...t, _folio: f.folio || "", _partida: f.concepto || "" }; })
+        .sort((x, y) => String(x._folio).localeCompare(String(y._folio)) || String(x.dia || "").localeCompare(String(y.dia || "")));
       await generarExcelOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo,
-        version: r.version, filas: data || [], transacciones: [], comparacion });
+        version: r.version, filas: data || [], transacciones: txs, comparacion,
+        notaTransacciones: `estado al ${fmtFecha(new Date())}` });
     }
   };
 

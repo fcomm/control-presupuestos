@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.95.3";
+const APP_VERSION = "2.96.0";
 const CHANGELOG = [
+  { v: "2.96.0", desc: "El Reporte de Pagos deja de ser pestana del menu y pasa a Transacciones > Importar / Exportar, al final de la seccion, con sus propios filtros, KPIs, tabla y Enviar a Pagos sin cambios. Recibe las transacciones sin las canceladas, igual que antes" },
   { v: "2.95.3", desc: "Se quitan del menu las pestanas Reporte Pagos Direccion y Reportes a Direccion. El envio y la comparacion del presupuesto mensual siguen en Partidas, y el envio del semanal en Transacciones. El codigo de ambas pestanas se conserva por si hay que volver a mostrarlas" },
   { v: "2.95.2", desc: "Partidas > Exportar y reportes: se quitan las tarjetas Reporte Excel, Presupuesto Mensual (PDF) y Exportar datos. Quedan solo Enviar a Direccion (oficial) y Comparar versiones enviadas. El Excel oficial conserva las columnas que estaban elegidas" },
   { v: "2.95.1", desc: "Presupuesto mensual comparado: el reporte vuelve a abrir con el total del presupuesto por moneda, y en el mismo recuadro el total de la revision contra la que se compara y la diferencia; despues van las diferencias (nuevo, cambio, retirado) y luego el reporte completo. Aplica al PDF ejecutivo al enviar, al PDF y a la hoja de cambios del Excel de Comparar versiones enviadas" },
@@ -10969,6 +10970,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const expVis = useVisibilidadColumnas("colv-transacciones-export", COLUMNAS_EXPORT_TX,
     ["folio_tx", "concepto_p", "area", "solicitante", "forma_pago", "referencia", "factura", "sae"]);
   const [subTx, setSubTx] = useSessionState("ss-trans-sub", "general");
+  // El Reporte de Pagos (antes pestaña propia) trabaja sin las canceladas,
+  // igual que cuando App se las pasaba ya filtradas.
+  const transaccionesVigentesTx = useMemo(() => transacciones.filter((t) => !estaCancelada(t)), [transacciones]);
 
   /* -------- Reporte semanal oficial a Dirección -------- */
   const [semanaOf, setSemanaOf] = useState(lunesDe(new Date().toISOString().slice(0, 10)));
@@ -12296,6 +12300,18 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         </Panel>
 
       <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />
+
+      {/* Reporte de Pagos: antes era una pestaña del menú principal (v2.96.0).
+          Tiene sus propios filtros; no usa los de la pestaña General. */}
+      <div style={{ borderTop: `1px solid ${T.border}`, paddingTop: 18, marginTop: 4 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: T.text }}>Reporte de Pagos</div>
+        <div style={{ fontSize: 11.5, color: T.textDim, marginTop: 3, marginBottom: 14 }}>
+          Lo que se envía a Pagos. Tiene sus propios filtros: no usa los de la pestaña General.
+        </div>
+        <ReportePagosTab listasSat={listasSat} gruposZona={gruposZona} unidad={unidad} partidas={partidas}
+          transacciones={transaccionesVigentesTx} transaccionesApi={transaccionesApi}
+          proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />
+      </div>
       </>)}
 
       {editandoMasivo && (
@@ -23924,7 +23940,7 @@ export default function App() {
     { id: "dashboard", label: "Dashboard" },
     { id: "partidas", label: "Partidas" },
     { id: "transacciones", label: "Transacciones" },
-    { id: "reporte", label: "Reporte de Pagos" },
+    // "Reporte de Pagos" vive ahora en Transacciones › Importar / Exportar.
     /* "Reporte Pagos Dirección" y "Reportes a Dirección" salen del menú
        (v2.95.3). Su código se conserva: volver a mostrarlas es agregar aquí
        sus entradas, ids "reporte-direccion" y "reportes-direccion". */

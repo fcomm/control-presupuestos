@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.93.2";
+const APP_VERSION = "2.94.0";
 const CHANGELOG = [
+  { v: "2.94.0", desc: "Presupuesto mensual a Direccion: misma comparacion entre versiones que el semanal. Al enviar desde Partidas, Resaltar lo nuevo respecto a elige la base (por omision la ultima enviada, otra version o sin comparar) y la confirmacion dice cuantas partidas nuevas, con cambio y retiradas lleva. El PDF ejecutivo abre con lo NUEVO en verde, lo que cambio en ambar (importe, moneda, concepto, proyecto, rubro o zona, con su valor anterior) y lo retirado en gris; despues va el reporte completo. El Excel abre con una hoja de cambios y en la hoja del presupuesto colorea las partidas nuevas y cambiadas. En Reportes a Direccion > Presupuesto mensual, Comparar version X contra Y descarga la X con lo nuevo respecto a la Y, y un clic en vN compara contra la anterior. Se compara contra lo congelado en cada envio, no contra el estado de hoy. De paso: el boton PDF ejecutivo de Partidas recibia el clic como si fuera la lista de partidas y no generaba nada" },
   { v: "2.93.2", desc: "Fix Dashboard, panel Presupuestado vs. pagado real: al desplegar un concepto aparecian ~10 renglones con el mismo nombre. No eran 10 registros: era UNA partida o transaccion marcada Todos (o Grupo Gral) repartida entre los proyectos, y como el agrupamiento no incluia Proyecto, todas las fracciones caian juntas. Ahora el detalle vuelve a juntar las fracciones por registro de origen y dice entre cuantos proyectos se reparte; si el concepto tiene un solo registro ya no se despliega. Los totales no cambian" },
   { v: "2.93.1", desc: "Dashboard, panel Presupuestado vs. pagado real: al desplegar un concepto, cada renglon de Pagado real ya no repite el concepto (que es el nombre del grupo y dejaba renglones identicos); ahora muestra fecha de pago, proveedor y folio de factura (o folio SAE), ordenados por fecha de pago. Ademas, el ultimo nivel del agrupamiento arranca contraido: los conceptos muestran su total y su numero de registros, y el detalle se abre con un clic. Expandir todo abre tambien el detalle" },
   { v: "2.93.0", desc: "Nueva pestana Herramientas, con dos herramientas para PDF que trabajan solo en el navegador (los archivos no se suben ni se guardan en la base). Unir PDF: se arrastran o eligen varios PDF, se ven con miniatura, paginas y tamano, se reordenan arrastrando o con flechas, se pueden ver completos y se descargan como un solo PDF con el nombre que se escriba. Separar PDF: se sube un PDF de varias paginas, se ven sus miniaturas, se marcan las paginas a descargar y se baja un ZIP con un PDF por pagina. Los PDF danados o protegidos con contrasena se marcan en rojo con un mensaje que dice que hacer, y se excluyen. Requiere instalar pdf-lib (npm install pdf-lib); se carga solo al usar estas herramientas" },
@@ -2145,8 +2146,10 @@ const nh = (v) => String(v || "").trim().toLowerCase();
  * permitiría que el documento enviado no coincida con la línea base, y
  * entonces la línea base mentiría — justo lo que se quiere evitar.
  */
-function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, etiqueta = (x) => x }) {
+function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, etiqueta = (x) => x, comparacion = null }) {
   const esPres = tipo === "presupuesto";
+  // Con comparación, las filas llevan su marca de nueva / cambió.
+  if (comparacion) filas = comparacion.filas;
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
   const M = 36;
   const num = (v) => "$" + (Number(v) || 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -2177,9 +2180,14 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, et
   doc.setTextColor(107, 119, 133).setFont(undefined, "normal");
   doc.text(
     `${filas.length} registros   ·   ` +
-    Object.entries(tot).map(([m, v]) => `${num(v)} ${m}`).join("   ·   "),
+    Object.entries(tot).map(([m, v]) => `${num(v)} ${m}`).join("   ·   ") +
+    (comparacion ? `   ·   respecto a la revisión ${comparacion.vsVersion}: ${comparacion.nuevas.length} nueva(s), `
+      + `${comparacion.modificadas.length} con cambio, ${comparacion.retiradas.length} retirada(s)` : ""),
     M, 70
   );
+  const yTabla = comparacion
+    ? dibujarCambiosPresupuestoPdf(doc, comparacion, { y: 84, M, ancho: 792 - M * 2, altoPag: 612 })
+    : 84;
 
   /* Respeta el agrupamiento de la pestaña de origen. Los FILTROS no se
      respetan a propósito —un reporte oficial debe traer todo el periodo, o
@@ -2195,10 +2203,12 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, et
     : [f.dia || "", f.proveedor || "", f.concepto || "", f.categoria || "", f.solicitante || "", f.proyecto || "", num(f.importe)];
 
   const body = [];
+  const marcas = []; // _cambio de cada renglón del cuerpo, para colorearlo
+  const empujar = (f) => { body.push(filaDe(f)); marcas.push(f._cambio || null); };
   if (grupos && grupos.length) {
     const hojas = (n) => n.type === "rows" ? n.rows : n.entries.flatMap((e) => hojas(e.child));
     (function rec(nodo, nivel) {
-      if (nodo.type === "rows") { nodo.rows.forEach((f) => body.push(filaDe(f))); return; }
+      if (nodo.type === "rows") { nodo.rows.forEach(empujar); return; }
       nodo.entries.forEach((e) => {
         const lista = hojas(e.child);
         body.push([{
@@ -2206,15 +2216,22 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, et
           colSpan: nCols,
           styles: { fillColor: nivel === 0 ? [236, 238, 241] : [246, 247, 249], fontStyle: "bold", halign: "left" },
         }]);
+        marcas.push(null);
         rec(e.child, nivel + 1);
       });
     })(agruparRows(filas, grupos, "importe"), 0);
   } else {
-    filas.forEach((f) => body.push(filaDe(f)));
+    filas.forEach(empujar);
   }
 
   autoTabla(doc, {
-    startY: 84,
+    startY: yTabla,
+    didParseCell: (d) => {
+      if (!comparacion || d.section !== "body") return;
+      const c = marcas[d.row.index];
+      if (c === "nueva") d.cell.styles.fillColor = COLORES_CAMBIO.VERDE_S;
+      else if (c === "modificada") d.cell.styles.fillColor = COLORES_CAMBIO.AMBAR_S;
+    },
     head: [esPres
       ? ["Folio", "Concepto", "Rubro", "Categoría", "Proyecto", "Importe"]
       : ["Día", "Proveedor", "Concepto", "Categoría", "Solicitante", "Proyecto", "Importe"]],
@@ -2235,9 +2252,13 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, et
  * sin detalle porque es para leerse, y el Excel lleva las transacciones
  * vinculadas en hoja aparte porque es para analizarse.
  */
-async function generarExcelOficial({ compania, tipo, periodo, version, filas, transacciones, grupos, etiqueta = (x) => x }) {
+async function generarExcelOficial({ compania, tipo, periodo, version, filas, transacciones, grupos, etiqueta = (x) => x, comparacion = null }) {
   const esPres = tipo === "presupuesto";
   const wbx = new ExcelJS.Workbook();
+  if (comparacion) {
+    filas = comparacion.filas;
+    hojaCambiosPresupuestoExcel(wbx, comparacion, { compania, periodo, version });
+  }
   const num = '"$"#,##0.00';
   const AZUL = "FF3E5C76", GRIS = "FFECEEF1";
 
@@ -2272,7 +2293,8 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
   const rev = ws.addRow([`${periodo}   ·   REVISIÓN ${version}   ·   enviado el ${fmtFecha(new Date())}`]);
   rev.font = { bold: true, size: 11, color: { argb: AZUL }, name: "Calibri" };
   fusionar(rev);
-  const sub = ws.addRow([`${filas.length} registros   ·   ${fmtTot(tot)}`]);
+  const sub = ws.addRow([`${filas.length} registros   ·   ${fmtTot(tot)}`
+    + (comparacion ? `   ·   en verde lo nuevo y en ámbar lo que cambió respecto a la revisión ${comparacion.vsVersion}` : "")]);
   sub.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" };
   fusionar(sub);
   ws.addRow([]);
@@ -2294,6 +2316,8 @@ async function generarExcelOficial({ compania, tipo, periodo, version, filas, tr
       cell.alignment = { horizontal: c.money ? "right" : (c.izq ? "left" : "center"),
                          vertical: "top", wrapText: !!c.izq, indent: c.izq ? sangria : undefined };
       if (c.money) cell.numFmt = num;
+      if (f._cambio) cell.fill = { type: "pattern", pattern: "solid",
+        fgColor: { argb: f._cambio === "nueva" ? COLORES_CAMBIO.xVERDE_S : COLORES_CAMBIO.xAMBAR_S } };
     });
   };
   const totDe = (lista) => {
@@ -2466,9 +2490,14 @@ function compararVersionSemanal(actual, anterior, vsVersion) {
    no se indica), o de la versión `exacta` cuando se elige a mano contra cuál
    comparar (p. ej. la 4 contra la 2). Devuelve null cuando no hay ninguna:
    la v1 no tiene contra qué compararse. */
-async function detalleRevisionAnteriorSemanal(compania, periodo, antesDe = null, exacta = null) {
+function detalleRevisionAnteriorSemanal(compania, periodo, antesDe = null, exacta = null) {
+  return detalleRevisionAnterior(compania, "transacciones", periodo, antesDe, exacta);
+}
+/* Igual para cualquier tipo de reporte oficial ("transacciones" o
+   "presupuesto"). */
+async function detalleRevisionAnterior(compania, tipo, periodo, antesDe = null, exacta = null) {
   let q = supabase.from("reportes_oficiales").select("id, version")
-    .eq("compania", compania).eq("tipo", "transacciones").eq("periodo", periodo);
+    .eq("compania", compania).eq("tipo", tipo).eq("periodo", periodo);
   if (exacta) q = q.eq("version", exacta);
   else if (antesDe) q = q.lt("version", antesDe);
   const { data: cab, error } = await q.order("version", { ascending: false }).limit(1);
@@ -2495,6 +2524,186 @@ const totPorMonedaSem = (lista) => {
   return r;
 };
 const txtTotSem = (o) => Object.entries(o).sort(([a], [b]) => a.localeCompare(b)).map(([m, v]) => `$${numMx(v)} ${m}`).join("  ·  ") || "$0.00";
+
+/* ----------------------------------------------------------------------
+   COMPARACIÓN ENTRE REVISIONES DEL PRESUPUESTO MENSUAL
+   Mismo propósito que la del semanal: al reenviar el mes, Dirección ve de
+   inmediato qué partidas son nuevas, cuáles cambiaron y cuáles se quitaron,
+   sin cotejar dos listados a mano. Se compara con los detalles CONGELADOS de
+   ambas revisiones, así que no depende del estado de hoy.
+   ---------------------------------------------------------------------- */
+const CAMPOS_CAMBIO_PRESUPUESTO = [
+  { k: "concepto", etq: "concepto" }, { k: "proyecto", etq: "proyecto" },
+  { k: "rubro", etq: "rubro" }, { k: "zona", etq: "zona" },
+];
+function compararVersionPresupuesto(actual, anterior, vsVersion) {
+  const porId = new Map(), porFolio = new Map();
+  anterior.forEach((p) => {
+    if (p.origen_id) porId.set(String(p.origen_id), p);
+    if (p.folio && !porFolio.has(p.folio)) porFolio.set(p.folio, p);
+  });
+  const usadas = new Set();
+  const filas = actual.map((f) => {
+    let p = f.origen_id ? porId.get(String(f.origen_id)) : null;
+    if (!p && f.folio) p = porFolio.get(f.folio);
+    if (!p || usadas.has(p)) return { ...f, _cambio: "nueva" };
+    usadas.add(p);
+    const que = [];
+    if (Math.abs((Number(f.importe) || 0) - (Number(p.importe) || 0)) > 0.005) que.push("importe");
+    if ((f.moneda || "MXP") !== (p.moneda || "MXP")) que.push("moneda");
+    // Lo que no es un monto se describe con su valor anterior: "cambió el
+    // proyecto" sin decir cuál era obliga a buscar la revisión anterior.
+    CAMPOS_CAMBIO_PRESUPUESTO.forEach(({ k, etq }) => {
+      if (nh(f[k]) !== nh(p[k])) que.push(`${etq} (antes: ${p[k] || "—"})`);
+    });
+    return que.length ? { ...f, _cambio: "modificada", _antes: p, _queCambio: que.join("; ") } : { ...f, _cambio: null };
+  });
+  return {
+    vsVersion, filas,
+    nuevas: filas.filter((f) => f._cambio === "nueva"),
+    modificadas: filas.filter((f) => f._cambio === "modificada"),
+    retiradas: anterior.filter((p) => !usadas.has(p)),
+  };
+}
+
+const textoResumenCambios = (comparacion, sustantivo = "partida") =>
+  `Respecto a la versión ${comparacion.vsVersion}: ${comparacion.nuevas.length} ${sustantivo}(s) nueva(s) por ` +
+  `${txtTotSem(totPorMonedaSem(comparacion.nuevas))}, ${comparacion.modificadas.length} con cambio y ` +
+  `${comparacion.retiradas.length} retirada(s).`;
+
+const COLORES_CAMBIO = {
+  VERDE: [30, 120, 80], VERDE_S: [226, 243, 233], AMBAR: [176, 110, 20], AMBAR_S: [253, 240, 214],
+  xVERDE: "FF1E7850", xVERDE_S: "FFE2F3E9", xAMBAR: "FFB06E14", xAMBAR_S: "FFFDF0D6",
+};
+
+/* Bloque de cambios al inicio de un PDF del presupuesto mensual. Sirve al
+   PDF ejecutivo (vertical) y al de versiones enviadas (horizontal); devuelve
+   la `y` donde sigue el reporte completo. */
+function dibujarCambiosPresupuestoPdf(doc, comparacion, { y, M, ancho, altoPag }) {
+  const { nuevas, modificadas, retiradas, vsVersion } = comparacion;
+  const { VERDE, VERDE_S, AMBAR, AMBAR_S } = COLORES_CAMBIO;
+  const salto = (alto) => { if (y + alto > altoPag - 36) { doc.addPage(); y = 40; } };
+  const titulo = (texto, color) => {
+    salto(44);
+    doc.setFontSize(10).setFont(undefined, "bold").setTextColor(...color);
+    doc.text(texto, M, y + 10);
+    doc.setFont(undefined, "normal");
+    y += 16;
+  };
+  const tabla = (opts) => {
+    autoTabla(doc, { startY: y, margin: { left: M, right: M }, tableWidth: ancho, ...opts });
+    y = doc.lastAutoTable.finalY + 16;
+  };
+  const colsBase = { 0: { cellWidth: 60 }, 1: { halign: "left" } };
+
+  doc.setFillColor(...VERDE_S).rect(M, y, ancho, 42, "F");
+  doc.setFillColor(...VERDE).rect(M, y, 4, 42, "F");
+  doc.setFontSize(8.5).setFont(undefined, "bold").setTextColor(...VERDE);
+  doc.text(`NUEVO EN ESTA REVISIÓN — no venía en la revisión ${vsVersion}`, M + 14, y + 15);
+  doc.setFontSize(12.5).setTextColor(35, 42, 49);
+  doc.text(nuevas.length ? `${nuevas.length} partida(s) nueva(s)   ·   ${txtTotSem(totPorMonedaSem(nuevas))}` : "Sin partidas nuevas", M + 14, y + 33);
+  doc.setFont(undefined, "normal");
+  y += 50;
+  if (nuevas.length) {
+    tabla({
+      head: [["Folio", "Concepto", "Rubro", "Proyecto", "Zona", "Importe", "Mon."]],
+      body: nuevas.map((f) => [f.folio || "", f.concepto || "", f.rubro || "", f.proyecto || "", f.zona || "", `$${numMx(f.importe)}`, f.moneda || "MXP"]),
+      styles: { fontSize: 7, cellPadding: 3, fillColor: VERDE_S },
+      alternateRowStyles: { fillColor: VERDE_S },
+      headStyles: { fillColor: VERDE, textColor: 255, halign: "center" },
+      columnStyles: { ...colsBase, 2: { halign: "left" }, 5: { halign: "right", cellWidth: 66, fontStyle: "bold" }, 6: { cellWidth: 30 } },
+    });
+  }
+  if (modificadas.length) {
+    titulo(`CAMBIARON RESPECTO A LA REVISIÓN ${vsVersion} · ${modificadas.length}`, AMBAR);
+    tabla({
+      head: [["Folio", "Concepto", "Qué cambió", "Antes", "Ahora", "Mon."]],
+      body: modificadas.map((f) => [f.folio || "", f.concepto || "", f._queCambio,
+        `$${numMx(f._antes.importe)}${(f._antes.moneda || "MXP") !== (f.moneda || "MXP") ? ` ${f._antes.moneda || "MXP"}` : ""}`,
+        `$${numMx(f.importe)}`, f.moneda || "MXP"]),
+      styles: { fontSize: 7, cellPadding: 3, fillColor: AMBAR_S },
+      alternateRowStyles: { fillColor: AMBAR_S },
+      headStyles: { fillColor: AMBAR, textColor: 255, halign: "center" },
+      columnStyles: { ...colsBase, 2: { halign: "left" }, 3: { halign: "right", cellWidth: 66 }, 4: { halign: "right", cellWidth: 66, fontStyle: "bold" }, 5: { cellWidth: 30 } },
+    });
+  }
+  if (retiradas.length) {
+    titulo(`RETIRADAS — venían en la revisión ${vsVersion} y ya no están · ${retiradas.length}`, [107, 119, 133]);
+    tabla({
+      head: [["Folio", "Concepto", "Rubro", "Proyecto", "Importe", "Mon."]],
+      body: retiradas.map((f) => [f.folio || "", f.concepto || "", f.rubro || "", f.proyecto || "", `$${numMx(f.importe)}`, f.moneda || "MXP"]),
+      styles: { fontSize: 7, cellPadding: 3, textColor: [107, 119, 133] },
+      headStyles: { fillColor: [139, 153, 166], textColor: 255, halign: "center" },
+      columnStyles: { ...colsBase, 2: { halign: "left" }, 4: { halign: "right", cellWidth: 66 }, 5: { cellWidth: 30 } },
+    });
+  }
+  salto(140);
+  doc.setDrawColor(200, 206, 213).line(M, y, M + ancho, y);
+  y += 8;
+  titulo("REPORTE COMPLETO DEL MES — incluye lo nuevo", [35, 42, 49]);
+  return y + 4;
+}
+
+/* Hoja de cambios del presupuesto mensual. Se crea ANTES que las demás
+   para que sea la primera que se ve al abrir el archivo. */
+function hojaCambiosPresupuestoExcel(wbx, comparacion, { compania, periodo, version }) {
+  const { nuevas, modificadas, retiradas, vsVersion } = comparacion;
+  const { xVERDE, xVERDE_S, xAMBAR, xAMBAR_S } = COLORES_CAMBIO;
+  const GRIS_T = "FF8B99A6", GRIS = "FFECEEF1", fmt = '"$"#,##0.00';
+  const COLS = [
+    { h: "Folio", w: 16 }, { h: "Concepto", w: 46, izq: 1 }, { h: "Rubro", w: 26, izq: 1 },
+    { h: "Proyecto", w: 18 }, { h: "Zona", w: 15 }, { h: "Qué cambió", w: 34, izq: 1 },
+    { h: "Importe antes", w: 15, money: 1 }, { h: "Importe", w: 15, money: 1 }, { h: "Moneda", w: 9 },
+  ];
+  const ws = wbx.addWorksheet(`Cambios vs rev ${vsVersion}`.slice(0, 31));
+  ws.columns = COLS.map((c) => ({ width: c.w }));
+  const fusion = (row) => ws.mergeCells(row.number, 1, row.number, COLS.length);
+  const relleno = (row, argb) => { for (let i = 1; i <= COLS.length; i++) row.getCell(i).fill = { type: "pattern", pattern: "solid", fgColor: { argb } }; };
+
+  const t = ws.addRow([`Presupuesto mensual — ${compania} — ${periodo} — REVISIÓN ${version}`]);
+  t.font = { bold: true, size: 14, name: "Calibri" }; fusion(t);
+  const s = ws.addRow([`Cambios respecto a la revisión ${vsVersion}: ${nuevas.length} nueva(s), ${modificadas.length} con cambio, ${retiradas.length} retirada(s). El presupuesto completo está en la hoja siguiente.`]);
+  s.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" }; fusion(s);
+  ws.addRow([]);
+
+  const banda = (texto, color, fondo) => {
+    const r = ws.addRow([texto]); fusion(r);
+    r.font = { bold: true, size: 11, name: "Calibri", color: { argb: color } };
+    r.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: fondo } };
+    r.height = 20;
+  };
+  const encabezado = (color) => {
+    const r = ws.addRow(COLS.map((c) => c.h));
+    r.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" }, name: "Calibri" };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: color } };
+      cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    });
+  };
+  const renglon = (f, queCambio, antes, fondo, gris) => {
+    const r = ws.addRow([f.folio || "", f.concepto || "", f.rubro || "", f.proyecto || "", f.zona || "",
+      queCambio, antes, Number(f.importe) || 0, f.moneda || "MXP"]);
+    COLS.forEach((c, i) => {
+      const cell = r.getCell(i + 1);
+      cell.font = { name: "Calibri", size: 10, color: gris ? { argb: "FF6B7785" } : undefined };
+      cell.alignment = { horizontal: c.money ? "right" : (c.izq ? "left" : "center"), vertical: "top", wrapText: !!c.izq };
+      if (c.money) cell.numFmt = fmt;
+    });
+    if (fondo) relleno(r, fondo);
+  };
+
+  banda(`NUEVO EN ESTA REVISIÓN — no venía en la revisión ${vsVersion}   ·   `
+    + (nuevas.length ? `${nuevas.length} partida(s)   ·   ${txtTotSem(totPorMonedaSem(nuevas))}` : "sin partidas nuevas"), xVERDE, xVERDE_S);
+  if (nuevas.length) { encabezado(xVERDE); nuevas.forEach((f) => renglon(f, "Nueva", "", xVERDE_S)); }
+  ws.addRow([]);
+  banda(`CAMBIARON RESPECTO A LA REVISIÓN ${vsVersion}   ·   ${modificadas.length}`, xAMBAR, xAMBAR_S);
+  if (modificadas.length) { encabezado(xAMBAR); modificadas.forEach((f) => renglon(f, f._queCambio, Number(f._antes.importe) || 0, xAMBAR_S)); }
+  ws.addRow([]);
+  banda(`RETIRADAS — venían en la revisión ${vsVersion} y ya no están   ·   ${retiradas.length}`, "FF6B7785", GRIS);
+  if (retiradas.length) { encabezado(GRIS_T); retiradas.forEach((f) => renglon(f, "Retirada", "", null, true)); }
+  ws.views = [{ state: "frozen", ySplit: 2 }];
+  return ws;
+}
 
 /**
  * PDF del reporte semanal de pagos.
@@ -8023,6 +8232,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const [versionesOf, setVersionesOf] = useState([]);
   const [oficialOcupado, setOficialOcupado] = useState(false);
   const [recargaOf, setRecargaOf] = useState(0);
+  // Contra qué versión resaltar lo nuevo: "" la última enviada, "0" sin comparar.
+  const [baseOf, setBaseOf] = useState("");
   const periodoOf = `${mesOf} ${anioOf}`;
 
   useEffect(() => {
@@ -8052,30 +8263,42 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       if (!seguir) return;
     }
     const v = versionesOf.length + 1;
+    const areaDe = (p) => transacciones.find((t) => t.partida_id === p.id && t.area)?.area || "Sin área";
+    const filas = partidasDelMesOf.map((p) => ({
+      origen_id: p.id, folio: p.folio || "", area: areaDe(p), categoria: p.categoria || "",
+      rubro: p.rubro || "", proyecto: p.proyecto || "", zona: p.zona || "",
+      concepto: p.concepto || "", proveedor: null, solicitante: null,
+      importe: Number(p.monto_estimado) || 0, moneda: p.moneda || "MXP", dia: null,
+    }));
+    /* Se compara antes de confirmar, igual que en el semanal: así se ve qué
+       se va a reportar como nuevo y se nota a tiempo si falta o sobra algo. */
+    let comparacion = null;
+    try {
+      const exacta = versionesOf.some((r) => String(r.version) === baseOf) ? Number(baseOf) : null;
+      const prev = baseOf === "0" ? null : await detalleRevisionAnterior(unidad, "presupuesto", periodoOf, null, exacta);
+      if (prev) comparacion = compararVersionPresupuesto(filas, prev.filas, prev.version);
+    } catch (err) {
+      alert("No se pudo leer la versión anterior para comparar. Revisa tu conexión e inténtalo de nuevo. Detalle: " + (err.message || err));
+      return;
+    }
     if (!confirm(
       `Se va a enviar a Dirección la versión ${v} del presupuesto de ${periodoOf}, ` +
       `con las ${partidasDelMesOf.length} partidas del mes (sin filtros).\n\n` +
+      (comparacion ? `${textoResumenCambios(comparacion)} Lo nuevo va primero, resaltado.\n\n` : "") +
       `Se generan el PDF ejecutivo y el Excel con las transacciones vinculadas, y queda ` +
       `registrado: a partir de aquí, lo que aparezca fuera de estas combinaciones de área ` +
       `y categoría cuenta como imprevisto.`
     )) return;
     setOficialOcupado(true);
     try {
-      const areaDe = (p) => transacciones.find((t) => t.partida_id === p.id && t.area)?.area || "Sin área";
-      const filas = partidasDelMesOf.map((p) => ({
-        origen_id: p.id, folio: p.folio || "", area: areaDe(p), categoria: p.categoria || "",
-        rubro: p.rubro || "", proyecto: p.proyecto || "", zona: p.zona || "",
-        concepto: p.concepto || "", proveedor: null, solicitante: null,
-        importe: Number(p.monto_estimado) || 0, moneda: p.moneda || "MXP", dia: null,
-      }));
       const r = await registrarReporteOficial({
         compania: unidad, tipo: "presupuesto", periodo: periodoOf, filas,
       });
       // El MISMO formato ejecutivo que ya estaba definido para Dirección.
-      await generarReportePDF(partidasDelMesOf, r.version);
+      await generarReportePDF(partidasDelMesOf, r.version, comparacion);
       await new Promise((res) => setTimeout(res, 900));
       // El Excel oficial SIEMPRE lleva las transacciones vinculadas.
-      await generarReporteExcel({ rows: partidasDelMesOf, revision: r.version, forzarDetalle: true, periodo: periodoOf });
+      await generarReporteExcel({ rows: partidasDelMesOf, revision: r.version, forzarDetalle: true, periodo: periodoOf, comparacion });
       setRecargaOf((x) => x + 1);
     } catch (err) {
       console.error("Reporte oficial:", err);
@@ -8113,7 +8336,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const generarReporteExcel = async (opts = {}) => {
     /* El reporte oficial pasa su propio conjunto, su revisión y fuerza el
        detalle de transacciones, que en el oficial va SIEMPRE. */
-    const { rows = null, revision = null, forzarDetalle = false, periodo: periodoForzado = null } = opts;
+    const { rows = null, revision = null, forzarDetalle = false, periodo: periodoForzado = null, comparacion = null } = opts;
+    // _cambio por partida, para colorear su renglón en la hoja principal.
+    const cambioDe = new Map((comparacion?.filas || []).map((f) => [String(f.origen_id), f._cambio]));
     const partidasOrdenadasVista = rows || partidasOrdenadasVistaBase;
     const conDetalleEfectivo = forzarDetalle || conDetalle;
     if (!partidasOrdenadasVista.length) {
@@ -8135,6 +8360,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         : `${periodos[0].mes} ${periodos[0].anio} a ${periodos[periodos.length - 1].mes} ${periodos[periodos.length - 1].anio}`;
 
       const wbx = new ExcelJS.Workbook();
+      // La hoja de cambios va primero: es lo que Dirección no ha visto.
+      if (comparacion) hojaCambiosPresupuestoExcel(wbx, comparacion, { compania: unidad, periodo: periodoForzado || etiquetaPeriodo, version: revision });
       // El nombre de hoja de Excel no admite : \\ / ? * [ ] y topa en 31.
       const nombreHoja = `${unidad} ${etiquetaPeriodo}`.replace(/[:\\/?*[\]]/g, "-").slice(0, 31);
       const ws = wbx.addWorksheet(nombreHoja);
@@ -8175,7 +8402,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       const sub = ws.addRow([
         `${partidasOrdenadasVista.length} partidas   ·   ${fmtTot(totalPorMoneda(partidasOrdenadasVista))}` +
         (groupKeys.length ? `   ·   ordenado por ${groupBys.map((g) => (GROUP_OPCIONES.find((o) => o.value === g.field) || {}).label || g.field).join(" > ")}` : "") +
-        (conDetalleEfectivo ? "   ·   el detalle de transacciones está en la hoja «Transacciones»" : ""),
+        (conDetalleEfectivo ? "   ·   el detalle de transacciones está en la hoja «Transacciones»" : "") +
+        (comparacion ? `   ·   en verde lo nuevo y en ámbar lo que cambió respecto a la revisión ${comparacion.vsVersion}` : ""),
       ]);
       sub.font = { size: 10, color: { argb: "FF6B7785" }, name: "Calibri" };
       fusionar(sub);
@@ -8194,6 +8422,11 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           const cell = row.getCell(i + 1);
           if (c.money) cell.numFmt = '"$"#,##0.00';
           if (c.izq) cell.alignment = { horizontal: "left", indent: sangria };
+        });
+        const cambio = cambioDe.get(String(p.id));
+        if (cambio) row.eachCell({ includeEmpty: true }, (cell) => {
+          cell.fill = { type: "pattern", pattern: "solid",
+            fgColor: { argb: cambio === "nueva" ? COLORES_CAMBIO.xVERDE_S : COLORES_CAMBIO.xAMBAR_S } };
         });
 
         return row;
@@ -8359,7 +8592,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   /* Acepta un conjunto y una etiqueta de revisión: el reporte oficial usa
      ESTE mismo formato ejecutivo —el que ya estaba definido para Dirección—
      pero sobre todas las partidas del mes, no sobre las filtradas. */
-  const generarReportePDF = async (rows = null, revision = null) => {
+  const generarReportePDF = async (rowsArg = null, revision = null, comparacion = null) => {
+    // Desde un botón llega el evento del clic, no una lista de partidas.
+    const rows = Array.isArray(rowsArg) ? rowsArg : null;
     const partidasOrdenadas = rows || partidasOrdenadasVistaBase;
     const esOficial = !!revision;
     if (!partidasOrdenadas.length) {
@@ -8415,9 +8650,17 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         doc.setFont(undefined, "normal").setTextColor(120);
       }
 
+      /* Con comparación, lo nuevo va antes que todo: es lo único que
+         Dirección no ha visto. El resumen ejecutivo completo sigue abajo. */
+      if (comparacion) {
+        doc.setFontSize(9).setTextColor(120);
+        doc.text(textoResumenCambios(comparacion), 30, 64);
+      }
       // Los totales van arriba y en grande: son la respuesta a la primera
       // pregunta, y quien lo lee no debería tener que buscarlos.
-      let y = 76;
+      let y = comparacion
+        ? dibujarCambiosPresupuestoPdf(doc, comparacion, { y: 76, M: 30, ancho: anchoUtil, altoPag: 792 })
+        : 76;
       monedas.forEach((m, i) => {
         const x = 30 + i * 270;
         doc.setFillColor(m === "USD" ? 30 : 62, m === "USD" ? 143 : 92, m === "USD" ? 115 : 118);
@@ -8904,7 +9147,19 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                   {partidasDelMesOf.length} partidas en {periodoOf}
                   {versionesOf.length ? ` · ${versionesOf.length} versión(es) enviada(s)` : " · sin enviar"}
                 </div>
-                <div style={{ flex: 1 }} />
+                {versionesOf.length > 0 && (
+                  <Field label="Resaltar lo nuevo respecto a">
+                    <Select value={versionesOf.some((r) => String(r.version) === baseOf) || baseOf === "0" ? baseOf : ""}
+                      onChange={(e) => setBaseOf(e.target.value)}>
+                      <option value="">La última enviada (v{Math.max(...versionesOf.map((r) => r.version))})</option>
+                      {[...versionesOf].sort((a, b) => b.version - a.version).slice(1).map((r) => (
+                        <option key={r.id} value={String(r.version)}>v{r.version} — {fmtFecha(r.enviado_en)}</option>
+                      ))}
+                      <option value="0">Sin comparar</option>
+                    </Select>
+                  </Field>
+                )}
+                <div style={{ flex: 1, minHeight: 8 }} />
                 {revPartidasOf.dialogo}
                 <Button onClick={() => enviarADireccion()} disabled={oficialOcupado || !partidasDelMesOf.length} style={{ width: "100%" }}>
                   {oficialOcupado ? "Enviando…" : `Enviar versión ${versionesOf.length + 1}`}
@@ -15264,12 +15519,18 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
       await generarExcelSemanal({ compania: r.compania, periodoIni: r.periodo_ini, periodoFin: r.periodo_fin,
         version: r.version, filas: data || [], gruposZona, comparacion });
     } else {
-      generarPdfOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [] });
+      let comparacion = null;
+      try {
+        const prev = base === "0" ? null
+          : await detalleRevisionAnterior(r.compania, "presupuesto", r.periodo, r.version, base ? Number(base) : null);
+        if (prev) comparacion = compararVersionPresupuesto(data || [], prev.filas, prev.version);
+      } catch (err) { alert("No se pudo leer la versión anterior; se descarga sin comparar. " + (err.message || err)); }
+      generarPdfOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo, version: r.version, filas: data || [], comparacion });
       await new Promise((res) => setTimeout(res, 900));
       // Sin hoja de transacciones al reconstruir: solo se congeló lo reportado,
       // y las transacciones de hoy no son las que existían entonces.
       await generarExcelOficial({ compania: r.compania, tipo: r.tipo, periodo: r.periodo,
-        version: r.version, filas: data || [], transacciones: [] });
+        version: r.version, filas: data || [], transacciones: [], comparacion });
     }
   };
 
@@ -15350,7 +15611,7 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
                 )}
               </span>
             ))}
-            {!esPresupuesto && versOrd.length > 1 && (
+            {versOrd.length > 1 && (
               <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", marginTop: 14,
                             paddingTop: 12, borderTop: `1px solid ${T.borderSoft}` }}>
                 <Field label="Comparar versión">

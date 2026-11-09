@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.98.0";
+const APP_VERSION = "2.98.1";
 const CHANGELOG = [
+  { v: "2.98.1", desc: "Edicion masiva de transacciones: la confirmacion deja de ser el cuadro del navegador. Cuando el cambio de Dia de Pago Programado toca transacciones ya enviadas a Pagos, el aviso las nombra y ofrece Aplicar solo a las no enviadas (las enviadas quedan como estaban), Aplicar a todas o Cancelar" },
   { v: "2.98.0", desc: "Una transaccion Pagada ya no se puede modificar. Al abrirla (desde Transacciones o desde Partidas) los campos salen desactivados, con un aviso y el boton Cambiar a No Pagado para editar: el cambio de status es el paso que la desbloquea. La edicion masiva se salta las pagadas (avisando cuales), salvo que el cambio sea precisamente quitarles el Pagado. Siguen abiertos el expediente (archivos), la nota privada y las marcas de proceso (registro, envio a Pagos, poliza). Borrar y cancelar ya pedian lo mismo" },
   { v: "2.97.2", desc: "Transacciones > General: la barra de filtros se reacomoda en una sola fila. Buscar y las fechas tienen ancho fijo (antes se estiraban a media pantalla), y a la derecha, tras un separador, van Agrupado, Contraer todo, Columnas, Solo mensuales y Clonar mensuales" },
   { v: "2.97.1", desc: "Transacciones > General: se quitan los filtros Direccion, Pagos, Canceladas, Clasificacion, Registro, Adjuntos, Proyecto y Moneda, que no se usaban. Quedan Buscar, Desde, Hasta y Solo mensuales. Lo que hubiera quedado elegido en esos filtros se ignora, para que ninguno siga escondiendo transacciones sin verse. Las canceladas siguen ocultas" },
@@ -6112,12 +6113,26 @@ function AnioMultiSelect({ aniosDisponibles, seleccionados, onChange }) {
 
 
 
+/* Con una ventana abierta sobre otra (p. ej. una confirmación encima de la
+   edición masiva), Escape cierra solo la de arriba, no las dos. */
+const pilaModales = [];
 function Modal({ title, subtitle, onClose, children, width = 720, zIndex = 1000, cerrarAlHacerClicFuera = true }) {
+  // onClose cambia en cada render de quien abre la ventana; se lee de un ref
+  // para que la ventana entre a la pila UNA vez y no se reacomode encima de
+  // otra que se abrió después.
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
   useEffect(() => {
-    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    const marca = {};
+    pilaModales.push(marca);
+    const onKey = (e) => { if (e.key === "Escape" && pilaModales[pilaModales.length - 1] === marca) onCloseRef.current(); };
     window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      const i = pilaModales.indexOf(marca);
+      if (i >= 0) pilaModales.splice(i, 1);
+    };
+  }, []);
 
   return (
     <div
@@ -10203,6 +10218,9 @@ function EditarMasivoModal({ filas, proveedores, proyectos, zonas, onCerrar, onA
   const [activos, setActivos] = useState(() => new Set());
   const [valores, setValores] = useState({});
   const [trabajando, setTrabajando] = useState(false);
+  // Confirmación propia en lugar de confirm(): el aviso de "ya enviadas a
+  // Pagos" necesita una tercera opción, aplicar solo a las que no lo están.
+  const [confirmacion, setConfirmacion] = useState(null);
 
   const alternar = (k) => {
     const s = new Set(activos);
@@ -10266,15 +10284,18 @@ function EditarMasivoModal({ filas, proveedores, proyectos, zonas, onCerrar, onA
       .join("\n");
     /* Reprogramar lo que ya está en manos de Pagos no les cambia nada a
        ellos: tienen el PDF con la fecha anterior. Se dice. */
-    const enviadas = activos.has("dia") ? filas.filter((t) => t.enviado_pagos_at && t.dia !== valores.dia).length : 0;
-    const avisoDia = enviadas
-      ? `\n\nOJO: ${enviadas} ya se enviaron a Pagos con la fecha anterior. Avísales del cambio, o vuelve a enviar esa fecha.`
-      : "";
-    if (!confirm(`Se van a modificar ${filas.length} transacción(es):\n\n${resumen}${avisoDia}\n\n¿Continuar?`)) return;
+    const enviadas = activos.has("dia") ? filas.filter((t) => t.enviado_pagos_at && t.dia !== valores.dia) : [];
+    setConfirmacion({ parche, resumen, enviadas });
+  };
 
+  /* `excluir`: ids que se dejan como están (las ya enviadas a Pagos, si se
+     eligió aplicar solo a las demás). */
+  const ejecutar = async (excluir = []) => {
+    const { parche } = confirmacion;
+    setConfirmacion(null);
     setTrabajando(true);
     try {
-      await onAplicar(parche);
+      await onAplicar(parche, new Set(excluir.map((t) => t.id)));
     } finally {
       setTrabajando(false);
     }
@@ -10282,6 +10303,40 @@ function EditarMasivoModal({ filas, proveedores, proyectos, zonas, onCerrar, onA
 
   return (
     <Modal onClose={onCerrar} title={`Editar ${filas.length} transacción(es)`} width={620}>
+      {confirmacion && (() => {
+        const nEnv = confirmacion.enviadas.length;
+        const nResto = filas.length - nEnv;
+        return (
+          <Modal onClose={() => setConfirmacion(null)} title="Confirma los cambios" width={520} zIndex={1200}>
+            <div style={{ fontSize: 12.5, color: T.text, lineHeight: 1.6 }}>
+              Se van a modificar {filas.length} transacción(es):
+              <pre style={{ fontFamily: T.fontUI, fontSize: 12.5, color: T.textDim, margin: "8px 0 0", whiteSpace: "pre-wrap" }}>
+                {confirmacion.resumen}
+              </pre>
+            </div>
+            {nEnv > 0 && (
+              <div style={{ marginTop: 14, fontSize: 12.5, lineHeight: 1.55, color: T.text,
+                            background: `${T.amber}14`, border: `1px solid ${T.amber}66`, borderRadius: 8, padding: "10px 12px" }}>
+                <b>OJO:</b> {nEnv} ya se enviaron a Pagos con la fecha anterior
+                ({confirmacion.enviadas.map((t) => t.folio_transaccion || t.proveedor).join(", ")}).
+                Si las cambias, avísales o vuelve a enviar esa fecha. También puedes dejarlas como están
+                y cambiar solo las otras {nResto}.
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 10, marginTop: 18, flexWrap: "wrap" }}>
+              {nEnv > 0 && nResto > 0 && (
+                <Button onClick={() => ejecutar(confirmacion.enviadas)}>
+                  Aplicar solo a las {nResto} no enviadas
+                </Button>
+              )}
+              <Button variant={nEnv > 0 && nResto > 0 ? "ghost" : "primary"} onClick={() => ejecutar([])}>
+                {nEnv > 0 ? `Aplicar a las ${filas.length}, incluidas las enviadas` : `Aplicar a ${filas.length}`}
+              </Button>
+              <Button variant="ghost" onClick={() => setConfirmacion(null)}>Cancelar</Button>
+            </div>
+          </Modal>
+        );
+      })()}
       <div style={{ fontSize: 12.5, color: T.textDim, lineHeight: 1.6, marginBottom: 14 }}>
         Solo se toca lo que marques. Lo demás de cada transacción queda igual.
       </div>
@@ -11738,7 +11793,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   /* Se actualiza de una en una, igual que las otras acciones masivas de esta
      pantalla: transaccionesApi.update es lo que mantiene el caché local en
      sincronía, y un update por lote contra Supabase lo dejaría desfasado. */
-  const aplicarMasivo = async (parche) => {
+  const aplicarMasivo = async (parche, excluir = new Set()) => {
     /* Las pagadas no se modifican, salvo que el cambio sea justamente
        quitarles el Pagado: ese es el paso que las desbloquea. */
     const quitaPagado = !!parche.status && parche.status !== "Pagado";
@@ -11762,7 +11817,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     try {
       for (const id of seleccionadas) {
         const t = transUnidad.find((x) => x.id === id);
-        if (pagadasSel.some((x) => x.id === id)) continue;
+        if (pagadasSel.some((x) => x.id === id) || excluir.has(id)) continue;
         let p = parche;
         /* Al pasar a Pagado, cada transacción en USD sin tipo de cambio toma
            el del DOF de SU fecha de pago. Al dejar de estar pagada, se borra. */

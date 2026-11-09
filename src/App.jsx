@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.98.2";
+const APP_VERSION = "2.98.3";
 const CHANGELOG = [
+  { v: "2.98.3", desc: "Aviso de categoria fuera del rubro de la partida: ahora dice tambien a que rubro pertenece la categoria elegida (o si no esta en el catalogo), para saber a que partida cargar la transaccion" },
   { v: "2.98.2", desc: "Solicitud de Pago a Proveedores, desglose fiscal: ademas del Total de la factura ahora se puede escribir el Subtotal; al hacerlo se calculan IVA, retenciones y el Total de la factura con el regimen elegido. La ultima cifra capturada manda: al cambiar de regimen se recalcula a partir de ella. En parcialidades el total sigue siendo el de la compra" },
   { v: "2.98.1", desc: "Edicion masiva de transacciones: la confirmacion deja de ser el cuadro del navegador. Cuando el cambio de Dia de Pago Programado toca transacciones ya enviadas a Pagos, el aviso las nombra y ofrece Aplicar solo a las no enviadas (las enviadas quedan como estaban), Aplicar a todas o Cancelar" },
   { v: "2.98.0", desc: "Una transaccion Pagada ya no se puede modificar. Al abrirla (desde Transacciones o desde Partidas) los campos salen desactivados, con un aviso y el boton Cambiar a No Pagado para editar: el cambio de status es el paso que la desbloquea. La edicion masiva se salta las pagadas (avisando cuales), salvo que el cambio sea precisamente quitarles el Pagado. Siguen abiertos el expediente (archivos), la nota privada y las marcas de proceso (registro, envio a Pagos, poliza). Borrar y cancelar ya pedian lo mismo" },
@@ -11496,8 +11497,19 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         const orig = editId ? transUnidad.find((x) => x.id === editId) : null;
         const tocada = !orig || !igualTxt(orig.categoria, cat) || orig.partida_id !== form.partida_id;
         if (tocada) {
+          /* Decir a qué rubro SÍ pertenece la categoría ahorra ir a buscarlo
+             al catálogo para saber a qué partida cargarla. Puede vivir en
+             más de un rubro. */
+          const suyos = RUBROS.filter((r) => r.categorias.some((c) => igualTxt(c, cat))).map((r) => r.rubro);
+          const deDonde = suyos.length === 0
+            ? `«${cat}» no está en el catálogo de categorías.`
+            : suyos.length === 1
+              ? `«${cat}» es una categoría del rubro ${suyos[0]}.`
+              : `«${cat}» es una categoría de los rubros ${suyos.slice(0, -1).join(", ")} y ${suyos[suyos.length - 1]}.`;
           alert(`La categoría «${cat}» no pertenece al rubro ${pSel.rubro} de la partida.\n\n` +
-                `Elige una categoría de ${pSel.rubro}, o carga la transacción a una partida del rubro correcto.`);
+                `${deDonde}\n\n` +
+                `Elige una categoría de ${pSel.rubro}, o carga la transacción a una partida ` +
+                (suyos.length ? `del rubro ${suyos.join(" o ")}.` : "del rubro correcto."));
           return;
         }
       }

@@ -442,8 +442,11 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.98.3";
+const APP_VERSION = "2.98.6";
 const CHANGELOG = [
+  { v: "2.98.6", desc: "Duplicar transaccion: el Dia de Pago Programado del duplicado es hoy, no el de la original. De paso, el duplicado ya no hereda las marcas de proceso de la original (enviada a Pagos, poliza, cancelacion, cierre de anticipo): antes nacia como ya enviada a Pagos" },
+  { v: "2.98.5", desc: "Nueva partida: el mes y el ano por omision son siempre los del dia de hoy, tanto en + Nueva partida de Partidas (antes Agosto fijo y el ano mas alto con partidas) como al crearla desde Elegir partida en una transaccion (antes el mes del dia de pago, o Enero)" },
+  { v: "2.98.4", desc: "Formulario de transaccion, categoria fuera del rubro de la partida: el aviso en rojo ahora dice 1) el error (y si se puede guardar: solo si ya venia asi), 2) a que rubro pertenece la categoria y 3) una sugerencia con un clic: una categoria del rubro de la partida segun el concepto, o una partida del rubro de la categoria del mismo mes, ano y moneda (primero del mismo proyecto y zona). Antes decia que se podia guardar tambien en transacciones nuevas, y el guardado la rechazaba" },
   { v: "2.98.3", desc: "Aviso de categoria fuera del rubro de la partida: ahora dice tambien a que rubro pertenece la categoria elegida (o si no esta en el catalogo), para saber a que partida cargar la transaccion" },
   { v: "2.98.2", desc: "Solicitud de Pago a Proveedores, desglose fiscal: ademas del Total de la factura ahora se puede escribir el Subtotal; al hacerlo se calculan IVA, retenciones y el Total de la factura con el regimen elegido. La ultima cifra capturada manda: al cambiar de regimen se recalcula a partir de ella. En parcialidades el total sigue siendo el de la compra" },
   { v: "2.98.1", desc: "Edicion masiva de transacciones: la confirmacion deja de ser el cuadro del navegador. Cuando el cambio de Dia de Pago Programado toca transacciones ya enviadas a Pagos, el aviso las nombra y ofrece Aplicar solo a las no enviadas (las enviadas quedan como estaban), Aplicar a todas o Cancelar" },
@@ -1539,8 +1542,10 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
      El rubro NO se hereda: no hay una señal confiable en la transacción para
      adivinarlo bien, así que se deja para elegir a mano como siempre. */
   const nuevaPartidaBlank = {
-    mes: origenTransaccion?.dia ? MESES[new Date(`${origenTransaccion.dia}T12:00:00`).getMonth()] : MESES[0],
-    anio: origenTransaccion?.dia ? new Date(`${origenTransaccion.dia}T12:00:00`).getFullYear() : new Date().getFullYear(),
+    // Siempre el mes y año en curso (pedido de Paco, v2.98.5). Antes tomaba
+    // el día de pago de la transacción, o Enero si no tenía.
+    mes: MESES[new Date().getMonth()],
+    anio: new Date().getFullYear(),
     concepto: origenTransaccion?.concepto_detallado || "",
     rubro: RUBROS[0]?.rubro || "",
     proyecto: origenTransaccion?.proyecto || proyectosOpciones[0] || "",
@@ -8244,7 +8249,9 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     const anios = partidas.filter((p) => p.unidad === unidad).map((p) => p.anio).filter(Boolean);
     return anios.length ? Math.max(...anios) : new Date().getFullYear();
   })();
-  const blank = { unidad, mes: "Agosto", anio: anioDefault, smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: "", proyecto: marcadores[0] || "", zona: "", monto_estimado: "", moneda: "MXP", folio: "" };
+  // Mes y año en curso por omisión. Antes el mes era "Agosto" fijo y el año
+  // el más alto con partidas, que podía ser uno futuro.
+  const blank = { unidad, mes: MESES[new Date().getMonth()], anio: new Date().getFullYear(), smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: "", proyecto: marcadores[0] || "", zona: "", monto_estimado: "", moneda: "MXP", folio: "" };
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -9178,7 +9185,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       } else {
         await partidasApi.insert({ ...record, id: uid() });
       }
-      setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" });
+      setForm({ ...blank, proyecto: marcadores[0] || "" });
       setModalOpen(false);
     } catch (err) {
       alert("No se pudo guardar la partida: " + (err.message || err));
@@ -9187,7 +9194,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     }
   };
 
-  const openNew = () => { setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" }); setEditId(null); setModalOpen(true); };
+  const openNew = () => { setForm({ ...blank, proyecto: marcadores[0] || "" }); setEditId(null); setModalOpen(true); };
   const duplicar = (p) => {
     // Copia la partida como registro NUEVO. El folio se limpia a propósito:
     // submit() respeta el que venga en el formulario, así que heredarlo haría
@@ -9200,7 +9207,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   };
   const startEdit = (p) => { setForm(p); setEditId(p.id); setModalOpen(true); };
 
-  const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, anio: anioDefault, proyecto: marcadores[0] || "" }); };
+  const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, proyecto: marcadores[0] || "" }); };
   /* Una partida con transacciones no se elimina dejándolas sueltas: primero
      se reasignan o se quitan. Cuentan también las canceladas, que no están en
      `transacciones` (aquí llegan solo las vigentes) pero siguen apuntando a la
@@ -11729,9 +11736,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     // `registrada_en` tampoco se hereda: el duplicado es una transacción
     // nueva, y comprometerse con ella es una decisión aparte.
     const { id, folio_transaccion, registrada_en, created_by, updated_by, updated_at, created_at, reportado_at, ...resto } = t;
-    const limpio = Object.fromEntries(Object.entries(resto).filter(([k]) => !k.startsWith("_")));
+    /* Tampoco las marcas de proceso de la original: el duplicado no se ha
+       enviado a Pagos, ni tiene póliza, ni está cancelado ni cerrado. Antes
+       sí se copiaban, y el duplicado nacía como "ya enviado a Pagos". */
+    const MARCAS_PROCESO = new Set(["enviado_pagos_at", "poliza_generada_en", "cancelada_en", "cancelada_por",
+      "motivo_cancelacion", "anticipo_cerrado_en", "anticipo_cerrado_por", "anticipo_nota_cierre"]);
+    const limpio = Object.fromEntries(Object.entries(resto).filter(([k]) => !k.startsWith("_") && !MARCAS_PROCESO.has(k)));
     // La marca Mensual tampoco: heredarla abriría una segunda serie.
+    // Día de Pago Programado: hoy (fecha local), no el de la original.
     setForm({ ...limpio, ...SIN_LIGA_PPD, ...(esParcialidad(t) ? { pct_pago: null } : {}),
+              dia: hoyLocalISO(),
               status: "No Pagado", fecha_pago: "", folio_compra_sae: "", folio_factura: "", referencia_pago: "",
               ...("es_mensual" in t ? { es_mensual: false } : {}), ...("clonada_de" in t ? { clonada_de: null } : {}) });
     setEditId(null);
@@ -12754,11 +12768,59 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     <>
                       <CategoriaCombo value={form.categoria || ""} grupos={gruposR}
                         onChange={(c) => setForm((f) => ({ ...f, categoria: c }))} />
-                      {fuera && (
-                        <span style={{ fontSize: 10.5, color: T.red, marginTop: 3 }}>
-                          «{actual}» no es de {p.rubro}. Se puede guardar así mientras no la cambies.
-                        </span>
-                      )}
+                      {fuera && (() => {
+                        /* Tres cosas, en este orden: qué está mal, a qué rubro SÍ
+                           pertenece la categoría y cómo arreglarlo (otra categoría
+                           del rubro de la partida, u otra partida del rubro de la
+                           categoría). Antes decía que "se puede guardar así" también
+                           en una transacción nueva, y el guardado la rechazaba. */
+                        const orig = editId ? transUnidad.find((x) => x.id === editId) : null;
+                        const yaVenia = !!orig && igualTxt(orig.categoria, actual) && orig.partida_id === form.partida_id;
+                        const suyos = RUBROS.filter((r) => r.categorias.some((c) => igualTxt(c, actual))).map((r) => r.rubro);
+                        const sugCat = sugerirCategoria(form.concepto_detallado, perm);
+                        // Partida del rubro de la categoría: mismo mes, año y moneda;
+                        // primero las del mismo proyecto y zona.
+                        const candidatas = partidasUnidad
+                          .filter((x) => x.id !== p.id && suyos.some((r) => igualTxt(r, x.rubro))
+                            && x.mes === p.mes && String(x.anio) === String(p.anio) && mismaMoneda(x.moneda, form.moneda))
+                          .sort((x, y) => (Number(y.proyecto === p.proyecto) - Number(x.proyecto === p.proyecto))
+                            || (Number(y.zona === p.zona) - Number(x.zona === p.zona)));
+                        const otraPartida = candidatas[0];
+                        const enlace = { background: "transparent", border: "none", padding: 0, color: T.accent,
+                                         fontSize: 11, cursor: "pointer", textAlign: "left", fontFamily: T.fontUI, fontWeight: 600 };
+                        return (
+                          <div style={{ fontSize: 11, color: T.red, marginTop: 4, lineHeight: 1.45,
+                                        display: "flex", flexDirection: "column", gap: 4 }}>
+                            <span>
+                              <b>1.</b> «{actual}» no es una categoría de <b>{p.rubro}</b>, el rubro de la partida.{" "}
+                              {yaVenia ? "Ya venía así: se puede guardar mientras no la cambies." : "Así no se puede guardar."}
+                            </span>
+                            <span style={{ color: T.textDim }}>
+                              <b>2.</b> {suyos.length === 0
+                                ? `«${actual}» no está en el catálogo de categorías.`
+                                : `«${actual}» pertenece al rubro ${suyos.join(" y al rubro ")}.`}
+                            </span>
+                            <span style={{ color: T.textDim }}>
+                              <b>3.</b> Sugerencia:{" "}
+                              {sugCat ? (
+                                <button type="button" style={enlace} onClick={() => setForm((f) => ({ ...f, categoria: sugCat }))}>
+                                  usar la categoría {sugCat} ({p.rubro})
+                                </button>
+                              ) : `elige una categoría de ${p.rubro} en la lista`}
+                              {suyos.length > 0 && (otraPartida ? (
+                                <>
+                                  {", o "}
+                                  <button type="button" style={enlace}
+                                    onClick={() => setForm((f) => ({ ...f, partida_id: otraPartida.id }))}>
+                                    cargarla a la partida {otraPartida.folio || otraPartida.concepto} ({otraPartida.rubro})
+                                  </button>
+                                  {candidatas.length > 1 ? ` (hay ${candidatas.length} de ese rubro en ${p.mes})` : ""}
+                                </>
+                              ) : `, o cargarla a una partida de ${suyos.join(" o ")} (no hay ninguna en ${p.mes} ${p.anio} en ${form.moneda})`)}.
+                            </span>
+                          </div>
+                        );
+                      })()}
                     </>
                   );
                 }
@@ -12784,6 +12846,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 const cats = categoriasPermitidas(p) || CATEGORIAS_TODAS;
                 const sug = sugerirCategoria(form.concepto_detallado, cats);
                 if (!sug || sug === form.categoria) return null;
+                // Fuera del rubro, la sugerencia ya va en el aviso de arriba.
+                const permF = categoriasPermitidas(p);
+                const actualF = String(form.categoria || "").trim();
+                if (permF && actualF && !permF.some((c) => igualTxt(c, actualF))) return null;
                 return (
                   <button type="button" onClick={() => setForm({ ...form, categoria: sug })}
                     style={{ marginTop: 5, background: "transparent", border: "none", padding: 0,

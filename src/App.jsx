@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.98.1";
+const APP_VERSION = "2.98.2";
 const CHANGELOG = [
+  { v: "2.98.2", desc: "Solicitud de Pago a Proveedores, desglose fiscal: ademas del Total de la factura ahora se puede escribir el Subtotal; al hacerlo se calculan IVA, retenciones y el Total de la factura con el regimen elegido. La ultima cifra capturada manda: al cambiar de regimen se recalcula a partir de ella. En parcialidades el total sigue siendo el de la compra" },
   { v: "2.98.1", desc: "Edicion masiva de transacciones: la confirmacion deja de ser el cuadro del navegador. Cuando el cambio de Dia de Pago Programado toca transacciones ya enviadas a Pagos, el aviso las nombra y ofrece Aplicar solo a las no enviadas (las enviadas quedan como estaban), Aplicar a todas o Cancelar" },
   { v: "2.98.0", desc: "Una transaccion Pagada ya no se puede modificar. Al abrirla (desde Transacciones o desde Partidas) los campos salen desactivados, con un aviso y el boton Cambiar a No Pagado para editar: el cambio de status es el paso que la desbloquea. La edicion masiva se salta las pagadas (avisando cuales), salvo que el cambio sea precisamente quitarles el Pagado. Siguen abiertos el expediente (archivos), la nota privada y las marcas de proceso (registro, envio a Pagos, poliza). Borrar y cancelar ya pedian lo mismo" },
   { v: "2.97.2", desc: "Transacciones > General: la barra de filtros se reacomoda en una sola fila. Buscar y las fechas tienen ancho fijo (antes se estiraban a media pantalla), y a la derecha, tras un separador, van Agrupado, Contraer todo, Columnas, Solo mensuales y Clonar mensuales" },
@@ -7349,6 +7350,17 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
     const nuevo = calcularDesglose(sub, esq);
     if (nuevo) setD((prev) => ({ ...nuevo, descuento: prev.descuento || 0 }));
   };
+  /* Se puede partir del TOTAL de la factura o del SUBTOTAL: el que se
+     capturó al último manda, y el otro se calcula con el régimen elegido.
+     Así, al cambiar de régimen, se respeta la cifra que sí se conoce. */
+  const [capturaDesde, setCapturaDesde] = useState("total");
+  const [subCaptura, setSubCaptura] = useState(() => String(d.subtotal ?? ""));
+  const desdeSubtotal = (sub, esq) => {
+    const nuevo = calcularDesglose(sub, esq);
+    if (!nuevo) return;
+    setD((prev) => ({ ...nuevo, descuento: prev.descuento || 0 }));
+    setTotalFactura(totalDesglose({ ...nuevo, descuento: d.descuento || 0 }));
+  };
 
   const [f, setF] = useState({
     fecha_elaboracion: new Date().toISOString().slice(0, 10),
@@ -7540,7 +7552,13 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
             <Select value={esquema} onChange={(e) => {
               const esq = e.target.value;
               setEsquema(esq);
-              if (esq !== "manual") recalcular(esq, subtotalDesdeTotal(totalFactura, esq));
+              if (esq === "manual") return;
+              if (capturaDesde === "subtotal" && !padre) desdeSubtotal(subCaptura, esq);
+              else {
+                const sub = subtotalDesdeTotal(totalFactura, esq);
+                recalcular(esq, sub);
+                setSubCaptura(String(sub));
+              }
             }}>
               {ESQUEMAS_FISCALES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
             </Select>
@@ -7554,8 +7572,18 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
               onChange={(e) => {
                 const v = e.target.value;
                 setTotalFactura(v);
-                if (esquema !== "manual") recalcular(esquema, subtotalDesdeTotal(v, esquema));
+                setCapturaDesde("total");
+                if (esquema !== "manual") {
+                  const sub = subtotalDesdeTotal(v, esquema);
+                  recalcular(esquema, sub);
+                  setSubCaptura(String(sub));
+                }
               }} />
+            {!padre && esquema !== "manual" && (
+              <span style={{ fontSize: 11, color: T.textFaint, marginTop: 4, display: "block" }}>
+                Escribe el Total o el Subtotal (en el desglose); el otro se calcula solo.
+              </span>
+            )}
           </Field>
         </div>
 
@@ -7567,6 +7595,23 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
           const cifra = { fontFamily: T.fontMono, textAlign: "right" };
           const linea = (label, campoD, { mostrar = true } = {}) => {
             if (!mostrar) return null;
+            // El subtotal también se captura fuera de la captura manual: al
+            // escribirlo se calculan el IVA, las retenciones y el total.
+            if (campoD === "subtotal" && !manual && !padre) {
+              return (
+                <div style={filaStyle}>
+                  <span style={{ color: T.textDim }}>{label}</span>
+                  <TextInput type="number" step="0.01" value={subCaptura} style={{ textAlign: "right" }}
+                    title="Escribe el subtotal y se calcula todo lo demás, incluido el Total de la factura"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setSubCaptura(v);
+                      setCapturaDesde("subtotal");
+                      desdeSubtotal(v, esquema);
+                    }} />
+                </div>
+              );
+            }
             return (
               <div style={filaStyle}>
                 <span style={{ color: T.textDim }}>{label}</span>

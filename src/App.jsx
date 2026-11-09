@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.98.6";
+const APP_VERSION = "2.98.7";
 const CHANGELOG = [
+  { v: "2.98.7", desc: "Suma en el encabezado de Importe / Monto (Transacciones, Partidas y demas tablas): pasa de 9.5 a 12 px en negritas, y cada linea lleva su moneda (MXP, USD). Las monedas capturadas con otra escritura (usd, Dolares, MXN) se juntan con la suya en vez de abrir una linea sin etiqueta" },
   { v: "2.98.6", desc: "Duplicar transaccion: el Dia de Pago Programado del duplicado es hoy, no el de la original. De paso, el duplicado ya no hereda las marcas de proceso de la original (enviada a Pagos, poliza, cancelacion, cierre de anticipo): antes nacia como ya enviada a Pagos" },
   { v: "2.98.5", desc: "Nueva partida: el mes y el ano por omision son siempre los del dia de hoy, tanto en + Nueva partida de Partidas (antes Agosto fijo y el ano mas alto con partidas) como al crearla desde Elegir partida en una transaccion (antes el mes del dia de pago, o Enero)" },
   { v: "2.98.4", desc: "Formulario de transaccion, categoria fuera del rubro de la partida: el aviso en rojo ahora dice 1) el error (y si se puede guardar: solo si ya venia asi), 2) a que rubro pertenece la categoria y 3) una sugerencia con un clic: una categoria del rubro de la partida segun el concepto, o una partida del rubro de la categoria del mismo mes, ano y moneda (primero del mismo proyecto y zona). Antes decia que se podia guardar tambien en transacciones nuevas, y el guardado la rechazaba" },
@@ -6251,12 +6252,17 @@ function useColumnOrder(storageKey, columns) {
 function sumaPorMoneda(rows, montoKey, monedaKey = "moneda") {
   const totals = {};
   rows.forEach((r) => {
-    const m = r[monedaKey] || "MXP";
+    /* Normalizada: un "usd", "Dólares" o "MXN" capturado así abría una
+       línea aparte SIN etiqueta, que no se sabía de qué moneda era. */
+    const crudo = String(r[monedaKey] || "MXP").trim().toUpperCase();
+    const m = crudo === "USD" || crudo === "US$" || crudo.startsWith("DOL") || crudo.startsWith("DÓL") ? "USD" : "MXP";
     const v = Number(r[montoKey]) || 0;
     if (!v) return;
     totals[m] = (totals[m] || 0) + v;
   });
-  return Object.entries(totals).map(([m, v]) => money(v, m)); // una línea por moneda
+  // Una línea por moneda, siempre con su código: pesos primero.
+  return Object.entries(totals).sort(([a], [b]) => (a === "MXP" ? -1 : b === "MXP" ? 1 : a.localeCompare(b)))
+    .map(([m, v]) => `${money(v, "MXP")} ${m}`);
 }
 
 function SortableTh({ label, sortKey, sort, setSort, width, onResizeStart, onDragStart, onDragOver, onDrop, sumLabel }) {
@@ -6272,8 +6278,11 @@ function SortableTh({ label, sortKey, sort, setSort, width, onResizeStart, onDra
     >
       <div>{label}{active ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}</div>
       {sumLabel && sumLabel.length > 0 && (
-        <div style={{ fontSize: 9.5, fontWeight: 400, textTransform: "none", letterSpacing: "normal", color: T.teal, fontFamily: T.fontMono, marginTop: 2 }}>
-          {sumLabel.map((linea, i) => <div key={i} style={{ whiteSpace: "nowrap" }}>{i === 0 ? "Σ " : ""}{linea}</div>)}
+        /* Antes 9.5 px: no se leía. Ahora del tamaño del texto de la tabla. */
+        <div style={{ fontSize: 12, fontWeight: 700, textTransform: "none", letterSpacing: "normal", color: T.teal,
+                      fontFamily: T.fontMono, marginTop: 4, lineHeight: 1.35 }}
+             title="Suma de lo que se ve con los filtros actuales, por moneda">
+          {sumLabel.map((linea, i) => <div key={i} style={{ whiteSpace: "nowrap" }}>Σ {linea}</div>)}
         </div>
       )}
       {onResizeStart && (

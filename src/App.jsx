@@ -442,8 +442,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.98.7";
+const APP_VERSION = "2.98.9";
 const CHANGELOG = [
+  { v: "2.98.9", desc: "Solicitudes: se elimina la etapa Por autorizar del tablero y del selector de estado. De Cotizando se pasa a Por programar a pago. Las SMI que estaban en Por autorizar se muestran en Por programar a pago; quitar-por-autorizar-smi.sql las mueve tambien en la base" },
+  { v: "2.98.8", desc: "Fix folio de SMI: el Consecutivo inicial de Parametros solo contaba si la compania no tenia ninguna SMI, asi que subirlo (p. ej. a 303 con la serie en 274) no tenia efecto. Ahora el siguiente folio es el MAYOR entre el consecutivo inicial y el que sigue a la ultima SMI. La vista previa de Parametros muestra los folios que de verdad siguen. Requiere correr consecutivo-inicial-smi.sql en Supabase para el formulario publico" },
   { v: "2.98.7", desc: "Suma en el encabezado de Importe / Monto (Transacciones, Partidas y demas tablas): pasa de 9.5 a 12 px en negritas, y cada linea lleva su moneda (MXP, USD). Las monedas capturadas con otra escritura (usd, Dolares, MXN) se juntan con la suya en vez de abrir una linea sin etiqueta" },
   { v: "2.98.6", desc: "Duplicar transaccion: el Dia de Pago Programado del duplicado es hoy, no el de la original. De paso, el duplicado ya no hereda las marcas de proceso de la original (enviada a Pagos, poliza, cancelacion, cierre de anticipo): antes nacia como ya enviada a Pagos" },
   { v: "2.98.5", desc: "Nueva partida: el mes y el ano por omision son siempre los del dia de hoy, tanto en + Nueva partida de Partidas (antes Agosto fijo y el ano mas alto con partidas) como al crearla desde Elegir partida en una transaccion (antes el mes del dia de pago, o Enero)" },
@@ -18581,7 +18583,18 @@ function SolicitudesParametrosPanel({ unidad, session }) {
 
   const n0 = Number(form.consecutivo_inicial) || 0;
   const ancho = Number(form.ancho_consecutivo) || 1;
-  const ejemplos = [n0, n0 + 1, n0 + 2]
+  /* La vista previa muestra el SIGUIENTE folio de verdad: el mayor entre el
+     consecutivo inicial y el que sigue a la última SMI de la serie. */
+  const [siguienteReal, setSiguienteReal] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    siguienteConsecutivoSolicitud(unidad, new Date().getFullYear(), n0, !!form.reinicia_cada_anio)
+      .then((n) => { if (vivo) setSiguienteReal(n); })
+      .catch(() => { if (vivo) setSiguienteReal(null); });
+    return () => { vivo = false; };
+  }, [unidad, n0, form.reinicia_cada_anio]);
+  const desde = siguienteReal ?? n0;
+  const ejemplos = [desde, desde + 1, desde + 2]
     .map((n) => armarFolioSolicitud(form.formato_folio, n, ancho, unidad));
   const sinConsecutivo = !/\{n\}/.test(String(form.formato_folio || ""));
   /* Sin año en el formato y con reinicio anual, el folio del año que viene
@@ -18682,8 +18695,13 @@ function SolicitudesParametrosPanel({ unidad, session }) {
 
         <div style={{ marginTop: 16, maxWidth: 780, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: "12px 14px" }}>
           <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 7 }}>
-            Así saldrían los primeros
+            Así saldrán las siguientes
           </div>
+          {siguienteReal != null && siguienteReal > n0 && (
+            <div style={{ fontSize: 11.5, color: T.textDim, marginBottom: 7 }}>
+              Ya hay SMI hasta el {siguienteReal - 1}: se sigue desde la última, no desde el consecutivo inicial.
+            </div>
+          )}
           <div style={{ fontFamily: T.fontMono, fontSize: 15, color: T.text }}>
             {ejemplos.join("   ·   ")}
           </div>
@@ -18838,7 +18856,11 @@ async function siguienteConsecutivoSolicitud(unidad, anio, inicial, reinicia) {
   const { data, error } = await q;
   if (error) throw error;
   const ultimo = data?.length ? Number(data[0].consecutivo) : null;
-  return ultimo === null ? Number(inicial) || 1 : ultimo + 1;
+  /* El MAYOR entre el siguiente de la serie y el consecutivo inicial. Antes
+     el inicial solo contaba si no había ninguna SMI todavía: subirlo a 303
+     con la serie en 274 no hacía nada, y la siguiente salía 275. Bajarlo
+     tampoco repite folios: manda el último usado. */
+  return Math.max(ultimo === null ? 1 : ultimo + 1, Number(inicial) || 1);
 }
 
 /**
@@ -20081,7 +20103,9 @@ const ESTADOS_SOLICITUD = [
   { value: "en_revision",     label: "En revisión",        tablero: true, quien: "Administración" },
   { value: "con_solicitante", label: "Con el solicitante", tablero: true, quien: "Quien la levantó" },
   { value: "cotizando",       label: "Cotizando",          tablero: true, quien: "El proveedor" },
-  { value: "por_autorizar",   label: "Por autorizar",      tablero: true, quien: "Quien autoriza" },
+  /* "Por autorizar" se quitó en v2.98.9: no hay paso de autorización. Las
+     que quedaban ahí se muestran en "Por programar a pago" (ver
+     estadoVigenteSmi) y la migración las mueve en la base. */
   { value: "por_programar_pago", label: "Por programar a pago", tablero: true, quien: "Administración" },
   /* No acepta que le suelten tarjetas: lo pone el sistema al convertir la
      solicitud en transacción. Si se pudiera marcar a mano, el tablero diría
@@ -20104,6 +20128,10 @@ function confirmarCancelacionSmi(s) {
     "Queda en la columna Cancelada y se puede regresar a cualquier paso.");
 }
 const COLUMNAS_TABLERO = ESTADOS_SOLICITUD.filter((e) => e.tablero);
+// Estados retirados → a dónde van ahora. Sin esto, una SMI que se quedó en
+// un estado que ya no existe desaparecería del tablero.
+const ESTADOS_SMI_RETIRADOS = { por_autorizar: "por_programar_pago" };
+const estadoVigenteSmi = (s) => (ESTADOS_SMI_RETIRADOS[s.estado] ? { ...s, estado: ESTADOS_SMI_RETIRADOS[s.estado] } : s);
 
 /* Lo que la SMI ya sabe, como punto de partida de su transacción. Una SMI da
    UNA transacción; si al final se compró a dos proveedores, la segunda sale
@@ -21137,7 +21165,7 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
       ]);
       setParametros(p.data || null);
       setCorreos(c.data || []);
-      setRecientes(r.data || []);
+      setRecientes((r.data || []).map(estadoVigenteSmi));
     } finally {
       setCargando(false);
     }

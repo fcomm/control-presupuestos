@@ -1816,6 +1816,20 @@ async function apiNube(url, opts = {}) {
       return { ok: true };
     }
     case "/api/carpetas": return { ok: true }; // en línea las carpetas existen en cuanto tienen archivos
+    case "/api/borrar": {
+      // Todos los archivos del paquete, también los de la papelera y los que hayan quedado sin registro.
+      const { p } = cuerpo(), pid = await idPaquete(p), base = `${U}/${pid}`;
+      const reg = chk(await sb.from("reembolso_archivos").select("id").eq("paquete_id", pid)).map(x => `${base}/${x.id}`);
+      const lis = await sb.storage.from("reembolsos").list(base, { limit: 1000 });
+      const claves = [...new Set([...reg, ...(lis.data || []).map(x => `${base}/${x.name}`)])];
+      for (let i = 0; i < claves.length; i += 100) {
+        const r = await sb.storage.from("reembolsos").remove(claves.slice(i, i + 100));
+        if (r.error) throw new Error("No se pudieron borrar los archivos: " + r.error.message);
+      }
+      chk(await sb.from("reembolso_paquetes").delete().eq("id", pid));
+      if (NB.paqIds) delete NB.paqIds[p];
+      return { ok: true };
+    }
     case "/api/estado": {
       const pid = await idPaquete(q.p), est = JSON.parse(opts.body), per = est.resumen?.periodo;
       chk(await sb.from("reembolso_paquetes").update({ estado: est, resumen: est.resumen || {}, periodo_desde: per?.desde || null, periodo_hasta: per?.hasta || null }).eq("id", pid));
@@ -1948,12 +1962,32 @@ function renderDirectorio() {
         return `<tr class="row" data-abrir="${esc(p.nombre)}" tabindex="0"><td><div class="desc">${esc(p.nombre)}</div>${p.abiertoPor ? `<div class="sub" style="color:var(--warn)">Abierto por ${esc(p.abiertoPor)}</div>` : ""}</td>
           <td class="n">${r.cargos ?? ""}</td><td class="n">${r.total != null ? fmt(r.total) : ""}</td>
           <td class="n">${r.cargos ? `${r.comprobados} de ${r.cargos}` : ""}</td><td class="n ${r.pendientes ? "difn" : ""}">${r.pendientes ?? ""}</td>
-          <td class="n">${r.archivos ?? ""}</td><td>${fh(p.modificado)}</td><td><button class="btn small">Abrir</button></td></tr>`;
+          <td class="n">${r.archivos ?? ""}</td><td>${fh(p.modificado)}</td><td style="white-space:nowrap"><button class="btn small">Abrir</button> <button class="btn small" data-borrar="${esc(p.nombre)}" aria-label="Borrar ${esc(p.nombre)}">Borrar</button></td></tr>`;
       }).join("")}</tbody></table></div>`
     : `<div class="scroll"><div class="empty">Todavía no hay paquetes. Arrastra arriba el listado AMEX para crear el primero.</div></div>`);
   $("#dir").querySelectorAll("[data-abrir]").forEach(tr => {
     tr.onclick = () => abrirPaquete(tr.dataset.abrir);
     tr.onkeydown = e => { if (e.key === "Enter") tr.click(); };
+  });
+  $("#dir").querySelectorAll("[data-borrar]").forEach(b => {
+    b.onclick = e => { e.stopPropagation(); borrarPaquete(b.dataset.borrar); };
+    b.onkeydown = e => e.stopPropagation();
+  });
+}
+// En la PC el paquete se mueve a Paquetes\.papelera (se puede recuperar). En línea no hay
+// papelera: se borran el paquete y sus archivos, así que se pide escribir BORRAR.
+async function borrarPaquete(nombre) {
+  const p = (S.lista || []).find(x => x.nombre === nombre), r = p?.resumen || {};
+  const detalle = `${r.cargos ? `${r.cargos} cargos, ` : ""}${r.archivos ?? "sus"} archivos`;
+  if (modoNube) {
+    const txt = prompt(`Vas a borrar «${nombre}» de ${NB.unidad} (${detalle}).${p?.abiertoPor ? `\n\nOjo: lo tiene abierto ${p.abiertoPor}.` : ""}\n\nEn línea no hay papelera: el paquete y sus archivos se borran para siempre. Si quieres conservarlos, genera antes el reporte y guarda el ZIP.\n\nPara confirmar, escribe BORRAR:`);
+    if ((txt || "").trim().toUpperCase() !== "BORRAR") { if (txt != null) aviso("No se borró: había que escribir BORRAR."); return; }
+  } else if (!confirm(`¿Borrar «${nombre}» (${detalle})?\n\nLa carpeta se mueve a Reporte Gastos\\Paquetes\\.papelera, de donde la puedes recuperar.`)) return;
+  await tarea(async () => {
+    try { await post("/api/borrar", { p: nombre }); }
+    catch (err) { throw new Error(/No encontrado/.test(err.message) ? "El servidor local es de una versión anterior: cierra la ventana negra y vuelve a abrir Iniciar_Reembolso.bat." : err.message); }
+    aviso(`Se borró el paquete «${nombre}».`);
+    await cargarDirectorio(); render();
   });
 }
 

@@ -1,0 +1,2762 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Previo de comprobación AMEX</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Sans+Condensed:wght@500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<style>
+:root{
+  --paper:#EDF1F0; --surface:#FFFFFF; --sunk:#F5F8F7; --ink:#172427; --muted:#5B6A6C; --line:#CED8D6;
+  --accent:#0C6A62; --accent-ink:#FFFFFF; --accent-soft:#DCEEEB;
+  --ok:#2B7345; --dif:#B23A30; --sinxml:#B7791F; --ext:#3D5F98; --revisar:#8A6BB0; --falta:#D9867D; --fuera:#9AA6A4;
+  --warn:#8F5A0E; --warn-soft:#FBEFD9; --bad:#9E342C; --bad-soft:#F8E1DE;
+  --font:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --font-c:"IBM Plex Sans Condensed","IBM Plex Sans",system-ui,sans-serif;
+  color-scheme:light; box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme:dark){
+  :root:not([data-theme="light"]){
+    --paper:#111816; --surface:#18211F; --sunk:#141C1A; --ink:#E3EAE8; --muted:#97A6A3; --line:#2B3734;
+    --accent:#4FB3A6; --accent-ink:#0B1513; --accent-soft:#1D3431;
+    --ok:#6CC08A; --dif:#EE8F86; --sinxml:#E3AE5B; --ext:#8FB0E6; --revisar:#B9A0DB; --falta:#A8665F; --fuera:#5E6B69;
+    --warn:#E3AE5B; --warn-soft:#332713; --bad:#EE8F86; --bad-soft:#3A1D1A;
+    color-scheme:dark;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#111816; --surface:#18211F; --sunk:#141C1A; --ink:#E3EAE8; --muted:#97A6A3; --line:#2B3734;
+  --accent:#4FB3A6; --accent-ink:#0B1513; --accent-soft:#1D3431;
+  --ok:#6CC08A; --dif:#EE8F86; --sinxml:#E3AE5B; --ext:#8FB0E6; --revisar:#B9A0DB; --falta:#A8665F; --fuera:#5E6B69;
+  --warn:#E3AE5B; --warn-soft:#332713; --bad:#EE8F86; --bad-soft:#3A1D1A;
+  color-scheme:dark;
+}
+*,*::before,*::after{box-sizing:inherit}
+[hidden]{display:none !important}
+/* versión en línea: sesión y compañía */
+.cuenta{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;justify-content:flex-end;font-size:13px;color:var(--muted);margin:-8px 0 10px}
+.cuenta b{color:var(--ink);font-weight:500}
+.cuenta select{border:1px solid var(--line);border-radius:6px;padding:3px 8px;background:var(--surface);color:var(--ink);font-weight:600}
+.cuenta .ok{color:var(--ok)}
+.cuenta .mal{color:var(--dif)}
+.login{max-width:380px;margin:40px auto;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:22px 24px;display:grid;gap:12px}
+.login h2{font:600 20px/1.2 var(--font-c);margin:0}
+.login label{display:grid;gap:4px;color:var(--muted);font-size:13px}
+.login input{border:1px solid var(--line);border-radius:7px;padding:8px 10px;background:var(--surface);color:var(--ink);font-size:15px}
+.login .acc{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.login .msg{font-size:13px;min-height:1.2em}
+.login .msg.mal{color:var(--dif)}
+body.sin-sesion #paqbar,body.sin-sesion #drop,body.sin-sesion #dir,body.sin-sesion #summary,body.sin-sesion #toolbar,body.sin-sesion #view{display:none !important}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--font);font-variant-numeric:tabular-nums}
+main{max-width:1500px;margin:0 auto;padding:28px 24px 64px}
+h1{font:600 26px/1.2 var(--font-c);margin:0 0 4px;letter-spacing:-.01em}
+.lede{color:var(--muted);margin:0 0 22px;max-width:72ch}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+
+.drop{border:1.5px dashed var(--line);border-radius:10px;background:var(--surface);padding:20px 22px;display:grid;grid-template-columns:1fr auto;gap:16px;align-items:center}
+.drop.over{border-color:var(--accent);background:var(--accent-soft)}
+.drop p{margin:0}
+.drop .hint{color:var(--muted);font-size:14px;margin-top:4px}
+.files{display:flex;flex-wrap:wrap;gap:6px 14px;margin-top:8px;font-size:13px;color:var(--muted)}
+.files b{color:var(--ink);font-weight:500}
+.btn{border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:8px 14px;white-space:nowrap}
+.btn:hover{border-color:var(--accent)}
+.btn.primary{background:var(--accent);color:var(--accent-ink);border-color:var(--accent);font-weight:500}
+.btn.small{padding:3px 9px;font-size:13px}
+.progress{margin-top:12px;font-size:14px;color:var(--muted)}
+.error{margin-top:12px;color:var(--bad);font-size:14px}
+
+/* resumen */
+.summary{margin:22px 0 16px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:18px 20px}
+.figures{display:flex;flex-wrap:wrap;gap:10px 40px;align-items:baseline;margin-bottom:14px}
+.figures div span{display:block;color:var(--muted);font-size:13px}
+.figures strong{font:600 22px/1.2 var(--font-c)}
+.figures .big strong{font-size:30px}
+.figures .neg strong{color:var(--dif)}
+.figures .zero strong{color:var(--ok)}
+.split{display:flex;height:16px;border-radius:4px;overflow:hidden;background:var(--sunk)}
+.split i{display:block;height:100%;min-width:3px}
+.legend{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.legend button{display:flex;align-items:center;gap:8px;border:1px solid var(--line);background:var(--surface);border-radius:7px;padding:5px 10px;font-size:13.5px;text-align:left}
+.legend button[aria-pressed="true"]{border-color:var(--ink);box-shadow:inset 0 0 0 1px var(--ink)}
+.legend .sw{width:10px;height:10px;border-radius:2px;flex:none}
+.legend small{color:var(--muted);font-size:12.5px}
+.legend .amt{font-weight:500}
+
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}
+.tabs{display:flex;gap:2px;background:var(--sunk);border:1px solid var(--line);border-radius:8px;padding:3px}
+.tabs button{border:0;background:none;padding:6px 14px;border-radius:6px;color:var(--muted)}
+.tabs button[aria-selected="true"]{background:var(--surface);color:var(--ink);box-shadow:0 0 0 1px var(--line)}
+.tabs .count{font-size:12px;margin-left:5px;color:var(--muted)}
+.hint2{font-size:13px;color:var(--muted)}
+
+/* tabla */
+.scroll{overflow-x:auto;background:var(--surface);border:1px solid var(--line);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th{font-weight:500;color:var(--muted);text-align:left;padding:9px 8px;border-bottom:1px solid var(--line);background:var(--sunk);white-space:nowrap}
+td{padding:7px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+td.n,th.n{text-align:right;white-space:nowrap}
+.dim{color:var(--muted)}
+tfoot td{font-weight:600;background:var(--sunk);border-top:1px solid var(--line);border-bottom:0}
+tr.row{cursor:pointer}
+tr.row:hover td{background:var(--sunk)}
+tr.row.open td{background:var(--accent-soft);border-bottom-color:transparent}
+tr.row td:first-child{border-left:4px solid var(--st,transparent);padding-left:8px;white-space:nowrap}
+tr.row.fuera td{opacity:.55}
+.desc{font-weight:500}
+.sub{font-size:12.5px;color:var(--muted)}
+.chev{display:inline-block;width:12px;color:var(--muted);transition:transform .15s}
+tr.open .chev{transform:rotate(90deg)}
+.state{display:inline-flex;align-items:center;gap:6px;font-size:12.5px;white-space:nowrap}
+.state i{width:8px;height:8px;border-radius:50%;background:var(--st)}
+.note{font-size:12px;padding:1px 7px;border-radius:20px;background:var(--sunk);border:1px solid var(--line);white-space:nowrap}
+td.difn{color:var(--dif);font-weight:500}
+th .sort{border:0;background:none;padding:0;color:inherit;font:inherit;display:inline-flex;gap:4px;align-items:center;cursor:pointer;white-space:nowrap}
+th .sort .ar{font-size:9px;opacity:0}
+th:hover .sort .ar{opacity:.45}
+th .sort.on{color:var(--ink)}
+th .sort.on .ar{opacity:1}
+.tablebar{display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center;margin-bottom:10px;font-size:13px}
+.tablebar label{display:flex;gap:6px;align-items:center;color:var(--muted)}
+.tablebar select{border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:var(--surface);color:var(--ink)}
+.tablebar select:disabled{opacity:.5}
+.tablebar input[type=search]{width:230px;border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:var(--surface);color:var(--ink)}
+.tablebar .cuenta{font-size:12px;color:var(--muted)}
+tr.grp{cursor:pointer}
+tr.grp td{background:var(--sunk);font-weight:600;border-bottom:1px solid var(--line)}
+tr.grp.l1 td{background:var(--surface);font-weight:500}
+tr.grp.l1 td:first-child{padding-left:28px}
+tr.grp[aria-expanded="true"] .chev{transform:rotate(90deg)}
+tr.grp .dim{font-weight:400;font-size:12.5px;margin-left:4px}
+
+/* detalle */
+tr.det>td{background:var(--sunk);padding:0;border-bottom:1px solid var(--line)}
+.panel{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(280px,.85fr);gap:18px;padding:16px 18px 18px 22px;border-left:4px solid var(--st)}
+.panel h3{font:600 15px/1.3 var(--font-c);margin:0 0 8px}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:3px 14px;font-size:13.5px;margin:0}
+.kv dt{color:var(--muted)}
+.kv dd{margin:0;word-break:break-word}
+.uuid{font-size:12.5px;letter-spacing:.01em}
+.flist{list-style:none;margin:10px 0 0;padding:0;font-size:13px}
+.flist li{display:flex;gap:8px;align-items:center;padding:4px 0;border-top:1px solid var(--line)}
+.flist .role{color:var(--muted);min-width:118px}
+.flist .path{word-break:break-all;flex:1}
+.warns{margin:10px 0 0;padding:0;list-style:none;font-size:13px}
+.warns li{padding:5px 9px;border-radius:6px;margin-top:5px}
+.warns li.w{background:var(--warn-soft);color:var(--warn)}
+.warns li.b{background:var(--bad-soft);color:var(--bad)}
+.warns li.i{background:var(--surface);color:var(--muted);border:1px solid var(--line)}
+.taxes{width:100%;font-size:13.5px;background:var(--surface);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.taxes td{padding:5px 10px}
+.taxes tr.sep td{border-top:1.5px solid var(--line)}
+.taxes tr.tot td{font-weight:600}
+.taxes tr.bad td{color:var(--dif);font-weight:600}
+.taxes tr.good td{color:var(--ok)}
+.controls{display:flex;flex-wrap:wrap;gap:10px 16px;margin-top:12px;font-size:13px;align-items:end}
+.controls label{display:grid;gap:3px;color:var(--muted)}
+.controls select{border:1px solid var(--line);border-radius:6px;padding:5px 8px;background:var(--surface);max-width:340px}
+.controls .chk{display:flex;gap:6px;align-items:center;color:var(--ink)}
+.full{grid-column:1/-1}
+.full table{background:var(--surface);border:1px solid var(--line);border-radius:8px;font-size:13px}
+.full th{background:var(--surface)}
+
+.badge{font-size:12px;padding:1px 8px;border-radius:20px;white-space:nowrap;border:1px solid var(--line);background:var(--surface)}
+.badge.warn{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.badge.bad{background:var(--bad-soft);color:var(--bad);border-color:transparent}
+.empty{padding:40px 24px;text-align:center;color:var(--muted)}
+
+dialog{border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--ink);padding:0;width:min(900px,96vw);max-height:92vh}
+dialog::backdrop{background:rgba(10,20,18,.5)}
+.dlg-head{display:flex;justify-content:space-between;gap:12px;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--surface)}
+.dlg-head b{font-weight:500;word-break:break-all;font-size:14px}
+.pages{padding:14px;display:grid;gap:12px;background:var(--sunk)}
+.pages canvas{width:100%;height:auto;background:#fff;border:1px solid var(--line)}
+/* paquetes, árbol y agregar a cargo */
+.paqbar{display:flex;flex-wrap:wrap;gap:6px 14px;align-items:center;margin:0 0 12px;font-size:14px}
+.paqbar b{font:600 17px/1.3 var(--font-c)}
+.aviso{position:fixed;left:50%;bottom:calc(20px + env(safe-area-inset-bottom,0px));transform:translateX(-50%);z-index:50;width:max-content;max-width:min(760px,92vw);font-size:14px;color:var(--ink);background:var(--surface);border:1px solid var(--accent);border-radius:10px;padding:10px 12px 10px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;box-shadow:0 6px 24px rgba(0,0,0,.18)}
+.provmsg{font-size:12.5px;margin-top:5px;display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+.provmsg.bad{color:var(--dif)}
+.provmsg input{max-width:300px}
+.dirhead{display:flex;flex-wrap:wrap;gap:4px 14px;align-items:baseline;margin:22px 0 10px}
+.dirhead h2{font:600 19px/1.2 var(--font-c);margin:0}
+.addcargo{margin-top:12px;padding:10px 12px;border:1.5px dashed var(--line);border-radius:8px;display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;background:var(--surface)}
+.addcargo.over{border-color:var(--accent);background:var(--accent-soft)}
+.flist .acc{display:flex;gap:4px}
+.tree{background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:10px 14px 14px;font-size:13.5px}
+.tree details{margin-left:18px}
+.tree>details{margin-left:0}
+.tree summary{cursor:pointer;padding:3px 0;list-style:none;display:flex;gap:6px;align-items:baseline;flex-wrap:wrap}
+.tree summary::-webkit-details-marker{display:none}
+.tree summary::before{content:"\25B8";color:var(--muted);width:10px;display:inline-block;transition:transform .15s}
+.tree details[open]>summary::before{transform:rotate(90deg)}
+.tree summary b{font-weight:600}
+.tree .tfile{margin-left:34px;padding:2px 0;display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.tree .tfile .nm{word-break:break-all}
+.tree .tcargos{list-style:none;margin:0 0 2px 34px;padding:0}
+.tree .tcargos button{border:0;background:none;padding:2px 0;text-align:left;display:flex;gap:7px;align-items:center;color:var(--ink);font-size:13px}
+.tree .tcargos button:hover .dsc{text-decoration:underline}
+.tree .tcargos i{width:8px;height:8px;border-radius:50%;flex:none}
+.tree .tvacio{margin-left:34px;color:var(--muted);font-size:12.5px;font-style:italic}
+.tree .pend{color:var(--dif);font-size:12px}
+.tag{font-size:11.5px;padding:0 6px;border-radius:10px;border:1px solid var(--line);color:var(--muted);white-space:nowrap}
+/* proveedores SAE */
+.clave{font-weight:600;white-space:nowrap}
+.tagauto{font-size:11px;padding:0 6px;border-radius:10px;background:var(--warn-soft);color:var(--warn);margin-left:4px}
+.sinclave{color:var(--dif);font-size:12.5px;white-space:nowrap}
+.provbox{margin-top:12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);font-size:13px}
+.provbox label{display:grid;gap:3px;color:var(--muted)}
+.provbox input,.ptable input,.addprov input{border:1px solid var(--line);border-radius:6px;padding:5px 8px;background:var(--surface);color:var(--ink);width:100%;max-width:420px}
+.sugs{display:flex;flex-wrap:wrap;gap:4px;margin-top:6px;align-items:center}
+.sugs .btn{font-size:12px;padding:2px 8px}
+.ptable td{vertical-align:middle}
+.addprov{display:flex;flex-wrap:wrap;gap:8px;align-items:end;margin-top:8px;font-size:13px}
+.addprov label{display:grid;gap:3px;color:var(--muted)}
+.addprov input[data-np="c"]{max-width:120px}
+.seccion{font:600 16px/1.3 var(--font-c);margin:22px 0 8px}
+.provlab{color:var(--muted);margin-bottom:3px}
+.provsel{display:flex;gap:6px;align-items:center}
+.provsel input{flex:1}
+/* centros de costo */
+.ccsel{border:1px solid var(--line);border-radius:6px;padding:3px 6px;background:var(--surface);color:var(--ink);font-size:12.5px;max-width:230px}
+.ccsel.vacio{border-color:var(--dif);color:var(--dif)}
+.cctable input{border:1px solid var(--line);border-radius:6px;padding:4px 8px;background:var(--surface);color:var(--ink);width:100%}
+.cctable td{vertical-align:middle}
+/* descripciones */
+.descin{border:1px solid var(--line);border-radius:6px;padding:3px 6px;background:var(--surface);color:var(--ink);font-size:12.5px;width:240px}
+.descin.vacio{border-color:var(--dif)}
+.descin::placeholder{color:var(--dif)}
+/* columnas: ancho y selector */
+th{position:relative}
+th .rz{position:absolute;top:0;right:-3px;width:7px;height:100%;cursor:col-resize;z-index:2;touch-action:none}
+th .rz:hover,th .rz.on{background:var(--accent);opacity:.45}
+tr.row td > .chev:first-child{float:left;margin-right:5px}
+table.fijo{table-layout:fixed}
+table.fijo th{white-space:normal;vertical-align:bottom;padding-right:10px}
+table.fijo td{overflow:hidden}
+table.fijo .desc,table.fijo .sub,table.fijo .clave,table.fijo .state{overflow:hidden;text-overflow:ellipsis}
+table.fijo td.n{text-overflow:ellipsis}
+table.fijo .descin,table.fijo .ccsel{width:calc(100% - 4px);max-width:none}
+table.fijo .tagauto{display:none}
+.colwrap{position:relative}
+.colpanel{position:absolute;z-index:30;top:calc(100% + 4px);left:0;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:8px;min-width:250px}
+.colpanel ul{list-style:none;margin:0;padding:0}
+.colpanel li{display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:6px}
+.colpanel li:hover{background:var(--sunk)}
+.colpanel label{flex:1;display:flex;gap:7px;align-items:center;color:var(--ink);cursor:pointer;font-size:13px}
+.colpanel .mv{border:1px solid var(--line);background:var(--surface);border-radius:5px;width:24px;height:22px;padding:0;font-size:10px;line-height:1}
+.colpanel .mv:disabled{opacity:.35;cursor:default}
+.colpanel .pie{display:flex;justify-content:space-between;gap:8px;border-top:1px solid var(--line);margin-top:6px;padding-top:6px;font-size:12px}
+/* reporte */
+#dlg-rep{width:min(760px,96vw)}
+.rep{padding:16px 18px 18px;display:grid;gap:14px;font-size:14px}
+.rep h3{font:600 16px/1.3 var(--font-c);margin:0}
+.rep .campos{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.rep label{display:grid;gap:3px;color:var(--muted);font-size:13px}
+.rep input[type=text],.rep input[type=date]{border:1px solid var(--line);border-radius:6px;padding:5px 8px;background:var(--surface);color:var(--ink)}
+.rep .pend{background:var(--warn-soft);color:var(--warn);border-radius:8px;padding:8px 12px;margin:0;font-size:13px}
+.rep .pend ul{margin:4px 0 0;padding-left:18px}
+.rep .listo{background:var(--accent-soft);border-radius:8px;padding:10px 12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.rep .acciones{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+@media (max-width:860px){
+  .panel{grid-template-columns:1fr;position:sticky;left:0;max-width:calc(100vw - 30px)}
+  .desc{min-width:170px}
+  .drop{grid-template-columns:1fr}
+  main{padding:18px 14px 48px}
+}
+@media (prefers-reduced-motion:reduce){.chev{transition:none}}
+</style>
+</head>
+<body>
+<main>
+  <div id="cuenta" class="cuenta" hidden></div>
+  <h1>Previo de comprobación AMEX</h1>
+  <p class="lede">Cada cargo del listado AMEX con la factura que lo respalda y sus impuestos. Revisa aquí antes de pasar nada al formato de reembolso.</p>
+
+  <section id="login" class="login" hidden>
+    <h2>Inicia sesión</h2>
+    <p class="sub" style="margin:0">Con tu usuario de Control de Presupuestos.</p>
+    <label>Correo<input type="email" id="lg-email" autocomplete="username"></label>
+    <label>Contraseña<input type="password" id="lg-pass" autocomplete="current-password"></label>
+    <div class="acc"><button class="btn primary" id="lg-entrar">Entrar</button><button class="btn small" id="lg-olvide">Olvidé mi contraseña</button></div>
+    <div class="msg" id="lg-msg" role="status"></div>
+  </section>
+  <div id="paqbar" class="paqbar" hidden></div>
+  <section id="drop" class="drop" tabindex="0" aria-label="Cargar archivos">
+    <div>
+      <p><b id="drop-t">Arrastra el .zip de facturas y el listado AMEX (.xlsx)</b></p>
+      <p class="hint" id="drop-h">Si el listado viene dentro del .zip, basta con el .zip. Los archivos se leen en este navegador y no se suben a ningún lado.</p>
+      <div id="files" class="files"></div>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn primary" id="pick">Elegir archivos</button>
+      <button class="btn" id="reset" hidden>Empezar de nuevo</button>
+    </div>
+    <input type="file" id="input" multiple accept=".zip,.xlsx,.xls,.xml,.pdf,.csv,.jpg,.jpeg,.png" hidden>
+    <input type="file" id="input-cargo" multiple accept=".zip,.xml,.pdf,.csv,.jpg,.jpeg,.png" hidden>
+    <input type="file" id="input-sust" accept=".xml,.pdf,.csv,.jpg,.jpeg,.png" hidden>
+  </section>
+  <div id="progress" class="progress" hidden></div>
+  <div id="error" class="error" hidden></div>
+  <div id="aviso" class="aviso" hidden></div>
+
+  <section id="dir" hidden></section>
+
+  <section id="summary" class="summary" hidden></section>
+
+  <div id="toolbar" class="bar" hidden>
+    <div class="tabs" role="tablist">
+      <button role="tab" data-tab="cargos" aria-selected="true">Cargos AMEX<span class="count" id="n-cargos"></span></button>
+      <button role="tab" data-tab="docs" aria-selected="false">Documentos<span class="count" id="n-docs"></span></button>
+      <button role="tab" data-tab="carpetas" aria-selected="false">Carpetas<span class="count" id="n-carp"></span></button>
+      <button role="tab" data-tab="prov" aria-selected="false">Proveedores<span class="count" id="n-prov"></span></button>
+      <button role="tab" data-tab="cc" aria-selected="false">Centros de costo<span class="count" id="n-cc"></span></button>
+      <button role="tab" data-tab="desc" aria-selected="false">Descripciones<span class="count" id="n-desc"></span></button>
+    </div>
+    <span style="display:flex;gap:12px;align-items:center;flex-wrap:wrap"><span class="hint2" id="hint">Toca un cargo para ver su comprobante e impuestos.</span><button class="btn primary small" id="btn-reporte">Generar reporte</button></span>
+  </div>
+  <section id="view"></section>
+</main>
+
+<dialog id="viewer">
+  <div class="dlg-head"><b id="v-title"></b><button class="btn small" id="v-close">Cerrar</button></div>
+  <div class="pages" id="v-pages"></div>
+</dialog>
+<datalist id="dl-prov"></datalist>
+<datalist id="dl-desc"></datalist>
+<input type="file" id="input-cat" accept=".xlsx,.xls" hidden>
+<dialog id="dlg-rep">
+  <div class="dlg-head"><b>Reporte de reembolso</b><button class="btn small" id="rep-cerrar">Cerrar</button></div>
+  <div class="rep" id="rep-body"></div>
+</dialog>
+
+<script>
+"use strict";
+/* ================= utilidades ================= */
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"']/g, ch => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[ch]));
+const fmt = n => (n ?? 0).toLocaleString("es-MX", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtZ = n => Math.abs(n || 0) < .005 ? "" : fmt(n);
+const fFecha = d => d ? d.toLocaleDateString("es-MX", { day: "2-digit", month: "short" }).replace(".", "") : "";
+const fFechaL = d => d ? d.toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" }).replace(".", "") : "";
+const norm = s => String(s ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/\s+/g, " ").trim();
+const dias = (a, b) => a && b ? Math.abs(a - b) / 864e5 : 99;
+const TOL = 1.0;
+const MESES = { ene: 1, jan: 1, feb: 2, mar: 3, abr: 4, apr: 4, may: 5, jun: 6, jul: 7, ago: 8, aug: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12, dec: 12 };
+
+function parseAmount(s) {
+  s = String(s).trim();
+  if (!/\d/.test(s)) return null;
+  const lc = s.lastIndexOf(","), ld = s.lastIndexOf(".");
+  let dec = null;
+  if (lc > -1 && ld > -1) dec = lc > ld ? "," : ".";
+  else if (lc > -1) dec = /,\d{2}$/.test(s) ? "," : null;
+  else if (ld > -1) dec = (s.match(/\./g).length === 1 && !/\.\d{3}$/.test(s)) ? "." : null;
+  let c = dec === "," ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
+  if (dec === null) c = c.replace(/\./g, "");
+  const n = parseFloat(c);
+  return isNaN(n) ? null : n;
+}
+function num(v) {
+  if (typeof v === "number") return v;
+  if (v == null || v === "") return 0;
+  if (/^\s*-?\d+(\.\d+)?\s*$/.test(String(v))) return parseFloat(v);
+  return parseAmount(String(v).replace(/[^\d.,-]/g, "")) ?? 0;
+}
+function fechaTexto(v) {
+  if (v instanceof Date) return v;
+  if (typeof v === "number") return new Date(Math.round((v - 25569) * 864e5));
+  const s = String(v ?? "").trim();
+  let m = s.match(/^(\d{1,2})[\s\/-]+([A-Za-zÁÉÍÓÚáéíóú]{3})[A-Za-z.]*[\s\/-]+(\d{4})/);
+  if (m) return new Date(+m[3], (MESES[norm(m[2]).slice(0, 3)] || 1) - 1, +m[1]);
+  m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3]);
+  m = s.match(/^(\d{2})\/(\d{2})\/(\d{4})/);
+  if (m) return new Date(+m[3], +m[2] - 1, +m[1]);
+  return null;
+}
+function fechaCarpeta(path) {
+  for (const seg of path.split("/").slice(0, -1)) {
+    const m = seg.match(/^(\d{2})(\d{2})(\d{2})$/);
+    if (m) return new Date(2000 + +m[3], +m[2] - 1, +m[1]);
+  }
+  return null;
+}
+const dirname = p => p.split("/").slice(0, -1).join("/");
+const basename = p => p.split("/").pop();
+const sinExt = p => p.replace(/\.[^.\/]+$/, "").toLowerCase();
+function hash(s) { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return h >>> 0; }
+function montosEnTexto(t) {
+  const out = new Set();
+  const re = /(?<![\d.,])(\d{1,3}(?:[.,]\d{3})+[.,]\d{2}|\d+[.,]\d{2})(?![\d])/g;
+  let m;
+  while ((m = re.exec(t))) { const v = parseAmount(m[1]); if (v != null && v > 0) out.add(Math.round(v * 100) / 100); }
+  return [...out];
+}
+const tieneMonto = (doc, v) => v != null && (doc.montos || []).some(m => Math.abs(m - v) <= .005);
+// Fechas escritas en un PDF: 2026-10-08, 08/10/2026, «Oct 8, 2026», «8 de octubre de 2026», «08 oct 2026».
+const mesTexto = w => ({ ene: 1, jan: 1, feb: 2, mar: 3, abr: 4, apr: 4, may: 5, jun: 6, jul: 7, ago: 8, aug: 8, sep: 9, set: 9, oct: 10, nov: 11, dic: 12, dec: 12 })[String(w).slice(0, 3)] || 0;
+function fechasEnTexto(t) {
+  const out = [], s = norm(t);
+  const add = (y, m, d) => { if (y > 2000 && y < 2100 && m >= 1 && m <= 12 && d >= 1 && d <= 31) out.push(new Date(y, m - 1, d)); };
+  for (const m of s.matchAll(/\b(\d{4})-(\d{2})-(\d{2})/g)) add(+m[1], +m[2], +m[3]);
+  for (const m of s.matchAll(/\b(\d{1,2})\/(\d{1,2})\/(\d{4})\b/g)) add(+m[3], +m[2], +m[1]);
+  for (const m of s.matchAll(/\b([a-z]{3,10})\.? (\d{1,2}),? (\d{4})\b/g)) { const mm = mesTexto(m[1]); if (mm) add(+m[3], mm, +m[2]); }
+  for (const m of s.matchAll(/\b(\d{1,2})(?: de)? ([a-z]{3,10})\.?(?: de| del)? (\d{4})\b/g)) { const mm = mesTexto(m[2]); if (mm) add(+m[3], mm, +m[1]); }
+  return out;
+}
+
+/* ================= listado AMEX ================= */
+function leerAmex(wb) {
+  let periodo = null;
+  for (const n of wb.SheetNames) {
+    for (const r of XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: false, defval: null })) {
+      const t = (r || []).filter(Boolean).join(" ");
+      const m = t.match(/(\d{1,2} \w{3} \d{4}) a (\d{1,2} \w{3} \d{4})/);
+      if (m && !periodo) periodo = { desde: fechaTexto(m[1]), hasta: fechaTexto(m[2]) };
+    }
+  }
+  for (const n of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: true, defval: null });
+    const h = rows.findIndex(r => r && r.some(c => /^fecha( de compra)?$/.test(norm(c))) && r.some(c => norm(c).startsWith("descripcion")));
+    if (h < 0) continue;
+    const H = rows[h].map(norm);
+    const col = f => H.findIndex(f);
+    const ix = {
+      fecha: col(x => x === "fecha"), compra: col(x => x === "fecha de compra"), desc: col(x => x.startsWith("descripcion")),
+      importe: col(x => x === "importe"), ext: col(x => x.startsWith("monto en moneda")), notas: col(x => x === "notas"),
+    };
+    const extra = H.map((x, i) => (x === "" || /estado|status|aclar/.test(x)) && i > ix.importe ? i : -1).filter(i => i >= 0 && i !== ix.ext && i !== ix.notas);
+    const cargos = [];
+    rows.slice(h + 1).forEach(r => {
+      if (!r) return;
+      const fecha = fechaTexto(r[ix.fecha >= 0 ? ix.fecha : ix.compra]);
+      const compra = fechaTexto(r[ix.compra >= 0 ? ix.compra : ix.fecha]) || fecha;
+      if (!fecha && !compra) return;
+      const ext = String(r[ix.ext] ?? "").trim();
+      const m = ext.match(/([\d.,]+)\s*([A-Z]{3})/);
+      cargos.push({
+        id: "c" + cargos.length, orden: cargos.length, fecha: fecha || compra, compra,
+        descripcion: String(r[ix.desc] ?? "").replace(/\s+/g, " ").trim(),
+        importe: num(r[ix.importe]), montoExt: m ? parseAmount(m[1]) : null, monedaExt: m ? m[2] : null,
+        nota: ix.notas >= 0 ? String(r[ix.notas] ?? "").trim() : "",
+        status: extra.map(i => r[i]).filter(Boolean).join(" ").trim(),
+      });
+    });
+    if (cargos.length) return { cargos, periodo };
+  }
+  return null;
+}
+
+/* ================= CFDI ================= */
+const lname = el => el.localName || el.nodeName.split(":").pop();
+const hijos = (el, n) => el ? Array.from(el.childNodes).filter(c => c.nodeType === 1 && lname(c) === n) : [];
+const ruta = (el, ...ns) => ns.reduce((acc, n) => acc.flatMap(e => hijos(e, n)), [el]);
+function buscar(el, n) {
+  if (lname(el) === n) return el;
+  for (const c of Array.from(el.childNodes)) if (c.nodeType === 1) { const r = buscar(c, n); if (r) return r; }
+  return null;
+}
+const TAX0 = () => ({ subtotal: 0, descuento: 0, b16: 0, iva16: 0, b8: 0, iva8: 0, b0: 0, exento: 0, noObjeto: 0, ieps: 0, retIva: 0, retIsr: 0, otros: 0, total: 0 });
+const TAXK = Object.keys(TAX0());
+const sumaTax = arr => arr.reduce((a, t) => { TAXK.forEach(k => a[k] += t[k] || 0); return a; }, TAX0());
+const escala = (t, f) => { const o = TAX0(); TAXK.forEach(k => o[k] = (t[k] || 0) * f); return o; };
+
+function leerCfdi(xml, path) {
+  let doc;
+  try { doc = new DOMParser().parseFromString(xml, "text/xml"); } catch { return null; }
+  const root = doc.documentElement;
+  if (!root || lname(root) !== "Comprobante") return null;
+  const g = (el, a) => el ? el.getAttribute(a) : null;
+  const em = hijos(root, "Emisor")[0], rc = hijos(root, "Receptor")[0];
+  const tax = TAX0();
+  const conceptos = [];
+  for (const c of ruta(root, "Conceptos", "Concepto")) {
+    const importe = num(g(c, "Importe")), desc = num(g(c, "Descuento")), base = importe - desc;
+    const tras = ruta(c, "Impuestos", "Traslados", "Traslado");
+    const iva = tras.filter(t => g(t, "Impuesto") === "002"), ieps = tras.filter(t => g(t, "Impuesto") === "003");
+    const k = { desc: g(c, "Descripcion") || "", noId: g(c, "NoIdentificacion") || "", cantidad: num(g(c, "Cantidad")), base, tasa: null, iva: 0, ieps: 0, objeto: g(c, "ObjetoImp") || "02" };
+    ieps.forEach(t => { k.ieps += num(g(t, "Importe")); });
+    tax.ieps += k.ieps;
+    if (k.objeto !== "02" || !iva.length) { tax.noObjeto += base; k.tasa = "No objeto"; conceptos.push(k); continue; }
+    const bases = iva.map(t => g(t, "Base") != null ? num(g(t, "Base")) : base);
+    const suma = bases.reduce((a, b) => a + b, 0);
+    const aj = suma ? Math.min(1, base / suma) : 1;
+    let asignado = 0;
+    iva.forEach((t, i) => {
+      const b = bases[i] * aj, imp = num(g(t, "Importe"));
+      asignado += b;
+      if (g(t, "TipoFactor") === "Exento") { tax.exento += b; k.tasa = "Exento"; return; }
+      const tasa = num(g(t, "TasaOCuota"));
+      if (Math.abs(tasa - .16) < 1e-6) { tax.b16 += b; tax.iva16 += imp; k.tasa = "16%"; }
+      else if (Math.abs(tasa - .08) < 1e-6) { tax.b8 += b; tax.iva8 += imp; k.tasa = "8%"; }
+      else { tax.b0 += b; k.tasa = "0%"; }
+      k.iva += imp;
+    });
+    if (base - asignado > .01) { tax.noObjeto += base - asignado; k.tasa += " + no objeto"; }
+    conceptos.push(k);
+  }
+  let rets = ruta(root, "Impuestos", "Retenciones", "Retencion");
+  if (!rets.length) rets = ruta(root, "Conceptos", "Concepto", "Impuestos", "Retenciones", "Retencion");
+  rets.forEach(r => { if (g(r, "Impuesto") === "001") tax.retIsr += num(g(r, "Importe")); else if (g(r, "Impuesto") === "002") tax.retIva += num(g(r, "Importe")); });
+  tax.subtotal = num(g(root, "SubTotal")); tax.descuento = num(g(root, "Descuento")); tax.total = num(g(root, "Total"));
+  const calc = tax.b16 + tax.b8 + tax.b0 + tax.exento + tax.noObjeto + tax.iva16 + tax.iva8 + tax.ieps - tax.retIva - tax.retIsr;
+  if (Math.abs(tax.total - calc) > .05) tax.otros = tax.total - calc; // impuestos locales u otros conceptos no desglosados
+  const tfd = buscar(root, "TimbreFiscalDigital");
+  return {
+    kind: "cfdi", path, carpetaFecha: fechaCarpeta(path),
+    uuid: (g(tfd, "UUID") || "").toUpperCase(), rfc: g(em, "Rfc") || "", emisor: g(em, "Nombre") || "",
+    receptorRfc: g(rc, "Rfc") || "", receptor: g(rc, "Nombre") || "", uso: g(rc, "UsoCFDI") || "",
+    fecha: fechaTexto(g(root, "Fecha")), folio: [g(root, "Serie"), g(root, "Folio")].filter(Boolean).join("-"),
+    moneda: g(root, "Moneda") || "MXN", tc: num(g(root, "TipoCambio")) || 1, tipo: g(root, "TipoDeComprobante") || "I",
+    metodo: g(root, "MetodoPago") || "", forma: g(root, "FormaPago") || "",
+    total: tax.total, tax, conceptos, pdfs: [], montos: [tax.total],
+  };
+}
+
+/* ================= PDF ================= */
+if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.worker.min.js";
+async function textoPdf(buf) {
+  const doc = await pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)), verbosity: 0 }).promise;
+  const lines = [];
+  for (let p = 1; p <= Math.min(doc.numPages, 15); p++) {
+    const tc = await (await doc.getPage(p)).getTextContent();
+    const rows = [];
+    for (const it of tc.items) {
+      if (!it.str || !it.str.trim()) continue;
+      const y = it.transform[5], x = it.transform[4];
+      let r = rows.find(r => Math.abs(r.y - y) < 2.5);
+      if (!r) { r = { y, items: [] }; rows.push(r); }
+      r.items.push({ x, s: it.str, w: it.width || 0 });
+    }
+    rows.sort((a, b) => b.y - a.y);
+    for (const r of rows) {
+      r.items.sort((a, b) => a.x - b.x);
+      let s = "", end = null;
+      for (const it of r.items) { if (end != null) s += it.x - end > 1.5 ? " " : ""; s += it.s; end = it.x + it.w; }
+      lines.push(s.replace(/\s+/g, " ").trim());
+    }
+  }
+  return { texto: lines.join("\n"), paginas: doc.numPages };
+}
+const RE_UUID = /[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}/gi;
+function pdfDoc(path, texto, paginas) {
+  const plano = texto.replace(/\s+/g, " ");
+  const inv = plano.match(/(?:invoice number|n[uú]mero de factura(?: de impuestos)?|n[uú]mero de facturaci[oó]n)\s*:?\s*([A-Z0-9][A-Z0-9\-\u2010\u2011\u2013]{4,})/i);
+  const d = {
+    kind: "pdf", path, carpetaFecha: fechaCarpeta(path), texto, paginas,
+    vacio: plano.replace(/\s/g, "").length < 60,
+    montos: montosEnTexto(plano), uuids: (plano.match(RE_UUID) || []).map(u => u.toUpperCase()),
+    factura: inv ? inv[1].toUpperCase() : null,
+    recibo: /\b(receipt|date paid|amount paid|comprobante de pago)\b/i.test(plano),
+    folioFiscal: /folio fiscal|timbre fiscal|cfdi/i.test(plano),
+    firma: plano.replace(/\s/g, "").length < 60 ? null : hash(norm(plano)),
+    pase: /PASE,? SERVICIOS ELECTR/i.test(plano),
+  };
+  if (d.pase) d.cruces = crucesPase(texto);
+  return d;
+}
+function crucesPase(texto) {
+  const out = [];
+  const re = /(\d{2}\/\d{2}\/\d{4})\s+(\d{2}:\d{2}:\d{2})\s+(\d{5,})\s+(\S+)\s+(\d+)\s+(.+?)\s+\d+\s+\$\s?([\d,]+\.\d{2})\s+\$\s?([\d,]+\.\d{2})\s+\$\s?([\d,]+\.\d{2})\s+\$\s?([\d,]+\.\d{2})\s+\$\s?([\d,]+\.\d{2})\s+\$\s?([\d,]+\.\d{2})/;
+  for (const l of texto.split("\n")) {
+    const m = l.match(re);
+    if (!m) continue;
+    out.push({ fecha: fechaTexto(m[1]), hora: m[2], consecar: m[3], carril: m[4], caseta: m[6].trim(),
+      base: parseAmount(m[10]), iva: parseAmount(m[11]), total: parseAmount(m[12]) });
+  }
+  return out;
+}
+
+/* ================= proveedores ================= */
+const ALIAS = [
+  [/MSBILL|MICROSOFT/, /microsoft/i, "Microsoft"], [/CLICKUP/, /clickup/i, "ClickUp"], [/AMAZON ?WEB|\bAWS\b/, /amazon web services/i, "Amazon Web Services México"],
+  [/AMAZONPRIME|AMZN|AMAZON\.COM|AMAZON MX/, /amazon/i, "Amazon"], [/ADOBE/, /adobe/i, "Adobe"], [/GOOGLE/, /google/i, "Google"],
+  [/TELEFONOS DE MEXICO|TELMEX/, /telmex|telefonos de mexico/i, "Teléfonos de México"], [/OPENAI|CHATGPT/, /openai/i, "OpenAI"], [/ANTHROPIC|CLAUDE/, /anthropic/i, "Anthropic"],
+  [/SUPABASE/, /supabase/i, "Supabase"], [/STARLINK/, /starlink/i, "Starlink"], [/SYSCOM/, /syscom|sistemas y servicios de comunicaci/i, "Syscom"],
+  [/ZOHO/, /zoho/i, "Zoho"], [/GAS EXPRESS/, /gas express/i, "Gas Express Nieto"],
+];
+const nombreProv = cargo => (ALIAS.find(([a]) => a.test(cargo.descripcion.toUpperCase())) || [])[2] || null;
+function claves(cargo) {
+  const d = cargo.descripcion.toUpperCase();
+  const out = ALIAS.filter(([a]) => a.test(d)).map(([, b]) => b);
+  const w = d.replace(/[^A-Z0-9 ]/g, " ").split(/\s+/).filter(x => x.length >= 4 && !/^(PAYU|NETPAY|MEXICO|CIUDAD|SUBSCR|FRANCISCO|MUNICIPALITY|CHIHUAHUA|SINGAPORE|DIEGO|HIDALGO|MIGUEL)$/.test(x) && !/\d/.test(x));
+  if (w[0]) out.push(new RegExp(w[0].replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i"));
+  return out;
+}
+const coincideProv = (cargo, txt) => claves(cargo).some(re => re.test(txt));
+const esPase = c => /^PASE\b/i.test(c.descripcion);
+const esExcluidoAmex = c => /no reconocido|aclaraci/i.test(c.status + " " + c.nota);
+
+/* ================= estado de la app ================= */
+const S = {
+  archivos: [], cargos: [], periodo: null, docs: [], buffers: {},
+  manual: {}, tratamiento: {}, excluir: {}, abiertos: new Set(), filtro: null, tab: "cargos", R: null,
+  orden: { k: "fecha", dir: 1 }, grupos: [null, null], colapsados: new Set(), q: "", qDocs: "",
+  paquete: null, rutaPaquete: "", lista: [], carpetas: new Set(), arbolCerradas: new Set(), pend: null,
+};
+const ESTADOS = {
+  ok: { t: "Con XML", c: "var(--ok)" },
+  dif: { t: "Diferencia", c: "var(--dif)" },
+  sinxml: { t: "CFDI sin XML", c: "var(--sinxml)" },
+  ext: { t: "Factura extranjera", c: "var(--ext)" },
+  revisar: { t: "Revisar a mano", c: "var(--revisar)" },
+  falta: { t: "Sin comprobante", c: "var(--falta)" },
+  fuera: { t: "Fuera del reembolso", c: "var(--fuera)" },
+};
+const TRAT = { noObjeto: "No objeto de IVA", iva16: "IVA 16% incluido", b0: "Tasa 0%", exento: "Exento" };
+
+/* ================= clasificación y empate ================= */
+function clasificar(docs) {
+  const cfdis = docs.filter(d => d.kind === "cfdi");
+  const porBase = Object.fromEntries(cfdis.map(c => [sinExt(c.path), c]));
+  const porUuid = Object.fromEntries(cfdis.filter(c => c.uuid).map(c => [c.uuid, c]));
+  const firmas = {}, facturas = {};
+  for (const d of docs) {
+    d.rep = null; d.dupDe = null; d.cfdiPdf = false;
+    if (d.kind === "cfdi") { d.pdfs = []; d.cruces = null; }
+  }
+  for (const d of docs.filter(d => d.kind === "pdf")) {
+    const c = porBase[sinExt(d.path)] || d.uuids.map(u => porUuid[u]).find(Boolean);
+    if (c) { d.rep = c; c.pdfs.push(d); continue; }
+    if (d.firma != null && firmas[d.firma]) { d.dupDe = firmas[d.firma]; continue; }
+    if (d.firma != null) firmas[d.firma] = d;
+    const kf = d.factura ? d.factura + (d.recibo ? "R" : "I") : null;
+    if (kf && facturas[kf] && !d.vacio) { d.dupDe = facturas[kf]; continue; }
+    if (kf) facturas[kf] = d;
+    if (!d.pase && !d.vacio && d.folioFiscal && d.uuids.length) d.cfdiPdf = true;
+  }
+  for (const d of docs.filter(d => d.kind === "otro")) {
+    if (firmas[d.firma]) d.dupDe = firmas[d.firma]; else firmas[d.firma] = d;
+  }
+  // Cruces PASE: fecha del PDF + base e IVA exactos del XML
+  for (const c of cfdis.filter(c => /PASE/i.test(c.emisor))) {
+    const pdf = c.pdfs.find(p => p.cruces?.length);
+    const porId = Object.fromEntries(c.conceptos.map(k => [k.noId, k]));
+    c.cruces = (pdf?.cruces || []).map(x => {
+      const k = porId[x.consecar];
+      return { ...x, base: k ? k.base : x.base, iva: k ? k.iva : x.iva, total: k ? k.base + k.iva : x.total, cfdi: c };
+    });
+  }
+  for (const d of docs.filter(d => d.kind === "pdf" && d.pase && !d.rep && d.cruces?.length)) {
+    d.crucesSinXml = d.cruces.map(x => ({ ...x, pdf: d }));
+  }
+}
+
+function empatar() {
+  const docs = S.docs, cargos = S.cargos;
+  const usado = new Map(); // doc -> cargo id
+  const A = Object.fromEntries(cargos.map(c => [c.id, { docs: [], cfdis: [], principal: null, tipo: null, cruce: null, soporte: [], notas: [], manual: false }]));
+  const libre = d => !usado.has(d) && !d.rep && !d.dupDe;
+  const asignar = (cg, tipo, principales, extra = []) => {
+    const a = A[cg.id];
+    a.tipo = tipo; a.principal = principales[0] || null;
+    if (tipo === "cfdi") a.cfdis = principales;
+    for (const d of principales) { a.docs.push(d); usado.set(d, cg.id); }
+    for (const d of extra) if (!usado.has(d)) { a.soporte.push(d); usado.set(d, cg.id); }
+  };
+  const cfdis = docs.filter(d => d.kind === "cfdi" && !/PASE/i.test(d.emisor) && d.tipo === "I");
+  const pdfs = docs.filter(d => d.kind === "pdf");
+  const activos = cargos.filter(c => !(S.excluir[c.id] ?? esExcluidoAmex(c)));
+  const pendientes = () => activos.filter(c => !A[c.id].tipo && !(c.id in S.manual) && !esPase(c));
+
+  // 0) asignaciones manuales
+  for (const cg of activos) {
+    if (!(cg.id in S.manual)) continue;
+    const a = A[cg.id]; a.manual = true;
+    // Un PDF que es la impresión de un CFDI cuenta como su XML; un duplicado, como su original.
+    const ds0 = S.manual[cg.id].map(id => docs.find(d => d.id === id)).filter(Boolean);
+    const ds = [...new Set(ds0.map(d => d.rep || d.dupDe || d))].filter(d => d.kind !== "listado");
+    if (ds0.some(d => d.rep)) a.notas.push(["i", "El PDF asignado es la impresión de un CFDI: se tomó su XML"]);
+    if (!ds.length) { a.tipo = S.manual[cg.id].length ? "ninguno" : "ninguno"; continue; }
+    const cfd = ds.filter(d => d.kind === "cfdi");
+    if (cfd.length) { asignar(cg, "cfdi", cfd, ds.filter(d => d.kind !== "cfdi")); continue; }
+    const d0 = ds[0];
+    const tipo = d0.cfdiPdf ? "cfdiPdf" : d0.vacio || d0.kind !== "pdf" ? "escaneado" : "ext";
+    asignar(cg, tipo, [d0], ds.slice(1));
+  }
+  // 1) casetas PASE: cada cargo con su cruce
+  const cruces = docs.flatMap(d => d.kind === "cfdi" ? (d.cruces || []) : (d.crucesSinXml || []));
+  const crUsados = new Set();
+  for (const cg of activos.filter(c => esPase(c) && !(c.id in S.manual)).sort((a, b) => a.compra - b.compra)) {
+    const pal = norm(cg.descripcion).replace(/^pase /, "").split(" ").filter(w => w.length > 3);
+    const cand = cruces.filter(x => !crUsados.has(x) && Math.abs(x.total - cg.importe) <= .011 && (cg.compra - x.fecha) / 864e5 >= -.5 && (cg.compra - x.fecha) / 864e5 <= 4)
+      .map(x => ({ x, s: pal.filter(w => norm(x.caseta).includes(w)).length - dias(x.fecha, cg.compra) / 10 }))
+      .sort((p, q) => q.s - p.s);
+    if (cand.length) {
+      const x = cand[0].x; crUsados.add(x);
+      const a = A[cg.id]; a.tipo = "pase"; a.cruce = x;
+      const doc = x.cfdi || x.pdf; a.principal = doc; a.docs.push(doc);
+      if (x.cfdi) a.cfdis = [x.cfdi];
+    } else A[cg.id].notas.push(["b", "No encontré el cruce en los estados de cuenta PASE del paquete"]);
+  }
+  const fechaDoc = d => d.fecha || d.carpetaFecha;
+  const cercania = (d, cg) => Math.min(dias(fechaDoc(d), cg.compra), dias(d.carpetaFecha, cg.compra), dias(d.carpetaFecha, cg.fecha));
+  // 2) CFDI en pesos con el mismo total
+  for (const cg of pendientes()) {
+    const cand = cfdis.filter(c => libre(c) && c.moneda === "MXN" && Math.abs(c.total - cg.importe) <= TOL)
+      .map(c => ({ c, s: (coincideProv(cg, c.emisor) ? 10 : 0) - Math.min(cercania(c, cg), 60) / 6 - Math.abs(c.total - cg.importe) }))
+      .sort((p, q) => q.s - p.s);
+    if (cand.length && cand[0].s > -8) asignar(cg, "cfdi", [cand[0].c]);
+  }
+  // 3) CFDI en moneda extranjera por el monto original
+  for (const cg of pendientes()) {
+    if (!cg.montoExt) continue;
+    const c = cfdis.find(c => libre(c) && c.moneda === cg.monedaExt && Math.abs(c.total - cg.montoExt) <= .05);
+    if (c) asignar(cg, "cfdi", [c]);
+  }
+  // 4) varios CFDI del mismo emisor que suman el cargo
+  for (const cg of pendientes()) {
+    const porRfc = {};
+    cfdis.filter(c => libre(c) && c.moneda === "MXN" && c.total < cg.importe).forEach(c => (porRfc[c.rfc] ||= []).push(c));
+    let hallado = null;
+    for (const g of Object.values(porRfc)) {
+      for (const n of [2, 3, 4]) {
+        for (const combo of combos(g.slice(0, 12), n)) if (Math.abs(combo.reduce((a, c) => a + c.total, 0) - cg.importe) <= TOL) { hallado = combo; break; }
+        if (hallado) break;
+      }
+      if (hallado) break;
+    }
+    if (hallado) asignar(cg, "cfdi", hallado);
+  }
+  // 5) PDF de un CFDI sin su XML, por monto
+  for (const cg of pendientes()) {
+    const cand = pdfs.filter(p => libre(p) && p.cfdiPdf && tieneMonto(p, cg.importe)).sort((p, q) => cercania(p, cg) - cercania(q, cg));
+    if (cand.length && (cercania(cand[0], cg) <= 20 || (!fechaDoc(cand[0]) && !cand[0].carpetaFecha))) asignar(cg, "cfdiPdf", [cand[0]]);
+  }
+  // 6) facturas extranjeras en PDF, por monto + proveedor + fecha
+  for (const cg of pendientes()) {
+    const cand = pdfs.filter(p => libre(p) && !p.cfdiPdf && !p.vacio && !p.pase && (tieneMonto(p, cg.montoExt) || tieneMonto(p, cg.importe)))
+      .map(p => ({ p, s: (coincideProv(cg, p.texto) ? 2 : 0) + (tieneMonto(p, cg.montoExt) ? 1.5 : 1) + Math.max(0, 1 - cercania(p, cg) / 10) + (p.recibo ? 0 : .2) }))
+      .sort((x, y) => y.s - x.s);
+    if (cand.length && cand[0].s >= 2.2) {
+      const p = cand[0].p;
+      const grupo = p.factura ? pdfs.filter(q => q !== p && libre(q) && q.factura === p.factura) : [];
+      asignar(cg, "ext", [p], grupo);
+    }
+  }
+  // soporte: otros archivos en la misma carpeta que traen el monto del cargo
+  const soporte = () => { for (const cg of activos) {
+    const a = A[cg.id];
+    if (!a.principal || a.tipo === "pase") continue;
+    const carpetas = new Set(a.docs.map(d => dirname(d.path)));
+    const objetivos = [cg.importe, cg.montoExt, a.principal.total].filter(v => v != null);
+    for (const d of docs) {
+      if (!libre(d) || d.kind === "cfdi" || d.kind === "listado" || d.cfdiPdf) continue;
+      const cerca = carpetas.has(dirname(d.path)) && dirname(d.path) !== "_Sin asignar";
+      if (objetivos.some(v => tieneMonto(d, v)) && (cerca || coincideProv(cg, d.texto || ""))) { a.soporte.push(d); usado.set(d, cg.id); }
+    }
+  } };
+  soporte();
+  // 7) CFDI del mismo proveedor con otro monto (se marca diferencia)
+  for (const cg of pendientes()) {
+    const cand = cfdis.filter(c => libre(c) && coincideProv(cg, c.emisor) && cercania(c, cg) <= 10).sort((p, q) => cercania(p, cg) - cercania(q, cg));
+    if (cand.length) { asignar(cg, "cfdi", [cand[0]]); A[cg.id].notas.push(["b", "El CFDI es del mismo proveedor, pero el total no coincide con el cargo"]); }
+  }
+  // 8) PDF del proveedor sin el monto
+  for (const cg of pendientes()) {
+    const cand = pdfs.filter(p => libre(p) && !p.vacio && !p.pase && coincideProv(cg, p.texto) && cercania(p, cg) <= 20).sort((p, q) => cercania(p, cg) - cercania(q, cg));
+    if (cand.length) { asignar(cg, "escaneado", [cand[0]]); A[cg.id].notas.push(["w", "PDF del proveedor, pero no encontré el monto del cargo en él"]); }
+  }
+  // 9) PDF escaneado (sin texto) en la carpeta con la fecha del cargo
+  for (const cg of pendientes()) {
+    const cand = pdfs.filter(p => libre(p) && p.vacio && p.carpetaFecha && (dias(p.carpetaFecha, cg.fecha) < .5 || dias(p.carpetaFecha, cg.compra) < .5));
+    const mismoDia = pendientes().filter(o => cand.length && (dias(cand[0].carpetaFecha, o.fecha) < .5 || dias(cand[0].carpetaFecha, o.compra) < .5));
+    if (cand.length && mismoDia.length === 1) { asignar(cg, "escaneado", [cand[0]]); A[cg.id].notas.push(["w", "PDF escaneado sin texto: tomado por estar en la carpeta de la fecha del cargo. Ábrelo y confirma que es el correcto."]); }
+  }
+  soporte();
+  return { A, usado, crUsados };
+}
+function* combos(arr, n, start = 0, acc = []) {
+  if (acc.length === n) { yield acc.slice(); return; }
+  for (let i = start; i < arr.length; i++) { acc.push(arr[i]); yield* combos(arr, n, i + 1, acc); acc.pop(); }
+}
+
+/* ================= cálculo por cargo ================= */
+// Lo que se asigna a mano no pasa por el empate, así que se revisa contra el cargo:
+// monto, proveedor y fecha. El comprobante se queda asignado; solo se avisa.
+function verificar(cg, a, doc, notas) {
+  if (!a.manual || !doc || a.tipo === "pase") return;
+  const V = (k, t) => notas.push([k, t, "verif"]);
+  const quien = nombreProv(cg) || cg.descripcion;
+  if (doc.kind === "cfdi") {
+    if (!coincideProv(cg, doc.emisor)) V("w", `El CFDI es de «${doc.emisor}»; el cargo AMEX dice «${cg.descripcion}»`);
+    if (doc.fecha && dias(doc.fecha, cg.compra) > 40) V("w", `El CFDI es del ${fFechaL(doc.fecha)} y el cargo del ${fFechaL(cg.compra)}`);
+    return;
+  }
+  if (doc.kind !== "pdf") return;
+  if (doc.vacio) { V("w", "PDF escaneado: no tiene texto para verificar monto, proveedor ni fecha. Ábrelo y confirma que es el correcto"); return; }
+  if (!tieneMonto(doc, cg.importe) && !tieneMonto(doc, cg.montoExt)) V("b", `El PDF no menciona ${fmt(cg.importe)}${cg.montoExt ? ` ni ${fmt(cg.montoExt)} ${cg.monedaExt}` : ""}, que es lo que cargó AMEX`);
+  if (!coincideProv(cg, doc.texto)) V("w", `El PDF no menciona a «${quien}»`);
+  const fs = fechasEnTexto(doc.texto);
+  if (fs.length && !fs.some(x => dias(x, cg.compra) <= 40)) {
+    const cerca = fs.sort((x, y) => dias(x, cg.compra) - dias(y, cg.compra))[0];
+    V("w", `La fecha más cercana en el PDF es el ${fFechaL(cerca)} y el cargo es del ${fFechaL(cg.compra)}`);
+  }
+}
+function calcular() {
+  const { A, usado, crUsados } = empatar();
+  const rfcs = {};
+  S.docs.filter(d => d.kind === "cfdi").forEach(c => rfcs[c.receptorRfc] = (rfcs[c.receptorRfc] || 0) + 1);
+  const rfcPropio = Object.entries(rfcs).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+  const filas = S.cargos.map(cg => {
+    const a = A[cg.id];
+    const fuera = S.excluir[cg.id] ?? esExcluidoAmex(cg);
+    const notas = [...a.notas];
+    let tax = null, estado, doc = null, totalDoc = null, monedaDoc = "MXN", totalDocOrig = null;
+    const trat = S.tratamiento[cg.id] || "noObjeto";
+    const porTrat = () => {
+      const t = TAX0(); t.total = cg.importe; t.subtotal = cg.importe;
+      if (trat === "iva16") { t.b16 = cg.importe / 1.16; t.iva16 = cg.importe - t.b16; t.subtotal = t.b16; }
+      else t[trat] = cg.importe;
+      return t;
+    };
+    if (fuera) { estado = "fuera"; if (esExcluidoAmex(cg) && S.excluir[cg.id] == null) notas.push(["i", `AMEX lo marca como «${cg.status || cg.nota}»`]); }
+    else if (a.tipo === "pase") {
+      const x = a.cruce; doc = a.principal;
+      tax = TAX0(); tax.b16 = x.base; tax.iva16 = x.iva; tax.subtotal = x.base; tax.total = x.total;
+      totalDoc = x.total; estado = Math.abs(totalDoc - cg.importe) <= TOL ? (x.cfdi ? "ok" : "sinxml") : "dif";
+      if (!x.cfdi) notas.push(["w", "Estado de cuenta PASE sin su XML"]);
+    } else if (a.tipo === "cfdi") {
+      const cs = a.cfdis; doc = cs[0];
+      const t = sumaTax(cs.map(c => c.tax));
+      totalDocOrig = t.total; monedaDoc = doc.moneda;
+      if (doc.moneda !== "MXN") {
+        const f = cg.importe / t.total;
+        tax = escala(t, f); totalDoc = tax.total;
+        notas.push(["i", `CFDI en ${doc.moneda} por ${fmt(t.total)}; convertido al importe que cargó AMEX (TC ${f.toFixed(4)})`]);
+      } else { tax = t; totalDoc = t.total; }
+      estado = Math.abs(totalDoc - cg.importe) <= TOL ? "ok" : "dif";
+      if (cs.length > 1) notas.push(["i", `${cs.length} CFDI del mismo emisor suman el cargo`]);
+      for (const c of cs) {
+        if (rfcPropio && c.receptorRfc !== rfcPropio) notas.push(["b", `CFDI emitido al RFC ${c.receptorRfc}, no a ${rfcPropio}`]);
+        if (c.metodo === "PPD") notas.push(["w", "Método de pago PPD: requiere complemento de pago"]);
+        if (c.tax.retIva || c.tax.retIsr) notas.push(["w", "El CFDI trae retenciones"]);
+        if (c.tax.otros) notas.push(["w", `${fmt(c.tax.otros)} del total no se pudo desglosar (impuestos locales u otros)`]);
+        if (!c.pdfs.length) notas.push(["i", "El XML no trae su PDF en el paquete"]);
+      }
+    } else if (a.tipo === "cfdiPdf") {
+      doc = a.principal; totalDoc = cg.importe;
+      tax = TAX0(); tax.total = cg.importe;
+      const iva = doc.montos.find(m => Math.abs(m - cg.importe * .16 / 1.16) <= .06);
+      if (iva) { tax.iva16 = iva; tax.b16 = cg.importe - iva; tax.subtotal = tax.b16; notas.push(["w", "Impuestos leídos del PDF: falta el XML para comprobar"]); }
+      else { tax.noObjeto = cg.importe; tax.subtotal = cg.importe; notas.push(["w", "No pude leer el IVA del PDF; falta el XML"]); }
+      estado = "sinxml";
+    } else if (a.tipo === "ext") {
+      doc = a.principal; tax = porTrat(); totalDoc = cg.importe;
+      if (cg.montoExt && tieneMonto(doc, cg.montoExt)) { totalDocOrig = cg.montoExt; monedaDoc = cg.monedaExt; }
+      else { totalDocOrig = cg.importe; }
+      estado = "ext";
+    } else if (a.tipo === "escaneado") {
+      doc = a.principal; tax = porTrat(); totalDoc = cg.importe; estado = "revisar";
+    } else {
+      tax = porTrat(); estado = "falta";
+      if (a.tipo === "ninguno") notas.push(["i", "Marcado sin comprobante"]);
+    }
+    const dif = totalDoc != null && (a.tipo === "cfdi" || a.tipo === "pase") ? totalDoc - cg.importe : 0;
+    if (Math.abs(dif) > TOL) notas.unshift(["b", `El comprobante suma ${fmt(totalDoc)}: ${fmt(Math.abs(dif))} ${dif > 0 ? "más" : "menos"} que el cargo`]);
+    else if (Math.abs(dif) >= .005) notas.push(["i", `Diferencia de centavos contra AMEX: ${fmt(dif)}`]);
+    if (!fuera) verificar(cg, a, doc, notas);
+    const fila = { cg, a, estado, tax, doc, totalDoc, totalDocOrig, monedaDoc, dif, notas, trat };
+    fila.emisor = emisorDe(fila); fila.prov = claveDe(fila.emisor); fila.cc = fuera ? null : ccDe(fila); fila.desc = fuera ? null : descDe(fila);
+    return fila;
+  });
+  // Un mismo comprobante asignado a mano a dos cargos.
+  const porDoc = new Map();
+  filas.forEach(f => { if (f.a.tipo !== "pase" && f.estado !== "fuera") f.a.docs.forEach(d => { if (!porDoc.has(d)) porDoc.set(d, []); porDoc.get(d).push(f); }); });
+  porDoc.forEach(fs => { if (fs.length > 1) fs.forEach(f => fs.filter(o => o !== f).forEach(o => f.notas.unshift(["b", `Este comprobante también está asignado a «${o.cg.descripcion}» del ${fFecha(o.cg.compra)} por ${fmt(o.cg.importe)}`, "verif"]))); });
+  // Un CFDI asignado a mano que por monto y proveedor era de otro cargo: ese otro se queda sin él.
+  filas.forEach(f => {
+    if (!f.a.manual || f.estado === "fuera") return;
+    f.a.cfdis.forEach(c => filas.forEach(o => {
+      if (o === f || o.estado === "fuera" || o.estado === "ok" || o.a.cfdis.includes(c) || Math.abs(c.total - o.cg.importe) > TOL || !coincideProv(o.cg, c.emisor)) return;
+      f.notas.unshift(["b", `Este CFDI cuadra con el cargo «${o.cg.descripcion}» del ${fFecha(o.cg.compra)} por ${fmt(o.cg.importe)}, que se quedó sin él`, "verif"]);
+      o.notas.unshift(["b", `Su CFDI (${c.folio || c.uuid}) está asignado a mano a «${f.cg.descripcion}» del ${fFecha(f.cg.compra)}`, "verif"]);
+    }));
+  });
+  // uso de cada documento
+  const uso = new Map();
+  filas.forEach(f => { f.a.docs.forEach(d => uso.set(d, { f, rol: "principal" })); f.a.soporte.forEach(d => uso.set(d, { f, rol: "soporte" })); });
+  S.R = { filas, uso, crUsados, rfcPropio };
+}
+
+/* ================= carga y paquetes ================= */
+function progreso(t) { const p = $("#progress"); p.hidden = !t; p.textContent = t || ""; }
+function error(t) { const p = $("#error"); p.hidden = !t; p.textContent = t || ""; }
+function aviso(t) {
+  const p = $("#aviso"); p.hidden = !t; p.innerHTML = t ? `<span>${esc(t)}</span><button class="btn small" onclick="aviso('')">Cerrar</button>` : "";
+  clearTimeout(aviso.t); if (t) aviso.t = setTimeout(() => aviso(""), 12000);
+}
+
+/* Con el servidor local (servidor_reembolso.py) cada paquete es una carpeta real en
+   Reporte Gastos\Paquetes. Sin él (doble clic al .html o la versión publicada), todo
+   vive en memoria y la pestaña Carpetas muestra cómo quedaría. */
+const API = { ok: false, base: "" };
+const qp = o => Object.entries(o).map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join("&");
+async function apiJSON(url, opts) {
+  if (modoNube) return apiNube(url, opts);
+  const r = await fetch(url, opts);
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
+}
+const post = (url, obj) => apiJSON(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(obj) });
+async function detectarServidor() {
+  if (!/^https?:$/.test(location.protocol) || !/^(localhost|127\.0\.0\.1)$/.test(location.hostname)) return;
+  try { const j = await apiJSON("/api/ping", { cache: "no-store" }); API.ok = !!j.ok; API.base = j.base || ""; } catch {}
+}
+const enPaquete = () => API.ok && !!S.paquete;
+
+// Huella del contenido: identifica el archivo aunque cambie de nombre o de carpeta.
+async function huella(buf) {
+  try {
+    const h = await crypto.subtle.digest("SHA-1", buf);
+    return "h" + [...new Uint8Array(h)].map(b => b.toString(16).padStart(2, "0")).join("");
+  } catch {
+    const u = new Uint8Array(buf); let a = 2166136261, b = 5381;
+    for (let i = 0; i < u.length; i++) { a = Math.imul(a ^ u[i], 16777619); b = ((b << 5) + b + u[i]) | 0; }
+    return "f" + (a >>> 0).toString(16) + (b >>> 0).toString(16) + u.length.toString(16);
+  }
+}
+const esHoja = e => e.ext === "xlsx" || e.ext === "xls";
+async function expandir(lista) {
+  const out = [];
+  for (const f of lista) {
+    const ext = f.name.split(".").pop().toLowerCase();
+    if (ext === "zip") {
+      progreso(`Abriendo ${f.name}…`);
+      try {
+        const zip = await JSZip.loadAsync(await f.arrayBuffer());
+        const items = [];
+        // Fuera: ocultos, la papelera y los reportes generados (se vuelven a generar).
+        zip.forEach((p, z) => { if (!z.dir && !/(^|\/)(__MACOSX|\.)/.test(p) && !/(^|\/)_Reporte\//.test(p)) items.push([p, z]); });
+        for (const [p, z] of items) out.push({ nombre: basename(p), origen: p, ext: p.split(".").pop().toLowerCase(), buf: await z.async("arraybuffer") });
+      } catch { error(`No pude abrir ${f.name}: el .zip parece dañado.`); }
+    } else out.push({ nombre: f.name, origen: f.name, ext, buf: await f.arrayBuffer() });
+    if (!API.ok && !S.archivos.includes(f.name)) S.archivos.push(f.name);
+  }
+  return out.sort((a, b) => esHoja(b) - esHoja(a)); // el listado primero
+}
+const otroDoc = (path, t) => ({ kind: "otro", path, texto: t, montos: montosEnTexto(t), firma: t ? hash(norm(t)) : null });
+async function leerDoc(e, path, id) {
+  let d;
+  if (e.ext === "xml") d = leerCfdi(new TextDecoder().decode(e.buf), path) || otroDoc(path, "");
+  else if (e.ext === "pdf") {
+    let t = { texto: "", paginas: 0 };
+    try { t = await textoPdf(e.buf); } catch (err) { console.warn(path, err); }
+    d = pdfDoc(path, t.texto, t.paginas); S.buffers[id] = e.buf;
+  } else if (e.ext === "csv" || e.ext === "txt") d = otroDoc(path, new TextDecoder().decode(e.buf));
+  else if (/^(jpe?g|png|heic|webp|gif)$/.test(e.ext)) d = { kind: "imagen", path, montos: [], firma: null };
+  else d = otroDoc(path, "");
+  d.id = id; d.origen = e.origen;
+  d.carpetaFecha = fechaCarpeta(e.origen) || fechaCarpeta(path);
+  S.buffers[id] = e.buf; // se guarda el archivo tal cual para el ZIP del reporte
+  return d;
+}
+const iso = d => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+// Una tarea a la vez: subir, quitar o mover mientras otra corre revuelve el estado.
+let ocupado = false;
+async function tarea(fn) {
+  if (ocupado) { aviso("Espera a que termine lo que está en curso."); return; }
+  ocupado = true; error("");
+  try { await fn(); } catch (err) { console.error(err); error(err.message || String(err)); progreso(""); }
+  finally { ocupado = false; }
+}
+
+async function agregarInterno(lista, op = {}) {
+  const entradas = await expandir(lista);
+  if (!entradas.length) return [];
+  if (API.ok && !S.paquete && !entradas.some(esHoja) && !op.catalogo && !entradas.some(e => e.ext === "json")) { error("Para crear un paquete, incluye el listado AMEX (.xlsx) en lo que arrastras."); progreso(""); return []; }
+  const nuevos = [], repetidos = [];
+  let k = 0;
+  for (const e of entradas) {
+    k++; progreso(`Leyendo ${k} de ${entradas.length}: ${e.nombre}`);
+    // paquete.json y proveedores.json de la versión local: se importan, no se guardan como comprobantes.
+    if (e.ext === "json") {
+      let j = null;
+      try { j = JSON.parse(new TextDecoder().decode(e.buf)); } catch {}
+      if (j && (j.manual || j.cc || j.desc) && j.resumen) { S.estadoImportado = j; continue; }
+      if (j && (j.vinculos || j.descripciones || j.ccEmisor || j.descEmisor)) { await importarMemoria(j); continue; }
+    }
+    const id = await huella(e.buf);
+    const ya = S.docs.find(d => d.id === id);
+    if (ya) { repetidos.push(e.nombre); if (op.cargo) nuevos.push(ya); continue; }
+    if (esHoja(e)) {
+      let r = null;
+      try { r = leerAmex(XLSX.read(e.buf, { type: "array" })); } catch {}
+      if (r) { await ponerListado(r, e, id); continue; }
+      let cat = null;
+      try { cat = leerCatalogo(XLSX.read(e.buf, { type: "array" })); } catch {}
+      if (cat) { await ponerCatalogo(cat, e.nombre); continue; }
+    }
+    let path = API.ok ? e.nombre : e.origen;
+    if (enPaquete()) path = (await apiJSON(`/api/archivo?${qp({ p: S.paquete, r: "_Sin asignar/" + e.nombre })}`, { method: "PUT", body: e.buf })).r;
+    const d = await leerDoc(e, path, id);
+    S.docs.push(d); nuevos.push(d);
+  }
+  progreso("");
+  // Las decisiones de un paquete de la versión local (asignaciones, centros, descripciones…)
+  // se aplican sobre los mismos cargos: el listado es el mismo, así que los cargos coinciden.
+  const imp = S.estadoImportado;
+  if (imp && S.cargos.length) {
+    S.estadoImportado = null;
+    for (const k of ["manual", "tratamiento", "excluir", "cc", "desc"]) S[k] = { ...(imp[k] || {}), ...S[k] };
+    aviso(`Se importaron las decisiones del paquete local: ${Object.keys(imp.cc || {}).length} centros de costo, ${Object.keys(imp.desc || {}).length} descripciones y ${Object.keys(imp.manual || {}).length} asignaciones manuales.`);
+  }
+  if (repetidos.length) aviso(`Ya estaban en el paquete y no se duplicaron: ${repetidos.slice(0, 6).join(", ")}${repetidos.length > 6 ? ` y ${repetidos.length - 6} más` : ""}.`);
+  return nuevos;
+}
+// Memoria de la versión local (Catalogo\proveedores.json): ligas de proveedor, centro y descripción
+// por emisor, catálogo de descripciones y encabezado del reporte. No pisa lo que ya exista.
+async function importarMemoria(j) {
+  let n = 0, d = 0;
+  for (const [k, v] of Object.entries(j.vinculos || {})) if (!CAT.vinculos[k]) { CAT.vinculos[k] = { ...v, nombreSae: v.nombreSae || provPorClave(v.clave)?.n || "" }; n++; }
+  for (const [k, c] of Object.entries(j.ccEmisor || {})) if (!CAT.ccEmisor[k] && (!modoNube || CAT.centros.some(x => x.c === c))) { CAT.ccEmisor[k] = c; n++; }
+  for (const [k, t] of Object.entries(j.descEmisor || {})) if (!CAT.descEmisor[k]) { CAT.descEmisor[k] = t; n++; }
+  for (const x of j.descripciones || []) {
+    const ya = CAT.descripciones.find(y => normDesc(y.t) === normDesc(x.t));
+    if (ya) ya.usos = Math.max(ya.usos || 0, x.usos || 0); else { CAT.descripciones.push({ t: x.t, usos: x.usos || 0, ultimo: x.ultimo || "" }); d++; }
+  }
+  if (j.reporte && !CAT.reporte?.recibidoPor) CAT.reporte = { ...CAT.reporte, ...j.reporte };
+  indexarCatalogo(); indexarDescripciones();
+  await guardarCatalogo();
+  aviso(`Memoria importada: ${n} ligas por proveedor y ${d} descripciones nuevas.`);
+}
+async function ponerListado(r, e, id) {
+  if (API.ok && !S.paquete) {
+    const nombre = r.periodo ? `AMEX ${iso(r.periodo.desde)} al ${iso(r.periodo.hasta)}` : `AMEX ${e.nombre.replace(/\.[^.]+$/, "")}`;
+    const j = await post("/api/paquete", { nombre });
+    if (modoNube && !(await tomarBloqueo(j.p))) throw new Error("El paquete " + j.p + " lo tiene abierto otra persona.");
+    await abrirInterno(j.p);
+  }
+  const viejo = S.docs.find(d => d.kind === "listado");
+  if (viejo && viejo.id === id) return;
+  if (viejo) {
+    if (enPaquete()) await post("/api/quitar", { p: S.paquete, r: viejo.path });
+    S.docs = S.docs.filter(d => d !== viejo);
+    S.manual = {}; S.tratamiento = {}; S.excluir = {}; S.cc = {}; S.desc = {}; S.abiertos.clear();
+    aviso("Se reemplazó el listado AMEX; las asignaciones manuales del anterior se reiniciaron.");
+  }
+  let path = e.nombre;
+  if (enPaquete()) path = (await apiJSON(`/api/archivo?${qp({ p: S.paquete, r: e.nombre })}`, { method: "PUT", body: e.buf })).r;
+  S.docs.push({ kind: "listado", id, path, montos: [], firma: null, origen: e.origen }); S.buffers[id] = e.buf;
+  S.cargos = r.cargos; S.periodo = r.periodo;
+}
+
+function agregar(lista, op = {}) {
+  return tarea(async () => {
+    const nuevos = await agregarInterno(lista, op);
+    if (op.cargo && nuevos.length) asignarACargo(op.cargo, nuevos);
+    await sincronizar();
+  });
+}
+// Lo agregado desde la ficha de un gasto queda asignado a ese gasto. Si el gasto ya
+// estaba comprobado, entra como soporte; si no, toma el lugar del comprobante.
+function asignarACargo(cid, nuevos) {
+  const f = S.R?.filas.find(x => x.cg.id === cid);
+  const actuales = f && f.estado === "ok" ? [...f.a.docs, ...f.a.soporte].filter(d => !d.cruces).map(d => d.id) : [];
+  S.manual[cid] = [...new Set([...actuales, ...nuevos.map(d => d.id)])];
+  delete S.excluir[cid];
+  S.abiertos.add(cid);
+}
+function quitarDoc(id) {
+  const d = S.docs.find(x => x.id === id);
+  if (!d) return;
+  if (!confirm(`¿Quitar «${basename(d.path)}» del paquete?${enPaquete() ? "\n\nNo se borra: se mueve a la carpeta .papelera del paquete." : ""}`)) return;
+  return tarea(async () => {
+    if (enPaquete()) await post("/api/quitar", { p: S.paquete, r: d.path });
+    S.docs = S.docs.filter(x => x !== d); delete S.buffers[id];
+    for (const k of Object.keys(S.manual)) { S.manual[k] = S.manual[k].filter(x => x !== id); if (!S.manual[k].length) delete S.manual[k]; }
+    await sincronizar();
+  });
+}
+function sustituirDoc(id, lista) {
+  const viejo = S.docs.find(x => x.id === id);
+  if (!viejo) return;
+  return tarea(async () => {
+    const nuevos = (await agregarInterno(lista)).filter(d => d !== viejo);
+    if (!nuevos.length) { aviso("El archivo nuevo es idéntico a uno que ya está en el paquete; no se sustituyó nada."); await sincronizar(); return; }
+    const ids = nuevos.map(d => d.id);
+    let estaba = false;
+    for (const k of Object.keys(S.manual)) { const i = S.manual[k].indexOf(id); if (i >= 0) { S.manual[k].splice(i, 1, ...ids); estaba = true; } }
+    // Si el viejo respaldaba un gasto por empate automático, el nuevo se queda con ese gasto.
+    const u = S.R?.uso.get(viejo) || (viejo.rep && S.R?.uso.get(viejo.rep));
+    if (!estaba && u && !u.f.a.cruce) S.manual[u.f.cg.id] = [...new Set([...[...u.f.a.docs, ...u.f.a.soporte].map(d => d.id).filter(x => x !== id && x !== viejo.rep?.id), ...ids])];
+    if (enPaquete()) await post("/api/quitar", { p: S.paquete, r: viejo.path });
+    S.docs = S.docs.filter(x => x !== viejo); delete S.buffers[id];
+    await sincronizar();
+  });
+}
+
+function limpiarTrabajo() {
+  Object.assign(S, { archivos: [], cargos: [], periodo: null, docs: [], buffers: {}, manual: {}, tratamiento: {}, excluir: {}, cc: {}, desc: {}, filtro: null, R: null, tab: "cargos", q: "", qDocs: "", carpetas: new Set() });
+  S.abiertos.clear(); S.colapsados.clear(); S.arbolCerradas = new Set(["_Duplicados"]);
+}
+async function cargarDirectorio() { S.lista = (await apiJSON("/api/paquetes")).paquetes; }
+async function abrirInterno(nombre) {
+  const j = await apiJSON(`/api/archivos?${qp({ p: nombre })}`);
+  limpiarTrabajo();
+  S.paquete = nombre; S.rutaPaquete = j.ruta; S.carpetas = new Set(j.carpetas);
+  // Los reportes generados viven en _Reporte y no son comprobantes: no se leen ni se acomodan.
+  S.reportes = j.archivos.filter(a => a.r.startsWith("_Reporte/")).map(a => a.r);
+  j.archivos = j.archivos.filter(a => !a.r.startsWith("_Reporte/"));
+  const arch = [...j.archivos].sort((a, b) => /\.xlsx?$/i.test(b.r) - /\.xlsx?$/i.test(a.r));
+  let k = 0;
+  for (const a of arch) {
+    k++; progreso(`Abriendo ${k} de ${arch.length}: ${basename(a.r)}`);
+    const buf = await leerArchivo(nombre, a.r);
+    const e = { nombre: basename(a.r), origen: a.r, ext: a.r.split(".").pop().toLowerCase(), buf };
+    const id = await huella(buf);
+    if (S.docs.some(d => d.id === id)) continue;
+    if (esHoja(e) && !a.r.includes("/")) {
+      let r = null;
+      try { r = leerAmex(XLSX.read(buf, { type: "array" })); } catch {}
+      if (r) { S.cargos = r.cargos; S.periodo = r.periodo; S.docs.push({ kind: "listado", id, path: a.r, montos: [], firma: null, origen: a.r }); S.buffers[id] = buf; continue; }
+    }
+    S.docs.push(await leerDoc(e, a.r, id));
+  }
+  const est = j.estado || {};
+  S.manual = est.manual || {}; S.tratamiento = est.tratamiento || {}; S.excluir = est.excluir || {}; S.cc = est.cc || {}; S.desc = est.desc || {};
+  progreso("");
+}
+const abrirPaquete = nombre => tarea(async () => { if (modoNube && !(await tomarBloqueo(nombre))) return; await abrirInterno(nombre); await sincronizar(); });
+const volverDirectorio = () => tarea(async () => { if (modoNube) await soltarBloqueo(); S.paquete = null; limpiarTrabajo(); aviso(""); await cargarDirectorio(); render(); });
+
+/* ================= carpetas del paquete ================= */
+const MES3 = ["ENE", "FEB", "MAR", "ABR", "MAY", "JUN", "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"];
+const ddmmyy = d => String(d.getDate()).padStart(2, "0") + String(d.getMonth() + 1).padStart(2, "0") + String(d.getFullYear()).slice(2);
+function mesPase(d) {
+  const cnt = {};
+  (d.cruces || []).forEach(x => { if (x.fecha) cnt[x.fecha.getMonth()] = (cnt[x.fecha.getMonth()] || 0) + 1; });
+  const m = Object.entries(cnt).sort((a, b) => b[1] - a[1])[0]?.[0];
+  return MES3[m != null ? +m : (d.fecha || d.carpetaFecha || new Date()).getMonth()];
+}
+// Dónde va cada archivo: la carpeta de la «Fecha» del cargo AMEX que respalda (DDMMYY),
+// PASE\MES para los estados de cuenta de casetas, y _Sin asignar / _Duplicados para el resto.
+function planCarpetas() {
+  const dest = new Map(), carpetas = new Set();
+  const poner = (d, c) => { dest.set(d, c); if (d.kind === "cfdi") d.pdfs.forEach(p => dest.set(p, c)); };
+  for (const f of S.R?.filas || []) {
+    if (f.estado === "fuera" || esPase(f.cg)) continue;
+    const c = ddmmyy(f.cg.fecha); carpetas.add(c);
+    [...f.a.docs, ...f.a.soporte].forEach(d => poner(d, c));
+  }
+  for (const d of S.docs) {
+    if ((d.kind === "cfdi" && /PASE/i.test(d.emisor)) || (d.kind === "pdf" && d.pase && !d.rep)) {
+      const c = "PASE/" + mesPase(d); carpetas.add(c); poner(d, c);
+    }
+  }
+  for (const d of S.docs) {
+    if (dest.has(d) || d.rep) continue;
+    dest.set(d, d.kind === "listado" ? "" : d.dupDe ? "_Duplicados" : "_Sin asignar");
+    if (d.kind === "cfdi") d.pdfs.forEach(p => dest.set(p, dest.get(d)));
+  }
+  for (const d of S.docs) if (!dest.has(d)) dest.set(d, d.rep ? dest.get(d.rep) ?? "_Sin asignar" : "_Sin asignar");
+  return { dest, carpetas };
+}
+const rutaEn = (c, nombre) => (c ? c + "/" : "") + nombre;
+async function acomodar() {
+  const { dest, carpetas } = planCarpetas();
+  const faltan = [...carpetas].filter(c => !S.carpetas.has(c));
+  if (faltan.length) { await post("/api/carpetas", { p: S.paquete, carpetas: faltan }); faltan.forEach(c => { S.carpetas.add(c); if (c.includes("/")) S.carpetas.add(c.split("/")[0]); }); }
+  const mov = S.docs.filter(d => dirname(d.path) !== dest.get(d));
+  let k = 0;
+  for (const d of mov) {
+    k++; progreso(`Acomodando ${k} de ${mov.length}: ${basename(d.path)}`);
+    const j = await post("/api/mover", { p: S.paquete, de: d.path, a: rutaEn(dest.get(d), basename(d.path)) });
+    d.path = j.r;
+    if (dest.get(d)) S.carpetas.add(dest.get(d));
+  }
+  progreso("");
+}
+async function guardarEstado() {
+  const F = S.R?.filas || [];
+  const suma = fs => fs.reduce((t, f) => t + f.cg.importe, 0);
+  const resumen = {
+    periodo: S.periodo ? { desde: iso(S.periodo.desde), hasta: iso(S.periodo.hasta) } : null,
+    cargos: F.length, total: suma(F), comprobados: F.filter(f => f.estado === "ok").length, importeComprobado: suma(F.filter(f => f.estado === "ok")),
+    pendientes: F.filter(f => ["dif", "sinxml", "revisar", "falta"].includes(f.estado)).length,
+    sinComprobante: F.filter(f => f.estado === "falta").length, fuera: F.filter(f => f.estado === "fuera").length,
+    sinCentro: F.filter(f => f.estado !== "fuera" && !f.cc?.c).length,
+    sinDescripcion: F.filter(f => f.estado !== "fuera" && !f.desc?.t).length,
+    archivos: S.docs.length, actualizado: new Date().toISOString(),
+  };
+  const estado = { version: 1, manual: S.manual, tratamiento: S.tratamiento, excluir: S.excluir, cc: S.cc, desc: S.desc, resumen };
+  await apiJSON(`/api/estado?${qp({ p: S.paquete })}`, { method: "PUT", body: JSON.stringify(estado, null, 1) });
+}
+async function sincronizar() {
+  clasificar(S.docs);
+  if (S.cargos.length) calcular(); else S.R = null;
+  if (enPaquete()) { render(); await acomodar(); await guardarEstado(); }
+  render();
+}
+async function cambio() { await tarea(sincronizar); }
+
+/* ================= catálogo de proveedores SAE ================= */
+/* El catálogo (clave y nombre de Aspel SAE) es uno solo para todos los paquetes: con el
+   servidor vive en Reporte Gastos\Catalogo\proveedores.json; sin él, en este navegador.
+   Cada emisor (por RFC si hay CFDI; si no, por nombre) queda ligado a su clave una vez
+   que la confirmas, y esa liga se reutiliza en los siguientes periodos. */
+const CC_INICIALES = [{ c: "CC-009", n: "Monitoreo" }, { c: "CC-013", n: "Mejoradores" }, { c: "CC-015", n: "Desarrollo de Proyectos" }, { c: "CC-016", n: "Sempra" }];
+const CAT = { proveedores: [], vinculos: {}, fuente: "", cargado: "", centros: CC_INICIALES.map(x => ({ ...x })), ccEmisor: {}, descripciones: [], descEmisor: {}, reporte: { gastosDe: "TARJETA AMEX", recibidoPor: "" } };
+let catIndice = null;
+const SUFIJOS = new Set(["sa", "de", "cv", "sab", "s", "rl", "sapi", "sc", "c", "v", "b", "inc", "llc", "ltd", "limited", "corp", "corporation", "co", "gmbh", "sas", "sl", "pbc", "the", "y", "and", "mexico", "mex"]);
+const tokensProv = s => norm(s).replace(/[^a-z0-9ñ ]/g, " ").split(" ").filter(w => w && !SUFIJOS.has(w));
+const normProv = s => tokensProv(s).join(" ");
+function indexarCatalogo() {
+  catIndice = CAT.proveedores.map(p => ({ ...p, t: tokensProv(p.n), k: normProv(p.n) }));
+  const dl = $("#dl-prov");
+  if (dl) dl.innerHTML = CAT.proveedores.map(p => `<option value="${esc(p.c + " · " + p.n)}"></option>`).join("");
+}
+const provPorClave = c => CAT.proveedores.find(p => p.c === c);
+async function cargarCatalogo() {
+  if (modoNube) { if (NB.sesion && NB.catUnidad !== NB.unidad) await cargarCatalogoNube(); return; }
+  let j = null;
+  if (API.ok) { try { j = await apiJSON("/api/catalogo"); } catch {} }
+  else { try { j = JSON.parse(localStorage.getItem("amex.catalogo") || "null"); } catch {} }
+  if (j && j.proveedores) Object.assign(CAT, { proveedores: j.proveedores, vinculos: j.vinculos || {}, fuente: j.fuente || "", cargado: j.cargado || "" });
+  if (j && Array.isArray(j.centros)) CAT.centros = j.centros;
+  if (j && j.ccEmisor) CAT.ccEmisor = j.ccEmisor;
+  if (j && Array.isArray(j.descripciones)) CAT.descripciones = j.descripciones;
+  if (j && j.descEmisor) CAT.descEmisor = j.descEmisor;
+  if (j && j.reporte) CAT.reporte = { ...CAT.reporte, ...j.reporte };
+  indexarCatalogo(); indexarDescripciones();
+}
+async function guardarCatalogo() {
+  if (modoNube) return guardarNube();
+  const datos = JSON.stringify({ version: 1, fuente: CAT.fuente, cargado: CAT.cargado, proveedores: CAT.proveedores, vinculos: CAT.vinculos, centros: CAT.centros, ccEmisor: CAT.ccEmisor, descripciones: CAT.descripciones, descEmisor: CAT.descEmisor, reporte: CAT.reporte });
+  if (API.ok) await apiJSON("/api/catalogo", { method: "PUT", body: datos });
+  else { try { localStorage.setItem("amex.catalogo", datos); } catch { aviso("No pude guardar el catálogo en este navegador."); } }
+}
+// Excel con columnas CLAVE y NOMBRE (el de Aspel SAE trae la clave con espacios a la izquierda).
+function leerCatalogo(wb) {
+  for (const n of wb.SheetNames) {
+    const rows = XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: false, defval: null });
+    const h = rows.findIndex(r => r && r.some(c => /^clave/.test(norm(c))) && r.some(c => /^nombre|razon social/.test(norm(c))));
+    if (h < 0) continue;
+    const ic = rows[h].findIndex(c => /^clave/.test(norm(c))), inn = rows[h].findIndex(c => /^nombre|razon social/.test(norm(c)));
+    const out = [];
+    rows.slice(h + 1).forEach(r => { const c = String(r?.[ic] ?? "").trim(), nm = String(r?.[inn] ?? "").trim(); if (c && nm) out.push({ c, n: nm }); });
+    if (out.length) return out;
+  }
+  return null;
+}
+async function ponerCatalogo(lista, nombreArchivo) {
+  if (modoNube) { aviso("En línea los proveedores vienen del maestro de ASPEL de Control de Presupuestos: no hace falta cargar el Excel."); return; }
+  const extras = CAT.proveedores.filter(p => p.manual && !lista.some(q => q.c === p.c));
+  CAT.proveedores = [...lista, ...extras]; CAT.fuente = nombreArchivo; CAT.cargado = new Date().toISOString();
+  indexarCatalogo();
+  const perdidas = Object.values(CAT.vinculos).filter(v => !provPorClave(v.clave)).length;
+  await guardarCatalogo();
+  aviso(`Catálogo de proveedores cargado: ${lista.length.toLocaleString("es-MX")} proveedores de ${nombreArchivo}.${perdidas ? ` ${perdidas} ligas apuntan a claves que ya no están en el catálogo.` : ""}`);
+}
+// Quién emite el comprobante de un cargo.
+function emisorDe(f) {
+  const d = f.doc;
+  if (d?.kind === "cfdi") return { k: "RFC:" + d.rfc, nombre: d.emisor, rfc: d.rfc };
+  const nombre = esPase(f.cg) ? "PASE, Servicios Electrónicos" : nombreProv(f.cg) || f.cg.descripcion.replace(/\s+(CIUDAD DE MEXIC|SAN FRANCISCO|SAN DIEGO|MEXICO CITY|SINGAPORE).*$/i, "");
+  return { k: "N:" + normProv(nombre), nombre, rfc: "" };
+}
+function sugerencias(nombre, max = 3) {
+  const t = tokensProv(nombre);
+  if (!t.length || !catIndice) return [];
+  return catIndice.map(p => {
+    const inter = p.t.filter(w => t.includes(w)).length;
+    if (!inter) return null;
+    const jac = inter / new Set([...p.t, ...t]).size;
+    const cont = inter / Math.min(p.t.length, t.length);
+    return { p, s: jac + (cont === 1 ? .3 : 0) };
+  }).filter(x => x && x.s >= .45).sort((a, b) => b.s - a.s).slice(0, max).map(x => x.p);
+}
+// Clave para un emisor: la liga confirmada; si no, la coincidencia exacta y única de nombre.
+function claveDe(em) {
+  const v = CAT.vinculos[em.k];
+  if (v) { const p = provPorClave(v.clave); return { clave: v.clave, nombre: p ? p.n : v.nombreSae || "", origen: "confirmado", falta: !p && !v.nombreSae }; }
+  // En línea, un CFDI se liga solo por el RFC del emisor contra el maestro de ASPEL.
+  if (modoNube && em.rfc && NB.porRfc) {
+    const ps = NB.porRfc.get(em.rfc.toUpperCase()) || [];
+    if (ps.length === 1) return { clave: ps[0].c, nombre: ps[0].n, origen: "rfc" };
+    if (ps.length > 1) return { clave: null, origen: "sin", sugerencias: ps.slice(0, 4) };
+  }
+  if (!catIndice) return { clave: null, origen: "sin" };
+  const k = normProv(em.nombre);
+  const ex = k ? catIndice.filter(p => p.k === k) : [];
+  if (ex.length === 1) return { clave: ex[0].c, nombre: ex[0].n, origen: "auto" };
+  return { clave: null, origen: "sin", sugerencias: ex.length > 1 ? ex.slice(0, 4) : sugerencias(em.nombre) };
+}
+async function ligar(k, clave, nombreEmisor) {
+  if (!clave) delete CAT.vinculos[k];
+  else CAT.vinculos[k] = { clave, emisor: nombreEmisor, nombreSae: provPorClave(clave)?.n || "", fecha: new Date().toISOString().slice(0, 10) };
+  await guardarCatalogo();
+}
+// Lo que se escribe en el selector: «123 · NOMBRE», la clave sola o el nombre exacto.
+function claveDeTexto(v) {
+  v = String(v || "").trim();
+  if (!v) return "";
+  const m = v.match(/^(\S+)\s+·/);
+  if (m && provPorClave(m[1])) return m[1];
+  if (provPorClave(v)) return v;
+  const p = CAT.proveedores.find(p => norm(p.n) === norm(v));
+  if (p) return p.c;
+  // Un pedazo del nombre que solo aparece en un proveedor también sirve.
+  const hits = CAT.proveedores.filter(p => norm(p.n).includes(norm(v)));
+  return hits.length === 1 ? hits[0].c : null;
+}
+function provCelda(f) {
+  if (!f.prov) return "";
+  const c = f.prov;
+  if (!c.clave) return `<span class="sinclave">${CAT.proveedores.length ? "Sin clave" : ""}</span>`;
+  return `<span class="clave">${esc(c.clave)}</span>${c.origen === "auto" ? `<span class="tagauto" title="Coincidencia exacta de nombre; confírmala en la ficha o en Proveedores">auto</span>` : ""}<div class="sub">${esc(c.nombre)}</div>`;
+}
+function provHtml(f) {
+  if (!f.prov || f.estado === "fuera") return "";
+  const em = f.emisor, c = f.prov;
+  if (!CAT.proveedores.length) return `<div class="provbox"><b>Proveedor en Aspel SAE</b><div class="sub">Carga el catálogo de proveedores (.xlsx con CLAVE y NOMBRE) en la pestaña Proveedores.</div></div>`;
+  return `<div class="provbox"><div class="provlab">Proveedor en Aspel SAE para «${esc(em.nombre)}»${em.rfc ? ` (${esc(em.rfc)})` : ""}</div>
+      ${selectorProv(em, c)}
+    <div class="sugs">${c.origen === "auto" ? `<span class="tagauto">auto</span><button class="btn small" data-provok="${esc(em.k)}" data-provc="${esc(c.clave)}" data-provn="${esc(em.nombre)}">Confirmar</button>` : c.origen === "confirmado" ? `<span class="dim">Confirmado; se aplica a todos sus cargos y a los siguientes periodos.</span>` : c.origen === "rfc" ? `<span class="dim">Encontrado por RFC en el maestro de ASPEL.</span>` : ""}
+      ${!c.clave && c.sugerencias?.length ? `<span class="dim">¿Es…?</span>${c.sugerencias.map(p => `<button class="btn small" data-provok="${esc(em.k)}" data-provc="${esc(p.c)}" data-provn="${esc(em.nombre)}">${esc(p.c)} · ${esc(p.n)}</button>`).join("")}` : ""}
+      ${!c.clave && !c.sugerencias?.length ? `<span class="sinclave">No lo encuentro en el catálogo. Si ya lo diste de alta en SAE, agrégalo en la pestaña Proveedores.</span>` : ""}
+    </div></div>`;
+}
+// Selector de clave: se guarda al elegir de la lista, con Enter o con el botón Guardar; Esc deshace.
+function selectorProv(em, c) {
+  const val = c.clave ? c.clave + " · " + c.nombre : "";
+  const hay = CAT.proveedores.length > 0;
+  return `<div class="provwrap"><div class="provsel"><input list="dl-prov" data-prov="${esc(em.k)}" data-provn="${esc(em.nombre)}" data-orig="${esc(c.origen === "confirmado" ? c.clave : "")}" data-origv="${esc(val)}" value="${esc(val)}"
+      placeholder="${hay ? "Escribe el nombre o la clave" : "Primero carga el catálogo de proveedores"}" ${hay ? "" : "disabled"}>
+    <button class="btn small primary" data-provguardar hidden>Guardar</button></div><div class="provmsg" hidden></div></div>`;
+}
+function enlazarProv(v) {
+  v.querySelectorAll("[data-prov]").forEach(i => {
+    const btn = i.parentElement.querySelector("[data-provguardar]");
+    const msg = i.closest(".provwrap").querySelector(".provmsg");
+    // El resultado se dice junto al campo: un aviso arriba de la página no se ve desde la tabla.
+    const decir = (html, cls = "") => { msg.hidden = !html; msg.className = "provmsg " + cls; msg.innerHTML = html || ""; };
+    const fijar = async clave => {
+      await ligar(i.dataset.prov, clave, i.dataset.provn);
+      aviso(clave ? `Guardado: «${i.dataset.provn}» es el proveedor ${clave} · ${provPorClave(clave)?.n || ""} en SAE.` : `Se quitó la clave de «${i.dataset.provn}».`);
+      await cambio();
+    };
+    const guardar = async () => {
+      try {
+        const txt = i.value.trim();
+        const clave = claveDeTexto(txt);
+        if (clave === null) {
+          const varios = CAT.proveedores.filter(p => norm(p.n).includes(norm(txt))).length;
+          if (/^[A-Za-z0-9-]{1,10}$/.test(txt) && !varios) {
+            // Una clave que no viene en el Excel: se agrega al catálogo con el nombre que le pongas.
+            decir(`La clave ${esc(txt)} no está en el catálogo. Nombre en SAE <input data-provnom value="${esc(i.dataset.provn.toUpperCase())}"> <button class="btn small primary" data-provnueva>Agregar al catálogo y guardar</button>`, "bad");
+            const nb = msg.querySelector("[data-provnueva]");
+            nb.onclick = async e => {
+              e.stopPropagation();
+              const nom = msg.querySelector("[data-provnom]").value.trim() || i.dataset.provn;
+              try { CAT.proveedores.push({ c: txt, n: nom, manual: true }); indexarCatalogo(); await fijar(txt); }
+              catch (err) { decir(`No se pudo guardar: ${esc(err.message)}`, "bad"); }
+            };
+            msg.querySelector("[data-provnom]").onclick = e => e.stopPropagation();
+          } else decir(varios > 1 ? `«${esc(txt)}» aparece en ${varios} proveedores: escribe más del nombre y elige uno de la lista.` : `No encuentro «${esc(txt)}» en el catálogo. Si ya existe en SAE, escribe su clave.`, "bad");
+          return;
+        }
+        if (clave === i.dataset.orig && i.dataset.orig) { btn.hidden = true; decir(""); return; }
+        decir("Guardando…");
+        await fijar(clave);
+      } catch (err) { decir(`No se pudo guardar: ${esc(err.message)}`, "bad"); }
+    };
+    i.oninput = () => {
+      btn.hidden = i.value === i.dataset.origv;
+      // Elegir una opción de la lista guarda en el acto.
+      if (i.value !== i.dataset.origv && CAT.proveedores.some(p => p.c + " · " + p.n === i.value)) guardar();
+    };
+    i.onkeydown = e => {
+      if (e.key === "Enter") { e.preventDefault(); guardar(); }
+      if (e.key === "Escape") { i.value = i.dataset.origv; btn.hidden = true; }
+    };
+    i.onclick = e => e.stopPropagation();
+    // En Firefox el primer clic fuera del campo solo cierra la lista de sugerencias;
+    // por eso el botón actúa al presionar, no al soltar.
+    btn.onpointerdown = e => { e.preventDefault(); e.stopPropagation(); guardar(); };
+    btn.onclick = e => { e.stopPropagation(); if (e.detail === 0) guardar(); };
+  });
+  v.querySelectorAll("[data-provok]").forEach(b => b.onclick = async e => { e.stopPropagation(); await ligar(b.dataset.provok, b.dataset.provc, b.dataset.provn); await cambio(); });
+}
+function renderProv() {
+  const F = (S.R?.filas || []).filter(f => f.estado !== "fuera");
+  const em = new Map();
+  F.forEach(f => { if (!em.has(f.emisor.k)) em.set(f.emisor.k, { e: f.emisor, c: f.prov, fs: [] }); em.get(f.emisor.k).fs.push(f); });
+  const filas = [...em.values()].sort((a, b) => (a.c.clave ? 1 : 0) - (b.c.clave ? 1 : 0) || b.fs.reduce((t, f) => t + f.cg.importe, 0) - a.fs.reduce((t, f) => t + f.cg.importe, 0));
+  const autos = filas.filter(x => x.c.origen === "auto");
+  const sin = filas.filter(x => !x.c.clave).length;
+  const manuales = CAT.proveedores.filter(p => p.manual);
+  const fecha = CAT.cargado ? new Date(CAT.cargado).toLocaleDateString("es-MX", { day: "2-digit", month: "short", year: "numeric" }) : "";
+  $("#view").innerHTML = `<div class="tablebar">
+      <span>${modoNube ? `<b>${CAT.proveedores.length.toLocaleString("es-MX")}</b> proveedores de ${esc(NB.unidad)} en el maestro de ASPEL (Control de Presupuestos). Los CFDI se ligan solos por RFC.` : CAT.proveedores.length ? `<b>${CAT.proveedores.length.toLocaleString("es-MX")}</b> proveedores en el catálogo${CAT.fuente ? `, de ${esc(CAT.fuente)}` : ""}${fecha ? ` (${fecha})` : ""}` : `<b>Sin catálogo.</b> Carga el Excel de proveedores de SAE (columnas CLAVE y NOMBRE).`}</span>
+      ${modoNube ? "" : `<button class="btn small${CAT.proveedores.length ? "" : " primary"}" data-cat>${CAT.proveedores.length ? "Reemplazar catálogo" : "Cargar catálogo (.xlsx)"}</button>`}
+      ${autos.length ? `<button class="btn small" data-autos>Confirmar ${autos.length} automáticos</button>` : ""}
+      <span class="cuenta">${filas.length} emisores en este paquete${sin ? ` · ${sin} sin clave` : ""}</span>
+    </div>
+    <div class="scroll"><table class="ptable"><thead><tr><th>Emisor</th><th>RFC</th><th class="n">Cargos</th><th class="n">Importe</th><th>Proveedor en Aspel SAE</th><th>Estado</th></tr></thead><tbody>
+    ${filas.map(x => `<tr><td><div class="desc">${esc(x.e.nombre)}</div></td><td class="dim">${esc(x.e.rfc)}</td><td class="n">${x.fs.length}</td><td class="n">${fmt(x.fs.reduce((t, f) => t + f.cg.importe, 0))}</td>
+      <td style="min-width:340px">${selectorProv(x.e, x.c)}
+        ${!x.c.clave && x.c.sugerencias?.length ? `<div class="sugs"><span class="dim">¿Es…?</span>${x.c.sugerencias.map(p => `<button class="btn small" data-provok="${esc(x.e.k)}" data-provc="${esc(p.c)}" data-provn="${esc(x.e.nombre)}">${esc(p.c)} · ${esc(p.n)}</button>`).join("")}</div>` : ""}</td>
+      <td>${x.c.origen === "rfc" ? "Por RFC" : x.c.origen === "confirmado" ? (x.c.falta ? `<span class="sinclave">La clave ya no está en el catálogo</span>` : "Confirmado") : x.c.origen === "auto" ? `<span class="tagauto">auto</span> <button class="btn small" data-provok="${esc(x.e.k)}" data-provc="${esc(x.c.clave)}" data-provn="${esc(x.e.nombre)}">Confirmar</button>` : `<span class="sinclave">Sin clave</span>`}</td></tr>`).join("")}
+    </tbody></table></div>
+    ${modoNube ? `<p class="sub">Si un proveedor ya está dado de alta en Aspel SAE pero todavía no aparece en el maestro, escribe su clave en el campo del emisor: la app te deja ponerle nombre y la liga queda guardada para tu compañía.</p>` : `<h3 class="seccion">Agregar un proveedor al catálogo</h3>
+    <p class="sub" style="margin:0">Para los que ya diste de alta en Aspel SAE y no vienen en el Excel. Se conservan aunque reemplaces el catálogo.</p>
+    <div class="addprov"><label>Clave<input data-np="c"></label><label style="flex:1">Nombre<input data-np="n"></label><button class="btn small primary" data-npok>Agregar</button></div>
+    ${manuales.length ? `<p class="sub">Agregados a mano: ${manuales.map(p => `${esc(p.c)} · ${esc(p.n)}`).join("; ")}</p>` : ""}`}`;
+  const v = $("#view");
+  enlazarProv(v);
+  v.querySelector("[data-cat]")?.addEventListener("click", () => $("#input-cat").click());
+  v.querySelector("[data-autos]")?.addEventListener("click", async () => { for (const x of autos) CAT.vinculos[x.e.k] = { clave: x.c.clave, emisor: x.e.nombre, nombreSae: x.c.nombre, fecha: new Date().toISOString().slice(0, 10) }; await guardarCatalogo(); await cambio(); });
+  const npok = v.querySelector("[data-npok]"); if (npok) npok.onclick = async () => {
+    const c = v.querySelector('[data-np="c"]').value.trim(), n = v.querySelector('[data-np="n"]').value.trim();
+    if (!c || !n) { aviso("Escribe la clave y el nombre."); return; }
+    if (provPorClave(c)) { aviso(`La clave ${c} ya existe: ${provPorClave(c).n}.`); return; }
+    CAT.proveedores.push({ c, n, manual: true }); indexarCatalogo(); await guardarCatalogo(); await cambio();
+  };
+}
+
+/* ================= centros de costo ================= */
+/* Un centro de costo por cargo. El catálogo de centros vive junto al de proveedores
+   (Catalogo\proveedores.json). Al elegir el centro de un cargo, la app recuerda ese centro
+   para el emisor y lo propone («auto») en sus otros cargos y en los siguientes periodos. */
+const nombreCC = c => CAT.centros.find(x => x.c === c)?.n || "";
+function ccDe(f) {
+  if (f.cg.id in S.cc) return S.cc[f.cg.id] ? { c: S.cc[f.cg.id], origen: "manual" } : null;
+  const c = CAT.ccEmisor[f.emisor.k];
+  return c && CAT.centros.some(x => x.c === c) ? { c, origen: "auto" } : null;
+}
+function ccSelect(f) {
+  if (f.estado === "fuera") return "";
+  const v = f.cc?.c || "";
+  const raro = v && !CAT.centros.some(x => x.c === v);
+  return `<select class="ccsel ${v ? "" : "vacio"}" data-cc="${f.cg.id}" aria-label="Centro de costo">
+      <option value="">Sin centro</option>
+      ${raro ? `<option value="${esc(v)}" selected>${esc(v)} (ya no está en el catálogo)</option>` : ""}
+      ${CAT.centros.map(x => `<option value="${esc(x.c)}" ${x.c === v ? "selected" : ""}>${esc(x.c)} · ${esc(x.n)}</option>`).join("")}
+    </select>${f.cc?.origen === "auto" ? `<span class="tagauto" title="El último centro que usaste para este proveedor; elígelo para confirmarlo">auto</span>` : ""}`;
+}
+async function ponerCC(ids, c) {
+  for (const id of ids) {
+    S.cc[id] = c;
+    const f = S.R?.filas.find(x => x.cg.id === id);
+    if (c && f) CAT.ccEmisor[f.emisor.k] = c;
+  }
+  if (c) { try { await guardarCatalogo(); } catch (err) { error("No pude guardar el centro de costo del proveedor: " + err.message); } }
+  await cambio();
+}
+function enlazarCC(v) {
+  v.querySelectorAll("select[data-cc]").forEach(s => {
+    s.onclick = e => e.stopPropagation();
+    s.onkeydown = e => e.stopPropagation();
+    s.onchange = () => ponerCC([s.dataset.cc], s.value);
+  });
+  v.querySelectorAll("select[data-ccmasivo]").forEach(s => s.onchange = () => {
+    if (!s.value) return;
+    const ids = s.dataset.ccmasivo.split(",");
+    ponerCC(ids, s.value);
+  });
+}
+function renderCC() {
+  const F = (S.R?.filas || []).filter(f => f.estado !== "fuera");
+  const uso = c => F.filter(f => f.cc?.c === c);
+  const sin = F.filter(f => !f.cc?.c);
+  const ed = S.ccEdit;
+  $("#view").innerHTML = `<div class="tablebar">
+      <span><b>${CAT.centros.length}</b> centros de costo en el catálogo</span>
+      <span class="cuenta">${sin.length ? `${sin.length} cargos de este paquete sin centro` : "Todos los cargos de este paquete tienen centro"}</span>
+    </div>
+    <div class="scroll"><table class="cctable"><thead><tr><th style="width:150px">Clave</th><th>Nombre</th><th class="n">Cargos en este paquete</th><th class="n">Importe</th><th style="width:210px"></th></tr></thead><tbody>
+    ${CAT.centros.map(x => {
+      const u = uso(x.c);
+      if (ed === x.c) return `<tr><td><input data-cce="c" value="${esc(x.c)}"></td><td><input data-cce="n" value="${esc(x.n)}"></td><td class="n">${u.length}</td><td class="n">${fmt(u.reduce((t, f) => t + f.cg.importe, 0))}</td>
+        <td><button class="btn small primary" data-ccguardar="${esc(x.c)}">Guardar</button> <button class="btn small" data-cccancelar>Cancelar</button></td></tr>`;
+      return `<tr><td class="clave">${esc(x.c)}</td><td>${esc(x.n)}</td><td class="n">${u.length || ""}</td><td class="n">${u.length ? fmt(u.reduce((t, f) => t + f.cg.importe, 0)) : ""}</td>
+        <td>${modoNube ? "" : `<button class="btn small" data-cceditar="${esc(x.c)}">Editar</button> <button class="btn small" data-ccquitar="${esc(x.c)}">Quitar</button>`}</td></tr>`;
+    }).join("")}
+    ${sin.length ? `<tr><td class="sinclave">Sin centro</td><td class="dim">Asígnalos en la tabla de cargos o en la ficha de cada cargo</td><td class="n">${sin.length}</td><td class="n">${fmt(sin.reduce((t, f) => t + f.cg.importe, 0))}</td><td></td></tr>` : ""}
+    </tbody></table></div>
+    ${modoNube ? `<p class="sub">Los centros de costo de ${esc(NB.unidad)} salen de los proyectos de Control de Presupuestos (Catálogo › Proyectos). Para agregar o cambiar uno, hazlo allá.</p>` : `<h3 class="seccion">Agregar un centro de costo</h3>
+    <div class="addprov"><label>Clave<input data-ccn="c" placeholder="CC-000" style="max-width:140px"></label><label style="flex:1">Nombre<input data-ccn="n"></label><button class="btn small primary" data-ccagregar>Agregar</button></div>
+    <p class="sub">El catálogo es el mismo para todos los paquetes. Si cambias una clave, se actualiza en este paquete; los paquetes anteriores conservan la clave con la que se hicieron.</p>`}`;
+  const v = $("#view");
+  const val = (sel) => v.querySelector(sel)?.value.trim() || "";
+  const guardarCat = async () => { try { await guardarCatalogo(); } catch (err) { error("No pude guardar el catálogo: " + err.message); } };
+  v.querySelectorAll("[data-cceditar]").forEach(b => b.onclick = () => { S.ccEdit = b.dataset.cceditar; renderCC(); });
+  v.querySelectorAll("[data-cccancelar]").forEach(b => b.onclick = () => { S.ccEdit = null; renderCC(); });
+  v.querySelectorAll("[data-ccguardar]").forEach(b => b.onclick = async () => {
+    const viejo = b.dataset.ccguardar, c = val('[data-cce="c"]').toUpperCase(), n = val('[data-cce="n"]');
+    if (!c || !n) { aviso("Escribe la clave y el nombre."); return; }
+    if (c !== viejo && CAT.centros.some(x => x.c === c)) { aviso(`Ya existe el centro ${c}.`); return; }
+    const x = CAT.centros.find(x => x.c === viejo); x.c = c; x.n = n;
+    if (c !== viejo) {
+      for (const k of Object.keys(S.cc)) if (S.cc[k] === viejo) S.cc[k] = c;
+      for (const k of Object.keys(CAT.ccEmisor)) if (CAT.ccEmisor[k] === viejo) CAT.ccEmisor[k] = c;
+    }
+    S.ccEdit = null; await guardarCat(); aviso(`Centro de costo guardado: ${c} · ${n}.`); await cambio();
+  });
+  v.querySelectorAll("[data-ccquitar]").forEach(b => b.onclick = async () => {
+    const c = b.dataset.ccquitar, u = uso(c).length;
+    if (!confirm(`¿Quitar ${c} · ${nombreCC(c)} del catálogo?${u ? `\n\n${u} cargos de este paquete lo usan y quedarán sin centro de costo.` : ""}`)) return;
+    CAT.centros = CAT.centros.filter(x => x.c !== c);
+    for (const k of Object.keys(S.cc)) if (S.cc[k] === c) S.cc[k] = "";
+    for (const k of Object.keys(CAT.ccEmisor)) if (CAT.ccEmisor[k] === c) delete CAT.ccEmisor[k];
+    await guardarCat(); await cambio();
+  });
+  const agCC = v.querySelector("[data-ccagregar]"); if (agCC) agCC.onclick = async () => {
+    const c = val('[data-ccn="c"]').toUpperCase(), n = val('[data-ccn="n"]');
+    if (!c || !n) { aviso("Escribe la clave y el nombre."); return; }
+    if (CAT.centros.some(x => x.c === c)) { aviso(`Ya existe el centro ${c}.`); return; }
+    CAT.centros.push({ c, n }); CAT.centros.sort((a, b) => a.c.localeCompare(b.c, "es", { numeric: true }));
+    await guardarCat(); aviso(`Centro de costo agregado: ${c} · ${n}.`); await cambio();
+  };
+}
+
+/* ================= descripciones del gasto ================= */
+/* La descripción la escribes tú, pero se va guardando en un catálogo para no reescribirla
+   cada mes: la lista sugiere las ya usadas y cada proveedor recuerda la última que le
+   pusiste («auto»). Un texto que solo difiere en mayúsculas, acentos o puntuación de uno
+   del catálogo se toma igual al del catálogo, para no tener dos versiones del mismo gasto. */
+const normDesc = t => norm(t).replace(/[^a-z0-9ñ ]/g, " ").replace(/\s+/g, " ").trim();
+function indexarDescripciones() {
+  const dl = $("#dl-desc");
+  if (dl) dl.innerHTML = [...CAT.descripciones].sort((a, b) => (b.usos || 0) - (a.usos || 0)).map(d => `<option value="${esc(d.t)}"></option>`).join("");
+}
+function descDe(f) {
+  if (f.cg.id in S.desc) return S.desc[f.cg.id] ? { t: S.desc[f.cg.id], origen: "manual" } : null;
+  const t = CAT.descEmisor[f.emisor.k];
+  return t ? { t, origen: "auto" } : null;
+}
+function canonDesc(t) {
+  t = String(t || "").replace(/\s+/g, " ").trim();
+  if (!t) return "";
+  const k = normDesc(t);
+  return CAT.descripciones.find(d => normDesc(d.t) === k)?.t || t;
+}
+function descInput(f) {
+  if (f.estado === "fuera") return "";
+  const v = f.desc?.t || "";
+  return `<input class="descin ${v ? "" : "vacio"}" list="dl-desc" data-desc="${f.cg.id}" value="${esc(v)}" data-origv="${esc(v)}" placeholder="Sin descripción" aria-label="Descripción del gasto">${f.desc?.origen === "auto" ? `<span class="tagauto" title="La última descripción que usaste para este proveedor; edítala o da Enter para confirmarla">auto</span>` : ""}`;
+}
+async function ponerDesc(ids, texto) {
+  const t = canonDesc(texto);
+  for (const id of ids) {
+    S.desc[id] = t;
+    const f = S.R?.filas.find(x => x.cg.id === id);
+    if (t && f) CAT.descEmisor[f.emisor.k] = t;
+  }
+  if (t) {
+    const d = CAT.descripciones.find(d => d.t === t);
+    if (d) { d.usos = (d.usos || 0) + ids.length; d.ultimo = new Date().toISOString().slice(0, 10); }
+    else CAT.descripciones.push({ t, usos: ids.length, ultimo: new Date().toISOString().slice(0, 10) });
+    indexarDescripciones();
+    try { await guardarCatalogo(); } catch (err) { error("No pude guardar la descripción en el catálogo: " + err.message); }
+  }
+  await cambio();
+}
+function enlazarDesc(v) {
+  v.querySelectorAll("input[data-desc]").forEach(i => {
+    i.onclick = e => e.stopPropagation();
+    i.onkeydown = e => {
+      e.stopPropagation();
+      if (e.key === "Enter") { e.preventDefault(); if (i.value === i.dataset.origv && i.value) ponerDesc([i.dataset.desc], i.value); else i.blur(); }
+      if (e.key === "Escape") { i.value = i.dataset.origv; i.blur(); }
+    };
+    i.onchange = () => { if (i.value.trim() !== i.dataset.origv) ponerDesc([i.dataset.desc], i.value); };
+  });
+  v.querySelectorAll("input[data-descmasivo]").forEach(i => {
+    i.onclick = e => e.stopPropagation();
+    i.onkeydown = e => { e.stopPropagation(); if (e.key === "Enter") { e.preventDefault(); if (i.value.trim()) ponerDesc(i.dataset.descmasivo.split(","), i.value); } };
+  });
+}
+function renderDesc() {
+  const F = (S.R?.filas || []).filter(f => f.estado !== "fuera");
+  const uso = t => F.filter(f => f.desc?.t === t);
+  const sin = F.filter(f => !f.desc?.t);
+  const lista = [...CAT.descripciones].sort((a, b) => a.t.localeCompare(b.t, "es"));
+  const provDe = t => Object.entries(CAT.descEmisor).filter(([, v]) => v === t).length;
+  const ed = S.descEdit;
+  $("#view").innerHTML = `<div class="tablebar">
+      <span><b>${CAT.descripciones.length}</b> descripciones en el catálogo</span>
+      <span class="cuenta">${sin.length ? `${sin.length} cargos de este paquete sin descripción` : "Todos los cargos de este paquete tienen descripción"}</span>
+    </div>
+    <div class="scroll"><table class="cctable"><thead><tr><th>Descripción</th><th class="n">En este paquete</th><th class="n">Proveedores que la usan</th><th class="n">Usos totales</th><th>Último uso</th><th style="width:210px"></th></tr></thead><tbody>
+    ${lista.length ? lista.map((d, i) => {
+      const u = uso(d.t);
+      if (ed === d.t) return `<tr><td><input data-desce value="${esc(d.t)}"></td><td class="n">${u.length || ""}</td><td class="n">${provDe(d.t) || ""}</td><td class="n">${d.usos || ""}</td><td>${esc(d.ultimo || "")}</td>
+        <td><button class="btn small primary" data-descguardar="${i}">Guardar</button> <button class="btn small" data-desccancelar>Cancelar</button></td></tr>`;
+      return `<tr><td>${esc(d.t)}</td><td class="n">${u.length || ""}</td><td class="n">${provDe(d.t) || ""}</td><td class="n">${d.usos || ""}</td><td class="dim">${esc(d.ultimo || "")}</td>
+        <td><button class="btn small" data-desceditar="${i}">Editar</button> <button class="btn small" data-descquitar="${i}">Quitar</button></td></tr>`;
+    }).join("") : `<tr><td colspan="6" class="dim">Todavía no hay descripciones. Se agregan solas al escribir la descripción de un cargo, o aquí abajo.</td></tr>`}
+    </tbody></table></div>
+    <h3 class="seccion">Agregar una descripción</h3>
+    <div class="addprov"><label style="flex:1">Descripción<input data-descn></label><button class="btn small primary" data-descagregar>Agregar</button></div>
+    <p class="sub">Editar una descripción la cambia en los cargos de este paquete y en los proveedores que la tienen como habitual. Los paquetes anteriores conservan el texto con el que se hicieron.</p>`;
+  const v = $("#view");
+  const guardarCat = async () => { indexarDescripciones(); try { await guardarCatalogo(); } catch (err) { error("No pude guardar el catálogo: " + err.message); } };
+  v.querySelectorAll("[data-desceditar]").forEach(b => b.onclick = () => { S.descEdit = lista[+b.dataset.desceditar].t; renderDesc(); });
+  v.querySelectorAll("[data-desccancelar]").forEach(b => b.onclick = () => { S.descEdit = null; renderDesc(); });
+  v.querySelectorAll("[data-descguardar]").forEach(b => b.onclick = async () => {
+    const viejo = lista[+b.dataset.descguardar].t, t = (v.querySelector("[data-desce]").value || "").replace(/\s+/g, " ").trim();
+    if (!t) { aviso("La descripción no puede quedar vacía."); return; }
+    const otra = CAT.descripciones.find(d => d.t !== viejo && normDesc(d.t) === normDesc(t));
+    const d = CAT.descripciones.find(d => d.t === viejo);
+    if (otra) { otra.usos = (otra.usos || 0) + (d.usos || 0); CAT.descripciones = CAT.descripciones.filter(x => x !== d); }
+    else d.t = t;
+    const nueva = otra ? otra.t : t;
+    for (const k of Object.keys(S.desc)) if (S.desc[k] === viejo) S.desc[k] = nueva;
+    for (const k of Object.keys(CAT.descEmisor)) if (CAT.descEmisor[k] === viejo) CAT.descEmisor[k] = nueva;
+    S.descEdit = null; await guardarCat(); aviso(otra ? `Se unió con la descripción existente «${nueva}».` : `Descripción guardada: «${nueva}».`); await cambio();
+  });
+  v.querySelectorAll("[data-descquitar]").forEach(b => b.onclick = async () => {
+    const t = lista[+b.dataset.descquitar].t, u = uso(t).length;
+    if (!confirm(`¿Quitar «${t}» del catálogo?${u ? `\n\n${u} cargos de este paquete la conservan; solo deja de sugerirse.` : ""}`)) return;
+    CAT.descripciones = CAT.descripciones.filter(d => d.t !== t);
+    for (const k of Object.keys(CAT.descEmisor)) if (CAT.descEmisor[k] === t) delete CAT.descEmisor[k];
+    await guardarCat(); await cambio();
+  });
+  v.querySelector("[data-descagregar]").onclick = async () => {
+    const t = (v.querySelector("[data-descn]").value || "").replace(/\s+/g, " ").trim();
+    if (!t) { aviso("Escribe la descripción."); return; }
+    if (CAT.descripciones.some(d => normDesc(d.t) === normDesc(t))) { aviso("Esa descripción ya está en el catálogo."); return; }
+    CAT.descripciones.push({ t, usos: 0, ultimo: "" });
+    await guardarCat(); aviso(`Descripción agregada: «${t}».`); await cambio();
+  };
+}
+
+/* ================= render ================= */
+/* ================= versión en línea (Supabase de Control de Presupuestos) ================= */
+/* Se activa cuando la app se sirve desde Presupuestos en /reembolso/ (o con ?nube=1 para
+   probarla). Usa la misma sesión que Presupuestos: en el mismo dominio, quien ya entró allá
+   no vuelve a escribir su contraseña. La llave es la publicable: lo que cada quien puede ver
+   o cambiar lo deciden las reglas de la base (tiene_acceso_unidad), no la app. */
+const NUBE = { url: "https://clxxsxrtxcdvqcthytws.supabase.co", key: "sb_publishable_cLqvKuqh3cUcjfmar2JZ7Q_urZSnZSi" };
+const UNIDADES_TODAS = ["OSB", "CTM", "ISE"];
+const modoNube = /^\/reembolso(\/|$)/.test(location.pathname) || new URLSearchParams(location.search).has("nube");
+const NB = { sb: null, sesion: null, perfil: null, unidades: [], unidad: null, conexion: "" };
+async function iniciarNube() {
+  if (!window.supabase?.createClient) { NB.conexion = "No se pudo cargar la librería de Supabase. Revisa la conexión a internet."; return; }
+  NB.sb = window.supabase.createClient(NUBE.url, NUBE.key, { auth: { persistSession: true, autoRefreshToken: true } });
+  const { data } = await NB.sb.auth.getSession();
+  NB.sesion = data.session;
+  NB.sb.auth.onAuthStateChange((ev, s) => {
+    const antes = NB.sesion?.user?.id;
+    NB.sesion = s;
+    if ((s?.user?.id || null) !== (antes || null)) cargarPerfil().then(render);
+  });
+  if (NB.sesion) await cargarPerfil();
+}
+async function cargarPerfil() {
+  NB.perfil = null; NB.conexion = "";
+  if (!NB.sesion) return;
+  const { data, error: err } = await NB.sb.from("perfiles").select("id, email, nombre, unidades_permitidas").eq("id", NB.sesion.user.id).maybeSingle();
+  if (err) { NB.conexion = "No pude leer tu perfil: " + err.message; return; }
+  NB.perfil = data || { email: NB.sesion.user.email, nombre: NB.sesion.user.email };
+  NB.unidades = data?.unidades_permitidas?.length ? data.unidades_permitidas : UNIDADES_TODAS;
+  let guardada = null; try { guardada = localStorage.getItem("amex.unidad"); } catch {}
+  NB.unidad = NB.unidades.includes(guardada) ? guardada : NB.unidades.includes("OSB") ? "OSB" : NB.unidades[0];
+  await verificarNube();
+  if (!NB.conexion) { try { await cargarCatalogoNube(); } catch (err) { NB.conexion = "No pude leer los catálogos: " + err.message; } }
+  // En línea, Supabase hace el papel del servidor local: paquetes, archivos y estado.
+  API.ok = !NB.conexion; API.base = `En línea · ${NB.unidad}`;
+  if (API.ok) { try { await cargarDirectorio(); } catch (err) { error(err.message); } }
+}
+// Catálogos de la compañía elegida, desde Control de Presupuestos y las tablas del reembolso.
+const chk = r => { if (r.error) throw new Error(r.error.message); return r.data; };
+async function cargarCatalogoNube() {
+  const U = NB.unidad, sb = NB.sb;
+  progreso(`Leyendo catálogos de ${U}…`);
+  try {
+    // Maestro de ASPEL: solo clave, nombre y RFC (nada de cuentas). Supabase entrega de 1,000 en 1,000.
+    const maestro = [];
+    for (let i = 0; ; i += 1000) {
+      const d = chk(await sb.from("proveedores_maestro").select("id_sae, nombre, rfc").eq("compania", U).order("id_sae").range(i, i + 999));
+      maestro.push(...d);
+      if (d.length < 1000 || i > 50000) break;
+    }
+    CAT.proveedores = maestro.filter(r => r.id_sae && r.nombre).map(r => ({ c: String(r.id_sae).trim(), n: String(r.nombre).trim(), rfc: String(r.rfc || "").trim().toUpperCase() }));
+    NB.porRfc = new Map();
+    CAT.proveedores.forEach(p => { if (/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(p.rfc)) { if (!NB.porRfc.has(p.rfc)) NB.porRfc.set(p.rfc, []); NB.porRfc.get(p.rfc).push(p); } });
+    // Centros de costo: los proyectos de la compañía que tienen clave.
+    const proy = chk(await sb.from("proyectos").select("nombre, centro_costo").eq("unidad", U));
+    const cc = new Map();
+    proy.forEach(p => { const c = String(p.centro_costo || "").trim(); if (c && !cc.has(c)) cc.set(c, p.nombre); });
+    CAT.centros = [...cc].map(([c, n]) => ({ c, n })).sort((a, b) => a.c.localeCompare(b.c, "es", { numeric: true }));
+    // Memoria por emisor, descripciones y encabezado del reporte.
+    const ligas = chk(await sb.from("reembolso_ligas").select("*").eq("unidad", U));
+    CAT.vinculos = {}; CAT.ccEmisor = {}; CAT.descEmisor = {};
+    ligas.forEach(l => {
+      if (l.id_sae) CAT.vinculos[l.emisor_k] = { clave: l.id_sae, emisor: l.emisor_nombre || "", nombreSae: l.nombre_sae || "", fecha: (l.updated_at || "").slice(0, 10) };
+      if (l.cc) CAT.ccEmisor[l.emisor_k] = l.cc;
+      if (l.descripcion) CAT.descEmisor[l.emisor_k] = l.descripcion;
+    });
+    CAT.descripciones = chk(await sb.from("reembolso_descripciones").select("texto, usos, ultimo").eq("unidad", U)).map(d => ({ t: d.texto, usos: d.usos || 0, ultimo: d.ultimo || "" }));
+    const cfg = chk(await sb.from("reembolso_config").select("reporte").eq("unidad", U).maybeSingle());
+    CAT.reporte = { gastosDe: "TARJETA AMEX", recibidoPor: "", ...(cfg?.reporte || {}) };
+    CAT.fuente = "maestro de ASPEL"; CAT.cargado = new Date().toISOString();
+    indexarCatalogo(); indexarDescripciones();
+    NB.snap = fotoNube(); NB.catUnidad = U;
+  } finally { progreso(""); }
+}
+// Lo que la app tiene en CAT, en forma de renglones de las tablas, para guardar solo lo que cambió.
+function fotoNube() {
+  const ligas = new Map(), U = NB.unidad;
+  const fila = k => { if (!ligas.has(k)) ligas.set(k, { unidad: U, emisor_k: k, emisor_nombre: null, id_sae: null, nombre_sae: null, cc: null, descripcion: null }); return ligas.get(k); };
+  for (const [k, v] of Object.entries(CAT.vinculos)) { const r = fila(k); r.id_sae = v.clave; r.nombre_sae = v.nombreSae || provPorClave(v.clave)?.n || null; r.emisor_nombre = v.emisor || null; }
+  for (const [k, c] of Object.entries(CAT.ccEmisor)) if (c) fila(k).cc = c;
+  for (const [k, t] of Object.entries(CAT.descEmisor)) if (t) fila(k).descripcion = t;
+  const desc = new Map(CAT.descripciones.map(d => [d.t, { unidad: U, texto: d.t, usos: d.usos || 0, ultimo: d.ultimo || null }]));
+  return { ligas, desc, reporte: JSON.stringify(CAT.reporte || {}) };
+}
+async function guardarNube() {
+  if (!NB.sb || !NB.snap) return;
+  const ahora = fotoNube(), antes = NB.snap, U = NB.unidad, sb = NB.sb;
+  const cambia = (a, b) => JSON.stringify(a) !== JSON.stringify(b);
+  const up = [...ahora.ligas.values()].filter(r => cambia(r, antes.ligas.get(r.emisor_k)));
+  const fuera = [...antes.ligas.keys()].filter(k => !ahora.ligas.has(k));
+  if (up.length) chk(await sb.from("reembolso_ligas").upsert(up));
+  if (fuera.length) chk(await sb.from("reembolso_ligas").delete().eq("unidad", U).in("emisor_k", fuera));
+  const upD = [...ahora.desc.values()].filter(r => cambia(r, antes.desc.get(r.texto)));
+  const fueraD = [...antes.desc.keys()].filter(k => !ahora.desc.has(k));
+  if (upD.length) chk(await sb.from("reembolso_descripciones").upsert(upD));
+  if (fueraD.length) chk(await sb.from("reembolso_descripciones").delete().eq("unidad", U).in("texto", fueraD));
+  if (ahora.reporte !== antes.reporte) chk(await sb.from("reembolso_config").upsert({ unidad: U, reporte: CAT.reporte }));
+  NB.snap = ahora;
+}
+/* Paquetes y archivos en línea. La app habla con el «servidor» por las mismas rutas /api/...;
+   en línea apiNube las atiende con Supabase. Cada archivo se guarda en el bucket con una clave
+   fija (compañía/paquete/id) y su carpeta y nombre viven en reembolso_archivos: mover o
+   renombrar es cambiar un renglón, y la papelera es una marca. */
+const claveStorage = (pid, aid) => `${NB.unidad}/${pid}/${aid}`;
+async function idPaquete(nombre) {
+  if (NB.paqIds?.[nombre]) return NB.paqIds[nombre];
+  const d = chk(await NB.sb.from("reembolso_paquetes").select("id").eq("unidad", NB.unidad).eq("nombre", nombre).maybeSingle());
+  if (!d) throw new Error("El paquete no existe");
+  (NB.paqIds ||= {})[nombre] = d.id;
+  return d.id;
+}
+async function rutaLibre(pid, r) {
+  const d = chk(await NB.sb.from("reembolso_archivos").select("ruta").eq("paquete_id", pid).eq("en_papelera", false));
+  const usadas = new Set(d.map(x => x.ruta.toLowerCase()));
+  if (!usadas.has(r.toLowerCase())) return r;
+  const m = r.match(/^(.*?)(\.[^./]+)?$/);
+  let n = 2;
+  while (usadas.has(`${m[1]} (${n})${m[2] || ""}`.toLowerCase())) n++;
+  return `${m[1]} (${n})${m[2] || ""}`;
+}
+async function nombresUsuarios(ids) {
+  if (!ids.length) return {};
+  const d = chk(await NB.sb.from("perfiles").select("id, nombre, email").in("id", [...new Set(ids)]));
+  return Object.fromEntries(d.map(x => [x.id, x.nombre || x.email]));
+}
+async function apiNube(url, opts = {}) {
+  const u = new URL(url, location.origin), q = Object.fromEntries(u.searchParams), m = (opts.method || "GET").toUpperCase();
+  const cuerpo = () => JSON.parse(opts.body || "{}");
+  const sb = NB.sb, U = NB.unidad;
+  if (!sb || !NB.sesion) throw new Error("Inicia sesión para trabajar en línea.");
+  switch (u.pathname) {
+    case "/api/paquetes": {
+      const d = chk(await sb.from("reembolso_paquetes").select("id, nombre, resumen, updated_at, bloqueado_por, bloqueado_en").eq("unidad", U));
+      NB.paqIds = Object.fromEntries(d.map(x => [x.nombre, x.id]));
+      const ajenos = d.filter(x => bloqueoVigente(x) && x.bloqueado_por !== NB.sesion.user.id);
+      const quien = await nombresUsuarios(ajenos.map(x => x.bloqueado_por));
+      return { paquetes: d.map(x => ({ nombre: x.nombre, resumen: Object.keys(x.resumen || {}).length ? x.resumen : null, modificado: Date.parse(x.updated_at) / 1000,
+        abiertoPor: ajenos.includes(x) ? quien[x.bloqueado_por] || "otra persona" : "" })) };
+    }
+    case "/api/paquete": {
+      const { nombre } = cuerpo();
+      const r = await sb.from("reembolso_paquetes").insert({ unidad: U, nombre });
+      if (r.error && r.error.code !== "23505") throw new Error(r.error.message);
+      if (NB.paqIds) delete NB.paqIds[nombre];
+      await idPaquete(nombre);
+      return { p: nombre };
+    }
+    case "/api/archivos": {
+      const pid = await idPaquete(q.p);
+      const a = chk(await sb.from("reembolso_archivos").select("id, ruta, tamano").eq("paquete_id", pid).eq("en_papelera", false));
+      const est = chk(await sb.from("reembolso_paquetes").select("estado").eq("id", pid).single());
+      NB.archIds = new Map(a.map(x => [x.ruta, x.id])); NB.archPaq = pid;
+      const carpetas = [...new Set(a.flatMap(x => { const ps = x.ruta.split("/").slice(0, -1); return ps.map((_, i) => ps.slice(0, i + 1).join("/")); }))];
+      return { archivos: a.map(x => ({ r: x.ruta, size: x.tamano })), carpetas, estado: Object.keys(est.estado || {}).length ? est.estado : null, ruta: `En línea · ${U} · ${q.p}` };
+    }
+    case "/api/archivo": {
+      if (m !== "PUT") break;
+      const pid = await idPaquete(q.p), r = await rutaLibre(pid, q.r), id = crypto.randomUUID(), buf = opts.body;
+      const up = await sb.storage.from("reembolsos").upload(claveStorage(pid, id), buf, { contentType: "application/octet-stream", upsert: false });
+      if (up.error) throw new Error("No se pudo subir " + basename(q.r) + ": " + up.error.message);
+      chk(await sb.from("reembolso_archivos").insert({ id, paquete_id: pid, unidad: U, ruta: r, nombre_original: basename(q.r), tamano: buf.byteLength }));
+      if (NB.archPaq === pid) NB.archIds.set(r, id);
+      return { r };
+    }
+    case "/api/mover": {
+      const { p, de, a } = cuerpo(), pid = await idPaquete(p);
+      if (de === a) return { r: de };
+      const r = await rutaLibre(pid, a);
+      chk(await sb.from("reembolso_archivos").update({ ruta: r }).eq("paquete_id", pid).eq("ruta", de).eq("en_papelera", false));
+      if (NB.archPaq === pid && NB.archIds.has(de)) { NB.archIds.set(r, NB.archIds.get(de)); NB.archIds.delete(de); }
+      return { r };
+    }
+    case "/api/quitar": {
+      const { p, r } = cuerpo(), pid = await idPaquete(p);
+      const d = chk(await sb.from("reembolso_archivos").update({ en_papelera: true, ruta: `.papelera/${Date.now()} ${basename(r)}` }).eq("paquete_id", pid).eq("ruta", r).eq("en_papelera", false).select("id"));
+      if (!d.length) throw new Error("No existe");
+      if (NB.archPaq === pid) NB.archIds.delete(r);
+      return { ok: true };
+    }
+    case "/api/carpetas": return { ok: true }; // en línea las carpetas existen en cuanto tienen archivos
+    case "/api/estado": {
+      const pid = await idPaquete(q.p), est = JSON.parse(opts.body), per = est.resumen?.periodo;
+      chk(await sb.from("reembolso_paquetes").update({ estado: est, resumen: est.resumen || {}, periodo_desde: per?.desde || null, periodo_hasta: per?.hasta || null }).eq("id", pid));
+      return { ok: true };
+    }
+  }
+  throw new Error("Operación no disponible en línea: " + u.pathname);
+}
+async function leerArchivo(p, r) {
+  if (!modoNube) return (await fetch(`/api/archivo?${qp({ p, r })}`)).arrayBuffer();
+  const pid = await idPaquete(p);
+  let id = NB.archPaq === pid ? NB.archIds.get(r) : null;
+  if (!id) id = chk(await NB.sb.from("reembolso_archivos").select("id").eq("paquete_id", pid).eq("ruta", r).eq("en_papelera", false).single()).id;
+  const { data, error: err } = await NB.sb.storage.from("reembolsos").download(claveStorage(pid, id));
+  if (err) throw new Error("No se pudo descargar " + basename(r) + ": " + err.message);
+  return await data.arrayBuffer();
+}
+// Bloqueo: quien abre un paquete lo marca como suyo; la marca se renueva cada 5 minutos y caduca a
+// los 30, por si alguien cierra el navegador sin salir. Abrir uno ajeno pide confirmación.
+const BLOQUEO_MIN = 30;
+const bloqueoVigente = x => !!(x.bloqueado_por && x.bloqueado_en && Date.now() - Date.parse(x.bloqueado_en) < BLOQUEO_MIN * 60000);
+async function tomarBloqueo(nombre) {
+  const pid = await idPaquete(nombre), yo = NB.sesion.user.id;
+  const x = chk(await NB.sb.from("reembolso_paquetes").select("bloqueado_por, bloqueado_en").eq("id", pid).single());
+  if (bloqueoVigente(x) && x.bloqueado_por !== yo) {
+    const quien = (await nombresUsuarios([x.bloqueado_por]))[x.bloqueado_por] || "Otra persona";
+    const hora = new Date(x.bloqueado_en).toLocaleTimeString("es-MX", { hour: "2-digit", minute: "2-digit" });
+    if (!confirm(`${quien} tiene abierto «${nombre}» (última actividad ${hora}).\n\nSi lo abres y los dos hacen cambios, se queda lo último que se guarde. ¿Abrirlo de todos modos?`)) return false;
+  }
+  chk(await NB.sb.from("reembolso_paquetes").update({ bloqueado_por: yo, bloqueado_en: new Date().toISOString() }).eq("id", pid));
+  clearInterval(NB.latido);
+  NB.latido = setInterval(() => { NB.sb.from("reembolso_paquetes").update({ bloqueado_en: new Date().toISOString() }).eq("id", pid).eq("bloqueado_por", yo).then(() => {}); }, 5 * 60000);
+  NB.bloqueado = pid;
+  return true;
+}
+async function soltarBloqueo() {
+  clearInterval(NB.latido);
+  const pid = NB.bloqueado; NB.bloqueado = null;
+  if (pid && NB.sesion) { try { await NB.sb.from("reembolso_paquetes").update({ bloqueado_por: null, bloqueado_en: null }).eq("id", pid).eq("bloqueado_por", NB.sesion.user.id); } catch {} }
+}
+window.addEventListener("pagehide", () => { if (NB.bloqueado) soltarBloqueo(); });
+// Comprueba que las tablas del reembolso respondan con los permisos de este usuario.
+async function verificarNube() {
+  const r = await NB.sb.from("reembolso_paquetes").select("id", { count: "exact", head: true }).eq("unidad", NB.unidad);
+  NB.conexion = r.error ? "Sin acceso a los paquetes: " + r.error.message : "";
+  NB.paquetesEnNube = r.count ?? 0;
+}
+function renderCuenta() {
+  const c = $("#cuenta");
+  document.body.classList.toggle("sin-sesion", modoNube && !NB.sesion);
+  $("#login").hidden = !(modoNube && !NB.sesion);
+  c.hidden = !modoNube || !NB.sesion;
+  if (c.hidden) return;
+  c.innerHTML = `<span><b>${esc(NB.perfil?.nombre || NB.sesion.user.email)}</b> · ${esc(NB.sesion.user.email)}</span>
+    <label>Compañía <select id="sel-unidad" ${NB.unidades.length < 2 ? "disabled" : ""}>${NB.unidades.map(u => `<option ${u === NB.unidad ? "selected" : ""}>${esc(u)}</option>`).join("")}</select></label>
+    ${NB.conexion ? `<span class="mal">${esc(NB.conexion)}</span>` : `<span class="ok" title="Las tablas del reembolso responden con tus permisos">● En línea</span>`}
+    <button class="btn small" id="btn-salir">Salir</button>`;
+  $("#sel-unidad").onchange = async e => {
+    NB.unidad = e.target.value; try { localStorage.setItem("amex.unidad", NB.unidad); } catch {}
+    if (S.paquete) await soltarBloqueo();
+    S.paquete = null; limpiarTrabajo();
+    await verificarNube();
+    try { await cargarCatalogoNube(); } catch (err) { error("No pude leer los catálogos de " + NB.unidad + ": " + err.message); }
+    API.ok = !NB.conexion; API.base = `En línea · ${NB.unidad}`;
+    if (API.ok) { try { await cargarDirectorio(); } catch (err) { error(err.message); } }
+    render();
+  };
+  $("#btn-salir").onclick = async () => { await soltarBloqueo(); await NB.sb.auth.signOut(); NB.sesion = null; NB.perfil = null; API.ok = false; S.paquete = null; limpiarTrabajo(); render(); };
+}
+async function entrar() {
+  const msg = $("#lg-msg"), btn = $("#lg-entrar");
+  const email = $("#lg-email").value.trim(), password = $("#lg-pass").value;
+  if (!email || !password) { msg.className = "msg mal"; msg.textContent = "Escribe tu correo y tu contraseña."; return; }
+  btn.disabled = true; msg.className = "msg"; msg.textContent = "Entrando…";
+  const { data, error: err } = await NB.sb.auth.signInWithPassword({ email, password });
+  btn.disabled = false;
+  if (err) { msg.className = "msg mal"; msg.textContent = /invalid/i.test(err.message) ? "Correo o contraseña incorrectos." : err.message; return; }
+  NB.sesion = data.session; $("#lg-pass").value = ""; msg.textContent = "";
+  await cargarPerfil(); render();
+}
+async function olvide() {
+  const msg = $("#lg-msg"), email = $("#lg-email").value.trim();
+  if (!email) { msg.className = "msg mal"; msg.textContent = "Escribe tu correo y vuelve a dar clic."; return; }
+  const { error: err } = await NB.sb.auth.resetPasswordForEmail(email, { redirectTo: location.origin });
+  msg.className = err ? "msg mal" : "msg";
+  msg.textContent = err ? err.message : "Te enviamos un correo para cambiar tu contraseña.";
+}
+
+function render() {
+  renderCuenta();
+  const enDir = API.ok && !S.paquete;
+  $("#dir").hidden = !enDir;
+  if (enDir) renderDirectorio();
+  const pb = $("#paqbar");
+  pb.hidden = !enPaquete();
+  if (enPaquete()) pb.innerHTML = `<button class="btn small" data-volver>← Paquetes</button><b>${esc(S.paquete)}</b><span class="dim">${esc(S.rutaPaquete || "")}</span>`;
+  pb.querySelector("[data-volver]")?.addEventListener("click", volverDirectorio);
+  $("#drop-t").textContent = enDir ? "Arrastra el listado AMEX (.xlsx) para crear un paquete"
+    : enPaquete() ? "Arrastra facturas para agregarlas al paquete" : "Arrastra el .zip de facturas y el listado AMEX (.xlsx)";
+  $("#drop-h").textContent = enDir ? `Puedes soltar las facturas en el mismo arrastre, sueltas o en .zip. ${modoNube ? `Se guardan en línea, en los paquetes de ${NB.unidad},` : "Se guardan en Reporte Gastos\\Paquetes"} y se acomodan solas en la carpeta de su gasto.`
+    : enPaquete() ? "Sueltas o en .zip, en cualquier orden y sin carpetas. Se guardan en la carpeta del paquete y se acomodan en la carpeta de su gasto."
+    : modoNube ? `Versión en línea en construcción: por ahora los archivos viven solo en esta pestaña. En los siguientes pasos se guardarán en los paquetes de ${NB.unidad || "tu compañía"}.`
+    : "Si el listado viene dentro del .zip, basta con el .zip. Sin el servidor local, los archivos viven solo en esta pestaña: para guardarlos en carpetas abre la app con Iniciar_Reembolso.bat.";
+  $("#files").innerHTML = API.ok ? "" : S.archivos.map(n => `<span><b>${esc(n)}</b></span>`).join("");
+  $("#reset").hidden = API.ok || !S.archivos.length;
+  const R = S.R;
+  if (enDir || !R) { $("#summary").hidden = $("#toolbar").hidden = true; $("#view").innerHTML = enPaquete() && !R ? `<div class="scroll"><div class="empty">El paquete no tiene listado AMEX. Arrastra el .xlsx arriba.</div></div>` : ""; return; }
+  $("#summary").hidden = $("#toolbar").hidden = false;
+  renderResumen();
+  document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === S.tab)));
+  $("#n-cargos").textContent = R.filas.length;
+  $("#n-docs").textContent = S.docs.length;
+  $("#n-carp").textContent = planCarpetas().carpetas.size || "";
+  const sinClave = new Set(R.filas.filter(f => f.estado !== "fuera" && !f.prov?.clave).map(f => f.emisor.k)).size;
+  $("#n-prov").textContent = CAT.proveedores.length ? (sinClave ? `${sinClave} sin clave` : "") : "sin catálogo";
+  $("#hint").hidden = S.tab !== "cargos";
+  const sinCC = R.filas.filter(f => f.estado !== "fuera" && !f.cc?.c).length;
+  $("#n-cc").textContent = sinCC ? `${sinCC} sin centro` : "";
+  const sinDesc = R.filas.filter(f => f.estado !== "fuera" && !f.desc?.t).length;
+  $("#n-desc").textContent = sinDesc ? `${sinDesc} sin descripción` : "";
+  if (S.tab === "cargos") renderCargos(); else if (S.tab === "docs") renderDocs(); else if (S.tab === "prov") renderProv(); else if (S.tab === "cc") renderCC(); else if (S.tab === "desc") renderDesc(); else renderArbol();
+}
+
+function renderDirectorio() {
+  const L = [...(S.lista || [])].sort((a, b) => b.nombre.localeCompare(a.nombre));
+  const fh = t => t ? new Date(t * 1000).toLocaleString("es-MX", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "";
+  $("#dir").innerHTML = `<div class="dirhead"><h2>Paquetes</h2><span class="dim">${esc(API.base)}</span></div>` + (L.length
+    ? `<div class="scroll"><table><thead><tr><th>Paquete</th><th class="n">Cargos</th><th class="n">Total AMEX</th><th class="n">Con XML</th><th class="n">Pendientes</th><th class="n">Archivos</th><th>Última modificación</th><th></th></tr></thead><tbody>${L.map(p => {
+        const r = p.resumen || {};
+        return `<tr class="row" data-abrir="${esc(p.nombre)}" tabindex="0"><td><div class="desc">${esc(p.nombre)}</div>${p.abiertoPor ? `<div class="sub" style="color:var(--warn)">Abierto por ${esc(p.abiertoPor)}</div>` : ""}</td>
+          <td class="n">${r.cargos ?? ""}</td><td class="n">${r.total != null ? fmt(r.total) : ""}</td>
+          <td class="n">${r.cargos ? `${r.comprobados} de ${r.cargos}` : ""}</td><td class="n ${r.pendientes ? "difn" : ""}">${r.pendientes ?? ""}</td>
+          <td class="n">${r.archivos ?? ""}</td><td>${fh(p.modificado)}</td><td><button class="btn small">Abrir</button></td></tr>`;
+      }).join("")}</tbody></table></div>`
+    : `<div class="scroll"><div class="empty">Todavía no hay paquetes. Arrastra arriba el listado AMEX para crear el primero.</div></div>`);
+  $("#dir").querySelectorAll("[data-abrir]").forEach(tr => {
+    tr.onclick = () => abrirPaquete(tr.dataset.abrir);
+    tr.onkeydown = e => { if (e.key === "Enter") tr.click(); };
+  });
+}
+
+/* ================= árbol de carpetas ================= */
+function rolDoc(d) {
+  if (d.kind === "listado") return "Listado AMEX";
+  if (d.dupDe) return "Duplicado";
+  if (d.rep) return "PDF del CFDI";
+  if (d.kind === "cfdi" && /PASE/i.test(d.emisor)) return "XML estado PASE";
+  if (d.pase) return "Estado PASE";
+  const u = S.R?.uso.get(d);
+  if (!u) return "Sin asignar";
+  if (u.rol === "soporte") return d.recibo ? "Recibo de pago" : "Soporte";
+  return d.kind === "cfdi" ? "XML del CFDI" : d.cfdiPdf ? "PDF de CFDI sin XML" : d.vacio ? "PDF escaneado" : "Comprobante";
+}
+function renderArbol() {
+  const { dest, carpetas } = planCarpetas();
+  const real = enPaquete();
+  const ruta = d => real ? d.path : rutaEn(dest.get(d), basename(d.path));
+  const raiz = { name: S.paquete || "Paquete", dirs: new Map(), files: [] };
+  const nodo = r => r.split("/").reduce((n, seg) => { if (!n.dirs.has(seg)) n.dirs.set(seg, { name: seg, dirs: new Map(), files: [] }); return n.dirs.get(seg); }, raiz);
+  [...(real ? S.carpetas : []), ...carpetas].forEach(c => c && nodo(c));
+  S.docs.forEach(d => { const r = ruta(d), c = dirname(r); (c ? nodo(c) : raiz).files.push(d); });
+  const porCarpeta = new Map();
+  (S.R?.filas || []).forEach(f => { if (f.estado !== "fuera" && !esPase(f.cg)) { const c = ddmmyy(f.cg.fecha); if (!porCarpeta.has(c)) porCarpeta.set(c, []); porCarpeta.get(c).push(f); } });
+  const crucesDe = n => S.docs.filter(d => d.kind === "cfdi" && d.cruces && dest.get(d) === n).flatMap(d => d.cruces);
+  const fechaDe = n => { const m = n.match(/^(\d{2})(\d{2})(\d{2})$/); return m ? new Date(2000 + +m[3], +m[2] - 1, +m[1]) : null; };
+  const orden = (a, b) => {
+    const k = n => fechaDe(n.name) ? "0" + iso(fechaDe(n.name)) : n.name === "PASE" ? "1" : MES3.includes(n.name) ? "0" + String(MES3.indexOf(n.name)).padStart(2, "0") : "2" + n.name;
+    return k(a).localeCompare(k(b));
+  };
+  const cuenta = n => n.files.length + [...n.dirs.values()].reduce((t, x) => t + cuenta(x), 0);
+  const archivo = d => `<div class="tfile"><span aria-hidden="true">📄</span><span class="nm">${esc(basename(ruta(d)))}</span><span class="tag">${esc(rolDoc(d))}</span>${d.kind === "pdf" ? `<button class="btn small" data-ver="${d.id}">Ver</button>` : ""}</div>`;
+  const dirHtml = (n, r) => {
+    const cs = porCarpeta.get(r) || [], f0 = fechaDe(n.name), nf = cuenta(n);
+    const pend = cs.filter(f => ["dif", "sinxml", "revisar", "falta"].includes(f.estado)).length;
+    let etiqueta = "";
+    if (f0) etiqueta = `${fFechaL(f0)} · ${cs.length} ${cs.length === 1 ? "cargo" : "cargos"} · ${fmt(cs.reduce((t, f) => t + f.cg.importe, 0))}${pend ? ` <span class="pend">${pend} ${pend === 1 ? "pendiente" : "pendientes"}</span>` : ""}`;
+    else if (r.startsWith("PASE/")) { const xs = crucesDe(r), en = xs.filter(x => S.R?.crUsados.has(x)); etiqueta = xs.length ? `${en.length} de ${xs.length} cruces en este corte` : ""; }
+    else if (n.name === "_Sin asignar") etiqueta = nf ? `${nf} sin gasto` : "vacía";
+    else if (n.name === "_Duplicados") etiqueta = "no entran al reembolso";
+    else if (n.name === "_Reporte") etiqueta = "reporte generado (Excel y PDF)";
+    const abierta = !S.arbolCerradas.has(r);
+    return `<details data-r="${esc(r)}" ${abierta ? "open" : ""}><summary><span aria-hidden="true">📁</span><b>${esc(n.name)}</b><span class="dim">${etiqueta}</span></summary>
+      ${cs.length ? `<ul class="tcargos">${cs.map(f => `<li><button data-ir="${f.cg.id}"><i style="background:${ESTADOS[f.estado].c}"></i><span class="dsc">${esc(f.cg.descripcion)}</span><span class="dim">${fmt(f.cg.importe)} · ${ESTADOS[f.estado].t}</span></button></li>`).join("")}</ul>` : ""}
+      ${[...n.dirs.values()].sort(orden).map(x => dirHtml(x, r + "/" + x.name)).join("")}
+      ${n.files.sort((a, b) => basename(a.path).localeCompare(basename(b.path))).map(archivo).join("")}
+      ${(n.extra || []).map(r => `<div class="tfile"><span aria-hidden="true">📄</span><span class="nm">${esc(basename(r))}</span><span class="tag">Reporte</span></div>`).join("")}
+      ${!nf && !cs.length && !(n.extra || []).length ? `<div class="tvacio">vacía</div>` : ""}
+    </details>`;
+  };
+  if (real && S.reportes?.length) { const n = nodo("_Reporte"); n.extra = S.reportes; }
+  const sinAsig = S.docs.filter(d => dest.get(d) === "_Sin asignar").length;
+  const todas = [...raiz.dirs.values()].flatMap(function rec(n, p = "") { const r = p ? p + "/" + n.name : n.name; return [r, ...[...n.dirs.values()].flatMap(x => rec(x, r))]; });
+  $("#view").innerHTML = `<div class="tablebar">
+      <span class="dim">${real ? `Carpetas reales en ${esc(S.rutaPaquete)}` : "Vista previa: así quedarían las carpetas. Para crearlas en tu PC, abre la app con Iniciar_Reembolso.bat."}</span>
+      <button class="btn small" data-arbol="abrir">Expandir todo</button><button class="btn small" data-arbol="cerrar">Contraer todo</button>
+      <span class="cuenta">${S.docs.length} archivos${sinAsig ? ` · ${sinAsig} sin asignar` : ""}</span>
+    </div>
+    <div class="tree"><details open><summary><span aria-hidden="true">📁</span><b>${esc(raiz.name)}</b><span class="dim">${S.R ? `${S.R.filas.length} cargos · ${fmt(S.R.filas.reduce((t, f) => t + f.cg.importe, 0))}` : ""}</span></summary>
+      ${[...raiz.dirs.values()].sort(orden).map(x => dirHtml(x, x.name)).join("")}
+      ${raiz.files.map(archivo).join("")}
+    </details></div>`;
+  const v = $("#view");
+  v.querySelectorAll("details[data-r]").forEach(d => d.addEventListener("toggle", () => { d.open ? S.arbolCerradas.delete(d.dataset.r) : S.arbolCerradas.add(d.dataset.r); }));
+  v.querySelectorAll("[data-arbol]").forEach(b => b.onclick = () => { S.arbolCerradas = b.dataset.arbol === "abrir" ? new Set() : new Set(todas); renderArbol(); });
+  v.querySelectorAll("[data-ir]").forEach(b => b.onclick = () => {
+    const id = b.dataset.ir; S.tab = "cargos"; S.filtro = null; S.q = ""; S.abiertos.add(id); render();
+    const tr = document.querySelector(`tr.row[data-id="${id}"]`); if (tr) tr.scrollIntoView({ block: "center" });
+  });
+  enlazarAcciones(v);
+}
+
+function renderResumen() {
+  const F = S.R.filas;
+  const total = F.reduce((s, f) => s + f.cg.importe, 0);
+  const activos = F.filter(f => f.estado !== "fuera");
+  const comprobado = activos.filter(f => f.estado === "ok").reduce((s, f) => s + f.cg.importe, 0);
+  const dif = activos.reduce((s, f) => s + f.dif, 0);
+  const por = {};
+  F.forEach(f => { (por[f.estado] ||= { n: 0, imp: 0 }); por[f.estado].n++; por[f.estado].imp += f.cg.importe; });
+  const p = S.periodo;
+  $("#summary").innerHTML = `
+    <div class="figures">
+      <div class="big"><span>Cargos AMEX${p ? ` del ${fFechaL(p.desde)} al ${fFechaL(p.hasta)}` : ""}</span><strong>${fmt(total)}</strong></div>
+      <div><span>Cargos</span><strong>${F.length}</strong></div>
+      <div><span>Respaldado con XML</span><strong>${fmt(comprobado)}</strong></div>
+      ${activos.some(f => !f.cc?.c) ? `<div class="neg"><span>Sin centro de costo</span><strong>${activos.filter(f => !f.cc?.c).length}</strong></div>` : ""}
+      ${activos.some(f => !f.desc?.t) ? `<div class="neg"><span>Sin descripción</span><strong>${activos.filter(f => !f.desc?.t).length}</strong></div>` : ""}
+      <div class="${Math.abs(dif) > TOL ? "neg" : "zero"}"><span>Diferencia comprobantes vs AMEX</span><strong>${fmt(dif)}</strong></div>
+    </div>
+    <div class="split" role="img" aria-label="Reparto del importe por estado">${Object.keys(ESTADOS).filter(k => por[k]).map(k => `<i style="width:${por[k].imp / total * 100}%;background:${ESTADOS[k].c}" title="${ESTADOS[k].t}: ${fmt(por[k].imp)}"></i>`).join("")}</div>
+    <div class="legend">
+      <button data-f="" aria-pressed="${!S.filtro}"><span>Todos <small>${F.length}</small></span></button>
+      ${Object.keys(ESTADOS).filter(k => por[k]).map(k => `<button data-f="${k}" aria-pressed="${S.filtro === k}"><span class="sw" style="background:${ESTADOS[k].c}"></span><span>${ESTADOS[k].t} <small>${por[k].n}</small><br><span class="amt">${fmt(por[k].imp)}</span></span></button>`).join("")}
+    </div>`;
+  $("#summary").querySelectorAll(".legend button").forEach(b => b.onclick = () => { S.filtro = b.dataset.f || null; S.tab = "cargos"; render(); });
+}
+
+function emisorCorto(f) {
+  if (!f.doc) return "";
+  if (f.doc.kind === "cfdi") return f.doc.emisor;
+  return nombreProv(f.cg) || basename(f.doc.path);
+}
+function tipoDoc(f) {
+  return { pase: "Cruce PASE", cfdi: f.a.cfdis.length > 1 ? `${f.a.cfdis.length} CFDI` : "CFDI", cfdiPdf: "PDF de CFDI", ext: "Factura extranjera", escaneado: "PDF" }[f.a.tipo] || "";
+}
+
+const baseT = t => t ? t.b16 + t.b8 : 0, ivaT = t => t ? t.iva16 + t.iva8 : 0, sinT = t => t ? t.b0 + t.exento + t.noObjeto + t.ieps + t.otros - t.retIva - t.retIsr : 0;
+const COLUMNAS = [
+  { k: "fecha", t: "Fecha", v: f => f.cg.compra.getTime() },
+  { k: "desc", t: "Cargo AMEX", v: f => f.cg.descripcion },
+  { k: "nota", t: "Nota", v: f => f.cg.nota },
+  { k: "importe", t: "Importe", n: 1, v: f => f.cg.importe },
+  { k: "comp", t: "Comprobante", v: f => emisorCorto(f) },
+  { k: "clave", t: "Clave SAE", v: f => f.prov?.clave ? (isNaN(+f.prov.clave) ? f.prov.clave : +f.prov.clave) : "\uffff" },
+  { k: "cc", t: "Centro de costo", v: f => f.cc?.c || "\uffff" },
+  { k: "descr", t: "Descripción", v: f => f.desc?.t || "\uffff" },
+  { k: "base", t: "Base IVA", n: 1, v: f => baseT(f.tax) },
+  { k: "iva", t: "IVA", n: 1, v: f => ivaT(f.tax) },
+  { k: "sin", t: "Sin IVA y otros", n: 1, v: f => sinT(f.tax) },
+  { k: "dif", t: "Diferencia", n: 1, v: f => f.dif },
+  { k: "estado", t: "Estado", v: f => Object.keys(ESTADOS).indexOf(f.estado) },
+];
+const pad2 = n => String(n).padStart(2, "0");
+const diaKey = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const proveedorDe = f => esPase(f.cg) ? "PASE, Servicios Electrónicos" : f.doc?.kind === "cfdi" ? f.doc.emisor : nombreProv(f.cg) || f.cg.descripcion;
+const GRUPOS = {
+  estado: { t: "Estado", key: f => f.estado, label: k => ESTADOS[k].t, orden: k => Object.keys(ESTADOS).indexOf(k) },
+  proveedor: { t: "Proveedor", key: proveedorDe },
+  tipo: { t: "Tipo de comprobante", key: f => tipoDoc(f) || "Sin comprobante" },
+  nota: { t: "Nota", key: f => f.cg.nota || "Sin nota" },
+  clave: { t: "Proveedor SAE", key: f => f.prov?.clave ? `${f.prov.clave} · ${f.prov.nombre}` : "Sin clave" },
+  cc: { t: "Centro de costo", key: f => f.cc?.c ? `${f.cc.c} · ${nombreCC(f.cc.c)}` : "Sin centro" },
+  descr: { t: "Descripción", key: f => f.desc?.t || "Sin descripción" },
+  mes: { t: "Mes", key: f => diaKey(f.cg.compra).slice(0, 7), label: k => { const [y, m] = k.split("-"); return new Date(+y, +m - 1, 1).toLocaleDateString("es-MX", { month: "long", year: "numeric" }); }, orden: k => k },
+  dia: { t: "Día", key: f => diaKey(f.cg.compra), label: k => { const [y, m, d] = k.split("-"); return fFechaL(new Date(+y, +m - 1, +d)); }, orden: k => k },
+};
+const cmpVal = (a, b) => typeof a === "number" && typeof b === "number" ? a - b : String(a ?? "").localeCompare(String(b ?? ""), "es", { numeric: true, sensitivity: "base" });
+const sumas = fs => {
+  const act = fs.filter(f => f.estado !== "fuera"), s = k => act.reduce((t, f) => t + k(f), 0);
+  return { n: fs.length, fuera: fs.length - act.length, importe: s(f => f.cg.importe), base: s(f => baseT(f.tax)), iva: s(f => ivaT(f.tax)), sin: s(f => sinT(f.tax)), dif: s(f => f.dif) };
+};
+
+/* Búsqueda: como en las otras apps, mira todas las columnas que se ven (más RFC, folio, UUID y archivos), sin distinguir mayúsculas ni acentos. */
+const textoFila = f => [fFecha(f.cg.compra), fFechaL(f.cg.compra), f.cg.descripcion, f.cg.nota, fmt(f.cg.importe), f.cg.importe.toFixed(2),
+  f.cg.montoExt != null ? `${fmt(f.cg.montoExt)} ${f.cg.monedaExt}` : "", emisorCorto(f), tipoDoc(f), f.a.cruce?.caseta,
+  fmtZ(baseT(f.tax)), fmtZ(ivaT(f.tax)), fmtZ(sinT(f.tax)), fmtZ(f.dif), ESTADOS[f.estado].t,
+  f.doc?.rfc, f.doc?.folio, f.doc?.uuid, f.prov?.clave, f.prov?.nombre, f.cc?.c, f.cc ? nombreCC(f.cc.c) : "Sin centro", f.desc?.t || "Sin descripción", ...f.a.docs.map(d => d.path), ...f.a.soporte.map(d => d.path)].filter(Boolean).join(" ");
+const coincideTexto = (texto, q) => norm(texto).includes(norm(q));
+function barraTabla({ q, ph, visibles, total, hayFiltro, extra = "" }) {
+  return `<div class="tablebar">
+    <input type="search" data-q value="${esc(q)}" placeholder="${esc(ph)}" aria-label="Buscar">
+    ${extra}
+    ${hayFiltro ? `<button class="btn small" data-limpiar>Limpiar</button>` : ""}
+    ${visibles !== total ? `<span class="cuenta">${visibles} de ${total}</span>` : ""}
+  </div>`;
+}
+// Repintar la tabla reemplaza el cuadro de búsqueda; esto le devuelve el foco y el cursor.
+function conFoco(pintar) {
+  const a = document.activeElement, enQ = !!(a && a.matches && a.matches("#view [data-q]")), pos = enQ ? a.selectionStart : 0;
+  pintar();
+  if (enQ) { const i = $("#view [data-q]"); if (i) { i.focus(); i.setSelectionRange(pos, pos); } }
+}
+function enlazarBusqueda(campo, repintar, limpiarMas) {
+  const v = $("#view"), qi = v.querySelector("[data-q]");
+  if (qi) {
+    qi.oninput = () => { S[campo] = qi.value; repintar(); };
+    qi.onkeydown = e => { if (e.key === "Escape" && qi.value) { S[campo] = ""; repintar(); } };
+  }
+  const l = v.querySelector("[data-limpiar]");
+  if (l) l.onclick = () => { S[campo] = ""; if (limpiarMas) limpiarMas(); render(); };
+}
+
+/* ================= columnas de la tabla de cargos: orden, visibles y ancho ================= */
+/* Como en las otras apps: se guarda lo ESCONDIDO (una columna nueva nace visible), la búsqueda
+   y el reporte siguen usando todas las columnas, y nunca se pueden esconder todas. Los anchos se
+   congelan al primer arrastre y un doble clic en cualquier borde regresa al ancho automático. */
+const COLS_KEY = "amex.tabla.cargos";
+const TOTALES = { importe: "importe", base: "base", iva: "iva", sin: "sin", dif: "dif" };
+function prefsCols() {
+  if (!S.cols) {
+    let g = {};
+    try { g = JSON.parse(localStorage.getItem(COLS_KEY) || "{}"); } catch {}
+    const todas = COLUMNAS.map(c => c.k);
+    const orden = (g.orden || []).filter(k => todas.includes(k));
+    todas.forEach((k, i) => { if (!orden.includes(k)) orden.splice(Math.min(i, orden.length), 0, k); });
+    S.cols = { orden, ocultas: new Set((g.ocultas || []).filter(k => todas.includes(k))), anchos: g.anchos || {} };
+  }
+  return S.cols;
+}
+function guardarCols() {
+  const c = S.cols;
+  try { localStorage.setItem(COLS_KEY, JSON.stringify({ orden: c.orden, ocultas: [...c.ocultas], anchos: c.anchos })); } catch {}
+}
+const colsVisibles = () => { const c = prefsCols(); return c.orden.filter(k => !c.ocultas.has(k)).map(k => COLUMNAS.find(x => x.k === k)); };
+// Contenido de cada celda de un cargo, por columna.
+const CELDA = {
+  fecha: f => `<td>${fFecha(f.cg.compra)}</td>`,
+  desc: f => `<td><div class="desc">${esc(f.cg.descripcion)}</div>${f.cg.montoExt ? `<div class="sub">${fmt(f.cg.montoExt)} ${esc(f.cg.monedaExt)}</div>` : ""}</td>`,
+  nota: f => `<td>${f.cg.nota ? `<span class="note">${esc(f.cg.nota)}</span>` : ""}</td>`,
+  importe: f => `<td class="n">${fmt(f.cg.importe)}</td>`,
+  comp: f => `<td><div>${esc(emisorCorto(f))}</div><div class="sub">${esc(tipoDoc(f))}${f.a.cruce ? `: ${esc(f.a.cruce.caseta)}, ${fFecha(f.a.cruce.fecha)} ${f.a.cruce.hora.slice(0, 5)}` : ""}</div></td>`,
+  clave: f => `<td>${provCelda(f)}</td>`,
+  cc: f => `<td style="white-space:nowrap">${ccSelect(f)}</td>`,
+  descr: f => `<td style="white-space:nowrap">${descInput(f)}</td>`,
+  base: f => `<td class="n">${fmtZ(baseT(f.tax))}</td>`,
+  iva: f => `<td class="n">${fmtZ(ivaT(f.tax))}</td>`,
+  sin: f => `<td class="n">${fmtZ(sinT(f.tax))}</td>`,
+  dif: f => `<td class="n ${Math.abs(f.dif) > TOL ? "difn" : "dim"}">${fmtZ(f.dif)}</td>`,
+  estado: f => {
+    const st = ESTADOS[f.estado], pend = f.notas.some(n => n[2] === "verif" || (n[0] === "b" && f.estado !== "dif"));
+    return `<td><span class="state" style="--st:${st.c}"><i></i>${st.t}</span>${pend ? `<div class="sub" style="color:var(--bad)">con avisos</div>` : ""}</td>`;
+  },
+};
+// La flecha de abrir va en la primera columna visible, sea cual sea.
+const conChevron = html => html.replace(/^<td([^>]*)>/, `<td$1><span class="chev">›</span> `);
+// Renglón de totales (grupo o pie): la etiqueta ocupa las columnas sin total que van al inicio.
+function filaTotales(vis, etiqueta, val) {
+  let lead = vis.findIndex(c => TOTALES[c.k]);
+  if (lead < 0) lead = vis.length;
+  const celdas = vis.slice(lead).map(c => TOTALES[c.k] ? `<td class="n ${c.k === "dif" && Math.abs(val.dif) > TOL ? "difn" : c.k === "dif" ? "dim" : ""}">${val[TOTALES[c.k]] == null ? "" : (c.k === "importe" || val.fmtFull ? fmt : fmtZ)(val[TOTALES[c.k]])}</td>` : "<td></td>");
+  if (!lead) celdas[0] = celdas[0].replace(/^<td([^>]*)>/, `<td$1><div style="text-align:left">${etiqueta}</div>`);
+  return (lead ? `<td colspan="${lead}">${etiqueta}</td>` : "") + celdas.join("");
+}
+
+function renderCargos() { conFoco(pintarCargos); }
+function pintarCargos() {
+  const col = COLUMNAS.find(c => c.k === S.orden.k) || COLUMNAS[0], dir = S.orden.dir;
+  const vis = colsVisibles(), cp = prefsCols();
+  let F = [...S.R.filas].sort((a, b) => dir * cmpVal(col.v(a), col.v(b)) || a.cg.compra - b.cg.compra || a.cg.orden - b.cg.orden);
+  if (S.filtro) F = F.filter(f => f.estado === S.filtro);
+  if (S.q.trim()) F = F.filter(f => coincideTexto(textoFila(f), S.q.trim()));
+  const niveles = S.grupos.filter(Boolean);
+  const ids = [];
+  const bloque = (fs, nivel, ruta) => {
+    const g = GRUPOS[niveles[nivel]];
+    if (!g) return fs.map(f => filaHtml(f, vis)).join("");
+    const lab = g.label || String;
+    const mapa = new Map();
+    fs.forEach(f => { const k = g.key(f); if (!mapa.has(k)) mapa.set(k, []); mapa.get(k).push(f); });
+    const ks = [...mapa.keys()];
+    const sum = Object.fromEntries(ks.map(k => [k, sumas(mapa.get(k))]));
+    const campo = TOTALES[col.k];
+    const dirFecha = col.k === "fecha" && ["mes", "dia"].includes(niveles[nivel]) ? dir : 1;
+    ks.sort((a, b) => campo ? dir * (sum[a][campo] - sum[b][campo]) : g.orden ? dirFecha * cmpVal(g.orden(a), g.orden(b)) : cmpVal(lab(a), lab(b)));
+    return ks.map(k => {
+      const id = ruta + "|" + k, cerrado = S.colapsados.has(id), s = sum[k];
+      ids.push(id);
+      const etiqueta = `<span class="chev">›</span> ${esc(lab(k))}<span class="dim">${s.n} ${s.n === 1 ? "cargo" : "cargos"}${s.fuera ? `, ${s.fuera} fuera` : ""}</span>`;
+      const fila = `<tr class="grp l${nivel}" data-g="${esc(id)}" tabindex="0" aria-expanded="${!cerrado}">${filaTotales(vis, etiqueta, s)}</tr>`;
+      return fila + (cerrado ? "" : bloque(mapa.get(k), nivel + 1, id));
+    }).join("");
+  };
+  const cuerpo = F.length ? bloque(F, 0, "") : "";
+  const todoContraido = ids.length > 0 && ids.every(id => S.colapsados.has(id));
+  const opts = sel => `<option value="">Sin agrupar</option>` + Object.entries(GRUPOS).map(([k, g]) => `<option value="${k}" ${sel === k ? "selected" : ""}>${g.t}</option>`).join("");
+  const nOcultas = cp.ocultas.size;
+  const panelCols = S.colPanel ? `<div class="colpanel" data-colpanel><ul>${cp.orden.map((k, i) => {
+      const c = COLUMNAS.find(x => x.k === k), on = !cp.ocultas.has(k), ultima = on && vis.length === 1;
+      return `<li><label><input type="checkbox" data-colver="${k}" ${on ? "checked" : ""} ${ultima ? "disabled title=\"Tiene que quedar al menos una columna\"" : ""}> ${esc(c.t)}</label>
+        <button class="mv" data-colmov="${k}" data-d="-1" ${i === 0 ? "disabled" : ""} aria-label="Subir ${esc(c.t)}">▲</button><button class="mv" data-colmov="${k}" data-d="1" ${i === cp.orden.length - 1 ? "disabled" : ""} aria-label="Bajar ${esc(c.t)}">▼</button></li>`;
+    }).join("")}</ul><div class="pie"><button class="btn small" data-colreset>Restablecer</button><button class="btn small" data-colcerrar>Cerrar</button></div></div>` : "";
+  const barra = barraTabla({
+    q: S.q, ph: "Buscar en cualquier columna…", visibles: F.length, total: S.R.filas.length, hayFiltro: !!(S.q.trim() || S.filtro),
+    extra: `<span class="colwrap"><button class="btn small" data-colbtn aria-expanded="${!!S.colPanel}">${nOcultas ? `Columnas ${vis.length} de ${COLUMNAS.length}` : "Columnas"}</button>${panelCols}</span>
+    <label>Agrupar por <select data-g="0">${opts(S.grupos[0])}</select></label>
+    <label>y luego por <select data-g="1" ${S.grupos[0] ? "" : "disabled"}>${opts(S.grupos[1])}</select></label>
+    ${niveles.length ? `<button class="btn small" data-alternar="${todoContraido ? 0 : 1}">${todoContraido ? "Expandir todo" : "Contraer todo"}</button>` : ""}
+    ${(() => { const sinCC = F.filter(f => f.estado !== "fuera" && !f.cc?.c); return sinCC.length && CAT.centros.length ? `<label>Centro de costo para los ${sinCC.length} ${S.q.trim() || S.filtro ? "visibles " : ""}sin centro <select class="ccsel" data-ccmasivo="${sinCC.map(f => f.cg.id).join(",")}"><option value="">Elegir…</option>${CAT.centros.map(x => `<option value="${esc(x.c)}">${esc(x.c)} · ${esc(x.n)}</option>`).join("")}</select></label>` : ""; })()}
+    ${(() => { const sinD = F.filter(f => f.estado !== "fuera" && !f.desc?.t); return sinD.length ? `<label>Descripción para los ${sinD.length} ${S.q.trim() || S.filtro ? "visibles " : ""}sin descripción <input class="descin" list="dl-desc" data-descmasivo="${sinD.map(f => f.cg.id).join(",")}" placeholder="Escribe y da Enter"></label>` : ""; })()}`,
+  });
+  if (!F.length) { $("#view").innerHTML = barra + `<div class="scroll"><div class="empty">Ningún renglón coincide con el filtro.</div></div>`; enlazarTabla([]); return; }
+  const t = sumas(F);
+  const fijo = Object.keys(cp.anchos).length > 0;
+  const colgroup = fijo ? `<colgroup>${vis.map(c => `<col data-k="${c.k}" style="width:${Math.round(cp.anchos[c.k] || 110)}px">`).join("")}</colgroup>` : "";
+  const th = c => { const on = c.k === col.k; return `<th class="${c.n ? "n" : ""}" data-k="${c.k}" aria-sort="${on ? (dir > 0 ? "ascending" : "descending") : "none"}"><button class="sort ${on ? "on" : ""}" data-sort="${c.k}">${c.t}<span class="ar" aria-hidden="true">${on && dir < 0 ? "▼" : "▲"}</span></button><span class="rz" data-rz="${c.k}" title="Arrastra para cambiar el ancho; doble clic regresa al ancho automático"></span></th>`; };
+  const tw = fijo ? `style="width:${vis.reduce((a, c) => a + Math.round(cp.anchos[c.k] || 110), 0)}px"` : "";
+  $("#view").innerHTML = barra + `<div class="scroll"><table class="${fijo ? "fijo" : ""}" data-tabla="cargos" ${tw}>${colgroup}
+    <thead><tr>${vis.map(th).join("")}</tr></thead>
+    <tbody>${cuerpo}</tbody>
+    <tfoot><tr>${filaTotales(vis, `${t.n - t.fuera} cargos${t.fuera ? ` <span class="dim">(${t.fuera} fuera)</span>` : ""}`, { ...t, fmtFull: true })}</tr></tfoot>
+  </table></div>`;
+  enlazarTabla(ids);
+}
+
+function enlazarColumnas(v) {
+  const cp = prefsCols();
+  const btn = v.querySelector("[data-colbtn]");
+  if (btn) btn.onclick = e => { e.stopPropagation(); S.colPanel = !S.colPanel; renderCargos(); };
+  v.querySelector("[data-colcerrar]")?.addEventListener("click", () => { S.colPanel = false; renderCargos(); });
+  v.querySelector("[data-colreset]")?.addEventListener("click", () => { S.cols = null; try { localStorage.removeItem(COLS_KEY); } catch {} renderCargos(); });
+  v.querySelectorAll("[data-colver]").forEach(i => i.onchange = () => {
+    const k = i.dataset.colver;
+    if (i.checked) cp.ocultas.delete(k); else if (colsVisibles().length > 1) cp.ocultas.add(k);
+    guardarCols(); renderCargos();
+  });
+  v.querySelectorAll("[data-colmov]").forEach(b => b.onclick = () => {
+    const k = b.dataset.colmov, i = cp.orden.indexOf(k), j = i + +b.dataset.d;
+    if (j < 0 || j >= cp.orden.length) return;
+    [cp.orden[i], cp.orden[j]] = [cp.orden[j], cp.orden[i]];
+    guardarCols(); renderCargos();
+  });
+  // Ancho: arrastrar el borde derecho del encabezado.
+  v.querySelectorAll("[data-rz]").forEach(h => {
+    h.onclick = e => e.stopPropagation();
+    h.ondblclick = e => { e.stopPropagation(); cp.anchos = {}; guardarCols(); renderCargos(); };
+    h.onpointerdown = e => {
+      e.preventDefault(); e.stopPropagation();
+      const k = h.dataset.rz;
+      if (!Object.keys(cp.anchos).length) {
+        // Primer arrastre: se congelan todas en el ancho con que se ven, para que solo cambie esta.
+        v.querySelectorAll("table[data-tabla] thead th").forEach(th => { cp.anchos[th.dataset.k] = th.getBoundingClientRect().width; });
+        renderCargos();
+      }
+      const x0 = e.clientX, w0 = cp.anchos[k] || 110;
+      const tabla = $("#view table[data-tabla]"), colEl = tabla?.querySelector(`col[data-k="${k}"]`);
+      const otras = colsVisibles().filter(c => c.k !== k).reduce((a, c) => a + (cp.anchos[c.k] || 110), 0);
+      const marca = tabla?.querySelector(`[data-rz="${k}"]`); marca?.classList.add("on");
+      const mover = ev => {
+        const w = Math.max(44, Math.round(w0 + ev.clientX - x0));
+        cp.anchos[k] = w;
+        if (colEl) colEl.style.width = w + "px";
+        if (tabla) tabla.style.width = (otras + w) + "px";
+      };
+      const soltar = () => { document.removeEventListener("pointermove", mover); document.removeEventListener("pointerup", soltar); marca?.classList.remove("on"); guardarCols(); };
+      document.addEventListener("pointermove", mover);
+      document.addEventListener("pointerup", soltar);
+    };
+  });
+}
+document.addEventListener("click", e => { if (S.colPanel && e.target.isConnected && !e.target.closest("[data-colpanel],[data-colbtn]")) { S.colPanel = false; if (S.tab === "cargos" && S.R) renderCargos(); } });
+
+function enlazarTabla(ids) {
+  const v = $("#view");
+  const teclado = tr => tr.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); tr.click(); } };
+  v.querySelectorAll("tr.row").forEach(tr => {
+    tr.onclick = () => { const id = tr.dataset.id; S.abiertos.has(id) ? S.abiertos.delete(id) : S.abiertos.add(id); renderCargos(); };
+    teclado(tr);
+  });
+  v.querySelectorAll("tr.grp").forEach(tr => {
+    tr.onclick = () => { const id = tr.dataset.g; S.colapsados.has(id) ? S.colapsados.delete(id) : S.colapsados.add(id); renderCargos(); };
+    teclado(tr);
+  });
+  v.querySelectorAll("[data-sort]").forEach(b => b.onclick = () => {
+    const k = b.dataset.sort, c = COLUMNAS.find(c => c.k === k);
+    S.orden = S.orden.k === k ? { k, dir: -S.orden.dir } : { k, dir: c.n ? -1 : 1 };
+    renderCargos();
+  });
+  v.querySelectorAll("select[data-g]").forEach(s => s.onchange = () => {
+    S.grupos[+s.dataset.g] = s.value || null;
+    if (!S.grupos[0] || S.grupos[0] === S.grupos[1]) S.grupos[1] = null;
+    S.colapsados.clear();
+    renderCargos();
+  });
+  v.querySelectorAll("[data-alternar]").forEach(b => b.onclick = () => { S.colapsados = b.dataset.alternar === "1" ? new Set(ids) : new Set(); renderCargos(); });
+  enlazarColumnas(v);
+  enlazarBusqueda("q", renderCargos, () => { S.filtro = null; });
+  enlazarDetalle();
+}
+
+function filaHtml(f, vis) {
+  const { cg } = f, st = ESTADOS[f.estado], abierto = S.abiertos.has(cg.id);
+  const celdas = vis.map((c, i) => i === 0 ? conChevron(CELDA[c.k](f)) : CELDA[c.k](f)).join("");
+  const row = `<tr class="row ${abierto ? "open" : ""} ${f.estado === "fuera" ? "fuera" : ""}" data-id="${cg.id}" tabindex="0" aria-expanded="${abierto}" style="--st:${st.c}">${celdas}</tr>`;
+  return abierto ? row + `<tr class="det"><td colspan="${vis.length}">${detalleHtml(f)}</td></tr>` : row;
+}
+
+function filaTax(label, v, cls = "") { return Math.abs(v || 0) < .005 && !cls ? "" : `<tr class="${cls}"><td>${label}</td><td class="n">${fmt(v)}</td></tr>`; }
+
+function detalleHtml(f) {
+  const { cg, a, tax, doc } = f, st = ESTADOS[f.estado];
+  let info = "";
+  if (doc?.kind === "cfdi") {
+    const c = doc;
+    info = `<dl class="kv">
+      <dt>Emisor</dt><dd>${esc(c.emisor)} <span class="dim">${esc(c.rfc)}</span></dd>
+      <dt>Receptor</dt><dd>${esc(c.receptor)} <span class="dim">${esc(c.receptorRfc)}</span>${c.uso ? ` <span class="dim">uso ${esc(c.uso)}</span>` : ""}</dd>
+      <dt>Folio</dt><dd>${esc(c.folio || "sin folio")}, ${fFechaL(c.fecha)}</dd>
+      <dt>UUID</dt><dd class="uuid">${esc(c.uuid)}</dd>
+      <dt>Pago</dt><dd>${esc(c.metodo)}${c.forma ? `, forma ${esc(c.forma)}` : ""}${c.moneda !== "MXN" ? `, ${esc(c.moneda)} TC ${c.tc}` : ""}</dd>
+      ${a.cfdis.length > 1 ? `<dt>CFDI</dt><dd>${a.cfdis.map(x => `${esc(x.folio)} por ${fmt(x.total)}`).join("; ")}</dd>` : ""}
+    </dl>`;
+  } else if (doc) {
+    info = `<dl class="kv">
+      <dt>Documento</dt><dd>${esc(basename(doc.path))}</dd>
+      ${nombreProv(cg) ? `<dt>Proveedor</dt><dd>${esc(nombreProv(cg))}</dd>` : ""}
+      ${doc.factura ? `<dt>Factura</dt><dd>${esc(doc.factura)}</dd>` : ""}
+      ${doc.uuids?.length ? `<dt>UUID</dt><dd class="uuid">${esc(doc.uuids[0])}</dd>` : ""}
+      ${f.totalDocOrig != null && f.monedaDoc !== "MXN" ? `<dt>Monto</dt><dd>${fmt(f.totalDocOrig)} ${esc(f.monedaDoc)}, cargado en ${fmt(cg.importe)} MXN (TC ${(cg.importe / f.totalDocOrig).toFixed(4)})</dd>` : ""}
+      ${doc.vacio ? `<dt>Texto</dt><dd>PDF escaneado: no tiene texto que leer</dd>` : ""}
+    </dl>`;
+  } else if (f.estado !== "fuera") info = `<p class="dim" style="margin:0">No encontré ningún documento para este cargo. Puedes asignarle uno de los que quedaron libres.</p>`;
+
+  const archivos = [
+    ...a.docs.flatMap(d => d.kind === "cfdi" ? [[d, "XML del CFDI"], ...d.pdfs.map(p => [p, "PDF del CFDI"])] : [[d, a.tipo === "pase" ? "Estado PASE" : "Comprobante"]]),
+    ...a.soporte.map(d => [d, d.recibo ? "Recibo de pago" : "Soporte"]),
+  ];
+  const acciones = d => `<span class="acc">${d.kind === "pdf" ? `<button class="btn small" data-ver="${d.id}">Ver</button>` : ""}${a.tipo !== "pase" ? `<button class="btn small" data-sust="${d.id}">Sustituir</button><button class="btn small" data-quitar="${d.id}">Quitar</button>` : ""}</span>`;
+  const lista = archivos.length ? `<ul class="flist">${archivos.map(([d, rol]) => `<li><span class="role">${rol}</span><span class="path">${esc(d.path)}</span>${acciones(d)}</li>`).join("")}</ul>` : "";
+  const warns = f.notas.length ? `<ul class="warns">${f.notas.map(([k, t]) => `<li class="${k}">${esc(t)}</li>`).join("")}</ul>` : "";
+
+  // controles
+  const opciones = S.docs.filter(d => !d.rep && !d.dupDe && d.kind !== "imagen" && d.kind !== "listado" && !(d.kind === "cfdi" && /PASE/i.test(d.emisor)) && (!S.R.uso.has(d) || S.R.uso.get(d).f === f))
+    .sort((x, y) => x.path.localeCompare(y.path));
+  const sel = cg.id in S.manual ? (S.manual[cg.id][0] || "none") : "auto";
+  const usaTrat = ["ext", "revisar", "falta"].includes(f.estado);
+  const controles = `<div class="controls">
+    <label>Comprobante
+      <select data-asignar="${cg.id}">
+        <option value="auto" ${sel === "auto" ? "selected" : ""}>Automático</option>
+        <option value="none" ${sel === "none" ? "selected" : ""}>Sin comprobante</option>
+        ${opciones.map(d => `<option value="${d.id}" ${sel === d.id ? "selected" : ""}>${esc(d.path)}${d.kind === "cfdi" ? ` · ${esc(d.emisor)} ${fmt(d.total)}` : ""}</option>`).join("")}
+      </select></label>
+    ${usaTrat ? `<label>Tratamiento del importe
+      <select data-trat="${cg.id}">${Object.entries(TRAT).map(([k, t]) => `<option value="${k}" ${f.trat === k ? "selected" : ""}>${t}</option>`).join("")}</select></label>` : ""}
+    ${f.estado !== "fuera" ? `<label>Centro de costo<span>${ccSelect(f)}</span></label>` : ""}
+    ${f.estado !== "fuera" ? `<label>Descripción del gasto<span>${descInput(f)}</span></label>` : ""}
+    <label class="chk"><input type="checkbox" data-excluir="${cg.id}" ${f.estado === "fuera" ? "checked" : ""}> Dejar fuera del reembolso</label>
+  </div>
+  ${f.estado !== "fuera" && a.tipo !== "pase" ? `<div class="addcargo" data-dropcargo="${cg.id}">
+    <button class="btn small primary" data-agregar="${cg.id}">Agregar factura a este gasto</button>
+    <span class="sub">o suelta aquí el XML y el PDF. ${f.estado === "ok" ? "Como ya está comprobado, se agrega como soporte." : "Toma el lugar del comprobante actual."}</span>
+  </div>` : ""}`;
+
+  const T = tax || TAX0();
+  const impuestos = f.estado === "fuera" ? "" : `<table class="taxes"><tbody>
+    ${filaTax("Subtotal", T.subtotal)}${filaTax("Descuento", -T.descuento)}
+    ${filaTax("Base 16%", T.b16)}${filaTax("IVA 16%", T.iva16)}${filaTax("Base 8%", T.b8)}${filaTax("IVA 8%", T.iva8)}
+    ${filaTax("Tasa 0%", T.b0)}${filaTax("Exento", T.exento)}${filaTax("No objeto de IVA", T.noObjeto)}${filaTax("IEPS", T.ieps)}
+    ${filaTax("Retención de IVA", -T.retIva)}${filaTax("Retención de ISR", -T.retIsr)}${filaTax("Otros sin desglosar", T.otros)}
+    ${filaTax(f.a.tipo === "cfdi" || f.a.tipo === "pase" ? "Total del comprobante" : "Total", f.totalDoc ?? T.total, "sep tot")}
+    ${filaTax("Cargo AMEX", cg.importe, "")}
+    ${f.a.tipo === "cfdi" || f.a.tipo === "pase" ? filaTax("Diferencia", f.dif, Math.abs(f.dif) > TOL ? "bad" : "good") : ""}
+  </tbody></table>
+  ${usaTrat ? `<p class="sub" style="margin:6px 2px 0">Sin CFDI: el importe va como «${TRAT[f.trat]}».</p>` : ""}`;
+
+  let extra = "";
+  if (a.tipo === "cfdi") {
+    const ks = a.cfdis.flatMap(c => c.conceptos);
+    extra = `<div class="full"><h3>Conceptos del CFDI</h3><div class="scroll"><table><thead><tr><th>Descripción</th><th class="n">Cant.</th><th class="n">Base</th><th>Tasa</th><th class="n">IVA</th><th class="n">IEPS</th></tr></thead><tbody>
+      ${ks.map(k => `<tr><td>${esc(k.desc)}</td><td class="n">${k.cantidad}</td><td class="n">${fmt(k.base)}</td><td>${esc(k.tasa || "")}</td><td class="n">${fmtZ(k.iva)}</td><td class="n">${fmtZ(k.ieps)}</td></tr>`).join("")}
+    </tbody></table></div></div>`;
+  } else if (a.tipo === "pase") {
+    const x = a.cruce;
+    extra = `<div class="full"><h3>Cruce</h3><dl class="kv">
+      <dt>Caseta</dt><dd>${esc(x.caseta)}, carril ${esc(x.carril)}</dd><dt>Fecha</dt><dd>${fFechaL(x.fecha)} ${esc(x.hora)}</dd>
+      <dt>Consecutivo</dt><dd>${esc(x.consecar)}</dd><dt>Factura PASE</dt><dd>${esc(x.cfdi ? x.cfdi.folio + ", UUID " + x.cfdi.uuid : basename(x.pdf.path))}</dd></dl></div>`;
+  }
+  return `<div class="panel" style="--st:${st.c}">
+    <div><h3>${esc(st.t)}${tipoDoc(f) ? `: ${esc(tipoDoc(f))}` : ""}</h3>${info}${provHtml(f)}${lista}${warns}${controles}</div>
+    <div><h3>Impuestos en pesos</h3>${impuestos}</div>
+    ${extra}
+  </div>`;
+}
+
+function enlazarAcciones(v) {
+  v.querySelectorAll("[data-ver]").forEach(b => b.onclick = e => { e.stopPropagation(); verPdf(b.dataset.ver); });
+  v.querySelectorAll("[data-sust]").forEach(b => b.onclick = e => { e.stopPropagation(); S.pend = { sust: b.dataset.sust }; $("#input-sust").click(); });
+  v.querySelectorAll("[data-quitar]").forEach(b => b.onclick = e => { e.stopPropagation(); quitarDoc(b.dataset.quitar); });
+}
+function enlazarDetalle() {
+  const v = $("#view");
+  enlazarAcciones(v);
+  enlazarCC(v);
+  enlazarDesc(v);
+  enlazarProv(v);
+  v.querySelectorAll("[data-asignar]").forEach(s => s.onchange = () => {
+    const id = s.dataset.asignar;
+    if (s.value === "auto") delete S.manual[id]; else S.manual[id] = s.value === "none" ? [] : [s.value];
+    cambio();
+  });
+  v.querySelectorAll("[data-trat]").forEach(s => s.onchange = () => { S.tratamiento[s.dataset.trat] = s.value; cambio(); });
+  v.querySelectorAll("[data-excluir]").forEach(c => c.onchange = () => { S.excluir[c.dataset.excluir] = c.checked; cambio(); });
+  v.querySelectorAll("[data-agregar]").forEach(b => b.onclick = e => { e.stopPropagation(); S.pend = { cargo: b.dataset.agregar }; $("#input-cargo").click(); });
+  v.querySelectorAll("[data-dropcargo]").forEach(z => {
+    z.ondragover = e => { e.preventDefault(); e.stopPropagation(); z.classList.add("over"); };
+    z.ondragleave = () => z.classList.remove("over");
+    z.ondrop = e => { e.preventDefault(); e.stopPropagation(); z.classList.remove("over"); if (e.dataTransfer.files.length) agregar([...e.dataTransfer.files], { cargo: z.dataset.dropcargo }); };
+  });
+}
+
+function renderDocs() { conFoco(pintarDocs); }
+function pintarDocs() {
+  const R = S.R;
+  const filas = [...S.docs].sort((a, b) => a.path.localeCompare(b.path)).map(d => {
+    let tipo, emisor = "", monto = "", uso, cls = "";
+    if (d.kind === "cfdi") {
+      tipo = /PASE/i.test(d.emisor) ? "CFDI PASE" : `CFDI ${d.tipo}`; emisor = d.emisor; monto = `${fmt(d.total)}${d.moneda !== "MXN" ? " " + d.moneda : ""}`;
+    } else if (d.kind === "pdf") {
+      tipo = d.rep ? "PDF del CFDI" : d.pase ? "Estado PASE" : d.cfdiPdf ? "PDF de CFDI sin XML" : d.vacio ? "PDF escaneado" : d.recibo ? "Recibo de pago" : "Factura / PDF";
+      emisor = d.rep ? d.rep.emisor : d.factura ? `Factura ${d.factura}` : "";
+    } else tipo = d.kind === "listado" ? "Listado AMEX" : d.kind === "imagen" ? "Imagen" : "Otro archivo";
+    if (d.kind === "cfdi" && d.cruces) {
+      const en = d.cruces.filter(x => R.crUsados.has(x)), fuera = d.cruces.filter(x => !R.crUsados.has(x));
+      uso = `${en.length} de ${d.cruces.length} cruces en este corte (${fmt(en.reduce((s, x) => s + x.total, 0))})${fuera.length ? `; ${fuera.length} fuera del corte por ${fmt(fuera.reduce((s, x) => s + x.total, 0))}` : ""}`;
+      if (!d.cruces.length) { uso = "No pude leer los cruces del PDF"; cls = "warn"; }
+    } else if (d.kind === "listado") uso = "Lista de cargos del paquete";
+    else if (d.rep) uso = `Acompaña a ${basename(d.rep.path)}`;
+    else if (d.dupDe) { uso = `Duplicado de ${d.dupDe.path}`; cls = "warn"; }
+    else if (R.uso.has(d)) { const u = R.uso.get(d); uso = `${u.rol === "soporte" ? "Soporte de" : "Respalda"} ${u.f.cg.descripcion} (${fFecha(u.f.cg.compra)}, ${fmt(u.f.cg.importe)})`; }
+    else { uso = "Sin asignar a ningún cargo"; cls = "bad"; }
+    return { texto: [d.path, tipo, emisor, monto, uso].join(" "), html: `<tr><td class="dim" style="word-break:break-all">${esc(d.path)}</td><td>${tipo}</td><td>${esc(emisor)}</td><td class="n">${monto}</td>
+      <td>${cls ? `<span class="badge ${cls}">${esc(uso)}</span>` : esc(uso)}</td><td><span class="acc" style="display:flex;gap:4px">${d.kind === "pdf" ? `<button class="btn small" data-ver="${d.id}">Ver</button>` : ""}${d.kind !== "listado" ? `<button class="btn small" data-sust="${d.id}">Sustituir</button><button class="btn small" data-quitar="${d.id}">Quitar</button>` : ""}</span></td></tr>` };
+  });
+  const vis = S.qDocs.trim() ? filas.filter(x => coincideTexto(x.texto, S.qDocs.trim())) : filas;
+  $("#view").innerHTML = barraTabla({ q: S.qDocs, ph: "Buscar en cualquier columna…", visibles: vis.length, total: filas.length, hayFiltro: !!S.qDocs.trim() })
+    + (vis.length
+      ? `<div class="scroll"><table><thead><tr><th>Archivo</th><th>Tipo</th><th>Emisor</th><th class="n">Total</th><th>Uso en el reembolso</th><th></th></tr></thead><tbody>${vis.map(x => x.html).join("")}</tbody></table></div>`
+      : `<div class="scroll"><div class="empty">Ningún renglón coincide con el filtro.</div></div>`);
+  enlazarAcciones($("#view"));
+  enlazarBusqueda("qDocs", renderDocs);
+}
+
+async function verPdf(id) {
+  const d = S.docs.find(x => x.id === id), buf = S.buffers[id];
+  if (!d || !buf) return;
+  const dlg = $("#viewer"), cont = $("#v-pages");
+  $("#v-title").textContent = d.path; cont.innerHTML = "";
+  dlg.showModal();
+  try {
+    const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(buf.slice(0)), verbosity: 0 }).promise;
+    for (let p = 1; p <= Math.min(pdf.numPages, 6); p++) {
+      const page = await pdf.getPage(p), vp = page.getViewport({ scale: 1.6 });
+      const cv = document.createElement("canvas"); cv.width = vp.width; cv.height = vp.height; cont.appendChild(cv);
+      await page.render({ canvasContext: cv.getContext("2d"), viewport: vp }).promise;
+    }
+    if (pdf.numPages > 6) cont.insertAdjacentHTML("beforeend", `<p class="dim">Se muestran 6 de ${pdf.numPages} páginas.</p>`);
+  } catch { cont.innerHTML = `<p class="error">No pude mostrar este PDF.</p>`; }
+}
+
+/* ================= eventos ================= */
+const drop = $("#drop"), input = $("#input");
+$("#pick").onclick = () => input.click();
+input.onchange = () => { const fs = [...input.files]; input.value = ""; agregar(fs); };
+$("#input-cargo").onchange = e => { const fs = [...e.target.files]; e.target.value = ""; if (fs.length && S.pend?.cargo) agregar(fs, { cargo: S.pend.cargo }); };
+$("#input-cat").onchange = e => { const fs = [...e.target.files]; e.target.value = ""; if (fs.length) agregar(fs, { catalogo: true }); };
+$("#input-sust").onchange = e => { const fs = [...e.target.files]; e.target.value = ""; if (fs.length && S.pend?.sust) sustituirDoc(S.pend.sust, fs); };
+// Soltar un archivo fuera de las zonas no debe hacer que el navegador lo abra.
+window.addEventListener("dragover", e => e.preventDefault());
+window.addEventListener("drop", e => e.preventDefault());
+drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", e => { e.preventDefault(); drop.classList.remove("over"); agregar([...e.dataTransfer.files]); });
+$("#reset").onclick = () => { limpiarTrabajo(); error(""); aviso(""); render(); };
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => { S.tab = b.dataset.tab; render(); });
+$("#v-close").onclick = () => $("#viewer").close();
+$("#btn-reporte").onclick = abrirReporte;
+$("#rep-cerrar").onclick = () => $("#dlg-rep").close();
+
+/* ================= reporte final (Excel y PDF) ================= */
+/* Excel con el detalle por cargo (y la partida a la que pertenece) y el resumen por centro de
+   costo; PDF con el detalle. Los cálculos de IVA y retenciones de cada partida siguen las
+   mismas fórmulas de la plantilla .xlsm de Aspel SAE. */
+const LIBS_REP = [
+  "https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js",
+  "https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js",
+  "https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js",
+];
+const cargarScript = src => new Promise((ok, mal) => {
+  if ([...document.scripts].some(s => s.src === src && s.dataset.listo)) return ok();
+  const s = document.createElement("script"); s.src = src;
+  s.onload = () => { s.dataset.listo = "1"; ok(); };
+  s.onerror = () => mal(new Error(`No pude cargar ${src.split("/").pop()}. Revisa la conexión a internet.`));
+  document.head.appendChild(s);
+});
+const r2 = v => Math.round((v || 0) * 100) / 100;
+function pendientesReporte() {
+  const F = S.R.filas.filter(f => f.estado !== "fuera");
+  return [
+    ["sin comprobante", F.filter(f => f.estado === "falta")],
+    ["con diferencia contra AMEX", F.filter(f => f.estado === "dif")],
+    ["con CFDI sin XML", F.filter(f => f.estado === "sinxml")],
+    ["por revisar a mano", F.filter(f => f.estado === "revisar")],
+    ["sin clave de proveedor SAE", F.filter(f => !f.prov?.clave)],
+    ["sin centro de costo", F.filter(f => !f.cc?.c)],
+    ["sin descripción", F.filter(f => !f.desc?.t)],
+  ].filter(([, l]) => l.length);
+}
+// Una partida por proveedor + descripción + centro de costo (o una por cargo).
+function armarPartidas(agrupar) {
+  const F = S.R.filas.filter(f => f.estado !== "fuera").sort((a, b) => a.cg.compra - b.cg.compra || a.cg.orden - b.cg.orden);
+  const m = new Map();
+  for (const f of F) {
+    const k = agrupar ? [f.prov?.clave || "¿" + f.emisor.k, f.desc?.t || "", f.cc?.c || ""].join("|") : f.cg.id;
+    if (!m.has(k)) m.set(k, { cargos: [], facs: new Set(), t: TAX0(), clave: f.prov?.clave || "", proveedor: f.prov?.nombre || f.emisor.nombre, concepto: f.desc?.t || "", cc: f.cc?.c || "", retIva: false, retIsr: false, importe: 0 });
+    const p = m.get(k), t = f.tax || TAX0();
+    p.cargos.push(f); p.importe += f.cg.importe;
+    TAXK.forEach(x => p.t[x] += t[x] || 0);
+    if (t.retIva) p.retIva = true;
+    if (t.retIsr) p.retIsr = true;
+    if (f.a.cfdis.length) f.a.cfdis.forEach(c => p.facs.add(c.id)); else if (f.doc) p.facs.add(f.doc.id);
+  }
+  return [...m.values()].map((p, i) => {
+    const b16 = r2(p.t.b16), b8 = r2(p.t.b8), b0 = r2(p.t.b0), ex = r2(p.t.exento), no = r2(p.t.noObjeto + p.t.ieps + p.t.otros);
+    // Mismas fórmulas que la plantilla .xlsm.
+    const iva16 = b16 * .16, iva8 = b8 * .08;
+    const retIva = p.retIva ? ((b16 * -.16) + (b8 * -.11)) / 3 * 2 : 0;
+    const retIsr = p.retIsr ? (b16 + b8 + b0 + ex + no) * -.0125 : 0;
+    return { ...p, n: i + 1, nf: p.facs.size, b16, b8, b0, ex, no, iva16, iva8, retIva, retIsr, total: b16 + b8 + b0 + ex + no + iva16 + iva8 + retIva + retIsr };
+  });
+}
+// Al generar el reporte, lo «auto» queda fijo en el paquete: si mañana cambia la memoria
+// por proveedor, este paquete conserva lo que se reportó.
+async function congelarAutos() {
+  let prov = 0;
+  for (const f of S.R.filas) {
+    if (f.estado === "fuera") continue;
+    if (f.cc?.origen === "auto") S.cc[f.cg.id] = f.cc.c;
+    if (f.desc?.origen === "auto") S.desc[f.cg.id] = f.desc.t;
+    if (f.prov?.origen === "auto" && !CAT.vinculos[f.emisor.k]) { CAT.vinculos[f.emisor.k] = { clave: f.prov.clave, emisor: f.emisor.nombre, nombreSae: f.prov.nombre, fecha: new Date().toISOString().slice(0, 10) }; prov++; }
+  }
+  if (prov) await guardarCatalogo();
+}
+function abrirReporte() {
+  if (!S.R) return;
+  const pend = pendientesReporte();
+  const P = armarPartidas(true);
+  const hoy = iso(new Date());
+  $("#rep-body").innerHTML = `
+    <div class="campos">
+      <label>Gastos de<input type="text" data-r="gastosDe" value="${esc(CAT.reporte.gastosDe)}"></label>
+      <label>Recibidos por<input type="text" data-r="recibidoPor" value="${esc(CAT.reporte.recibidoPor)}"></label>
+      <label>Cierre al<input type="date" data-r="cierre" value="${S.periodo ? iso(S.periodo.hasta) : hoy}"></label>
+      <label>Fecha de envío<input type="date" data-r="envio" value="${hoy}"></label>
+    </div>
+    <label style="display:flex;gap:8px;align-items:center;color:var(--ink)"><input type="checkbox" data-r="agrupar" checked> Juntar en una partida los cargos del mismo proveedor, descripción y centro de costo <span class="dim" data-r="nparts">(${P.length} partidas)</span></label>
+    ${pend.length ? `<div class="pend"><b>Antes de enviarlo, revisa:</b><ul>${pend.map(([t, l]) => `<li>${l.length} ${l.length === 1 ? "cargo" : "cargos"} ${t}</li>`).join("")}</ul>Puedes generarlo así; esos cargos salen como están.</div>` : ""}
+    <p class="sub" style="margin:0">Se genera un Excel con el detalle por cargo y el resumen por centro de costo, un PDF con el detalle, y se descarga un ZIP con el listado AMEX, los comprobantes en sus carpetas y el reporte (sin _Sin asignar ni _Duplicados).${enPaquete() ? " Ambos se guardan en la carpeta _Reporte del paquete." : ""} Lo marcado como «auto» queda fijo en este paquete.</p>
+    <div class="acciones"><button class="btn primary" data-r="generar">Generar Excel y PDF</button></div>
+    <div data-r="resultado"></div>`;
+  const b = $("#rep-body");
+  b.querySelector('[data-r="agrupar"]').onchange = e => { b.querySelector('[data-r="nparts"]').textContent = `(${armarPartidas(e.target.checked).length} partidas)`; };
+  b.querySelector('[data-r="generar"]').onclick = async () => {
+    const btn = b.querySelector('[data-r="generar"]'), res = b.querySelector('[data-r="resultado"]');
+    const val = k => b.querySelector(`[data-r="${k}"]`).value;
+    btn.disabled = true; btn.textContent = "Generando…"; res.innerHTML = "";
+    try {
+      CAT.reporte = { ...CAT.reporte, gastosDe: val("gastosDe").trim(), recibidoPor: val("recibidoPor").trim() };
+      await congelarAutos();
+      await tarea(sincronizar);
+      for (const s of LIBS_REP) await cargarScript(s);
+      const info = { ...CAT.reporte, cierre: val("cierre"), envio: val("envio"), agrupar: b.querySelector('[data-r="agrupar"]').checked };
+      const P2 = armarPartidas(info.agrupar);
+      const base = `Reembolso AMEX ${S.periodo ? `${iso(S.periodo.desde)} al ${iso(S.periodo.hasta)}` : info.cierre}`;
+      info.rutas = rutasZip(); // el Excel cita los archivos con el nombre y la carpeta que tendrán en el ZIP
+      const xlsx = await excelReporte(P2, info), pdf = pdfReporte(P2, info);
+      const archivos = [[base + ".xlsx", xlsx, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"], [base + ".pdf", pdf, "application/pdf"]];
+      if (enPaquete()) {
+        for (const [n, buf] of archivos) {
+          try { await post("/api/quitar", { p: S.paquete, r: "_Reporte/" + n }); } catch {}
+          await apiJSON(`/api/archivo?${qp({ p: S.paquete, r: "_Reporte/" + n })}`, { method: "PUT", body: buf });
+        }
+        S.reportes = archivos.map(([n]) => "_Reporte/" + n); S.carpetas.add("_Reporte");
+        await guardarCatalogo();
+      } else { try { await guardarCatalogo(); } catch {} }
+      const z = await zipPaquete(base, archivos, info.rutas);
+      archivos.push([base + ".zip", z.buf, "application/zip"]);
+      descargar(base + ".zip", z.buf, "application/zip");
+      res.innerHTML = `<div class="listo"><span>Listo: ${P2.length} partidas por ${fmt(P2.reduce((t, p) => t + p.total, 0))}.${enPaquete() ? (modoNube ? " Excel y PDF guardados en el paquete, en la carpeta _Reporte." : ` Excel y PDF guardados en ${esc(S.rutaPaquete)}\\_Reporte.`) : ""} Se descargó el ZIP con ${z.n} comprobantes, renombrados como MONTO-SAE-Proveedor, y el reporte.</span>
+        ${archivos.map(([n], i) => `<button class="btn small" data-desc-rep="${i}">Descargar ${n.endsWith(".pdf") ? "PDF" : n.endsWith(".zip") ? "ZIP" : "Excel"}</button>`).join("")}</div>
+        ${z.faltan.length ? `<div class="pend">No pude incluir en el ZIP: ${z.faltan.map(esc).join(", ")}</div>` : ""}`;
+      res.querySelectorAll("[data-desc-rep]").forEach(x => x.onclick = () => { const [n, buf, tipo] = archivos[+x.dataset.descRep]; descargar(n, buf, tipo); });
+      render();
+    } catch (err) { console.error(err); res.innerHTML = `<div class="pend">No se pudo generar: ${esc(err.message || String(err))}</div>`; }
+    finally { btn.disabled = false; btn.textContent = "Generar Excel y PDF"; }
+  };
+  $("#dlg-rep").showModal();
+}
+// Nombre de cada comprobante dentro del ZIP: MONTO-SAE-Nombre Proveedor.ext. El monto es lo que
+// respalda en este reembolso (la suma de sus cargos AMEX; en PASE, los cruces del corte). En la
+// carpeta del paquete los archivos conservan su nombre original.
+const limpiarNombre = t => String(t || "").replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().replace(/[. ]+$/, "");
+function nombresZip() {
+  const info = new Map();
+  for (const f of S.R?.filas || []) {
+    if (f.estado === "fuera") continue;
+    const docs = [...f.a.docs, ...f.a.soporte].flatMap(d => [d, ...(d.pdfs || [])]);
+    for (const d of new Set(docs)) {
+      if (!info.has(d)) info.set(d, { monto: 0, clave: f.prov?.clave || "SIN CLAVE", nombre: f.prov?.nombre || f.emisor.nombre });
+      info.get(d).monto += f.cg.importe;
+    }
+  }
+  return d => {
+    const i = info.get(d);
+    if (!i) return basename(d.path);
+    const ext = (basename(d.path).match(/\.[^.]+$/) || [""])[0];
+    return limpiarNombre(`${i.monto.toFixed(2)}-${i.clave}-${i.nombre}`).slice(0, 150) + ext;
+  };
+}
+// ZIP con lo útil del paquete: listado AMEX, carpetas de fecha, PASE y el reporte. Sin
+// _Sin asignar ni _Duplicados (ni la papelera, que nunca se lee).
+// Ruta de cada archivo dentro del ZIP (carpeta y nombre nuevo). La usan el ZIP y el Excel.
+function rutasZip() {
+  const { dest } = planCarpetas();
+  const nombre = nombresZip(), usados = new Set(), rutas = new Map();
+  for (const d of S.docs) {
+    const c = dest.get(d) ?? "";
+    if (c === "_Sin asignar" || c === "_Duplicados") continue;
+    const carpeta = enPaquete() ? dirname(d.path) : c;
+    let nom = nombre(d), ruta = rutaEn(carpeta, nom), k = 2;
+    while (usados.has(ruta.toLowerCase())) { ruta = rutaEn(carpeta, nom.replace(/(\.[^.]+)?$/, ` (${k++})$1`)); }
+    usados.add(ruta.toLowerCase()); rutas.set(d, ruta);
+  }
+  return rutas;
+}
+async function zipPaquete(base, extras, rutas = rutasZip()) {
+  const zip = new JSZip(), raiz = zip.folder(base);
+  let n = 0;
+  const faltan = [];
+  for (const [d, ruta] of rutas) {
+    let buf = S.buffers[d.id];
+    if (!buf && enPaquete()) { try { buf = await leerArchivo(S.paquete, d.path); } catch {} }
+    if (!buf) { faltan.push(ruta); continue; }
+    raiz.file(ruta, buf); if (d.kind !== "listado") n++;
+  }
+  for (const [nombre, buf] of extras) raiz.file("_Reporte/" + nombre, buf);
+  return { buf: await zip.generateAsync({ type: "arraybuffer", compression: "DEFLATE" }), n, faltan };
+}
+function descargar(nombre, buf, tipo) {
+  const url = URL.createObjectURL(new Blob([buf], { type: tipo }));
+  const a = document.createElement("a"); a.href = url; a.download = nombre; document.body.appendChild(a); a.click();
+  setTimeout(() => { URL.revokeObjectURL(url); a.remove(); }, 2000);
+}
+const fechaCorta = s => { if (!s) return ""; const [y, m, d] = s.split("-"); return `${d}/${m}/${y}`; };
+async function excelReporte(P, info) {
+  const wb = new ExcelJS.Workbook(); wb.creator = "Reembolso AMEX";
+  const NUM = '#,##0.00;-#,##0.00;"-"';
+  const borde = { top: { style: "thin", color: { argb: "FFBFBFBF" } }, left: { style: "thin", color: { argb: "FFBFBFBF" } }, bottom: { style: "thin", color: { argb: "FFBFBFBF" } }, right: { style: "thin", color: { argb: "FFBFBFBF" } } };
+  const amarillo = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF9C4" } };
+  const amex = P.reduce((t, p) => t + p.importe, 0);
+  // DETALLE: un renglón por cargo, para revisar de dónde sale cada partida.
+  const wd = wb.addWorksheet("DETALLE", { views: [{ state: "frozen", ySplit: 4 }] });
+  const cols = [["Partida", 8], ["Fecha cargo", 11], ["Cargo AMEX", 34], ["Importe AMEX", 13], ["Moneda ext.", 12], ["Clave SAE", 9], ["Proveedor SAE", 30], ["Emisor", 30], ["RFC", 15], ["Folio", 16], ["UUID / factura", 38], ["Descripción", 36], ["C. costo", 9],
+    ["Base 16%", 12], ["IVA 16%", 11], ["Base 8%", 11], ["IVA 8%", 10], ["Tasa 0%", 11], ["Exento", 11], ["No objeto", 12], ["IEPS", 10], ["Ret. IVA", 10], ["Ret. ISR", 10], ["Total comprobante", 14], ["Diferencia", 11], ["Estado", 16], ["Archivos", 50]];
+  wd.columns = cols.map(([, w]) => ({ width: w }));
+  wd.getCell("A1").value = "Reembolso de gastos AMEX"; wd.getCell("A1").font = { bold: true, size: 14 };
+  wd.getCell("A2").value = [`Gastos de: ${info.gastosDe || ""}`, `Cierre al: ${fechaCorta(info.cierre)}`, `Recibidos por: ${info.recibidoPor || ""}`, `Fecha de envío: ${fechaCorta(info.envio)}`,
+    S.periodo ? `Periodo AMEX: ${fFechaL(S.periodo.desde)} al ${fFechaL(S.periodo.hasta)}` : ""].filter(Boolean).join("    ");
+  const hr = wd.getRow(4); hr.values = cols.map(([h]) => h);
+  hr.eachCell(c => { c.font = { bold: true }; c.fill = amarillo; c.border = borde; c.alignment = { wrapText: true, vertical: "middle" }; });
+  P.forEach(p => p.cargos.forEach(f => {
+    const t = f.tax || TAX0(), d = f.doc;
+    const row = wd.addRow([p.n, f.cg.compra, f.cg.descripcion, f.cg.importe, f.cg.montoExt ? `${f.cg.montoExt} ${f.cg.monedaExt}` : "", /^\d+$/.test(f.prov?.clave || "") ? +f.prov.clave : f.prov?.clave || "", f.prov?.nombre || "", f.emisor.nombre, f.emisor.rfc,
+      d?.kind === "cfdi" ? d.folio : "", d?.kind === "cfdi" ? d.uuid : d?.factura || d?.uuids?.[0] || "", f.desc?.t || "", f.cc?.c || "",
+      r2(t.b16), r2(t.iva16), r2(t.b8), r2(t.iva8), r2(t.b0), r2(t.exento), r2(t.noObjeto + t.otros), r2(t.ieps), r2(t.retIva), r2(t.retIsr), r2(f.totalDoc ?? t.total), r2(f.dif), ESTADOS[f.estado].t,
+      [...f.a.docs.flatMap(x => [x, ...(x.pdfs || [])]), ...f.a.soporte].map(x => (info.rutas?.get(x) || x.path).replace(/\//g, "\\")).join("; ")]);
+    row.getCell(2).numFmt = "dd/mm/yyyy";
+    [4, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25].forEach(i => row.getCell(i).numFmt = NUM);
+  }));
+  const ultima = wd.rowCount;
+  const tot = wd.addRow(["", "", "TOTAL", { formula: `SUM(D5:D${ultima})` }]);
+  tot.font = { bold: true }; tot.getCell(4).numFmt = NUM;
+  "NOPQRSTUVWX".split("").forEach(c => { const cell = wd.getCell(`${c}${tot.number}`); cell.value = { formula: `SUM(${c}5:${c}${ultima})` }; cell.numFmt = NUM; });
+
+  // CENTROS: cuánto lleva cada centro de costo.
+  const wc = wb.addWorksheet("CENTROS");
+  wc.columns = [{ header: "Centro de costo", width: 16 }, { header: "Nombre", width: 30 }, { header: "Partidas", width: 10 }, { header: "Cargos", width: 10 }, { header: "Total base + IVA", width: 18 }, { header: "Cargos AMEX", width: 16 }];
+  wc.getRow(1).eachCell(c => { c.font = { bold: true }; c.fill = amarillo; });
+  [...new Set(P.map(p => p.cc))].sort().forEach(cc => {
+    const ps = P.filter(p => p.cc === cc);
+    const row = wc.addRow([cc || "Sin centro", nombreCC(cc), ps.length, ps.reduce((t, p) => t + p.cargos.length, 0), r2(ps.reduce((t, p) => t + p.total, 0)), r2(ps.reduce((t, p) => t + p.importe, 0))]);
+    row.getCell(5).numFmt = NUM; row.getCell(6).numFmt = NUM;
+  });
+  return await wb.xlsx.writeBuffer();
+}
+function pdfReporte(P, info) {
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
+  const f2 = v => Math.abs(v || 0) < .005 ? "" : fmt(v);
+  const amex = P.reduce((t, p) => t + p.importe, 0), total = P.reduce((t, p) => t + p.total, 0);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(14); doc.text("Reembolso de gastos AMEX", 36, 36);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(9);
+  const enc = [["Gastos de", info.gastosDe], ["Cierre al", fechaCorta(info.cierre)], ["Recibidos por", info.recibidoPor || ""], ["Fecha de envío", fechaCorta(info.envio)],
+    ["Periodo AMEX", S.periodo ? `${fFechaL(S.periodo.desde)} al ${fFechaL(S.periodo.hasta)}` : ""], ["Cargos AMEX", fmt(amex)]];
+  enc.forEach(([k, v], i) => { const x = 36 + (i % 3) * 240, y = 54 + Math.floor(i / 3) * 13; doc.setFont("helvetica", "bold"); doc.text(k + ":", x, y); doc.setFont("helvetica", "normal"); doc.text(String(v), x + 78, y); });
+  doc.setFont("helvetica", "bold"); doc.setFontSize(11); doc.text("Detalle por cargo AMEX", 36, 92);
+  const num = { halign: "right" };
+  const bodyD = P.flatMap(p => p.cargos.map(f => [p.n, fFecha(f.cg.compra), f.cg.descripcion, fmt(f.cg.importe), f.prov?.clave || "", f.emisor.nombre,
+    f.doc?.kind === "cfdi" ? `${f.doc.folio}\n${f.doc.uuid}` : f.doc?.factura || (f.doc ? basename(f.doc.path) : "Sin comprobante"), f.cc?.c || "", f2(f.totalDoc ?? f.tax?.total), f2(f.dif), ESTADOS[f.estado].t]));
+  doc.autoTable({ head: [["Partida", "Fecha", "Cargo AMEX", "Importe", "Clave", "Emisor", "Comprobante", "C. costo", "Total comp.", "Dif.", "Estado"]], body: bodyD, startY: 100,
+    foot: [["", "", "TOTAL", fmt(amex), "", "", "", "", f2(P.reduce((t, p) => t + p.cargos.reduce((u, f) => u + (f.totalDoc ?? f.tax?.total ?? 0), 0), 0)), "", ""]],
+    footStyles: { fillColor: [245, 245, 245], textColor: 20, fontStyle: "bold" },
+    margin: { left: 30, right: 30 }, theme: "grid", styles: { font: "helvetica", fontSize: 6.5, cellPadding: 2.5, lineColor: [200, 200, 200], lineWidth: .4 },
+    headStyles: { fillColor: [255, 249, 196], textColor: 20, fontStyle: "bold" },
+    columnStyles: { 0: { cellWidth: 30, halign: "center" }, 1: { cellWidth: 36 }, 2: { cellWidth: 120 }, 3: num, 4: { cellWidth: 32 }, 5: { cellWidth: 110 }, 6: { cellWidth: 150 }, 8: num, 9: num } });
+  const pags = doc.getNumberOfPages();
+  for (let i = 1; i <= pags; i++) { doc.setPage(i); doc.setFontSize(7); doc.setFont("helvetica", "normal"); doc.text(`${S.paquete || "Reembolso AMEX"} · página ${i} de ${pags}`, 30, doc.internal.pageSize.getHeight() - 16); }
+  return doc.output("arraybuffer");
+}
+$("#viewer").addEventListener("click", e => { if (e.target.id === "viewer") e.target.close(); });
+limpiarTrabajo();
+$("#lg-entrar").onclick = entrar;
+$("#lg-olvide").onclick = olvide;
+$("#lg-pass").onkeydown = e => { if (e.key === "Enter") entrar(); };
+$("#lg-email").onkeydown = e => { if (e.key === "Enter") $("#lg-pass").focus(); };
+(async () => {
+  if (modoNube) { try { await iniciarNube(); } catch (err) { NB.conexion = err.message || String(err); } }
+  else await detectarServidor();
+  if (API.ok) { try { await cargarDirectorio(); } catch (err) { error(err.message); } }
+  await cargarCatalogo();
+  render();
+})();
+</script>
+</body>
+</html>

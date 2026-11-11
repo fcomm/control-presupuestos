@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.98.9";
+const APP_VERSION = "2.99.0";
 const CHANGELOG = [
+  { v: "2.99.0", desc: "Permisos de usuario por compania: Sin acceso, Solo lectura o Edicion total. Los administradores los asignan en Catalogo > Usuarios (pestana visible solo para ellos). La base los hace cumplir con reglas restrictivas en cada tabla: un usuario de lectura no puede guardar, ni desde la app ni por fuera. Con Solo lectura aparece un aviso arriba, y si intenta guardar algo el mensaje explica que su acceso es de lectura. Nadie pierde acceso: todos quedan con Edicion total. Requiere correr permisos-usuario.sql" },
   { v: "2.98.9", desc: "Solicitudes: se elimina la etapa Por autorizar del tablero y del selector de estado. De Cotizando se pasa a Por programar a pago. Las SMI que estaban en Por autorizar se muestran en Por programar a pago; quitar-por-autorizar-smi.sql las mueve tambien en la base" },
   { v: "2.98.8", desc: "Fix folio de SMI: el Consecutivo inicial de Parametros solo contaba si la compania no tenia ninguna SMI, asi que subirlo (p. ej. a 303 con la serie en 274) no tenia efecto. Ahora el siguiente folio es el MAYOR entre el consecutivo inicial y el que sigue a la ultima SMI. La vista previa de Parametros muestra los folios que de verdad siguen. Requiere correr consecutivo-inicial-smi.sql en Supabase para el formulario publico" },
   { v: "2.98.7", desc: "Suma en el encabezado de Importe / Monto (Transacciones, Partidas y demas tablas): pasa de 9.5 a 12 px en negritas, y cada linea lleva su moneda (MXP, USD). Las monedas capturadas con otra escritura (usd, Dolares, MXN) se juntan con la suya en vez de abrir una linea sin etiqueta" },
@@ -15024,6 +15025,7 @@ const SUBS_CATALOGO = [
   { id: "zonas", label: "Zonas" },
   { id: "proveedores", label: "Proveedores" },
   { id: "solicitudes", label: "Solicitudes de Pago" },
+  { id: "usuarios", label: "Usuarios", soloAdmin: true },
 ];
 
 /* Estado de hoy de una transacción que se reportó. Eliminada es la que ya no
@@ -21401,7 +21403,145 @@ function SolicitudesTab({ unidad, session, unidades = [], proyectos = [], zonas 
   );
 }
 
-function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi, listasSat }) {
+/* ----------------------------------------------------------------------
+   PERMISOS DE USUARIO (v2.99.0)
+   Por compañía: Sin acceso · Solo lectura · Edición total. "Sin acceso" es
+   lo que ya guardaba unidades_permitidas; el nivel va en perfiles.permisos
+   ({"OSB":"lectura"}; sin llave = edición). Lo hace cumplir la base (reglas
+   restrictivas, ver permisos-usuario.sql): la pantalla solo lo administra y
+   lo avisa.
+---------------------------------------------------------------------- */
+const NIVELES_PERMISO = [
+  { value: "sin",     label: "Sin acceso" },
+  { value: "lectura", label: "Solo lectura" },
+  { value: "edicion", label: "Edición total" },
+];
+
+const nivelDe = (perfil, u) => {
+  const lista = perfil?.unidades_permitidas;
+  if (lista && lista.length && !lista.includes(u)) return "sin";
+  return perfil?.permisos?.[u] === "lectura" ? "lectura" : "edicion";
+};
+
+const soloLecturaEn = (perfil, u) => !!perfil && perfil?.permisos?.[u] === "lectura";
+
+function UsuariosPanel({ perfilesApi, session }) {
+  // Copia local: la pantalla refleja lo guardado aunque la lista de perfiles
+  // no se refresque sola.
+  const [editados, setEditados] = useState({});
+  const [guardando, setGuardando] = useState(null);
+  const [aviso, setAviso] = useState(null);
+
+  const perfiles = [...perfilesApi.rows]
+    .map((p) => ({ ...p, ...(editados[p.id] || {}) }))
+    .sort((a, b) => Number(!!b.es_admin) - Number(!!a.es_admin)
+      || String(a.nombre || a.email || "").localeCompare(String(b.nombre || b.email || "")));
+
+  const [borrador, setBorrador] = useState({}); // { [id]: { OSB: "lectura", ... } }
+  const nivelVisto = (p, u) => borrador[p.id]?.[u] ?? nivelDe(p, u);
+  const cambiado = (p) => UNIDAD_KEYS.some((u) => nivelVisto(p, u) !== nivelDe(p, u));
+
+  const guardar = async (p) => {
+    setAviso(null);
+    const niveles = Object.fromEntries(UNIDAD_KEYS.map((u) => [u, nivelVisto(p, u)]));
+    const conAcceso = UNIDAD_KEYS.filter((u) => niveles[u] !== "sin");
+    if (!conAcceso.length) {
+      setAviso({ tono: "red", texto: `${p.nombre || p.email} quedaría sin acceso a ninguna compañía. Deja al menos una en Solo lectura o Edición total.` });
+      return;
+    }
+    if (p.id === session?.user?.id && !conAcceso.some((u) => niveles[u] === "edicion")) {
+      if (!confirm("Te estás quitando la edición en todas las compañías. Seguirás siendo administrador y podrás devolvértela aquí. ¿Continuar?")) return;
+    }
+    // Acceso a las tres = null, como hasta hoy: así no se le cierra la vista
+    // de las compañías que solo existen en Vehículos.
+    const unidades = conAcceso.length === UNIDAD_KEYS.length ? null : conAcceso;
+    const permisos = Object.fromEntries(conAcceso.filter((u) => niveles[u] === "lectura").map((u) => [u, "lectura"]));
+    setGuardando(p.id);
+    try {
+      const { error } = await supabase.rpc("admin_guardar_permisos", {
+        p_usuario: String(p.id), p_unidades: unidades, p_permisos: permisos,
+      });
+      if (error) throw error;
+      setEditados((e) => ({ ...e, [p.id]: { unidades_permitidas: unidades, permisos } }));
+      setBorrador((b) => { const c = { ...b }; delete c[p.id]; return c; });
+      setAviso({ tono: "teal", texto: `Permisos de ${p.nombre || p.email} guardados. Se aplican la próxima vez que recargue la página.` });
+    } catch (err) {
+      const msg = String(err.message || err);
+      setAviso({ tono: "red", texto: /admin_guardar_permisos|function/i.test(msg) && /not find|no existe|does not exist/i.test(msg)
+        ? "Falta correr permisos-usuario.sql en Supabase. Sin eso no se pueden guardar permisos."
+        : "No se pudieron guardar los permisos: " + msg });
+    } finally {
+      setGuardando(null);
+    }
+  };
+
+  return (
+    <Panel title="Usuarios y permisos"
+      subtitle="Por compañía: Sin acceso (no la ve), Solo lectura (consulta y descarga, no puede guardar cambios) o Edición total. Solo los administradores ven esta pantalla.">
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12.5 }}>
+          <thead>
+            <tr style={{ color: T.textDim, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", textAlign: "left" }}>
+              <th style={{ padding: "8px 10px" }}>Usuario</th>
+              {UNIDAD_KEYS.map((u) => <th key={u} style={{ padding: "8px 10px" }}>{u}</th>)}
+              <th style={{ padding: "8px 10px" }} />
+            </tr>
+          </thead>
+          <tbody>
+            {perfiles.map((p) => (
+              <tr key={p.id} style={{ borderTop: `1px solid ${T.borderSoft}` }}>
+                <td style={{ padding: "8px 10px", minWidth: 220 }}>
+                  <div style={{ fontWeight: 600, color: T.text }}>
+                    {p.nombre || p.email || p.id}
+                    {p.es_admin && <span style={{ marginLeft: 8 }}><Pill tone="accent">Administrador</Pill></span>}
+                    {p.id === session?.user?.id && <span style={{ marginLeft: 6, fontSize: 11, color: T.textFaint }}>(tú)</span>}
+                  </div>
+                  {p.email && p.nombre && <div style={{ fontSize: 11, color: T.textFaint }}>{p.email}</div>}
+                </td>
+                {UNIDAD_KEYS.map((u) => {
+                  const v = nivelVisto(p, u);
+                  return (
+                    <td key={u} style={{ padding: "8px 10px", minWidth: 140 }}>
+                      <Select value={v} disabled={guardando === p.id}
+                        onChange={(e) => setBorrador((b) => ({ ...b, [p.id]: { ...(b[p.id] || {}), [u]: e.target.value } }))}
+                        style={{ color: v === "sin" ? T.textFaint : v === "lectura" ? T.amber : T.text }}>
+                        {NIVELES_PERMISO.map((n) => <option key={n.value} value={n.value}>{n.label}</option>)}
+                      </Select>
+                    </td>
+                  );
+                })}
+                <td style={{ padding: "8px 10px", whiteSpace: "nowrap" }}>
+                  {cambiado(p) && (
+                    <>
+                      <Button disabled={guardando === p.id} onClick={() => guardar(p)}>
+                        {guardando === p.id ? "Guardando…" : "Guardar"}
+                      </Button>{" "}
+                      <Button variant="ghost" disabled={guardando === p.id}
+                        onClick={() => setBorrador((b) => { const c = { ...b }; delete c[p.id]; return c; })}>Deshacer</Button>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {aviso && (
+        <div style={{
+          marginTop: 12, fontSize: 12.5, padding: "10px 12px", borderRadius: 6,
+          color: aviso.tono === "red" ? T.red : T.teal,
+          background: aviso.tono === "red" ? `${T.red}12` : `${T.teal}14`,
+          border: `1px solid ${aviso.tono === "red" ? `${T.red}55` : `${T.teal}55`}`,
+        }}>{aviso.texto}</div>
+      )}
+      <div style={{ fontSize: 11.5, color: T.textFaint, marginTop: 12, lineHeight: 1.6 }}>
+        Quién es administrador se asigna en Supabase. Los usuarios nuevos entran con Edición total en las tres compañías.
+      </div>
+    </Panel>
+  );
+}
+
+function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, categoriasApi, partidas = [], transacciones = [], proveedoresApi, cuentasApi, perfilesApi, listasSat, esAdmin = false, session = null }) {
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
   const [sub, setSub] = useSessionState("ss-catalogo-sub", "proyectos");
   const [nuevo, setNuevo] = useState({ nombre: "", grupo: "", pct: "", centro_costo: "" });
@@ -21445,7 +21585,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
           secciones plegables: con seis encabezados que atravesar el recorrido
           sigue existiendo, y el estado de plegado se olvida entre visitas. */}
       <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start", flexWrap: "wrap" }}>
-        {SUBS_CATALOGO.map((sc) => (
+        {SUBS_CATALOGO.filter((sc) => !sc.soloAdmin || esAdmin).map((sc) => (
           <button
             key={sc.id}
             onClick={() => setSub(sc.id)}
@@ -21537,6 +21677,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
         <ProveedoresPanel unidad={unidad} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} listasSat={listasSat} />
       )}
       {sub === "solicitudes" && <ConfigCompaniaPanel unidad={unidad} />}
+      {sub === "usuarios" && esAdmin && <UsuariosPanel perfilesApi={perfilesApi} session={session} />}
     </div>
   );
 }
@@ -24187,6 +24328,27 @@ export default function App() {
   const unidadesPermitidas = (miPerfil?.unidades_permitidas && miPerfil.unidades_permitidas.length)
     ? miPerfil.unidades_permitidas
     : UNIDAD_KEYS;
+  const soloLectura = soloLecturaEn(miPerfil, unidad);
+
+  /* Cuando la base rechaza un cambio por permisos, el mensaje técnico
+     ("new row violates row-level security policy…") llega tal cual a los
+     alert() de toda la app. Aquí se traduce en un solo lugar a algo que
+     diga qué pasó y qué hacer. */
+  const unidadRef = useRef(unidad);
+  unidadRef.current = unidad;
+  useEffect(() => {
+    const original = window.alert;
+    window.alert = (msg) => {
+      const t = String(msg ?? "");
+      if (/row-level security|violates row-level|permission denied|42501/i.test(t)) {
+        return original(
+          `No se guardó el cambio: tu acceso en ${unidadRef.current} es de solo lectura.\n\n` +
+          "Puedes consultar y descargar, pero no modificar. Si necesitas hacer este cambio, pídeselo a un administrador.");
+      }
+      return original(msg);
+    };
+    return () => { window.alert = original; };
+  }, []);
 
   // Si la unidad activa no está entre las permitidas (primera carga, o a alguien
   // le acaban de restringir el acceso), se cambia sola a la primera que sí puede ver.
@@ -24332,6 +24494,14 @@ export default function App() {
         </div>
       </div>
 
+      {soloLectura && (
+        <div style={{ margin: "0 0 14px", padding: "9px 14px", borderRadius: 8, fontSize: 12.5, lineHeight: 1.5,
+                      background: `${T.amber}14`, border: `1px solid ${T.amber}66`, color: T.text }}>
+          👁 <b>Solo lectura en {unidad}.</b> Puedes consultar y descargar reportes, pero no hacer cambios.
+          Si necesitas modificar algo, pídeselo a un administrador.
+        </div>
+      )}
+
       <div style={{ display: "flex", gap: 4, borderBottom: `1px solid ${T.border}`, marginBottom: 22 }}>
         {TABS.map((t) => (
           <button
@@ -24374,7 +24544,7 @@ export default function App() {
           {tab === "solicitudes" && <SolicitudesTab onConvertir={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} unidad={unidad} session={session} unidades={unidades} proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} zonas={zonas.map((z) => (typeof z === "string" ? z : z.nombre))} />}
           {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} clausulasApi={contratosClausulasApi} session={session} />}
           {tab === "herramientas" && <HerramientasTab />}
-          {tab === "catalogo" && <CatalogoTab key={catalogoVersion} listasSat={listasSat} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} />}
+          {tab === "catalogo" && <CatalogoTab key={catalogoVersion} listasSat={listasSat} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} esAdmin={!!miPerfil?.es_admin} session={session} />}
         </>
       )}
     </div>

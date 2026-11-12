@@ -53,7 +53,7 @@
 .login .acc{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .login .msg{font-size:13px;min-height:1.2em}
 .login .msg.mal{color:var(--dif)}
-body.sin-sesion #paqbar,body.sin-sesion #drop,body.sin-sesion #dir,body.sin-sesion #summary,body.sin-sesion #toolbar,body.sin-sesion #view{display:none !important}
+body.sin-sesion #paqbar,body.sin-sesion #drop,body.sin-sesion #dir,body.sin-sesion #summary,body.sin-sesion #toolbar,body.sin-sesion #view{display:none !important}body.sin-permiso #paqbar,body.sin-permiso #drop,body.sin-permiso #dir,body.sin-permiso #summary,body.sin-permiso #toolbar,body.sin-permiso #view{display:none !important}
 html{scroll-padding-top:env(safe-area-inset-top,0px)}
 body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--font);font-variant-numeric:tabular-nums}
 main{max-width:1500px;margin:0 auto;padding:28px 24px 64px}
@@ -1645,7 +1645,14 @@ function renderDesc() {
 const NUBE = { url: "https://clxxsxrtxcdvqcthytws.supabase.co", key: "sb_publishable_cLqvKuqh3cUcjfmar2JZ7Q_urZSnZSi" };
 const UNIDADES_TODAS = ["OSB", "CTM", "ISE"];
 const modoNube = /^\/reembolso(\/|$)/.test(location.pathname) || new URLSearchParams(location.search).has("nube");
-const NB = { sb: null, sesion: null, perfil: null, unidades: [], unidad: null, conexion: "" };
+const NB = { sb: null, sesion: null, perfil: null, unidades: [], unidad: null, conexion: "", lectura: false };
+/* Permisos (v2.99.0 de Control de Presupuestos): esta herramienta es SOLO para
+   administradores, y dentro de ella se respeta el nivel por compañía: con
+   "Solo lectura" en una compañía se consulta pero no se guarda. La base lo
+   hace cumplir de todos modos (reembolso-solo-admin.sql); aquí se avisa
+   antes, con un mensaje claro, en vez de dejar que el cambio falle. */
+const MSG_LECTURA = () => `Tu acceso en ${NB.unidad} es de solo lectura: no se guardó el cambio. Puedes consultar y descargar; si necesitas modificar algo, pídeselo a un administrador.`;
+const esErrorPermiso = t => /row-level security|violates row-level|permission denied|42501|Unauthorized|not authorized/i.test(String(t || ""));
 async function iniciarNube() {
   if (!window.supabase?.createClient) { NB.conexion = "No se pudo cargar la librería de Supabase. Revisa la conexión a internet."; return; }
   NB.sb = window.supabase.createClient(NUBE.url, NUBE.key, { auth: { persistSession: true, autoRefreshToken: true } });
@@ -1661,8 +1668,19 @@ async function iniciarNube() {
 async function cargarPerfil() {
   NB.perfil = null; NB.conexion = "";
   if (!NB.sesion) return;
-  const { data, error: err } = await NB.sb.from("perfiles").select("id, email, nombre, unidades_permitidas").eq("id", NB.sesion.user.id).maybeSingle();
-  if (err) { NB.conexion = "No pude leer tu perfil: " + err.message; return; }
+  const { data, error: err } = await NB.sb.from("perfiles").select("id, email, nombre, unidades_permitidas, es_admin, permisos").eq("id", NB.sesion.user.id).maybeSingle();
+  if (err) {
+    NB.conexion = /es_admin|permisos/.test(err.message)
+      ? "Falta correr permisos-usuario.sql en Supabase: sin eso no se puede saber quién es administrador."
+      : "No pude leer tu perfil: " + err.message;
+    API.ok = false; return;
+  }
+  if (!data?.es_admin) {
+    NB.perfil = data || { email: NB.sesion.user.email, nombre: NB.sesion.user.email };
+    NB.unidades = []; NB.unidad = null;
+    NB.conexion = "Esta herramienta es solo para administradores. Si necesitas usarla, pídele acceso a un administrador.";
+    API.ok = false; return;
+  }
   NB.perfil = data || { email: NB.sesion.user.email, nombre: NB.sesion.user.email };
   NB.unidades = data?.unidades_permitidas?.length ? data.unidades_permitidas : UNIDADES_TODAS;
   let guardada = null; try { guardada = localStorage.getItem("amex.unidad"); } catch {}
@@ -1674,7 +1692,7 @@ async function cargarPerfil() {
   if (API.ok) { try { await cargarDirectorio(); } catch (err) { error(err.message); } }
 }
 // Catálogos de la compañía elegida, desde Control de Presupuestos y las tablas del reembolso.
-const chk = r => { if (r.error) throw new Error(r.error.message); return r.data; };
+const chk = r => { if (r.error) throw new Error(esErrorPermiso(r.error.message) ? MSG_LECTURA() : r.error.message); return r.data; };
 async function cargarCatalogoNube() {
   const U = NB.unidad, sb = NB.sb;
   progreso(`Leyendo catálogos de ${U}…`);
@@ -1722,6 +1740,8 @@ function fotoNube() {
 }
 async function guardarNube() {
   if (!NB.sb || !NB.snap) return;
+  // Con solo lectura los catálogos no se guardan; se avisa una vez.
+  if (NB.lectura) { if (!guardarNube.avisado) { guardarNube.avisado = true; aviso(MSG_LECTURA()); } return; }
   const ahora = fotoNube(), antes = NB.snap, U = NB.unidad, sb = NB.sb;
   const cambia = (a, b) => JSON.stringify(a) !== JSON.stringify(b);
   const up = [...ahora.ligas.values()].filter(r => cambia(r, antes.ligas.get(r.emisor_k)));
@@ -1766,6 +1786,8 @@ async function apiNube(url, opts = {}) {
   const cuerpo = () => JSON.parse(opts.body || "{}");
   const sb = NB.sb, U = NB.unidad;
   if (!sb || !NB.sesion) throw new Error("Inicia sesión para trabajar en línea.");
+  // Solo lectura: nada que no sea consultar llega a la base.
+  if (m !== "GET" && NB.lectura) throw new Error(MSG_LECTURA());
   switch (u.pathname) {
     case "/api/paquetes": {
       const d = chk(await sb.from("reembolso_paquetes").select("id, nombre, resumen, updated_at, bloqueado_por, bloqueado_en").eq("unidad", U));
@@ -1874,17 +1896,21 @@ window.addEventListener("pagehide", () => { if (NB.bloqueado) soltarBloqueo(); }
 // Comprueba que las tablas del reembolso respondan con los permisos de este usuario.
 async function verificarNube() {
   const r = await NB.sb.from("reembolso_paquetes").select("id", { count: "exact", head: true }).eq("unidad", NB.unidad);
-  NB.conexion = r.error ? "Sin acceso a los paquetes: " + r.error.message : "";
+  NB.conexion = r.error ? "Sin acceso a los paquetes: " + (esErrorPermiso(r.error.message) ? "esta herramienta es solo para administradores." : r.error.message) : "";
+  NB.lectura = NB.perfil?.permisos?.[NB.unidad] === "lectura";
   NB.paquetesEnNube = r.count ?? 0;
 }
 function renderCuenta() {
   const c = $("#cuenta");
   document.body.classList.toggle("sin-sesion", modoNube && !NB.sesion);
+  // Sin ser administrador no se muestra la herramienta: solo el aviso de arriba.
+  document.body.classList.toggle("sin-permiso", modoNube && !!NB.sesion && !NB.perfil?.es_admin);
   $("#login").hidden = !(modoNube && !NB.sesion);
   c.hidden = !modoNube || !NB.sesion;
   if (c.hidden) return;
   c.innerHTML = `<span><b>${esc(NB.perfil?.nombre || NB.sesion.user.email)}</b> · ${esc(NB.sesion.user.email)}</span>
     <label>Compañía <select id="sel-unidad" ${NB.unidades.length < 2 ? "disabled" : ""}>${NB.unidades.map(u => `<option ${u === NB.unidad ? "selected" : ""}>${esc(u)}</option>`).join("")}</select></label>
+    ${NB.lectura && !NB.conexion ? `<span class="mal" title="Puedes consultar y descargar, pero no guardar cambios">👁 Solo lectura en ${esc(NB.unidad)}</span>` : ""}
     ${NB.conexion ? `<span class="mal">${esc(NB.conexion)}</span>` : `<span class="ok" title="Las tablas del reembolso responden con tus permisos">● En línea</span>`}
     <button class="btn small" id="btn-salir">Salir</button>`;
   $("#sel-unidad").onchange = async e => {

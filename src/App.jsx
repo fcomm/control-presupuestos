@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.99.1";
+const APP_VERSION = "2.99.2";
 const CHANGELOG = [
+  { v: "2.99.2", desc: "Formulario de transaccion en secciones plegables: Clasificacion (partida, area, proyecto, zona, categoria), Proveedor y solicitud, Importe y pago, y Datos fiscales y referencia. Plegada, cada seccion muestra un resumen en su encabezado y avisa si tiene un problema (p. ej. categoria fuera del rubro). Al crear van todas abiertas; al editar, solo Importe y pago. Si falta un dato obligatorio en una seccion plegada, se abre sola al guardar. En una transaccion pagada las secciones se pueden abrir para consultarla aunque los campos sigan bloqueados" },
   { v: "2.99.1", desc: "Formulario de transaccion: el aviso de categoria fuera del rubro sale de la celda de Categoria (ocupaba un cuarto del ancho y estiraba toda la fila) a un recuadro a lo ancho del formulario, debajo de esa fila, con los tres puntos lado a lado y textos mas cortos. En el campo queda solo una linea. En ambar si ya venia asi y se puede guardar, en rojo si no" },
   { v: "2.99.0", desc: "Permisos de usuario por compania: Sin acceso, Solo lectura o Edicion total. Los administradores los asignan en Catalogo > Usuarios (pestana visible solo para ellos). La base los hace cumplir con reglas restrictivas en cada tabla: un usuario de lectura no puede guardar, ni desde la app ni por fuera. Con Solo lectura aparece un aviso arriba, y si intenta guardar algo el mensaje explica que su acceso es de lectura. Nadie pierde acceso: todos quedan con Edicion total. Requiere correr permisos-usuario.sql" },
   { v: "2.98.9", desc: "Solicitudes: se elimina la etapa Por autorizar del tablero y del selector de estado. De Cotizando se pasa a Por programar a pago. Las SMI que estaban en Por autorizar se muestran en Por programar a pago; quitar-por-autorizar-smi.sql las mueve tambien en la base" },
@@ -7000,6 +7001,33 @@ function CamposBloqueables({ bloqueado, children }) {
   );
 }
 
+/* Sección plegable de un formulario. El botón del encabezado queda FUERA
+   del fieldset de bloqueo: una transacción pagada se puede seguir abriendo
+   para consultarla aunque sus campos no se editen. Plegada no se desmonta:
+   lo capturado se conserva. */
+function SeccionForm({ id, titulo, resumen, alerta, abierta, onAlternar, bloqueado, children }) {
+  return (
+    <div data-seccion={id} style={{ gridColumn: "span 4", border: `1px solid ${alerta ? `${T.amber}88` : T.borderSoft}`,
+                                     borderRadius: 8, overflow: "hidden" }}>
+      <button type="button" onClick={onAlternar} aria-expanded={abierta}
+        style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "9px 12px",
+                 background: T.panelAlt, border: "none", cursor: "pointer", textAlign: "left",
+                 fontFamily: T.fontUI, color: T.text }}>
+        <span style={{ color: T.textFaint, width: 10, fontSize: 11 }}>{abierta ? "▾" : "▸"}</span>
+        <span style={{ fontWeight: 700, fontSize: 12.5, whiteSpace: "nowrap" }}>{titulo}</span>
+        {!abierta && resumen && (
+          <span style={{ fontSize: 11.5, color: T.textDim, overflow: "hidden", textOverflow: "ellipsis",
+                         whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>{resumen}</span>
+        )}
+        {alerta && <span style={{ marginLeft: "auto", color: T.amber, fontSize: 11.5, whiteSpace: "nowrap" }}>⚠ {alerta}</span>}
+      </button>
+      <div style={{ display: abierta ? "block" : "none", padding: 12 }}>
+        <CamposBloqueables bloqueado={bloqueado}>{children}</CamposBloqueables>
+      </div>
+    </div>
+  );
+}
+
 function puedeBorrarTransaccion(t) {
   if (!t || t.status !== "Pagado") return true;
   alert(
@@ -11150,6 +11178,18 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const expVis = useVisibilidadColumnas("colv-transacciones-export", COLUMNAS_EXPORT_TX,
     ["folio_tx", "concepto_p", "area", "solicitante", "forma_pago", "referencia", "factura", "sae"]);
   const [subTx, setSubTx] = useSessionState("ss-trans-sub", "general");
+  // Secciones abiertas del formulario de transacción (ver SeccionForm).
+  const [seccionesForm, setSeccionesForm] = useState(() => new Set());
+  const seccionAbierta = (id) => seccionesForm.has(id);
+  const alternarSeccion = (id) => setSeccionesForm((prev) => {
+    const n = new Set(prev); if (n.has(id)) n.delete(id); else n.add(id); return n;
+  });
+  /* Al abrir: una transacción nueva se captura completa, así que van todas
+     abiertas; al editar, solo "Importe y pago", que es lo que más cambia. */
+  useEffect(() => {
+    if (!modalOpen) return;
+    setSeccionesForm(new Set(editId ? ["pago"] : ["clasif", "proveedor", "pago", "fiscal"]));
+  }, [modalOpen, editId]);
   // El Reporte de Pagos (antes pestaña propia) trabaja sin las canceladas,
   // igual que cuando App se las pasaba ya filtradas.
   const transaccionesVigentesTx = useMemo(() => transacciones.filter((t) => !estaCancelada(t)), [transacciones]);
@@ -11481,6 +11521,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       alert("No se pudo guardar tu nota privada: " + (err.message || err));
     }
   };
+
+  // Para el formulario en secciones: bloqueo por pago y aviso de categoría.
+  const bloqueoForm = bloqueadaPorPago(editId ? transUnidad.find((x) => x.id === editId) : null, form);
+  const categoriaFueraDeRubro = (() => {
+    const p = partidasUnidad.find((x) => x.id === form.partida_id);
+    const perm = categoriasPermitidas(p);
+    const actual = String(form.categoria || "").trim();
+    return !!(perm && actual && !perm.some((c) => igualTxt(c, actual)));
+  })();
 
   const submit = async (e) => {
     e.preventDefault();
@@ -12586,14 +12635,29 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           cerrarAlHacerClicFuera={false}
         >
           <AutoriaCaption record={form} perfilesApi={perfilesApi} />
-          <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+          <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}
+            onInvalidCapture={(e) => {
+              /* Un campo obligatorio vacío dentro de una sección plegada: el
+                 navegador no puede señalarlo y no diría nada. Se abre su
+                 sección y se vuelve a mostrar el aviso sobre el campo. */
+              const sec = e.target.closest?.("[data-seccion]")?.dataset?.seccion;
+              if (sec && !seccionesForm.has(sec)) {
+                e.preventDefault();
+                setSeccionesForm((prev) => new Set([...prev, sec]));
+                const campo = e.target;
+                setTimeout(() => campo.reportValidity?.(), 50);
+              }
+            }}>
             {(() => {
               const orig = editId ? transUnidad.find((x) => x.id === editId) : null;
               return bloqueadaPorPago(orig, form)
                 ? <AvisoBloqueoPago onDesbloquear={() => setForm({ ...form, status: "No Pagado" })} />
                 : null;
             })()}
-            <CamposBloqueables bloqueado={bloqueadaPorPago(editId ? transUnidad.find((x) => x.id === editId) : null, form)}>
+            {/* Secciones plegables (v2.99.2): el formulario completo era una sola
+                pared de campos. Al editar abre solo "Importe y pago"; las demás
+                muestran un resumen en su encabezado y avisan si tienen un problema. */}
+            <CamposBloqueables bloqueado={bloqueoForm}>
             {!editId && form._desdeSmi && (
               <div style={{ gridColumn: "span 4", background: T.panelAlt, border: `1px solid ${T.accent}55`,
                             borderRadius: 8, padding: "10px 13px", fontSize: 12, color: T.textDim, lineHeight: 1.6 }}>
@@ -12625,373 +12689,385 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 </div>
               );
             })()}
-            <Field label="Partida" style={{ gridColumn: "span 4" }}>
-              {/* Solo las partidas de la MISMA moneda. Prevenir es mejor que
-                  rechazar al guardar: la opción equivocada ni se ofrece. */}
-              {esParcialidad(form) ? (() => {
-                const p = partidasUnidad.find((x) => x.id === form.partida_id);
-                return (
-                  <div style={{ padding: "8px 10px", border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 13, color: T.textDim }}>
-                    {p ? <><span style={{ fontFamily: T.fontMono }}>{p.folio}</span> · {p.concepto} · {p.mes} {p.anio}</> : "—"}
-                    {" "}<i style={{ color: T.textFaint }}>(la de la compra PPD)</i>
-                  </div>
-                );
-              })() : <PartidaPickerButton
-                partidas={partidasUnidad.filter((p) => mismaMoneda(p.moneda, form.moneda))}
-                ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, form.moneda)).length}
-                moneda={form.moneda}
-                origenTransaccion={form}
-                transacciones={transUnidad.filter((x) => !estaCancelada(x))}
-                partidasApi={partidasApi}
-                unidad={unidad}
-                proyectosOpciones={marcadoresProyecto}
-                value={form.partida_id}
-                onChange={(id) => setForm({ ...form, partida_id: id })}
-              />}
-            </Field>
-            <Field label="Día de Pago Programado">
-              <TextInput type="date" value={form.dia} onChange={(e) => setForm({ ...form, dia: e.target.value })} />
-            </Field>
-            {!esPadrePPD(form) && !esParcialidad(form) && (
-              <Field label="Se repite">
-                <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, minHeight: 34, cursor: "pointer", color: T.text }}
-                  title="Las mensuales se clonan al mes siguiente al cierre, con 🔁 Clonar mensuales">
-                  <input type="checkbox" checked={!!form.es_mensual} onChange={(e) => setForm({ ...form, es_mensual: e.target.checked })} />
-                  🔁 Mensual
-                </div>
+            </CamposBloqueables>
+            <SeccionForm id="clasif" titulo="Clasificación" abierta={seccionAbierta("clasif")} onAlternar={() => alternarSeccion("clasif")}
+              resumen={[partidasUnidad.find((x) => x.id === form.partida_id)?.folio, form.area, form.proyecto, form.categoria].filter(Boolean).join(" · ")} alerta={categoriaFueraDeRubro ? "Categoría fuera del rubro" : null} bloqueado={bloqueoForm}>
+              <Field label="Partida" style={{ gridColumn: "span 4" }}>
+                {/* Solo las partidas de la MISMA moneda. Prevenir es mejor que
+                    rechazar al guardar: la opción equivocada ni se ofrece. */}
+                {esParcialidad(form) ? (() => {
+                  const p = partidasUnidad.find((x) => x.id === form.partida_id);
+                  return (
+                    <div style={{ padding: "8px 10px", border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 13, color: T.textDim }}>
+                      {p ? <><span style={{ fontFamily: T.fontMono }}>{p.folio}</span> · {p.concepto} · {p.mes} {p.anio}</> : "—"}
+                      {" "}<i style={{ color: T.textFaint }}>(la de la compra PPD)</i>
+                    </div>
+                  );
+                })() : <PartidaPickerButton
+                  partidas={partidasUnidad.filter((p) => mismaMoneda(p.moneda, form.moneda))}
+                  ocultasPorMoneda={partidasUnidad.filter((p) => !mismaMoneda(p.moneda, form.moneda)).length}
+                  moneda={form.moneda}
+                  origenTransaccion={form}
+                  transacciones={transUnidad.filter((x) => !estaCancelada(x))}
+                  partidasApi={partidasApi}
+                  unidad={unidad}
+                  proyectosOpciones={marcadoresProyecto}
+                  value={form.partida_id}
+                  onChange={(id) => setForm({ ...form, partida_id: id })}
+                />}
               </Field>
-            )}
-            <Field label="Solicitante">
-              <TextInput value={form.solicitante} onChange={(e) => setForm({ ...form, solicitante: e.target.value })} />
-            </Field>
-            <Field label="SMI (No. de Solicitud)">
-              <TextInput value={form.smi} onChange={(e) => setForm({ ...form, smi: e.target.value })} />
-            </Field>
-            <Field label="Área">
-              <TextInput value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
-            </Field>
-            <Field label="Proyecto">
-              <Select value={form.proyecto} onChange={(e) => setForm({ ...form, proyecto: e.target.value })}>
-                <option value="">— Sin especificar —</option>
-                {marcadoresProyecto.map((m) => <option key={m}>{m}</option>)}
-              </Select>
-            </Field>
-            <Field label="Zona">
-              <Select value={form.zona} onChange={(e) => setForm({ ...form, zona: e.target.value })}>
-                <option value="">— Sin especificar —</option>
-                {zonas.map((z) => <option key={z}>{z}</option>)}
-                {/* Si la transacción trae una zona que ya no está en el
-                    catálogo, se agrega como opción para no perderla al editar. */}
-                {form.zona && !zonas.includes(form.zona) && <option key={form.zona}>{form.zona}</option>}
-              </Select>
-            </Field>
-            <Field label="Proveedor (catálogo)">
-              {esParcialidad(form) ? (
-                <div style={{ padding: "8px 10px", border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 13, color: T.textDim }}>
-                  {form.proveedor || "—"}
-                </div>
-              ) : <ProveedorPickerButton
-                proveedores={proveedoresUnidad}
-                proveedoresApi={proveedoresApi}
-                cuentasApi={cuentasApi}
-                unidad={unidad}
-                value={form.proveedor_id}
-                onChange={(id, p) => {
-                  const proveedor = p !== undefined ? p : (proveedoresUnidad.find((pr) => pr.id === id) || null);
-                  setForm({ ...form, proveedor_id: id, proveedor: proveedor ? proveedor.nombre : form.proveedor, cuenta_id: "" });
-                }}
-              />}
-            </Field>
-            <Field label="Cuenta bancaria">
-              <Select value={form.cuenta_id} onChange={(e) => setForm({ ...form, cuenta_id: e.target.value })} disabled={!form.proveedor_id}>
-                <option value="">{form.proveedor_id ? "— Elegir cuenta —" : "— Elige un proveedor primero —"}</option>
-                {cuentasDelProveedorSeleccionado.map((c) => (
-                  <option key={c.id} value={c.id}>{c.banco || "Banco N/D"} · {c.clabe || c.numero_cuenta || "—"} ({c.divisa})</option>
-                ))}
-              </Select>
-            </Field>
-            <Field label="Proveedor / razón social (texto)" style={{ gridColumn: "span 2" }}>
-              <TextInput value={form.proveedor} readOnly={esParcialidad(form)} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} placeholder="Se llena solo al elegir del catálogo, o captúralo si no está dado de alta" />
-            </Field>
-            <Field label="Concepto de pago (detallado)" style={{ gridColumn: "span 2" }}>
-              <TextInput value={form.concepto_detallado} onChange={(e) => setForm({ ...form, concepto_detallado: e.target.value })} />
-            </Field>
-            {/* En una compra PPD estos datos son de cada pago, no de la compra:
-                van en sus parcialidades. */}
-            <Field label="Folio Compra SAE">
-              <TextInput value={form.es_padre ? "" : form.folio_compra_sae} disabled={!!form.es_padre}
-                placeholder={form.es_padre ? "Va en cada parcialidad" : undefined}
-                onChange={(e) => setForm({ ...form, folio_compra_sae: e.target.value })} />
-            </Field>
-            <Field label="Folio Factura">
-              <TextInput value={form.folio_factura} onChange={(e) => setForm({ ...form, folio_factura: e.target.value })} />
-            </Field>
-            <Field label="Forma de Pago">
-              <Select value={form.forma_pago} onChange={(e) => setForm({ ...form, forma_pago: e.target.value })}>
-                <option value="">— Sin especificar —</option>
-                {FORMAS_PAGO.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
-              </Select>
-            </Field>
-            <Field label="Método de Pago">
-              <Select value={form.metodo_pago} onChange={(e) => setForm({ ...form, metodo_pago: e.target.value })}>
-                <option value="">— Sin especificar —</option>
-                {METODOS_PAGO.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
-              </Select>
-            </Field>
-            <Field label="Referencia de Pago">
-              <TextInput value={form.es_padre ? "" : form.referencia_pago} disabled={!!form.es_padre}
-                onChange={(e) => setForm({ ...form, referencia_pago: e.target.value })}
-                placeholder={form.es_padre ? "Va en cada parcialidad" : "Folio SPEI, cheque, etc."} />
-            </Field>
-            {esParcialidad(form) && (
-              <Field label="% de la compra">
-                <TextInput type="number" step="0.01" min="0.01" max="100" value={form.pct_pago ?? ""}
-                  onChange={(e) => {
-                    const padre = padreDe(form);
-                    const pct = e.target.value;
-                    setForm({ ...form, pct_pago: pct, importe: padre ? montoParcialidad(padre, "importe", pct, editId, form.num_parcialidad) : form.importe });
-                  }} required />
+              <Field label="Área">
+                <TextInput value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />
               </Field>
-            )}
-            <Field label={esParcialidad(form) ? "Importe (calculado)" : "Importe"}>
-              <TextInput type="number" step="0.01" value={form.importe} disabled={esParcialidad(form)}
-                title={esParcialidad(form)
-                  ? (form.status === "Pagado" && editId && transUnidad.find((x) => x.id === editId)?.status === "Pagado"
-                      ? "Ya pagada: conserva el importe que se pagó"
-                      : "% de la parcialidad × total de la compra; se recalcula al cambiar el %")
-                  : undefined}
-                onChange={(e) => setForm({ ...form, importe: e.target.value })} placeholder="0.00" />
-            </Field>
-            <Field label="Categoría del gasto">
-              {/* Solo categorías del rubro de la partida (ver CATEGORÍA DENTRO
-                  DEL RUBRO). Antes se ofrecían todas, y una partida de un rubro
-                  terminaba pagando gastos de otro. Si la transacción ya traía
-                  una de fuera, se muestra para no perderla, marcada. */}
+              <Field label="Proyecto">
+                <Select value={form.proyecto} onChange={(e) => setForm({ ...form, proyecto: e.target.value })}>
+                  <option value="">— Sin especificar —</option>
+                  {marcadoresProyecto.map((m) => <option key={m}>{m}</option>)}
+                </Select>
+              </Field>
+              <Field label="Zona">
+                <Select value={form.zona} onChange={(e) => setForm({ ...form, zona: e.target.value })}>
+                  <option value="">— Sin especificar —</option>
+                  {zonas.map((z) => <option key={z}>{z}</option>)}
+                  {/* Si la transacción trae una zona que ya no está en el
+                      catálogo, se agrega como opción para no perderla al editar. */}
+                  {form.zona && !zonas.includes(form.zona) && <option key={form.zona}>{form.zona}</option>}
+                </Select>
+              </Field>
+              <Field label="Categoría del gasto">
+                {/* Solo categorías del rubro de la partida (ver CATEGORÍA DENTRO
+                    DEL RUBRO). Antes se ofrecían todas, y una partida de un rubro
+                    terminaba pagando gastos de otro. Si la transacción ya traía
+                    una de fuera, se muestra para no perderla, marcada. */}
+                {(() => {
+                  const p = partidasUnidad.find((x) => x.id === form.partida_id);
+                  const perm = categoriasPermitidas(p);
+                  if (perm) {
+                    const actual = String(form.categoria || "").trim();
+                    const fuera = actual && !perm.some((c) => igualTxt(c, actual));
+                    const gruposR = [
+                      { label: p.rubro, destacado: true, cats: perm },
+                      ...(fuera ? [{ label: "Actual, fuera del rubro", cats: [actual] }] : []),
+                    ];
+                    return (
+                      <>
+                        <CategoriaCombo value={form.categoria || ""} grupos={gruposR}
+                          onChange={(c) => setForm((f) => ({ ...f, categoria: c }))} />
+                        {fuera && (
+                          <span style={{ fontSize: 11, color: T.red, marginTop: 4, display: "block" }}>
+                            ⚠ No es de {p.rubro}: ver el aviso abajo
+                          </span>
+                        )}
+                      </>
+                    );
+                  }
+                  const delRubro = p ? (RUBROS.find((r) => r.rubro === p.rubro)?.categorias || []) : [];
+                  /* El resto se agrupa POR RUBRO. En una lista plana son casi
+                     cien opciones sin estructura, y encontrar la correcta
+                     obliga a recorrerlas todas — que es justo la fricción que
+                     empuja a no elegir ninguna.
+                     El rubro de la partida sigue primero: es el caso normal, y
+                     bajarlo al orden alfabético lo escondería entre los demás. */
+                  const grupos = [
+                    ...(delRubro.length ? [{ label: p.rubro, destacado: true, cats: delRubro }] : []),
+                    ...RUBROS
+                      .filter((r) => !p || r.rubro !== p.rubro)
+                      .map((r) => ({ label: r.rubro, cats: r.categorias.filter((c) => !delRubro.includes(c)) }))
+                      .filter((r) => r.cats.length),
+                  ];
+                  return <CategoriaCombo value={form.categoria || ""} grupos={grupos}
+                    onChange={(c) => setForm((f) => ({ ...f, categoria: c }))} />;
+                })()}
+                {(() => {
+                  const p = partidasUnidad.find((x) => x.id === form.partida_id);
+                  const cats = categoriasPermitidas(p) || CATEGORIAS_TODAS;
+                  const sug = sugerirCategoria(form.concepto_detallado, cats);
+                  if (!sug || sug === form.categoria) return null;
+                  // Fuera del rubro, la sugerencia ya va en el aviso de arriba.
+                  const permF = categoriasPermitidas(p);
+                  const actualF = String(form.categoria || "").trim();
+                  if (permF && actualF && !permF.some((c) => igualTxt(c, actualF))) return null;
+                  return (
+                    <button type="button" onClick={() => setForm({ ...form, categoria: sug })}
+                      style={{ marginTop: 5, background: "transparent", border: "none", padding: 0,
+                               color: T.accent, fontSize: 11.5, cursor: "pointer", textAlign: "left", fontFamily: T.fontUI }}>
+                      Por el concepto, quizá sea <b>{sug}</b> — usar
+                    </button>
+                  );
+                })()}
+              </Field>
+              {/* Aviso de categoría fuera del rubro, a TODO lo ancho del formulario.
+                  Dentro de la celda de Categoría ocupaba un cuarto del ancho y
+                  estiraba la fila entera hacia abajo, dejando huecos en las otras
+                  tres columnas. En el campo queda solo una línea corta. */}
               {(() => {
                 const p = partidasUnidad.find((x) => x.id === form.partida_id);
                 const perm = categoriasPermitidas(p);
-                if (perm) {
-                  const actual = String(form.categoria || "").trim();
-                  const fuera = actual && !perm.some((c) => igualTxt(c, actual));
-                  const gruposR = [
-                    { label: p.rubro, destacado: true, cats: perm },
-                    ...(fuera ? [{ label: "Actual, fuera del rubro", cats: [actual] }] : []),
-                  ];
-                  return (
-                    <>
-                      <CategoriaCombo value={form.categoria || ""} grupos={gruposR}
-                        onChange={(c) => setForm((f) => ({ ...f, categoria: c }))} />
-                      {fuera && (
-                        <span style={{ fontSize: 11, color: T.red, marginTop: 4, display: "block" }}>
-                          ⚠ No es de {p.rubro}: ver el aviso abajo
-                        </span>
-                      )}
-                    </>
-                  );
-                }
-                const delRubro = p ? (RUBROS.find((r) => r.rubro === p.rubro)?.categorias || []) : [];
-                /* El resto se agrupa POR RUBRO. En una lista plana son casi
-                   cien opciones sin estructura, y encontrar la correcta
-                   obliga a recorrerlas todas — que es justo la fricción que
-                   empuja a no elegir ninguna.
-                   El rubro de la partida sigue primero: es el caso normal, y
-                   bajarlo al orden alfabético lo escondería entre los demás. */
-                const grupos = [
-                  ...(delRubro.length ? [{ label: p.rubro, destacado: true, cats: delRubro }] : []),
-                  ...RUBROS
-                    .filter((r) => !p || r.rubro !== p.rubro)
-                    .map((r) => ({ label: r.rubro, cats: r.categorias.filter((c) => !delRubro.includes(c)) }))
-                    .filter((r) => r.cats.length),
-                ];
-                return <CategoriaCombo value={form.categoria || ""} grupos={grupos}
-                  onChange={(c) => setForm((f) => ({ ...f, categoria: c }))} />;
-              })()}
-              {(() => {
-                const p = partidasUnidad.find((x) => x.id === form.partida_id);
-                const cats = categoriasPermitidas(p) || CATEGORIAS_TODAS;
-                const sug = sugerirCategoria(form.concepto_detallado, cats);
-                if (!sug || sug === form.categoria) return null;
-                // Fuera del rubro, la sugerencia ya va en el aviso de arriba.
-                const permF = categoriasPermitidas(p);
-                const actualF = String(form.categoria || "").trim();
-                if (permF && actualF && !permF.some((c) => igualTxt(c, actualF))) return null;
+                const actual = String(form.categoria || "").trim();
+                if (!perm || !actual || perm.some((c) => igualTxt(c, actual))) return null;
+                /* Tres cosas, en este orden: qué está mal, a qué rubro SÍ
+                   pertenece la categoría y cómo arreglarlo (otra categoría del
+                   rubro de la partida, u otra partida del rubro de la categoría). */
+                const orig = editId ? transUnidad.find((x) => x.id === editId) : null;
+                const yaVenia = !!orig && igualTxt(orig.categoria, actual) && orig.partida_id === form.partida_id;
+                const suyos = RUBROS.filter((r) => r.categorias.some((c) => igualTxt(c, actual))).map((r) => r.rubro);
+                const sugCat = sugerirCategoria(form.concepto_detallado, perm);
+                // Partida del rubro de la categoría: mismo mes, año y moneda;
+                // primero las del mismo proyecto y zona.
+                const candidatas = partidasUnidad
+                  .filter((x) => x.id !== p.id && suyos.some((r) => igualTxt(r, x.rubro))
+                    && x.mes === p.mes && String(x.anio) === String(p.anio) && mismaMoneda(x.moneda, form.moneda))
+                  .sort((x, y) => (Number(y.proyecto === p.proyecto) - Number(x.proyecto === p.proyecto))
+                    || (Number(y.zona === p.zona) - Number(x.zona === p.zona)));
+                const otraPartida = candidatas[0];
+                const enlace = { background: "transparent", border: "none", padding: 0, color: T.accent,
+                                 fontSize: 12, cursor: "pointer", textAlign: "left", fontFamily: T.fontUI, fontWeight: 600 };
+                const tono = yaVenia ? T.amber : T.red;
                 return (
-                  <button type="button" onClick={() => setForm({ ...form, categoria: sug })}
-                    style={{ marginTop: 5, background: "transparent", border: "none", padding: 0,
-                             color: T.accent, fontSize: 11.5, cursor: "pointer", textAlign: "left", fontFamily: T.fontUI }}>
-                    Por el concepto, quizá sea <b>{sug}</b> — usar
-                  </button>
+                  <div style={{ gridColumn: "span 4", fontSize: 12, lineHeight: 1.5, borderRadius: 8, padding: "9px 12px",
+                                background: `${tono}12`, border: `1px solid ${tono}55`, color: T.text,
+                                display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "4px 18px" }}>
+                    <div>
+                      <b style={{ color: tono }}>1. Categoría fuera del rubro.</b>{" "}
+                      «{actual}» no es de <b>{p.rubro}</b>.{" "}
+                      {yaVenia ? "Ya venía así: se puede guardar mientras no la cambies." : "Así no se puede guardar."}
+                    </div>
+                    <div style={{ color: T.textDim }}>
+                      <b style={{ color: T.text }}>2. Su rubro:</b>{" "}
+                      {suyos.length === 0 ? "no está en el catálogo de categorías." : suyos.join(" o ")}
+                    </div>
+                    <div style={{ color: T.textDim }}>
+                      <b style={{ color: T.text }}>3. Sugerencia:</b>{" "}
+                      {sugCat ? (
+                        <button type="button" style={enlace} onClick={() => setForm((f) => ({ ...f, categoria: sugCat }))}>
+                          usar {sugCat}
+                        </button>
+                      ) : `elige una de ${p.rubro}`}
+                      {suyos.length > 0 && (otraPartida ? (
+                        <>
+                          {" o "}
+                          <button type="button" style={enlace}
+                            onClick={() => setForm((f) => ({ ...f, partida_id: otraPartida.id }))}>
+                            cargarla a {otraPartida.folio || otraPartida.concepto}
+                          </button>
+                          {candidatas.length > 1 ? ` (hay ${candidatas.length} de ${otraPartida.rubro})` : ` (${otraPartida.rubro})`}
+                        </>
+                      ) : ` (no hay partida de ${suyos.join(" o ")} en ${p.mes} ${p.anio}, ${form.moneda})`)}
+                    </div>
+                  </div>
                 );
               })()}
-            </Field>
-            {/* Aviso de categoría fuera del rubro, a TODO lo ancho del formulario.
-                Dentro de la celda de Categoría ocupaba un cuarto del ancho y
-                estiraba la fila entera hacia abajo, dejando huecos en las otras
-                tres columnas. En el campo queda solo una línea corta. */}
-            {(() => {
-              const p = partidasUnidad.find((x) => x.id === form.partida_id);
-              const perm = categoriasPermitidas(p);
-              const actual = String(form.categoria || "").trim();
-              if (!perm || !actual || perm.some((c) => igualTxt(c, actual))) return null;
-              /* Tres cosas, en este orden: qué está mal, a qué rubro SÍ
-                 pertenece la categoría y cómo arreglarlo (otra categoría del
-                 rubro de la partida, u otra partida del rubro de la categoría). */
-              const orig = editId ? transUnidad.find((x) => x.id === editId) : null;
-              const yaVenia = !!orig && igualTxt(orig.categoria, actual) && orig.partida_id === form.partida_id;
-              const suyos = RUBROS.filter((r) => r.categorias.some((c) => igualTxt(c, actual))).map((r) => r.rubro);
-              const sugCat = sugerirCategoria(form.concepto_detallado, perm);
-              // Partida del rubro de la categoría: mismo mes, año y moneda;
-              // primero las del mismo proyecto y zona.
-              const candidatas = partidasUnidad
-                .filter((x) => x.id !== p.id && suyos.some((r) => igualTxt(r, x.rubro))
-                  && x.mes === p.mes && String(x.anio) === String(p.anio) && mismaMoneda(x.moneda, form.moneda))
-                .sort((x, y) => (Number(y.proyecto === p.proyecto) - Number(x.proyecto === p.proyecto))
-                  || (Number(y.zona === p.zona) - Number(x.zona === p.zona)));
-              const otraPartida = candidatas[0];
-              const enlace = { background: "transparent", border: "none", padding: 0, color: T.accent,
-                               fontSize: 12, cursor: "pointer", textAlign: "left", fontFamily: T.fontUI, fontWeight: 600 };
-              const tono = yaVenia ? T.amber : T.red;
-              return (
-                <div style={{ gridColumn: "span 4", fontSize: 12, lineHeight: 1.5, borderRadius: 8, padding: "9px 12px",
-                              background: `${tono}12`, border: `1px solid ${tono}55`, color: T.text,
-                              display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "4px 18px" }}>
-                  <div>
-                    <b style={{ color: tono }}>1. Categoría fuera del rubro.</b>{" "}
-                    «{actual}» no es de <b>{p.rubro}</b>.{" "}
-                    {yaVenia ? "Ya venía así: se puede guardar mientras no la cambies." : "Así no se puede guardar."}
+            </SeccionForm>
+            <SeccionForm id="proveedor" titulo="Proveedor y solicitud" abierta={seccionAbierta("proveedor")} onAlternar={() => alternarSeccion("proveedor")}
+              resumen={[form.proveedor, form.concepto_detallado, form.solicitante].filter(Boolean).join(" · ")} bloqueado={bloqueoForm}>
+              <Field label="Proveedor (catálogo)">
+                {esParcialidad(form) ? (
+                  <div style={{ padding: "8px 10px", border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 13, color: T.textDim }}>
+                    {form.proveedor || "—"}
                   </div>
-                  <div style={{ color: T.textDim }}>
-                    <b style={{ color: T.text }}>2. Su rubro:</b>{" "}
-                    {suyos.length === 0 ? "no está en el catálogo de categorías." : suyos.join(" o ")}
+                ) : <ProveedorPickerButton
+                  proveedores={proveedoresUnidad}
+                  proveedoresApi={proveedoresApi}
+                  cuentasApi={cuentasApi}
+                  unidad={unidad}
+                  value={form.proveedor_id}
+                  onChange={(id, p) => {
+                    const proveedor = p !== undefined ? p : (proveedoresUnidad.find((pr) => pr.id === id) || null);
+                    setForm({ ...form, proveedor_id: id, proveedor: proveedor ? proveedor.nombre : form.proveedor, cuenta_id: "" });
+                  }}
+                />}
+              </Field>
+              <Field label="Cuenta bancaria">
+                <Select value={form.cuenta_id} onChange={(e) => setForm({ ...form, cuenta_id: e.target.value })} disabled={!form.proveedor_id}>
+                  <option value="">{form.proveedor_id ? "— Elegir cuenta —" : "— Elige un proveedor primero —"}</option>
+                  {cuentasDelProveedorSeleccionado.map((c) => (
+                    <option key={c.id} value={c.id}>{c.banco || "Banco N/D"} · {c.clabe || c.numero_cuenta || "—"} ({c.divisa})</option>
+                  ))}
+                </Select>
+              </Field>
+              <Field label="Proveedor / razón social (texto)" style={{ gridColumn: "span 2" }}>
+                <TextInput value={form.proveedor} readOnly={esParcialidad(form)} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} placeholder="Se llena solo al elegir del catálogo, o captúralo si no está dado de alta" />
+              </Field>
+              <Field label="Concepto de pago (detallado)" style={{ gridColumn: "span 2" }}>
+                <TextInput value={form.concepto_detallado} onChange={(e) => setForm({ ...form, concepto_detallado: e.target.value })} />
+              </Field>
+              <Field label="Solicitante">
+                <TextInput value={form.solicitante} onChange={(e) => setForm({ ...form, solicitante: e.target.value })} />
+              </Field>
+              <Field label="SMI (No. de Solicitud)">
+                <TextInput value={form.smi} onChange={(e) => setForm({ ...form, smi: e.target.value })} />
+              </Field>
+            </SeccionForm>
+            <SeccionForm id="pago" titulo="Importe y pago" abierta={seccionAbierta("pago")} onAlternar={() => alternarSeccion("pago")}
+              resumen={[form.importe ? money(form.importe, form.moneda) : null, form.status, form.dia ? `programado ${fmtFecha(form.dia)}` : null].filter(Boolean).join(" · ")} bloqueado={bloqueoForm}>
+              <Field label="Día de Pago Programado">
+                <TextInput type="date" value={form.dia} onChange={(e) => setForm({ ...form, dia: e.target.value })} />
+              </Field>
+              {!esPadrePPD(form) && !esParcialidad(form) && (
+                <Field label="Se repite">
+                  <div style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, minHeight: 34, cursor: "pointer", color: T.text }}
+                    title="Las mensuales se clonan al mes siguiente al cierre, con 🔁 Clonar mensuales">
+                    <input type="checkbox" checked={!!form.es_mensual} onChange={(e) => setForm({ ...form, es_mensual: e.target.checked })} />
+                    🔁 Mensual
                   </div>
-                  <div style={{ color: T.textDim }}>
-                    <b style={{ color: T.text }}>3. Sugerencia:</b>{" "}
-                    {sugCat ? (
-                      <button type="button" style={enlace} onClick={() => setForm((f) => ({ ...f, categoria: sugCat }))}>
-                        usar {sugCat}
-                      </button>
-                    ) : `elige una de ${p.rubro}`}
-                    {suyos.length > 0 && (otraPartida ? (
-                      <>
-                        {" o "}
-                        <button type="button" style={enlace}
-                          onClick={() => setForm((f) => ({ ...f, partida_id: otraPartida.id }))}>
-                          cargarla a {otraPartida.folio || otraPartida.concepto}
-                        </button>
-                        {candidatas.length > 1 ? ` (hay ${candidatas.length} de ${otraPartida.rubro})` : ` (${otraPartida.rubro})`}
-                      </>
-                    ) : ` (no hay partida de ${suyos.join(" o ")} en ${p.mes} ${p.anio}, ${form.moneda})`)}
-                  </div>
-                </div>
-              );
-            })()}
-            <Field label="Moneda">
-              <Select
-                disabled={esParcialidad(form)}
-                value={form.moneda}
-                onChange={(e) => {
-                  // Al cambiar de moneda, la partida elegida puede dejar de ser
-                  // válida. Se suelta en lugar de quedarse como una selección
-                  // que el guardado va a rechazar después.
-                  const nueva = e.target.value;
-                  const actual = partidasUnidad.find((p) => p.id === form.partida_id);
-                  const sigueValida = !actual || mismaMoneda(actual.moneda, nueva);
-                  setForm({ ...form, moneda: nueva, partida_id: sigueValida ? form.partida_id : "" });
-                }}
-              >
-                {MONEDAS.map((m) => <option key={m}>{m}</option>)}
-              </Select>
-            </Field>
-            <Field label="Tipo de pago">
-              {/* Anticipo implica seguimiento de su factura: al pagarse sin
-                  Factura XML en el expediente, se marca en la tabla. */}
-              <Select value={form.es_padre ? "" : form.tipo_pago || ""} disabled={!!form.es_padre}
-                title={form.es_padre ? "Va en cada parcialidad" : undefined}
-                onChange={(e) => setForm({ ...form, tipo_pago: e.target.value })}>
-                <option value="">{form.es_padre ? "— Va en cada parcialidad —" : "— Sin especificar —"}</option>
-                {TIPOS_PAGO.map((x) => <option key={x}>{x}</option>)}
-              </Select>
-            </Field>
-            {!esParcialidad(form) && (() => {
-              const guardada = editId ? transUnidad.find((x) => x.id === editId) : null;
-              const conHijas = guardada && esPadrePPD(guardada) && hijasDe(guardada).length > 0;
-              /* Se mira el status del formulario, no el guardado: basta con
-                 pasarla a No Pagado aquí mismo para poder convertirla. */
-              const pagada = !form.es_padre && form.status === "Pagado";
-              const bloqueo = conHijas ? "Ya tiene parcialidades: no puede dejar de ser compra PPD."
-                : pagada ? "Está como Pagada. Cámbiala a No Pagado para llevarla en parcialidades." : "";
-              return (
-                <Field label="Compra PPD">
-                  <label title={bloqueo || "El total se compromete aquí y se paga en parcialidades, cada una con su %"}
-                    style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 12.5, paddingTop: 7,
-                             color: bloqueo ? T.textFaint : T.text, cursor: bloqueo ? "not-allowed" : "pointer" }}>
-                    <input type="checkbox" checked={!!form.es_padre} disabled={!!bloqueo}
-                      onChange={(e) => setForm({ ...form, es_padre: e.target.checked })} />
-                    En parcialidades
-                  </label>
                 </Field>
-              );
-            })()}
-            {form.es_padre ? (
+              )}
+              {esParcialidad(form) && (
+                <Field label="% de la compra">
+                  <TextInput type="number" step="0.01" min="0.01" max="100" value={form.pct_pago ?? ""}
+                    onChange={(e) => {
+                      const padre = padreDe(form);
+                      const pct = e.target.value;
+                      setForm({ ...form, pct_pago: pct, importe: padre ? montoParcialidad(padre, "importe", pct, editId, form.num_parcialidad) : form.importe });
+                    }} required />
+                </Field>
+              )}
+              <Field label={esParcialidad(form) ? "Importe (calculado)" : "Importe"}>
+                <TextInput type="number" step="0.01" value={form.importe} disabled={esParcialidad(form)}
+                  title={esParcialidad(form)
+                    ? (form.status === "Pagado" && editId && transUnidad.find((x) => x.id === editId)?.status === "Pagado"
+                        ? "Ya pagada: conserva el importe que se pagó"
+                        : "% de la parcialidad × total de la compra; se recalcula al cambiar el %")
+                    : undefined}
+                  onChange={(e) => setForm({ ...form, importe: e.target.value })} placeholder="0.00" />
+              </Field>
+              <Field label="Moneda">
+                <Select
+                  disabled={esParcialidad(form)}
+                  value={form.moneda}
+                  onChange={(e) => {
+                    // Al cambiar de moneda, la partida elegida puede dejar de ser
+                    // válida. Se suelta en lugar de quedarse como una selección
+                    // que el guardado va a rechazar después.
+                    const nueva = e.target.value;
+                    const actual = partidasUnidad.find((p) => p.id === form.partida_id);
+                    const sigueValida = !actual || mismaMoneda(actual.moneda, nueva);
+                    setForm({ ...form, moneda: nueva, partida_id: sigueValida ? form.partida_id : "" });
+                  }}
+                >
+                  {MONEDAS.map((m) => <option key={m}>{m}</option>)}
+                </Select>
+              </Field>
+              <Field label="Tipo de pago">
+                {/* Anticipo implica seguimiento de su factura: al pagarse sin
+                    Factura XML en el expediente, se marca en la tabla. */}
+                <Select value={form.es_padre ? "" : form.tipo_pago || ""} disabled={!!form.es_padre}
+                  title={form.es_padre ? "Va en cada parcialidad" : undefined}
+                  onChange={(e) => setForm({ ...form, tipo_pago: e.target.value })}>
+                  <option value="">{form.es_padre ? "— Va en cada parcialidad —" : "— Sin especificar —"}</option>
+                  {TIPOS_PAGO.map((x) => <option key={x}>{x}</option>)}
+                </Select>
+              </Field>
+              {!esParcialidad(form) && (() => {
+                const guardada = editId ? transUnidad.find((x) => x.id === editId) : null;
+                const conHijas = guardada && esPadrePPD(guardada) && hijasDe(guardada).length > 0;
+                /* Se mira el status del formulario, no el guardado: basta con
+                   pasarla a No Pagado aquí mismo para poder convertirla. */
+                const pagada = !form.es_padre && form.status === "Pagado";
+                const bloqueo = conHijas ? "Ya tiene parcialidades: no puede dejar de ser compra PPD."
+                  : pagada ? "Está como Pagada. Cámbiala a No Pagado para llevarla en parcialidades." : "";
+                return (
+                  <Field label="Compra PPD">
+                    <label title={bloqueo || "El total se compromete aquí y se paga en parcialidades, cada una con su %"}
+                      style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 12.5, paddingTop: 7,
+                               color: bloqueo ? T.textFaint : T.text, cursor: bloqueo ? "not-allowed" : "pointer" }}>
+                      <input type="checkbox" checked={!!form.es_padre} disabled={!!bloqueo}
+                        onChange={(e) => setForm({ ...form, es_padre: e.target.checked })} />
+                      En parcialidades
+                    </label>
+                  </Field>
+                );
+              })()}
+              {form.es_padre ? (
+                <Field label="Status">
+                  <div style={{ fontSize: 12, color: T.textDim, paddingTop: 7, lineHeight: 1.4 }}>
+                    {form.status === "Pagado" ? "Pagada (100 %)"
+                      : form.status === "Parcial" ? "Parcial: hay parcialidades pagadas"
+                      : "Sin pagos aún"} · lo calculan sus parcialidades
+                  </div>
+                </Field>
+              ) : (
               <Field label="Status">
-                <div style={{ fontSize: 12, color: T.textDim, paddingTop: 7, lineHeight: 1.4 }}>
-                  {form.status === "Pagado" ? "Pagada (100 %)"
-                    : form.status === "Parcial" ? "Parcial: hay parcialidades pagadas"
-                    : "Sin pagos aún"} · lo calculan sus parcialidades
-                </div>
+                <Select
+                  value={form.status}
+                  onChange={(e) => {
+                    const status = e.target.value;
+                    setForm({
+                      ...form,
+                      status,
+                      // Al marcar como Pagado, la Fecha de Pago se llena con
+                      // la de programación — es el caso normal, pagar cuando
+                      // se programó. Solo si faltaba: no pisa una fecha real
+                      // distinta que ya se hubiera capturado a mano.
+                      fecha_pago: (status === "Pagado" && !form.fecha_pago) ? form.dia : form.fecha_pago,
+                      // En USD, el TC DOF de la fecha de pago, marcado como
+                      // automático: si luego cambia la fecha, se recalcula.
+                      ...(status === "Pagado" && monedaNorm(form.moneda) === "USD" && !(Number(form.tipo_cambio) > 0)
+                        ? { tipo_cambio: tcDOF(tiposCambio, form.fecha_pago || form.dia)?.valor ?? "", _tcAuto: true }
+                        : {}),
+                    });
+                  }}
+                >
+                  <option value="">— Sin especificar —</option>
+                  <option>Pagado</option>
+                  <option>No Pagado</option>
+                </Select>
               </Field>
-            ) : (
-            <Field label="Status">
-              <Select
-                value={form.status}
-                onChange={(e) => {
-                  const status = e.target.value;
-                  setForm({
-                    ...form,
-                    status,
-                    // Al marcar como Pagado, la Fecha de Pago se llena con
-                    // la de programación — es el caso normal, pagar cuando
-                    // se programó. Solo si faltaba: no pisa una fecha real
-                    // distinta que ya se hubiera capturado a mano.
-                    fecha_pago: (status === "Pagado" && !form.fecha_pago) ? form.dia : form.fecha_pago,
-                    // En USD, el TC DOF de la fecha de pago, marcado como
-                    // automático: si luego cambia la fecha, se recalcula.
-                    ...(status === "Pagado" && monedaNorm(form.moneda) === "USD" && !(Number(form.tipo_cambio) > 0)
-                      ? { tipo_cambio: tcDOF(tiposCambio, form.fecha_pago || form.dia)?.valor ?? "", _tcAuto: true }
-                      : {}),
-                  });
-                }}
-              >
-                <option value="">— Sin especificar —</option>
-                <option>Pagado</option>
-                <option>No Pagado</option>
-              </Select>
-            </Field>
-            )}
-            {form.status === "Pagado" && !form.es_padre && (
-              <Field label="Fecha de Pago">
-                <TextInput type="date" value={form.fecha_pago} onChange={(e) => setForm({
-                  ...form, fecha_pago: e.target.value,
-                  ...(form._tcAuto && monedaNorm(form.moneda) === "USD"
-                    ? { tipo_cambio: tcDOF(tiposCambio, e.target.value)?.valor ?? "" } : {}),
-                })} required />
-              </Field>
-            )}
-            {form.status === "Pagado" && !form.es_padre && monedaNorm(form.moneda) === "USD" && (() => {
-              const dof = tcDOF(tiposCambio, form.fecha_pago);
-              return (
-                <Field label="Tipo de cambio">
-                  <TextInput type="number" step="0.0001" min="0" value={form.tipo_cambio ?? ""}
-                    onChange={(e) => setForm({ ...form, tipo_cambio: e.target.value, _tcAuto: false })}
-                    placeholder={dof ? dof.valor.toFixed(4) : "Sin dato de Banxico"} />
-                  <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>
-                    {dof ? `Para pagos del ${fechaCorta(dof.fix)}: ${dof.valor.toFixed(4)}` : "Sin tipo de cambio de Banxico para esa fecha"}
-                    {form.importe && Number(form.tipo_cambio) > 0 ? ` · ≈ ${money(Number(form.importe) * Number(form.tipo_cambio), "MXP")}` : ""}
-                  </div>
+              )}
+              {form.status === "Pagado" && !form.es_padre && (
+                <Field label="Fecha de Pago">
+                  <TextInput type="date" value={form.fecha_pago} onChange={(e) => setForm({
+                    ...form, fecha_pago: e.target.value,
+                    ...(form._tcAuto && monedaNorm(form.moneda) === "USD"
+                      ? { tipo_cambio: tcDOF(tiposCambio, e.target.value)?.valor ?? "" } : {}),
+                  })} required />
                 </Field>
-              );
-            })()}
-            </CamposBloqueables>
+              )}
+              {form.status === "Pagado" && !form.es_padre && monedaNorm(form.moneda) === "USD" && (() => {
+                const dof = tcDOF(tiposCambio, form.fecha_pago);
+                return (
+                  <Field label="Tipo de cambio">
+                    <TextInput type="number" step="0.0001" min="0" value={form.tipo_cambio ?? ""}
+                      onChange={(e) => setForm({ ...form, tipo_cambio: e.target.value, _tcAuto: false })}
+                      placeholder={dof ? dof.valor.toFixed(4) : "Sin dato de Banxico"} />
+                    <div style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>
+                      {dof ? `Para pagos del ${fechaCorta(dof.fix)}: ${dof.valor.toFixed(4)}` : "Sin tipo de cambio de Banxico para esa fecha"}
+                      {form.importe && Number(form.tipo_cambio) > 0 ? ` · ≈ ${money(Number(form.importe) * Number(form.tipo_cambio), "MXP")}` : ""}
+                    </div>
+                  </Field>
+                );
+              })()}
+            </SeccionForm>
+            <SeccionForm id="fiscal" titulo="Datos fiscales y referencia" abierta={seccionAbierta("fiscal")} onAlternar={() => alternarSeccion("fiscal")}
+              resumen={[form.folio_factura && `Factura ${form.folio_factura}`, form.folio_compra_sae && `SAE ${form.folio_compra_sae}`, form.forma_pago, form.metodo_pago].filter(Boolean).join(" · ")} bloqueado={bloqueoForm}>
+              {/* En una compra PPD estos datos son de cada pago, no de la compra:
+                  van en sus parcialidades. */}
+              <Field label="Folio Compra SAE">
+                <TextInput value={form.es_padre ? "" : form.folio_compra_sae} disabled={!!form.es_padre}
+                  placeholder={form.es_padre ? "Va en cada parcialidad" : undefined}
+                  onChange={(e) => setForm({ ...form, folio_compra_sae: e.target.value })} />
+              </Field>
+              <Field label="Folio Factura">
+                <TextInput value={form.folio_factura} onChange={(e) => setForm({ ...form, folio_factura: e.target.value })} />
+              </Field>
+              <Field label="Forma de Pago">
+                <Select value={form.forma_pago} onChange={(e) => setForm({ ...form, forma_pago: e.target.value })}>
+                  <option value="">— Sin especificar —</option>
+                  {FORMAS_PAGO.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+                </Select>
+              </Field>
+              <Field label="Método de Pago">
+                <Select value={form.metodo_pago} onChange={(e) => setForm({ ...form, metodo_pago: e.target.value })}>
+                  <option value="">— Sin especificar —</option>
+                  {METODOS_PAGO.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}
+                </Select>
+              </Field>
+              <Field label="Referencia de Pago">
+                <TextInput value={form.es_padre ? "" : form.referencia_pago} disabled={!!form.es_padre}
+                  onChange={(e) => setForm({ ...form, referencia_pago: e.target.value })}
+                  placeholder={form.es_padre ? "Va en cada parcialidad" : "Folio SPEI, cheque, etc."} />
+              </Field>
+            </SeccionForm>
             <Field label="🔒 Tu nota privada (solo tú la ves)" style={{ gridColumn: "span 4" }}>
               <TextInput value={notaPrivada} onChange={(e) => setNotaPrivada(e.target.value)} placeholder="Recordatorios, pendientes, contexto — nadie más puede ver esto" />
             </Field>

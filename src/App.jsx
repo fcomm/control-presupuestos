@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.99.2";
+const APP_VERSION = "2.99.3";
 const CHANGELOG = [
+  { v: "2.99.3", desc: "Parcialidades PPD en la tabla de Transacciones: debajo de cada una se ven la fecha de pago programado y la fecha en que se pago (o Sin pagar)" },
   { v: "2.99.2", desc: "Formulario de transaccion en secciones plegables: Clasificacion (partida, area, proyecto, zona, categoria), Proveedor y solicitud, Importe y pago, y Datos fiscales y referencia. Plegada, cada seccion muestra un resumen en su encabezado y avisa si tiene un problema (p. ej. categoria fuera del rubro). Al crear van todas abiertas; al editar, solo Importe y pago. Si falta un dato obligatorio en una seccion plegada, se abre sola al guardar. En una transaccion pagada las secciones se pueden abrir para consultarla aunque los campos sigan bloqueados" },
   { v: "2.99.1", desc: "Formulario de transaccion: el aviso de categoria fuera del rubro sale de la celda de Categoria (ocupaba un cuarto del ancho y estiraba toda la fila) a un recuadro a lo ancho del formulario, debajo de esa fila, con los tres puntos lado a lado y textos mas cortos. En el campo queda solo una linea. En ambar si ya venia asi y se puede guardar, en rojo si no" },
   { v: "2.99.0", desc: "Permisos de usuario por compania: Sin acceso, Solo lectura o Edicion total. Los administradores los asignan en Catalogo > Usuarios (pestana visible solo para ellos). La base los hace cumplir con reglas restrictivas en cada tabla: un usuario de lectura no puede guardar, ni desde la app ni por fuera. Con Solo lectura aparece un aviso arriba, y si intenta guardar algo el mensaje explica que su acceso es de lectura. Nadie pierde acceso: todos quedan con Edicion total. Requiere correr permisos-usuario.sql" },
@@ -11453,8 +11454,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   Parcialidad {t.num_parcialidad}{nActivas ? ` de ${nActivas}` : ""} · {fmtPct(t.pct_pago)}
                 </span>
               </div>
-              <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>
-                Pago programado {fmtFecha(t.dia) || "—"}
+              {/* Las dos fechas de la parcialidad: cuándo se programó y cuándo
+                  se pagó de verdad (o que sigue sin pagar). */}
+              <div style={{ fontSize: 11.5, color: T.textDim, marginTop: 2 }}>
+                Programado: {fmtFecha(t.dia) || "—"}
+                {" · "}
+                {t.status === "Pagado" && t.fecha_pago
+                  ? <span style={{ color: T.teal }}>Pagado: {fmtFecha(t.fecha_pago)}</span>
+                  : <span style={{ color: T.textFaint }}>Sin pagar</span>}
                 {t.folio_compra_sae ? ` · Folio SAE ${t.folio_compra_sae}` : ""}
                 {t.tipo_pago ? ` · ${t.tipo_pago}` : ""}
               </div>

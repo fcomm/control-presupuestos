@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.99.0";
+const APP_VERSION = "2.99.1";
 const CHANGELOG = [
+  { v: "2.99.1", desc: "Formulario de transaccion: el aviso de categoria fuera del rubro sale de la celda de Categoria (ocupaba un cuarto del ancho y estiraba toda la fila) a un recuadro a lo ancho del formulario, debajo de esa fila, con los tres puntos lado a lado y textos mas cortos. En el campo queda solo una linea. En ambar si ya venia asi y se puede guardar, en rojo si no" },
   { v: "2.99.0", desc: "Permisos de usuario por compania: Sin acceso, Solo lectura o Edicion total. Los administradores los asignan en Catalogo > Usuarios (pestana visible solo para ellos). La base los hace cumplir con reglas restrictivas en cada tabla: un usuario de lectura no puede guardar, ni desde la app ni por fuera. Con Solo lectura aparece un aviso arriba, y si intenta guardar algo el mensaje explica que su acceso es de lectura. Nadie pierde acceso: todos quedan con Edicion total. Requiere correr permisos-usuario.sql" },
   { v: "2.98.9", desc: "Solicitudes: se elimina la etapa Por autorizar del tablero y del selector de estado. De Cotizando se pasa a Por programar a pago. Las SMI que estaban en Por autorizar se muestran en Por programar a pago; quitar-por-autorizar-smi.sql las mueve tambien en la base" },
   { v: "2.98.8", desc: "Fix folio de SMI: el Consecutivo inicial de Parametros solo contaba si la compania no tenia ninguna SMI, asi que subirlo (p. ej. a 303 con la serie en 274) no tenia efecto. Ahora el siguiente folio es el MAYOR entre el consecutivo inicial y el que sigue a la ultima SMI. La vista previa de Parametros muestra los folios que de verdad siguen. Requiere correr consecutivo-inicial-smi.sql en Supabase para el formulario publico" },
@@ -12780,59 +12781,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     <>
                       <CategoriaCombo value={form.categoria || ""} grupos={gruposR}
                         onChange={(c) => setForm((f) => ({ ...f, categoria: c }))} />
-                      {fuera && (() => {
-                        /* Tres cosas, en este orden: qué está mal, a qué rubro SÍ
-                           pertenece la categoría y cómo arreglarlo (otra categoría
-                           del rubro de la partida, u otra partida del rubro de la
-                           categoría). Antes decía que "se puede guardar así" también
-                           en una transacción nueva, y el guardado la rechazaba. */
-                        const orig = editId ? transUnidad.find((x) => x.id === editId) : null;
-                        const yaVenia = !!orig && igualTxt(orig.categoria, actual) && orig.partida_id === form.partida_id;
-                        const suyos = RUBROS.filter((r) => r.categorias.some((c) => igualTxt(c, actual))).map((r) => r.rubro);
-                        const sugCat = sugerirCategoria(form.concepto_detallado, perm);
-                        // Partida del rubro de la categoría: mismo mes, año y moneda;
-                        // primero las del mismo proyecto y zona.
-                        const candidatas = partidasUnidad
-                          .filter((x) => x.id !== p.id && suyos.some((r) => igualTxt(r, x.rubro))
-                            && x.mes === p.mes && String(x.anio) === String(p.anio) && mismaMoneda(x.moneda, form.moneda))
-                          .sort((x, y) => (Number(y.proyecto === p.proyecto) - Number(x.proyecto === p.proyecto))
-                            || (Number(y.zona === p.zona) - Number(x.zona === p.zona)));
-                        const otraPartida = candidatas[0];
-                        const enlace = { background: "transparent", border: "none", padding: 0, color: T.accent,
-                                         fontSize: 11, cursor: "pointer", textAlign: "left", fontFamily: T.fontUI, fontWeight: 600 };
-                        return (
-                          <div style={{ fontSize: 11, color: T.red, marginTop: 4, lineHeight: 1.45,
-                                        display: "flex", flexDirection: "column", gap: 4 }}>
-                            <span>
-                              <b>1.</b> «{actual}» no es una categoría de <b>{p.rubro}</b>, el rubro de la partida.{" "}
-                              {yaVenia ? "Ya venía así: se puede guardar mientras no la cambies." : "Así no se puede guardar."}
-                            </span>
-                            <span style={{ color: T.textDim }}>
-                              <b>2.</b> {suyos.length === 0
-                                ? `«${actual}» no está en el catálogo de categorías.`
-                                : `«${actual}» pertenece al rubro ${suyos.join(" y al rubro ")}.`}
-                            </span>
-                            <span style={{ color: T.textDim }}>
-                              <b>3.</b> Sugerencia:{" "}
-                              {sugCat ? (
-                                <button type="button" style={enlace} onClick={() => setForm((f) => ({ ...f, categoria: sugCat }))}>
-                                  usar la categoría {sugCat} ({p.rubro})
-                                </button>
-                              ) : `elige una categoría de ${p.rubro} en la lista`}
-                              {suyos.length > 0 && (otraPartida ? (
-                                <>
-                                  {", o "}
-                                  <button type="button" style={enlace}
-                                    onClick={() => setForm((f) => ({ ...f, partida_id: otraPartida.id }))}>
-                                    cargarla a la partida {otraPartida.folio || otraPartida.concepto} ({otraPartida.rubro})
-                                  </button>
-                                  {candidatas.length > 1 ? ` (hay ${candidatas.length} de ese rubro en ${p.mes})` : ""}
-                                </>
-                              ) : `, o cargarla a una partida de ${suyos.join(" o ")} (no hay ninguna en ${p.mes} ${p.anio} en ${form.moneda})`)}.
-                            </span>
-                          </div>
-                        );
-                      })()}
+                      {fuera && (
+                        <span style={{ fontSize: 11, color: T.red, marginTop: 4, display: "block" }}>
+                          ⚠ No es de {p.rubro}: ver el aviso abajo
+                        </span>
+                      )}
                     </>
                   );
                 }
@@ -12871,6 +12824,67 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 );
               })()}
             </Field>
+            {/* Aviso de categoría fuera del rubro, a TODO lo ancho del formulario.
+                Dentro de la celda de Categoría ocupaba un cuarto del ancho y
+                estiraba la fila entera hacia abajo, dejando huecos en las otras
+                tres columnas. En el campo queda solo una línea corta. */}
+            {(() => {
+              const p = partidasUnidad.find((x) => x.id === form.partida_id);
+              const perm = categoriasPermitidas(p);
+              const actual = String(form.categoria || "").trim();
+              if (!perm || !actual || perm.some((c) => igualTxt(c, actual))) return null;
+              /* Tres cosas, en este orden: qué está mal, a qué rubro SÍ
+                 pertenece la categoría y cómo arreglarlo (otra categoría del
+                 rubro de la partida, u otra partida del rubro de la categoría). */
+              const orig = editId ? transUnidad.find((x) => x.id === editId) : null;
+              const yaVenia = !!orig && igualTxt(orig.categoria, actual) && orig.partida_id === form.partida_id;
+              const suyos = RUBROS.filter((r) => r.categorias.some((c) => igualTxt(c, actual))).map((r) => r.rubro);
+              const sugCat = sugerirCategoria(form.concepto_detallado, perm);
+              // Partida del rubro de la categoría: mismo mes, año y moneda;
+              // primero las del mismo proyecto y zona.
+              const candidatas = partidasUnidad
+                .filter((x) => x.id !== p.id && suyos.some((r) => igualTxt(r, x.rubro))
+                  && x.mes === p.mes && String(x.anio) === String(p.anio) && mismaMoneda(x.moneda, form.moneda))
+                .sort((x, y) => (Number(y.proyecto === p.proyecto) - Number(x.proyecto === p.proyecto))
+                  || (Number(y.zona === p.zona) - Number(x.zona === p.zona)));
+              const otraPartida = candidatas[0];
+              const enlace = { background: "transparent", border: "none", padding: 0, color: T.accent,
+                               fontSize: 12, cursor: "pointer", textAlign: "left", fontFamily: T.fontUI, fontWeight: 600 };
+              const tono = yaVenia ? T.amber : T.red;
+              return (
+                <div style={{ gridColumn: "span 4", fontSize: 12, lineHeight: 1.5, borderRadius: 8, padding: "9px 12px",
+                              background: `${tono}12`, border: `1px solid ${tono}55`, color: T.text,
+                              display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: "4px 18px" }}>
+                  <div>
+                    <b style={{ color: tono }}>1. Categoría fuera del rubro.</b>{" "}
+                    «{actual}» no es de <b>{p.rubro}</b>.{" "}
+                    {yaVenia ? "Ya venía así: se puede guardar mientras no la cambies." : "Así no se puede guardar."}
+                  </div>
+                  <div style={{ color: T.textDim }}>
+                    <b style={{ color: T.text }}>2. Su rubro:</b>{" "}
+                    {suyos.length === 0 ? "no está en el catálogo de categorías." : suyos.join(" o ")}
+                  </div>
+                  <div style={{ color: T.textDim }}>
+                    <b style={{ color: T.text }}>3. Sugerencia:</b>{" "}
+                    {sugCat ? (
+                      <button type="button" style={enlace} onClick={() => setForm((f) => ({ ...f, categoria: sugCat }))}>
+                        usar {sugCat}
+                      </button>
+                    ) : `elige una de ${p.rubro}`}
+                    {suyos.length > 0 && (otraPartida ? (
+                      <>
+                        {" o "}
+                        <button type="button" style={enlace}
+                          onClick={() => setForm((f) => ({ ...f, partida_id: otraPartida.id }))}>
+                          cargarla a {otraPartida.folio || otraPartida.concepto}
+                        </button>
+                        {candidatas.length > 1 ? ` (hay ${candidatas.length} de ${otraPartida.rubro})` : ` (${otraPartida.rubro})`}
+                      </>
+                    ) : ` (no hay partida de ${suyos.join(" o ")} en ${p.mes} ${p.anio}, ${form.moneda})`)}
+                  </div>
+                </div>
+              );
+            })()}
             <Field label="Moneda">
               <Select
                 disabled={esParcialidad(form)}

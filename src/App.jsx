@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.0.7";
+const APP_VERSION = "3.1.0";
 const CHANGELOG = [
+  { v: "3.1.0", desc: "Transacciones > Importar / Exportar > Pegar desde Excel: una cuadricula con las mismas columnas de la tabla que mandan las zonas (Numero, Solicitante, Area, Folio de factura, Forma y Metodo de pago, Nombre o razon social, Concepto, Importe). Se copia en Excel y se pega con Ctrl + V; los encabezados se saltan solos y los importes con $ y comas se limpian. Cada fila se revisa (lista, aviso o error) antes de insertar; el renglon de total se ignora. Todo el bloque es de la compania seleccionada y de una moneda; la partida es opcional (para todas o despues en cada una). Se insertan como borradores, con el proveedor y su cuenta del catalogo cuando coinciden, y la categoria sugerida por el concepto" },
   { v: "3.0.7", desc: "Transacciones: nueva columna Folio Factura, disponible en el listado de Columnas (se capturaba en el formulario pero no existia como columna). Tambien se puede ordenar por ella" },
   { v: "3.0.6", desc: "Campos numericos de todos los dialogos (importes, %, tipo de cambio): al pegar un valor con formato como $85,256.00, USD 1,200.50, 35.5 % o con espacios, se limpia y queda como numero. Antes el navegador dejaba el campo vacio y al guardar faltaba el dato" },
   { v: "3.0.5", desc: "Fix formulario de transaccion en secciones: las listas desplegables (Categoria, Proveedor, Partida...) se recortaban dentro de su seccion y al abrirlas el contenido se desplazaba de lado. Ahora se ven completas" },
@@ -9736,6 +9737,294 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
 /* ----------------------------------------------------------------------
    TABS: TRANSACCIONES
 ---------------------------------------------------------------------- */
+/* ----------------------------------------------------------------------
+   PEGAR DESDE EXCEL (v3.1.0)
+   La tabla que mandan las zonas foráneas se copia en Excel y se pega aquí,
+   como en una hoja: cae desde la celda donde está el cursor. Las columnas
+   son SOLO las de esa tabla; lo demás (partida, cuenta, proyecto, zona…) se
+   llena después en cada transacción. Todo el bloque es de UNA compañía (la
+   seleccionada) y UNA moneda. Se insertan como BORRADORES, sin folio, para
+   revisarlas antes de registrarlas.
+---------------------------------------------------------------------- */
+const COLS_PEGAR = [
+  { key: "num",           label: "Número",           w: 64,  ayuda: "Solo de referencia: no se guarda" },
+  { key: "solicitante",   label: "Solicitante",      w: 170 },
+  { key: "area",          label: "Área",             w: 84 },
+  { key: "folio_factura", label: "Folio de factura", w: 130 },
+  { key: "forma_pago",    label: "Forma de pago",    w: 84,  ayuda: "03 ó 99" },
+  { key: "metodo_pago",   label: "Método de pago",   w: 84,  ayuda: "PUE ó PPD" },
+  { key: "proveedor",     label: "Nombre / razón social", w: 210 },
+  { key: "concepto",      label: "Concepto del pago", w: 230 },
+  { key: "importe",       label: "Importe",          w: 120, num: true },
+];
+const filaPegarVacia = () => ({ _id: uid(), ...Object.fromEntries(COLS_PEGAR.map((c) => [c.key, ""])) });
+
+/* Texto del portapapeles de Excel → matriz de celdas. Excel separa con
+   tabuladores y saltos de línea, y pone entre comillas las celdas que
+   llevan un salto de línea dentro (conceptos largos). */
+function parsearTablaPegada(texto) {
+  const filas = [];
+  let fila = [], celda = "", enComillas = false;
+  const t = String(texto || "").replace(/\r\n?/g, "\n");
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (enComillas) {
+      if (ch === '"' && t[i + 1] === '"') { celda += '"'; i++; }
+      else if (ch === '"') enComillas = false;
+      else celda += ch;
+    } else if (ch === '"' && celda === "") enComillas = true;
+    else if (ch === "\t") { fila.push(celda); celda = ""; }
+    else if (ch === "\n") { fila.push(celda); filas.push(fila); fila = []; celda = ""; }
+    else celda += ch;
+  }
+  if (celda !== "" || fila.length) { fila.push(celda); filas.push(fila); }
+  return filas.map((f) => f.map((c) => c.replace(/\s+/g, " ").trim()));
+}
+
+const esEncabezadoPegado = (f) => f.some((c) => /^(solicitante|importe|concepto del pago|n[uú]mero|area|área)$/i.test(c));
+
+function PegarTransaccionesPanel({ unidad, partidas, proveedores, cuentas = [], transaccionesApi }) {
+  const [filas, setFilas] = useState(() => Array.from({ length: 12 }, filaPegarVacia));
+  const [moneda, setMoneda] = useState("MXP");
+  const [partidaId, setPartidaId] = useState("");
+  const [dia, setDia] = useState(hoyLocalISO());
+  const [insertando, setInsertando] = useState(false);
+  const [aviso, setAviso] = useState(null);
+
+  const partidasMoneda = partidas
+    .filter((p) => p.unidad === unidad && mismaMoneda(p.moneda, moneda))
+    .sort((a, b) => (Number(b.anio) - Number(a.anio)) || (MESES.indexOf(b.mes) - MESES.indexOf(a.mes))
+      || String(a.folio || "").localeCompare(String(b.folio || "")));
+  const partidaSel = partidasMoneda.find((p) => p.id === partidaId) || null;
+
+  const setCelda = (i, key, v) => setFilas((fs) => fs.map((f, j) => (j === i ? { ...f, [key]: v } : f)));
+
+  /* Pegar desde la celda (fila i, columna c): como en Excel, el bloque se
+     acomoda hacia la derecha y hacia abajo, y se agregan las filas que falten.
+     Si trae los encabezados, se saltan. */
+  const alPegar = (e, i, c) => {
+    const texto = e.clipboardData?.getData("text") ?? "";
+    if (!/[\t\n]/.test(texto.trim())) return; // una sola celda: que la pegue el navegador
+    e.preventDefault();
+    let matriz = parsearTablaPegada(texto).filter((f) => f.some((x) => x !== ""));
+    if (matriz.length && esEncabezadoPegado(matriz[0])) matriz = matriz.slice(1);
+    if (!matriz.length) return;
+    // Copiaron desde Solicitante (sin la columna Número) y pegaron en la
+    // primera celda: se recorre una columna para que cada dato caiga en su lugar.
+    if (c === 0 && Math.max(...matriz.map((f) => f.length)) === COLS_PEGAR.length - 1) c = 1;
+    setAviso(null);
+    setFilas((fs) => {
+      const nuevas = [...fs];
+      while (nuevas.length < i + matriz.length) nuevas.push(filaPegarVacia());
+      matriz.forEach((celdas, k) => {
+        const f = { ...nuevas[i + k] };
+        celdas.forEach((valor, m) => {
+          const col = COLS_PEGAR[c + m];
+          if (col) f[col.key] = valor;
+        });
+        nuevas[i + k] = f;
+      });
+      return nuevas;
+    });
+  };
+
+  /* Lo que se va a guardar de cada fila, o por qué no se puede. */
+  const analizar = (f) => {
+    const llena = COLS_PEGAR.some((c) => c.key !== "num" && String(f[c.key] || "").trim());
+    if (!llena) return { vacia: true };
+    const importe = Number(limpiarNumeroPegado(f.importe) ?? NaN);
+    const proveedorTxt = String(f.proveedor || "").trim();
+    const concepto = String(f.concepto || "").trim();
+    // Un renglón con solo el importe es el total de la tabla: no es un pago.
+    if (!proveedorTxt && !concepto && !String(f.solicitante || "").trim()) {
+      return { ignorar: "Solo trae importe (parece el total de la tabla): no se inserta." };
+    }
+    const errores = [], avisos = [];
+    if (!(importe > 0)) errores.push("Falta el importe o no es un número.");
+    if (!proveedorTxt) errores.push("Falta el proveedor.");
+    if (!concepto) errores.push("Falta el concepto.");
+    const prov = proveedorTxt
+      ? proveedores.find((pv) => pv.nombre && pv.nombre.trim().toUpperCase() === proveedorTxt.toUpperCase() && pv.unidad === unidad)
+      : null;
+    if (proveedorTxt && !prov) avisos.push("Proveedor fuera del catálogo: se guarda como texto.");
+    let fp = String(f.forma_pago || "").trim();
+    if (/^\d$/.test(fp)) fp = "0" + fp;
+    const forma = cruzarCatalogoPago(fp, FORMAS_PAGO);
+    if (!forma.reconocido) avisos.push(`Forma de pago «${fp}» no reconocida.`);
+    const metodo = cruzarCatalogoPago(String(f.metodo_pago || "").trim(), METODOS_PAGO);
+    if (!metodo.reconocido) avisos.push(`Método de pago «${f.metodo_pago}» no reconocido.`);
+    const ctasProv = prov ? cuentas.filter((ct) => ct.proveedor_id === prov.id && (ct.divisa || "MXP").toUpperCase() === moneda) : [];
+    const cats = partidaSel ? (RUBROS.find((r) => r.rubro === partidaSel.rubro)?.categorias || CATEGORIAS_TODAS) : CATEGORIAS_TODAS;
+    return {
+      errores, avisos, prov,
+      registro: errores.length ? null : {
+        id: uid(), folio_transaccion: null, registrada_en: null,
+        unidad_detectada: unidad, partida_id: partidaSel ? partidaSel.id : null,
+        dia: dia || null, status: "No Pagado", moneda,
+        solicitante: String(f.solicitante || "").trim(),
+        area: String(f.area || "").trim(),
+        folio_factura: String(f.folio_factura || "").trim(),
+        forma_pago: forma.valor, metodo_pago: metodo.valor,
+        proveedor: prov ? prov.nombre : proveedorTxt, proveedor_id: prov ? prov.id : null,
+        // Una sola cuenta del proveedor en esta moneda: se asigna; con varias
+        // se deja vacía a propósito (elegir mal manda el dinero a otro lado).
+        cuenta_id: ctasProv.length === 1 ? ctasProv[0].id : null,
+        concepto_detallado: concepto,
+        importe: Math.round(importe * 100) / 100,
+        categoria: sugerirCategoria(concepto, cats) || "",
+      },
+    };
+  };
+
+  const analisis = filas.map(analizar);
+  const listas = analisis.filter((a) => a.registro);
+  const conError = analisis.filter((a) => a.errores && a.errores.length);
+  const total = listas.reduce((s, a) => s + a.registro.importe, 0);
+
+  const insertar = async () => {
+    setAviso(null);
+    if (!listas.length) { setAviso({ tono: "red", texto: "No hay filas listas para insertar. Pega la tabla o corrige las que están en rojo." }); return; }
+    if (!confirm(
+      `Se van a insertar ${listas.length} transacción(es) de ${unidad} en ${moneda}, por ${money(total, moneda)}, como BORRADORES.\n\n` +
+      (partidaSel ? `Todas quedan en la partida ${partidaSel.folio || partidaSel.concepto}.` : "Quedan SIN partida: asígnasela a cada una en la tabla.") +
+      (conError.length ? `\n\n${conError.length} fila(s) en rojo NO se insertan y se quedan aquí para corregirlas.` : "") +
+      "\n\n¿Continuar?")) return;
+    setInsertando(true);
+    try {
+      await transaccionesApi.bulkInsert(listas.map((a) => a.registro));
+      // Se quitan las insertadas; las que tenían error se quedan para corregirlas.
+      setFilas((fs) => {
+        const quedan = fs.filter((_, j) => !analisis[j].registro && !analisis[j].vacia && !analisis[j].ignorar);
+        return quedan.length ? [...quedan, ...Array.from({ length: 3 }, filaPegarVacia)] : Array.from({ length: 12 }, filaPegarVacia);
+      });
+      setAviso({ tono: "teal", texto:
+        `Listo: se insertaron ${listas.length} transacción(es) por ${money(total, moneda)} como borradores. ` +
+        "Están en la pestaña General (filtra por el día de pago programado). Ahí complétalas" +
+        (partidaSel ? "" : ", asígnales partida") + " y regístralas para darles folio." });
+    } catch (err) {
+      setAviso({ tono: "red", texto: "No se pudieron insertar: " + (err.message || err) + ". No se guardó ninguna; revisa e inténtalo de nuevo." });
+    } finally {
+      setInsertando(false);
+    }
+  };
+
+  const celdaInput = { width: "100%", boxSizing: "border-box", border: "none", background: "transparent", color: T.text,
+                       fontSize: 12.5, fontFamily: T.fontUI, padding: "6px 7px", outline: "none" };
+
+  return (
+    <Panel title="Pegar desde Excel"
+      subtitle="Copia en Excel las filas de la tabla que te mandan (con o sin encabezados) y pégalas en la primera celda con Ctrl + V. Se insertan como borradores.">
+      <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+        <Field label="Compañía">
+          <div style={{ ...inputStyle, display: "flex", alignItems: "center", fontWeight: 700, minWidth: 70 }}>{unidad}</div>
+        </Field>
+        <Field label="Moneda de todo el bloque" style={{ width: 170 }}>
+          <Select value={moneda} onChange={(e) => { setMoneda(e.target.value); setPartidaId(""); }}>
+            <option value="MXP">MXP — Pesos</option>
+            <option value="USD">USD — Dólares</option>
+          </Select>
+        </Field>
+        <Field label="Día de pago programado" style={{ width: 170 }}>
+          <TextInput type="date" value={dia} onChange={(e) => setDia(e.target.value)} />
+        </Field>
+        <Field label="Partida (opcional, para todas)" style={{ flex: "1 1 320px", maxWidth: 520 }}>
+          <Select value={partidaId} onChange={(e) => setPartidaId(e.target.value)}>
+            <option value="">— Sin partida: la asigno después en cada una —</option>
+            {partidasMoneda.map((p) => (
+              <option key={p.id} value={p.id}>{p.folio || "s/folio"} · {p.concepto} · {p.mes} {p.anio}</option>
+            ))}
+          </Select>
+        </Field>
+      </div>
+
+      <div style={{ overflowX: "auto", border: `1px solid ${T.border}`, borderRadius: 8 }}>
+        <table style={{ borderCollapse: "collapse", tableLayout: "fixed", minWidth: COLS_PEGAR.reduce((s, c) => s + c.w, 0) + 260 }}>
+          <colgroup>
+            <col style={{ width: 34 }} />
+            {COLS_PEGAR.map((c) => <col key={c.key} style={{ width: c.w }} />)}
+            <col style={{ width: 196 }} />
+            <col style={{ width: 30 }} />
+          </colgroup>
+          <thead>
+            <tr style={{ background: T.panelAlt }}>
+              <th style={{ ...thStyle, padding: "8px 6px" }}></th>
+              {COLS_PEGAR.map((c) => (
+                <th key={c.key} title={c.ayuda} style={{ ...thStyle, padding: "8px 7px", textAlign: c.num ? "right" : "left",
+                                                          color: c.key === "num" ? T.textFaint : thStyle.color }}>
+                  {c.label}
+                </th>
+              ))}
+              <th style={{ ...thStyle, padding: "8px 7px" }}>Revisión</th>
+              <th style={{ ...thStyle, padding: "8px 4px" }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {filas.map((f, i) => {
+              const a = analisis[i];
+              const fondo = a.vacia ? "transparent" : a.ignorar ? `${T.textFaint}14`
+                : a.errores?.length ? `${T.red}12` : a.avisos?.length ? `${T.amber}10` : `${T.teal}0F`;
+              return (
+                <tr key={f._id} style={{ background: fondo }}>
+                  <td style={{ padding: "0 6px", fontSize: 10.5, color: T.textFaint, textAlign: "right", borderBottom: `1px solid ${T.borderSoft}` }}>{i + 1}</td>
+                  {COLS_PEGAR.map((c, k) => (
+                    <td key={c.key} style={{ padding: 0, borderBottom: `1px solid ${T.borderSoft}`, borderLeft: `1px solid ${T.borderSoft}` }}>
+                      <input value={f[c.key]} aria-label={`${c.label}, fila ${i + 1}`}
+                        onChange={(e) => setCelda(i, c.key, e.target.value)}
+                        onPaste={(e) => alPegar(e, i, k)}
+                        style={{ ...celdaInput, textAlign: c.num ? "right" : "left", fontFamily: c.num ? T.fontMono : T.fontUI,
+                                 color: c.key === "num" ? T.textFaint : T.text }} />
+                    </td>
+                  ))}
+                  <td style={{ padding: "5px 7px", fontSize: 11, lineHeight: 1.4, borderBottom: `1px solid ${T.borderSoft}`, borderLeft: `1px solid ${T.borderSoft}` }}>
+                    {a.vacia ? null
+                      : a.ignorar ? <span style={{ color: T.textDim }}>{a.ignorar}</span>
+                      : a.errores.length ? <span style={{ color: T.red }}>{a.errores.join(" ")}</span>
+                      : (
+                        <span style={{ color: a.avisos.length ? T.amber : T.teal }}>
+                          {a.avisos.length ? a.avisos.join(" ") : "Lista"}
+                          {a.prov && !a.avisos.length ? " · proveedor del catálogo" : ""}
+                        </span>
+                      )}
+                  </td>
+                  <td style={{ padding: 0, textAlign: "center", borderBottom: `1px solid ${T.borderSoft}` }}>
+                    <button type="button" aria-label={`Quitar fila ${i + 1}`} title="Quitar esta fila"
+                      onClick={() => setFilas((fs) => fs.length > 1 ? fs.filter((_, j) => j !== i) : [filaPegarVacia()])}
+                      style={{ border: "none", background: "transparent", color: T.textFaint, cursor: "pointer", fontSize: 13 }}>✕</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", marginTop: 12 }}>
+        <Button variant="ghost" onClick={() => setFilas((fs) => [...fs, ...Array.from({ length: 10 }, filaPegarVacia)])}>+ 10 filas</Button>
+        <Button variant="ghost" onClick={() => { if (confirm("¿Vaciar toda la cuadrícula?")) { setFilas(Array.from({ length: 12 }, filaPegarVacia)); setAviso(null); } }}>Vaciar</Button>
+        <div style={{ flex: 1 }} />
+        <span style={{ fontSize: 12.5, color: T.textDim }}>
+          {listas.length} lista(s){conError.length ? ` · ${conError.length} con error` : ""} · Total{" "}
+          <b style={{ fontFamily: T.fontMono, color: T.text }}>{money(total, moneda)} {moneda}</b>
+        </span>
+        <Button disabled={insertando || !listas.length} onClick={insertar}>
+          {insertando ? "Insertando…" : `Insertar ${listas.length || ""} como borradores`}
+        </Button>
+      </div>
+      <div style={{ fontSize: 11.5, color: T.textFaint, marginTop: 8 }}>
+        Compara el total con el de la tabla que te mandaron antes de insertar. La columna Número es solo de referencia y no se guarda.
+      </div>
+      {aviso && (
+        <div style={{
+          marginTop: 12, fontSize: 12.5, padding: "10px 12px", borderRadius: 6,
+          color: aviso.tono === "red" ? T.red : T.teal,
+          background: aviso.tono === "red" ? `${T.red}12` : `${T.teal}14`,
+          border: `1px solid ${aviso.tono === "red" ? `${T.red}55` : `${T.teal}55`}`,
+        }}>{aviso.texto}</div>
+      )}
+    </Panel>
+  );
+}
+
 function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], transaccionesApi }) {
   const inputRef = useRef(null);
   const [preview, setPreview] = useState(null);
@@ -10637,6 +10926,7 @@ const SECCIONES_TX_IO = [
   { id: "solicitudes", label: "Solicitudes de Pago generadas", corto: "SP" },
   { id: "exportar",    label: "Exportar transacciones",        corto: "EX" },
   { id: "masiva",      label: "Carga masiva",                  corto: "CM" },
+  { id: "pegar",       label: "Pegar desde Excel",             corto: "PE" },
   { id: "reporte",     label: "Reporte de Pagos",              corto: "RP" },
 ];
 
@@ -12731,6 +13021,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </div>
           </div>
         </Panel>
+            </div>
+            <div style={{ display: seccionIo === "pegar" ? "block" : "none" }}>
+              <PegarTransaccionesPanel unidad={unidad} partidas={partidas} proveedores={proveedoresApi.rows}
+                cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />
             </div>
             <div style={{ display: seccionIo === "masiva" ? "block" : "none" }}>
               <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />

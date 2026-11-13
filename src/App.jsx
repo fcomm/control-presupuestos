@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "2.99.3";
+const APP_VERSION = "3.0.0";
 const CHANGELOG = [
+  { v: "3.0.0", desc: "Transacciones, nueva cara de la tabla (segun el previo aprobado): el importe va alineado a la derecha con el equivalente en pesos y el tipo de cambio en sus propias lineas, ya sin encimarse con el Status; la compra PPD muestra en Status su avance (Parcial · 60 %, barra y saldo); encabezados cortos (Pago prog., Folio SAE, ID SAE) con el nombre completo al pasar el raton; ID SAE sin comillas; concepto a dos lineas; la etiqueta USD solo cuando hay monedas mezcladas; acciones reducidas a Editar (y Registrar en borradores) mas un menu ⋯ con Generar solicitud de pago, Duplicar, Duplicar al mes siguiente y Cancelar; parcialidades con fondo suave y una linea morada que las agrupa; sin la columna de numeracion; status en verde, ambar y morado" },
   { v: "2.99.3", desc: "Parcialidades PPD en la tabla de Transacciones: debajo de cada una se ven la fecha de pago programado y la fecha en que se pago (o Sin pagar)" },
   { v: "2.99.2", desc: "Formulario de transaccion en secciones plegables: Clasificacion (partida, area, proyecto, zona, categoria), Proveedor y solicitud, Importe y pago, y Datos fiscales y referencia. Plegada, cada seccion muestra un resumen en su encabezado y avisa si tiene un problema (p. ej. categoria fuera del rubro). Al crear van todas abiertas; al editar, solo Importe y pago. Si falta un dato obligatorio en una seccion plegada, se abre sola al guardar. En una transaccion pagada las secciones se pueden abrir para consultarla aunque los campos sigan bloqueados" },
   { v: "2.99.1", desc: "Formulario de transaccion: el aviso de categoria fuera del rubro sale de la celda de Categoria (ocupaba un cuarto del ancho y estiraba toda la fila) a un recuadro a lo ancho del formulario, debajo de esa fila, con los tres puntos lado a lado y textos mas cortos. En el campo queda solo una linea. En ambar si ya venia asi y se puede guardar, en rojo si no" },
@@ -1173,15 +1174,90 @@ const EtiquetaUSD = () => (
 );
 
 /* Importe y, si es en USD, su equivalente en pesos debajo. */
-function ImporteConEquivalente({ t, serie }) {
+/* `conMoneda` = false cuando todo lo que se ve es de una sola moneda: ya lo
+   dice la suma del encabezado, y repetir "USD" en cada renglón solo estorba.
+   `aLaDerecha`: el equivalente en pesos y el tipo de cambio van en su propia
+   línea; en una sola se salían de la celda y quedaban debajo del Status. */
+function ImporteConEquivalente({ t, serie, conMoneda = true, aLaDerecha = false }) {
   const eq = equivalenteMXN(t, serie);
+  const usd = monedaNorm(t.moneda) === "USD";
   return (
-    <span style={{ fontFamily: T.fontMono }}>
-      {monedaNorm(t.moneda) === "USD" ? <>{money(t.importe, "MXP")}<EtiquetaUSD /></> : money(t.importe, t.moneda)}
-      {eq && (
+    <span style={{ fontFamily: T.fontMono, ...(aLaDerecha ? { display: "block", textAlign: "right" } : {}) }}>
+      <span style={{ fontWeight: aLaDerecha ? 700 : undefined }}>
+        {usd ? <>{money(t.importe, "MXP")}{conMoneda && <EtiquetaUSD />}</> : money(t.importe, t.moneda)}
+      </span>
+      {eq && (aLaDerecha ? (
+        <span style={{ display: "block", fontSize: 11, color: T.textDim, lineHeight: 1.4, marginTop: 2 }}
+          title={eq.guardado ? "Con el tipo de cambio guardado al pagarse" : "Con el tipo de cambio para pagos de hoy"}>
+          <span style={{ display: "block", whiteSpace: "nowrap" }}>≈ {money(eq.mxn, "MXP")} MXN</span>
+          <span style={{ display: "block", whiteSpace: "nowrap" }}>TC {eq.tc.toFixed(4)}{eq.guardado ? "" : " hoy"}</span>
+        </span>
+      ) : (
         <div style={{ fontSize: 10.5, color: T.textFaint, whiteSpace: "nowrap" }}
           title={eq.guardado ? "Con el tipo de cambio guardado al pagarse" : "Con el tipo de cambio para pagos de hoy"}>
           ≈ {money(eq.mxn, "MXP")} · TC {eq.tc.toFixed(4)}{eq.guardado ? "" : " hoy"}
+        </div>
+      ))}
+    </span>
+  );
+}
+
+/* Menú ⋯ de acciones de un renglón. Se dibuja con posición FIJA, calculada
+   del botón: dentro de la tabla (que se desplaza de lado) un menú absoluto
+   quedaría recortado. Se cierra con clic afuera, Escape o al desplazarse. */
+function MenuAcciones({ items, etiqueta = "Más acciones" }) {
+  const [pos, setPos] = useState(null);
+  const btn = useRef(null);
+  const visibles = items.filter((it) => it && !it.oculto);
+  useEffect(() => {
+    if (!pos) return;
+    const cerrar = () => setPos(null);
+    const fuera = (e) => { if (!btn.current?.parentElement?.contains(e.target)) setPos(null); };
+    const tecla = (e) => { if (e.key === "Escape") setPos(null); };
+    window.addEventListener("mousedown", fuera);
+    window.addEventListener("keydown", tecla);
+    window.addEventListener("scroll", cerrar, true);
+    window.addEventListener("resize", cerrar);
+    return () => {
+      window.removeEventListener("mousedown", fuera);
+      window.removeEventListener("keydown", tecla);
+      window.removeEventListener("scroll", cerrar, true);
+      window.removeEventListener("resize", cerrar);
+    };
+  }, [pos]);
+  if (!visibles.length) return null;
+  const abrir = () => {
+    if (pos) { setPos(null); return; }
+    const r = btn.current.getBoundingClientRect();
+    const alto = visibles.length * 36 + 16;
+    const arriba = r.bottom + alto > window.innerHeight - 8;
+    setPos({ top: arriba ? Math.max(8, r.top - alto - 4) : r.bottom + 4, left: Math.max(8, r.right - 230) });
+  };
+  return (
+    <span style={{ position: "relative", display: "inline-flex" }}>
+      <button ref={btn} type="button" onClick={abrir} title={etiqueta} aria-label={etiqueta} aria-expanded={!!pos}
+        style={{ width: 28, height: 28, borderRadius: 6, cursor: "pointer", padding: 0, flexShrink: 0,
+                 background: pos ? T.accentBg : "transparent", border: `1px solid ${pos ? T.accent : T.border}`,
+                 color: T.text, fontSize: 15, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        ⋯
+      </button>
+      {pos && (
+        <div role="menu" style={{ position: "fixed", top: pos.top, left: pos.left, width: 230, zIndex: 900,
+                                  background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8,
+                                  boxShadow: `0 10px 28px ${T.sombra}`, padding: 6, display: "flex", flexDirection: "column" }}>
+          {visibles.map((it, i) => it.separador ? (
+            <div key={`s${i}`} style={{ height: 1, background: T.border, margin: "4px 2px" }} />
+          ) : (
+            <button key={it.label} type="button" role="menuitem" disabled={it.disabled}
+              onClick={() => { setPos(null); it.onClick(); }}
+              style={{ textAlign: "left", padding: "8px 10px", borderRadius: 5, border: "none", background: "transparent",
+                       color: it.tone || T.text, fontSize: 12.5, fontFamily: T.fontUI, cursor: it.disabled ? "default" : "pointer",
+                       opacity: it.disabled ? 0.5 : 1 }}
+              onMouseEnter={(e) => { e.currentTarget.style.background = T.border; }}
+              onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}>
+              {it.label}
+            </button>
+          ))}
         </div>
       )}
     </span>
@@ -6271,15 +6347,17 @@ function sumaPorMoneda(rows, montoKey, monedaKey = "moneda") {
     .map(([m, v]) => `${money(v, "MXP")} ${m}`);
 }
 
-function SortableTh({ label, sortKey, sort, setSort, width, onResizeStart, onDragStart, onDragOver, onDrop, sumLabel }) {
+function SortableTh({ label, sortKey, sort, setSort, width, onResizeStart, onDragStart, onDragOver, onDrop, sumLabel, title, alinear }) {
   const active = sort.key === sortKey;
   return (
     <th
+      title={title}
       draggable={!!onDragStart}
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      style={{ ...thStyle, position: "relative", cursor: "pointer", userSelect: "none", width, color: active ? T.accent : thStyle.color }}
+      style={{ ...thStyle, position: "relative", cursor: "pointer", userSelect: "none", width, color: active ? T.accent : thStyle.color,
+               ...(alinear ? { textAlign: alinear } : {}) }}
       onClick={() => setSort((s) => (s.key === sortKey ? { key: sortKey, dir: s.dir === "asc" ? "desc" : "asc" } : { key: sortKey, dir: "asc" }))}
     >
       <div>{label}{active ? (sort.dir === "asc" ? " ▲" : " ▼") : ""}</div>
@@ -10897,6 +10975,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     </tr>
   );
 
+  // ¿Lo filtrado mezcla monedas? Si no, la etiqueta USD sobra en cada renglón.
+  const hayMezclaMonedas = new Set(transFiltradas.map((t) => monedaNorm(t.moneda))).size > 1;
   const COLUMNAS_TRANS = [
     {
       key: "folio_transaccion", label: "ID",
@@ -10934,7 +11014,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         );
       },
     },
-    { key: "dia", label: "Día de Pago Programado", render: (t) => t.dia || "—" },
+    { key: "dia", label: "Día de Pago Programado", corto: "Pago prog.", render: (t) => t.dia || "—" },
     { key: "smi", label: "SMI", render: (t) => t.smi || "—" },
     {
       key: "folio", label: "Folio",
@@ -10970,9 +11050,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     },
     { key: "proveedor", label: "Proveedor", render: renderProveedorConIndicador },
     {
-      key: "id_sae_proveedor", label: "ID SAE Proveedor",
+      key: "id_sae_proveedor", label: "ID SAE Proveedor", corto: "ID SAE",
       render: (t) => {
-        const id = idSaeProv(t);
+        // Sin comillas: algunas claves llegaron de la importación como "03898".
+        const id = String(idSaeProv(t) || "").replace(/^["'\s]+|["'\s]+$/g, "");
         if (id) return <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{id}</span>;
         // Se dice por qué falta: no es lo mismo un proveedor sin clave en el
         // catálogo que una transacción que ni siquiera está ligada a él.
@@ -10984,8 +11065,11 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     { key: "area", label: "Área", render: (t) => t.area || "—" },
     {
       key: "concepto_detallado", label: "Concepto",
+      // Máximo dos líneas: un concepto largo triplicaba la altura del renglón.
+      // El texto completo sale al pasar el ratón.
       render: (t) => (
-        <span style={{ color: T.textDim }}>
+        <span title={t.concepto_detallado || undefined}
+          style={{ color: T.textDim, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden", lineHeight: 1.45 }}>
           {notaActual(t.id) && <span title="Tienes una nota privada aquí" style={{ marginRight: 5 }}>🔒</span>}
           {t.concepto_detallado}
         </span>
@@ -10999,48 +11083,51 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       );
       return <Pill>{t.categoria}</Pill>;
     } },
-    { key: "importe", label: "Importe", render: (t) => (t._ppdTotal != null ? (
+    { key: "importe", label: "Importe", alinear: "right", render: (t) => (t._ppdTotal != null ? (
         /* Copia de una compra PPD dentro de un grupo: vale lo de ese grupo. */
         <span title={t._ppdPorAsignar ? "Parte de la compra que aún no tiene parcialidad"
                      : t._ppdContexto ? "La compra no entra en el filtro: aparece como encabezado de sus parcialidades y suma solo lo de ellas"
-                     : "Lo que se paga en este grupo con sus parcialidades"}>
-          <ImporteConEquivalente t={t} serie={tiposCambio} />
-          <div style={{ fontSize: 10.5, color: T.textFaint, whiteSpace: "nowrap" }}>
+                     : "Lo que se paga en este grupo con sus parcialidades"} style={{ display: "block", textAlign: "right" }}>
+          <ImporteConEquivalente t={t} serie={tiposCambio} conMoneda={hayMezclaMonedas} aLaDerecha />
+          <div style={{ fontSize: 10.5, color: T.textDim, whiteSpace: "nowrap" }}>
             {t._ppdPorAsignar ? "por asignar · " : t._ppdContexto ? "lo visible · " : ""}de {money(t._ppdTotal, t.moneda)}
           </div>
         </span>
-      ) : esPadrePPD(t) ? (() => {
-        const r = resumenPPD(t);
-        const pct = Math.max(0, Math.min(100, r.pctPagado));
-        return (
-          <span>
-            <ImporteConEquivalente t={t} serie={tiposCambio} />
-            <div title={`Pagado ${fmtPct(r.pctPagado)} de la compra`}
-              style={{ height: 5, background: `${COLOR_PPD}22`, borderRadius: 3, margin: "4px 0 2px", maxWidth: 150, overflow: "hidden" }}>
-              <div style={{ width: `${pct}%`, height: "100%", background: pct >= 100 ? T.teal : COLOR_PPD }} />
-            </div>
-            <div style={{ fontSize: 10.5, color: T.textFaint, whiteSpace: "nowrap" }}>
-              Pagado {money(r.pagado, t.moneda)} · Saldo {money(r.saldo, t.moneda)}
-            </div>
+      ) : <ImporteConEquivalente t={t} serie={tiposCambio} conMoneda={hayMezclaMonedas} aLaDerecha />) },
+    { key: "status", label: "Status", render: (t) => {
+      /* Compra PPD: el avance va aquí, junto a su status, y no debajo del
+         importe (donde empujaba el texto a la columna vecina). */
+      const ppd = esPadrePPD(t) && t._ppdTotal == null ? resumenPPD(t) : null;
+      const pct = ppd ? Math.max(0, Math.min(100, ppd.pctPagado)) : 0;
+      const color = t.status === "Pagado" ? T.teal : t.status === "Parcial" ? COLOR_PPD : T.amber;
+      return (
+        <span style={{ display: "flex", flexDirection: "column", gap: 5, alignItems: "flex-start" }}>
+          <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
+            {t.status ? (
+              <span style={{ fontSize: 11, fontWeight: 600, color, background: `${color}1F`, borderRadius: 10,
+                             padding: "2px 9px", whiteSpace: "nowrap" }}>
+                {t.status === "No Pagado" ? "No pagado" : t.status}{ppd ? ` · ${fmtPct(ppd.pctPagado)}` : ""}
+              </span>
+            ) : "—"}
+            <PillAnticipo seg={seguimientoAnticipo(t, adjDe(t))} />
           </span>
-        );
-      })() : <ImporteConEquivalente t={t} serie={tiposCambio} />) },
-    { key: "status", label: "Status", render: (t) => (
-      <span style={{ display: "inline-flex", gap: 4, flexWrap: "wrap" }}>
-        {t.status ? (
-          <span title={t.status === "Parcial" && esPadrePPD(t)
-            ? `Compra PPD con pagos parciales: ${fmtPct(resumenPPD(t._ppdOriginal || t).pctPagado)} pagado` : undefined}>
-            <Pill tone={t.status === "Pagado" ? "teal" : t.status === "Parcial" ? "accent" : "amber"}>{t.status}</Pill>
-          </span>
-        ) : "—"}
-        <PillAnticipo seg={seguimientoAnticipo(t, adjDe(t))} />
-      </span>
-    ) },
+          {ppd && (
+            <>
+              <span title={`Pagado ${money(ppd.pagado, t.moneda)} de ${money(t.importe, t.moneda)}`}
+                style={{ width: "100%", maxWidth: 140, height: 5, background: `${COLOR_PPD}22`, borderRadius: 3, overflow: "hidden" }}>
+                <span style={{ display: "block", width: `${pct}%`, height: "100%", background: pct >= 100 ? T.teal : COLOR_PPD }} />
+              </span>
+              <span style={{ fontSize: 10.5, color: T.textDim, whiteSpace: "nowrap" }}>Saldo {money(ppd.saldo, t.moneda)}</span>
+            </>
+          )}
+        </span>
+      );
+    } },
     {
       // Se captura en el formulario y se usa en otros reportes (Reporte de
       // Pagos, la SPP, el detector de anticipos) pero nunca se agregó como
       // columna aquí — no estaba oculta, simplemente no existía.
-      key: "folio_compra_sae", label: "Folio Compra SAE",
+      key: "folio_compra_sae", label: "Folio Compra SAE", corto: "Folio SAE",
       render: (t) => t.folio_compra_sae
         ? <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{t.folio_compra_sae}</span>
         : "—",
@@ -11409,8 +11496,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const renderFilaTr = (v, depth, n, rolPPD) => {
     const t = v._ppdOriginal || v;
     const esHija = rolPPD === "hija" || rolPPD === "hija-ultima";
-    const celdaHija = esHija ? { background: FONDO_PPD, paddingTop: 5, paddingBottom: 5 } : {};
-    const separacion = esHija && rolPPD !== "hija-ultima" ? { borderBottom: `1px dashed ${COLOR_PPD}33` } : {};
+    // Parcialidad: fondo apenas distinto (antes un morado intenso) y una línea
+    // morada a la izquierda (en la primera celda) que agrupa a las hijas.
+    const celdaHija = esHija ? { background: `${COLOR_PPD}0D`, paddingTop: 7, paddingBottom: 7 } : {};
+    const separacion = esHija && rolPPD !== "hija-ultima" ? { borderBottom: `1px solid ${T.borderSoft}` } : {};
     const padreAbierto = rolPPD === "padre" ? { borderBottom: `1px solid ${COLOR_PPD}55` } : {};
     const celda = { ...tdStyle, ...celdaHija, ...separacion, ...padreAbierto };
     const padreH = esHija ? padreDe(t) : null;
@@ -11427,16 +11516,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       title={estaCancelada(t) ? `Cancelada: ${t.motivo_cancelacion || ""}`
         : rolPPD === "padre-cerrado" ? "Clic para ver sus parcialidades"
         : rolPPD === "padre" ? "Clic para ocultar sus parcialidades" : undefined}>
-      <td style={{ ...celda, width: 36, textAlign: esHija ? "center" : "right", fontFamily: T.fontMono,
-                   color: esHija ? COLOR_PPD : T.textFaint, fontSize: esHija ? 15 : 11, lineHeight: 1,
-                   ...(esHija && estiloFilaUSD(t.moneda) ? { boxShadow: estiloFilaUSD(t.moneda).boxShadow } : {}) }}>
-        {esHija ? (rolPPD === "hija-ultima" ? "└" : "├") : n}
+      <td style={{ ...celda, textAlign: "center", fontFamily: T.fontMono, padding: "9px 0",
+                   color: COLOR_PPD, fontSize: 15, lineHeight: 1,
+                   ...(esHija ? { boxShadow: `inset 3px 0 0 ${COLOR_PPD}` } : {}) }}>
+        {esHija ? (rolPPD === "hija-ultima" ? "└" : "├") : ""}
       </td>
       <td style={{ ...celda, textAlign: "center" }}>
         <input type="checkbox" checked={seleccionadas.has(t.id)} onChange={() => toggleSeleccion(t.id)} />
       </td>
       {!esHija ? columnasVisibles.map((c) => (
-        <td key={c.key} style={celda}>{mostrarFecha(c.render(v))}</td>
+        <td key={c.key} style={{ ...celda, ...(c.alinear ? { textAlign: c.alinear } : {}) }}>{mostrarFecha(c.render(v))}</td>
       )) : (() => {
         /* Parcialidad: el tramo inicial de columnas generales (hasta la
            primera columna propia del pago) se une en UNA celda, con sangría
@@ -11468,7 +11557,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </td>
           ),
           ...resto.map((c) => (
-            <td key={c.key} style={celda}>{COLUMNAS_HEREDADAS_PPD.has(c.key) ? null : mostrarFecha(c.render(v))}</td>
+            <td key={c.key} style={{ ...celda, ...(c.alinear ? { textAlign: c.alinear } : {}) }}>{COLUMNAS_HEREDADAS_PPD.has(c.key) ? null : mostrarFecha(c.render(v))}</td>
           )),
         ];
       })()}
@@ -11479,29 +11568,32 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               pagos que no las necesitan. */}
           {/* En una compra PPD la SPP se genera por parcialidad, nunca sobre la
               compra: lo que se paga es cada parcialidad. */}
-          {!esPadrePPD(t) && (esAnticipo(t) || esParcialidad(t)) && (
-            <IconButton icon="§" label="Generar Solicitud de Pago" tone={T.teal} onClick={() => setSppDe(t)} />
-          )}
+          {/* Visibles solo Editar, y Registrar cuando es borrador (es también
+              su aviso de pendiente). Lo demás va en el menú ⋯: cinco iconos
+              por renglón eran la mayor fuente de ruido de la tabla. */}
           <IconButton icon="✎" label="Editar" tone={T.accent} onClick={() => startEdit(t)} />
-          {/* El botón ocupa el lugar de la etiqueta "Borrador": en ámbar dice
-              lo mismo, y además lo resuelve sin abrir el detalle. */}
           {pendienteDeRegistro(t) && (
             <IconButton icon={registrandoFila === t.id ? "…" : "✓"}
               label={t.registrada_en ? "Registrada sin folio: asignarle folio y REG" : "Borrador: registrar (folio y REG)"} tone={T.amber}
               disabled={!!registrandoFila} onClick={() => registrarFila(t)} />
           )}
-          <IconButton icon="⧉" label="Duplicar" tone={T.textDim} onClick={() => duplicar(t)} />
-          <IconButton icon={duplicandoSig === t.id ? "…" : "»"} label="Duplicar al mes siguiente" tone={T.accent}
-            disabled={!!duplicandoSig} onClick={() => duplicarMesSiguiente(t)} />
-          {/* Registrada: se cancela, no se borra. Borrador: se puede borrar,
-              porque no tiene folio que dejar hueco. */}
-          {estaCancelada(t) ? (
-            <IconButton icon="↺" label="Reactivar (cancelada)" tone={T.accent} onClick={() => reactivar(t)} />
-          ) : pendienteDeRegistro(t) ? (
-            <IconButton icon="✕" label="Eliminar" tone={T.red} onClick={() => remove(t.id)} />
-          ) : (
-            <IconButton icon="⊘" label="Cancelar transacción" tone={T.red} onClick={() => cancelar(t)} />
-          )}
+          <MenuAcciones items={[
+            // La SPP solo aplica a anticipos y parcialidades; en una compra
+            // PPD se genera por parcialidad, nunca sobre la compra.
+            { label: "Generar solicitud de pago", onClick: () => setSppDe(t),
+              oculto: esPadrePPD(t) || !(esAnticipo(t) || esParcialidad(t)) },
+            { label: "Duplicar", onClick: () => duplicar(t) },
+            { label: duplicandoSig === t.id ? "Duplicando…" : "Duplicar al mes siguiente", onClick: () => duplicarMesSiguiente(t),
+              disabled: !!duplicandoSig },
+            { separador: true },
+            // Registrada: se cancela, no se borra. Borrador: se puede borrar,
+            // porque no tiene folio que dejar hueco.
+            estaCancelada(t)
+              ? { label: "Reactivar", onClick: () => reactivar(t), tone: T.accent }
+              : pendienteDeRegistro(t)
+                ? { label: "Eliminar borrador", onClick: () => remove(t.id), tone: T.red }
+                : { label: "Cancelar transacción", onClick: () => cancelar(t), tone: T.red },
+          ]} />
         </div>
       </td>
     </tr>
@@ -12304,21 +12396,24 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         <div style={{ overflowX: "auto" }}>
           <table style={{ ...tableStyle, tableLayout: "fixed" }}>
             <colgroup>
-              <col style={{ width: 36 }} />
+              {/* La primera columna ya no numera: solo lleva las guías ├ └ de
+                  las parcialidades. */}
+              <col style={{ width: 22 }} />
               <col style={{ width: 28 }} />
               {columnasVisibles.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
-              <col style={{ width: 200 }} />
+              <col style={{ width: 104 }} />
             </colgroup>
             <thead>
               <tr>
-                <th style={thStyle}>#</th>
+                <th style={thStyle}></th>
                 <th style={{ ...thStyle, textAlign: "center" }}>
                   <input type="checkbox" checked={transOrdenadas.length > 0 && transOrdenadas.every((t) => seleccionadas.has(t.id))} onChange={toggleSeleccionTodas}
                     title={`Selecciona las ${transOrdenadas.length} del filtro, no solo las de esta página`} />
                 </th>
                 {columnasVisibles.map((c) => (
                   <SortableTh
-                    key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
+                    key={c.key} label={c.corto || c.label} title={c.corto ? c.label : undefined} alinear={c.alinear}
+                    sortKey={c.key} sort={sort} setSort={setSort}
                     width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
                     onDragStart={(e) => onColDragStart(e, c.key)} onDragOver={onColDragOver} onDrop={(e) => onColDrop(e, c.key)}
                     sumLabel={c.key === "importe" ? sumaPorMoneda(transPrimerNivel, "importe") : undefined}

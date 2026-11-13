@@ -442,8 +442,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.0.3";
+const APP_VERSION = "3.0.5";
 const CHANGELOG = [
+  { v: "3.0.5", desc: "Fix formulario de transaccion en secciones: las listas desplegables (Categoria, Proveedor, Partida...) se recortaban dentro de su seccion y al abrirlas el contenido se desplazaba de lado. Ahora se ven completas" },
+  { v: "3.0.4", desc: "Pestana Solicitudes: muestra un indicador con el numero de SMI de la compania que estan en Entrada, sin revisar. Se actualiza al cambiar de compania o de pestana, al volver a la ventana y cada minuto" },
   { v: "3.0.3", desc: "Transacciones: la columna Categoria se muestra como texto normal en vez de etiqueta, para que haga cambio de linea al angostar la columna y ya no se encime con el Importe. La categoria fuera del rubro de la partida sigue marcada, en rojo y con ⚠" },
   { v: "3.0.2", desc: "Fix parcialidades: el campo % de la compra solo aceptaba 2 decimales, y al calcular el % desde el importe (p. ej. 35.4178) el navegador no dejaba guardar. Ahora acepta los decimales que haga falta" },
   { v: "3.0.1", desc: "Parcialidades PPD: al editar o crear una, se puede escribir el % de la compra o el importe a pagar; el otro se calcula con el total de la compra. Si se escribe el importe, se guarda exactamente ese importe (el % se deriva de el). Siguen valiendo los limites: el % no puede pasar de lo que falta por asignar" },
@@ -7089,12 +7091,16 @@ function CamposBloqueables({ bloqueado, children }) {
    lo capturado se conserva. */
 function SeccionForm({ id, titulo, resumen, alerta, abierta, onAlternar, bloqueado, children }) {
   return (
+    /* Sin overflow: hidden. Recortaba las listas desplegables (Categoría,
+       Proveedor…), que se abren hacia abajo y salen del recuadro; además, al
+       enfocarlas el navegador desplazaba el contenido de lado. Las esquinas
+       redondeadas las lleva el encabezado. */
     <div data-seccion={id} style={{ gridColumn: "span 4", border: `1px solid ${alerta ? `${T.amber}88` : T.borderSoft}`,
-                                     borderRadius: 8, overflow: "hidden" }}>
+                                     borderRadius: 8 }}>
       <button type="button" onClick={onAlternar} aria-expanded={abierta}
         style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "9px 12px",
                  background: T.panelAlt, border: "none", cursor: "pointer", textAlign: "left",
-                 fontFamily: T.fontUI, color: T.text }}>
+                 fontFamily: T.fontUI, color: T.text, borderRadius: abierta ? "7px 7px 0 0" : 7 }}>
         <span style={{ color: T.textFaint, width: 10, fontSize: 11 }}>{abierta ? "▾" : "▸"}</span>
         <span style={{ fontWeight: 700, fontSize: 12.5, whiteSpace: "nowrap" }}>{titulo}</span>
         {!abierta && resumen && (
@@ -24560,6 +24566,27 @@ export default function App() {
     : UNIDAD_KEYS;
   const soloLectura = soloLecturaEn(miPerfil, unidad);
 
+  /* Indicador en la pestaña Solicitudes: cuántas SMI de la compañía están en
+     Entrada, sin que nadie las haya tomado. Se consulta solo el conteo (no
+     las filas) al cambiar de compañía o de pestaña, al volver a la ventana y
+     cada minuto: las SMI llegan del formulario público, sin avisar a la app. */
+  const [smiEnEntrada, setSmiEnEntrada] = useState(0);
+  useEffect(() => {
+    if (!session || !unidad) return;
+    let vivo = true;
+    const contar = async () => {
+      const { count, error } = await supabase.from("solicitudes")
+        .select("id", { count: "exact", head: true })
+        .eq("unidad", unidad).eq("estado", "entrada");
+      if (vivo && !error) setSmiEnEntrada(count || 0);
+    };
+    contar();
+    const cada = setInterval(contar, 60000);
+    const alVolver = () => { if (document.visibilityState === "visible") contar(); };
+    document.addEventListener("visibilitychange", alVolver);
+    return () => { vivo = false; clearInterval(cada); document.removeEventListener("visibilitychange", alVolver); };
+  }, [session, unidad, tab]);
+
   /* Cuando la base rechaza un cambio por permisos, el mensaje técnico
      ("new row violates row-level security policy…") llega tal cual a los
      alert() de toda la app. Aquí se traduce en un solo lugar a algo que
@@ -24746,6 +24773,14 @@ export default function App() {
             }}
           >
             {t.label}
+            {t.id === "solicitudes" && smiEnEntrada > 0 && (
+              <span title={`${smiEnEntrada} solicitud(es) en Entrada, sin revisar`}
+                style={{ marginLeft: 7, display: "inline-block", minWidth: 18, padding: "1px 6px", borderRadius: 10,
+                         background: T.amber, color: T.onAccent, fontSize: 10.5, fontWeight: 700, lineHeight: "16px",
+                         textAlign: "center", verticalAlign: "1px" }}>
+                {smiEnEntrada}
+              </span>
+            )}
           </button>
         ))}
       </div>
@@ -24781,8 +24816,3 @@ export default function App() {
     </TipoCambioContext.Provider>
   );
 }
-
-
-
-
-

@@ -442,8 +442,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.0.5";
+const APP_VERSION = "3.0.7";
 const CHANGELOG = [
+  { v: "3.0.7", desc: "Transacciones: nueva columna Folio Factura, disponible en el listado de Columnas (se capturaba en el formulario pero no existia como columna). Tambien se puede ordenar por ella" },
+  { v: "3.0.6", desc: "Campos numericos de todos los dialogos (importes, %, tipo de cambio): al pegar un valor con formato como $85,256.00, USD 1,200.50, 35.5 % o con espacios, se limpia y queda como numero. Antes el navegador dejaba el campo vacio y al guardar faltaba el dato" },
   { v: "3.0.5", desc: "Fix formulario de transaccion en secciones: las listas desplegables (Categoria, Proveedor, Partida...) se recortaban dentro de su seccion y al abrirlas el contenido se desplazaba de lado. Ahora se ven completas" },
   { v: "3.0.4", desc: "Pestana Solicitudes: muestra un indicador con el numero de SMI de la compania que estan en Entrada, sin revisar. Se actualiza al cambiar de compania o de pestana, al volver a la ventana y cada minuto" },
   { v: "3.0.3", desc: "Transacciones: la columna Categoria se muestra como texto normal en vez de etiqueta, para que haga cambio de linea al angostar la columna y ya no se encime con el Importe. La categoria fuera del rubro de la partida sigue marcada, en rojo y con ⚠" },
@@ -4707,10 +4709,49 @@ function FechaInput({ value, onChange, style, disabled, ...rest }) {
 
 /* Todo type="date" de la app pasa por aquí, así que la captura corta queda
    disponible en los 18 campos sin tocar un solo punto de uso. */
+/* Convierte lo que se pega en un campo numérico a un número limpio:
+   " $85,256.00 " → "85256.00", "USD 1,200.50" → "1200.50", "35.5 %" → "35.5",
+   "(1,234.00)" → "-1234.00" (negativo contable). La coma se toma como
+   separador de miles, como se escribe en México. Devuelve null si lo pegado
+   no es un número (así no se borra lo que había en el campo). */
+function limpiarNumeroPegado(texto) {
+  let t = String(texto ?? "").replace(/[\s\u00A0]+/g, "");
+  if (!t) return null;
+  let negativo = false;
+  if (/^\(.*\)$/.test(t)) { negativo = true; t = t.slice(1, -1); }
+  t = t.replace(/^(MXN|MXP|USD|US)?\$?/i, "").replace(/(MXN|MXP|USD|M\.N\.|%)$/i, "").replace(/\$/g, "").replace(/,/g, "");
+  if (t.startsWith("-")) { negativo = !negativo; t = t.slice(1); }
+  if (!/^\d*\.?\d+$/.test(t) && !/^\d+\.$/.test(t)) return null;
+  return (negativo ? "-" : "") + t.replace(/\.$/, "");
+}
+
 function TextInput(props) {
   if (props.type === "date") {
     const { type, ...resto } = props;
     return <FechaInput {...resto} />;
+  }
+  /* Campos numéricos (importes, %, tipo de cambio…): el navegador no acepta
+     pegar "$85,256.00" ni " 85256 " y deja el campo vacío. Aquí se limpia lo
+     pegado ($, comas, espacios, MXN/USD, %) y se entrega ya como número, por
+     el mismo onChange que usa cada formulario. Vale para todos los diálogos. */
+  if (props.type === "number" && props.onChange) {
+    const { onPaste, ...resto } = props;
+    return (
+      <input {...resto} style={{ ...inputStyle, ...(props.style || {}) }}
+        onPaste={(e) => {
+          onPaste?.(e);
+          if (e.defaultPrevented) return;
+          const texto = e.clipboardData?.getData("text") ?? "";
+          const limpio = limpiarNumeroPegado(texto);
+          if (limpio === null || limpio === texto) return; // número normal: que lo pegue el navegador
+          e.preventDefault();
+          const input = e.currentTarget;
+          // Se fija el valor en el campo y se avisa a React como si se hubiera tecleado.
+          const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+          setter.call(input, limpio);
+          input.dispatchEvent(new Event("input", { bubbles: true }));
+        }} />
+    );
   }
   return <input {...props} style={{ ...inputStyle, ...(props.style || {}) }} />;
 }
@@ -11144,6 +11185,14 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         ? <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{t.folio_compra_sae}</span>
         : "—",
     },
+    {
+      // Se captura en el formulario (Datos fiscales) pero no existía como
+      // columna, así que no se podía elegir en el listado de columnas.
+      key: "folio_factura", label: "Folio Factura", corto: "Factura",
+      render: (t) => t.folio_factura
+        ? <span style={{ fontFamily: T.fontMono, color: T.textDim }}>{t.folio_factura}</span>
+        : "—",
+    },
     { key: "fecha_pago", label: "Fecha de Pago", render: (t) => t.fecha_pago || "—" },
     {
       key: "reportado_at", label: "Reportado a Dirección",
@@ -11564,6 +11613,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   ? <span style={{ color: T.teal }}>Pagado: {fmtFecha(t.fecha_pago)}</span>
                   : <span style={{ color: T.textFaint }}>Sin pagar</span>}
                 {t.folio_compra_sae ? ` · Folio SAE ${t.folio_compra_sae}` : ""}
+                {t.folio_factura && !columnasVisibles.slice(tramo).some((c) => c.key === "folio_factura") ? ` · Factura ${t.folio_factura}` : ""}
                 {t.tipo_pago ? ` · ${t.tipo_pago}` : ""}
               </div>
             </td>

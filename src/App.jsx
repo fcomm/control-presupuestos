@@ -215,10 +215,10 @@ const GROUP_OPCIONES = [
   ];
 const GROUP_OPCIONES_TRANS = [
   { value: "dia", label: "Día de Pago Programado" },
-  // Zona agrupa por el GRUPO de Catálogo › Zonas (como lo ve Dirección);
-  // la zona tal cual se capturó queda como "Zona (detalle)".
-  { value: "_zonaGrupo", label: "Zona (como la ve Dirección)" },
-  { value: "zona", label: "Zona (detalle)" },
+  // Región = el grupo de la zona en Catálogo › Zonas (como lo ve Dirección).
+  // "Región" es el nombre que se usa en toda la app desde la v3.2.1.
+  { value: "_zonaGrupo", label: "Región" },
+  { value: "zona", label: "Zona" },
   { value: "area", label: "Área" },
   { value: "proveedor", label: "Proveedor" },
   { value: "proyecto", label: "Proyecto (transacción)" },
@@ -445,8 +445,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.2.0";
+const APP_VERSION = "3.2.1";
 const CHANGELOG = [
+  { v: "3.2.1", desc: "El grupo de las zonas (como lo ve Direccion) pasa a llamarse Region en toda la app: columna de Catalogo > Zonas, opcion de Agrupar por en Transacciones (Region; la zona capturada queda como Zona), columna del Excel del reporte semanal, columna del Excel de partidas y seccion del PDF ejecutivo mensual" },
   { v: "3.2.0", desc: "Pegar desde Excel: nueva columna Parcialidad de, que marca a mano quien captura (no se deduce de la tabla de las zonas). Ahi se elige una compra PPD registrada de la compania y moneda con saldo por asignar; la fila entra como su siguiente parcialidad (P3, P4...), con el % calculado del importe (exacto si completa la compra) y todo lo demas heredado de la compra: partida, proveedor, cuenta, concepto, proyecto, zona, categoria y desglose fiscal. Si pasa de lo que falta, la fila sale en rojo. Varios pagos de la misma compra en un bloque se numeran en orden y se validan juntos" },
   { v: "3.1.1", desc: "Transacciones, Agrupar por: la opcion Zona agrupa ahora por el Grupo de Catalogo > Zonas (como la ve Direccion); la zona capturada tal cual queda como Zona (detalle). Quien ya tenia guardado el agrupamiento por Zona pasa una vez al grupo" },
   { v: "3.1.0", desc: "Transacciones > Importar / Exportar > Pegar desde Excel: una cuadricula con las mismas columnas de la tabla que mandan las zonas (Numero, Solicitante, Area, Folio de factura, Forma y Metodo de pago, Nombre o razon social, Concepto, Importe). Se copia en Excel y se pega con Ctrl + V; los encabezados se saltan solos y los importes con $ y comas se limpian. Cada fila se revisa (lista, aviso o error) antes de insertar; el renglon de total se ignora. Todo el bloque es de la compania seleccionada y de una moneda; la partida es opcional (para todas o despues en cada una). Se insertan como borradores, con el proveedor y su cuenta del catalogo cuando coinciden, y la categoria sugerida por el concepto" },
@@ -3256,7 +3257,7 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
   };
   const PL = [
     { h: "Zona", w: 16, g: (f) => f.zona },
-    { h: "Grupo de zona", w: 16, g: (f) => grupoDe(f.zona) },
+    { h: "Región", w: 16, g: (f) => grupoDe(f.zona) },
     { h: "Moneda", w: 9, g: (f) => f.moneda },
     ...COLS,
   ];
@@ -8597,7 +8598,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     { key: "zona",        header: "Zona",        width: 16, get: (p) => p.zona || "Cualquiera" },
     // El grupo como columna aparte: en una tabla plana permite filtrar por
     // "Zona Norte" sin perder de vista la zona real de cada partida.
-    { key: "grupo_zona",  header: "Grupo de zona", width: 16,
+    { key: "grupo_zona",  header: "Región", width: 16,
       get: (p) => (p.zona ? (gruposZona[String(p.zona).trim().toLowerCase()] || p.zona) : "Cualquiera") },
     { key: "proyecto",    header: "Proyecto",    width: 18, get: (p) => p.proyecto || "" },
     { key: "smi",         header: "SMI",         width: 11, get: (p) => p.smi || "" },
@@ -9192,7 +9193,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       const porZona = Object.values(mapaZ).sort((a, b) => (b.MXP + b.USD) - (a.MXP + a.USD));
       // Si ninguna partida tiene zona, el corte no aporta nada y se omite.
       if (!(porZona.length === 1 && porZona[0].clave === "Cualquier zona")) {
-        seccion(esOficial ? "Zona (como la conoce Dirección)" : "Zona", porZona);
+        seccion("Región", porZona);
       }
 
       /* Con el detalle activado se agrega el gasto REAL de esas partidas,
@@ -15270,7 +15271,7 @@ function ZonasPanel({ zonasApi, transacciones = [], unidad }) {
         <thead>
           <tr>
             <th style={thStyle}>Zona</th>
-            <th style={thStyle}>Grupo (como lo ve Dirección)</th>
+            <th style={thStyle} title="Cómo agrupa Dirección las zonas en sus reportes. Vacía: la zona se reporta con su propio nombre">Región</th>
             <th style={thStyle}>Transacciones</th>
             <th style={thStyle}>Estado</th>
             <th style={thStyle}></th>
@@ -15291,8 +15292,8 @@ function ZonasPanel({ zonasApi, transacciones = [], unidad }) {
                 {editandoId === z.id ? (
                   <TextInput value={borradorGrupo} onChange={(e) => setBorradorGrupo(e.target.value)}
                     onKeyDown={(e) => { if (e.key === "Enter") guardar(z.id); }}
-                    placeholder="Zona Norte" style={{ width: 150 }} />
-                ) : (z.grupo ? <Pill>{z.grupo}</Pill> : <span style={{ color: T.textFaint }}>propio nombre</span>)}
+                    placeholder="Ej. Zona Norte" style={{ width: 150 }} />
+                ) : (z.grupo ? <Pill>{z.grupo}</Pill> : <span style={{ color: T.textFaint }}>— (su propio nombre)</span>)}
               </td>
               <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{usos(z.nombre) || "—"}</td>
               <td style={tdStyle}>

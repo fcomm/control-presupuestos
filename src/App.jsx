@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.0.0";
+const APP_VERSION = "3.0.1";
 const CHANGELOG = [
+  { v: "3.0.1", desc: "Parcialidades PPD: al editar o crear una, se puede escribir el % de la compra o el importe a pagar; el otro se calcula con el total de la compra. Si se escribe el importe, se guarda exactamente ese importe (el % se deriva de el). Siguen valiendo los limites: el % no puede pasar de lo que falta por asignar" },
   { v: "3.0.0", desc: "Transacciones, nueva cara de la tabla (segun el previo aprobado): el importe va alineado a la derecha con el equivalente en pesos y el tipo de cambio en sus propias lineas, ya sin encimarse con el Status; la compra PPD muestra en Status su avance (Parcial · 60 %, barra y saldo); encabezados cortos (Pago prog., Folio SAE, ID SAE) con el nombre completo al pasar el raton; ID SAE sin comillas; concepto a dos lineas; la etiqueta USD solo cuando hay monedas mezcladas; acciones reducidas a Editar (y Registrar en borradores) mas un menu ⋯ con Generar solicitud de pago, Duplicar, Duplicar al mes siguiente y Cancelar; parcialidades con fondo suave y una linea morada que las agrupa; sin la columna de numeracion; status en verde, ambar y morado" },
   { v: "2.99.3", desc: "Parcialidades PPD en la tabla de Transacciones: debajo de cada una se ven la fecha de pago programado y la fecha en que se pago (o Sin pagar)" },
   { v: "2.99.2", desc: "Formulario de transaccion en secciones plegables: Clasificacion (partida, area, proyecto, zona, categoria), Proveedor y solicitud, Importe y pago, y Datos fiscales y referencia. Plegada, cada seccion muestra un resumen en su encabezado y avisa si tiene un problema (p. ej. categoria fuera del rubro). Al crear van todas abiertas; al editar, solo Importe y pago. Si falta un dato obligatorio en una seccion plegada, se abre sola al guardar. En una transaccion pagada las secciones se pueden abrir para consultarla aunque los campos sigan bloqueados" },
@@ -11740,7 +11741,12 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       // Una parcialidad ya pagada conserva el importe que se pagó.
       const yaPagada = original?.status === "Pagado";
       if (!yaPagada) {
-        rest.importe = montoParcialidad(padrePPD, "importe", pct, editId, form.num_parcialidad);
+        /* Si se capturó el IMPORTE (y no el %), se guarda tal cual: el % se
+           derivó de él, y volver a calcularlo desde el % podía moverlo unos
+           centavos. */
+        rest.importe = form._importeManual && Number(form.importe) > 0
+          ? Math.round(Number(form.importe) * 100) / 100
+          : montoParcialidad(padrePPD, "importe", pct, editId, form.num_parcialidad);
         CAMPOS_DESGLOSE.forEach((c) => {
           if (padrePPD[c] !== null && padrePPD[c] !== undefined && padrePPD[c] !== "") rest[c] = montoParcialidad(padrePPD, c, pct, editId, form.num_parcialidad);
         });
@@ -13020,18 +13026,34 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     onChange={(e) => {
                       const padre = padreDe(form);
                       const pct = e.target.value;
-                      setForm({ ...form, pct_pago: pct, importe: padre ? montoParcialidad(padre, "importe", pct, editId, form.num_parcialidad) : form.importe });
+                      setForm({ ...form, pct_pago: pct, _importeManual: false,
+                                importe: padre ? montoParcialidad(padre, "importe", pct, editId, form.num_parcialidad) : form.importe });
                     }} required />
                 </Field>
               )}
-              <Field label={esParcialidad(form) ? "Importe (calculado)" : "Importe"}>
-                <TextInput type="number" step="0.01" value={form.importe} disabled={esParcialidad(form)}
+              {/* En una parcialidad se puede escribir el % o el importe: el
+                  otro se calcula con el total de la compra. Si se escribió el
+                  importe, ese es el que se guarda tal cual (ver submit). */}
+              <Field label="Importe">
+                <TextInput type="number" step="0.01" value={form.importe}
                   title={esParcialidad(form)
                     ? (form.status === "Pagado" && editId && transUnidad.find((x) => x.id === editId)?.status === "Pagado"
                         ? "Ya pagada: conserva el importe que se pagó"
-                        : "% de la parcialidad × total de la compra; se recalcula al cambiar el %")
+                        : "Escribe el importe y se calcula el %, o escribe el % y se calcula el importe")
                     : undefined}
-                  onChange={(e) => setForm({ ...form, importe: e.target.value })} placeholder="0.00" />
+                  onChange={(e) => {
+                    const v = e.target.value;
+                    if (!esParcialidad(form)) { setForm({ ...form, importe: v }); return; }
+                    const total = Number(padreDe(form)?.importe) || 0;
+                    const pct = total > 0 && v !== "" ? Math.round((Number(v) / total) * 100 * 10000) / 10000 : "";
+                    setForm({ ...form, importe: v, pct_pago: pct, _importeManual: true });
+                  }} placeholder="0.00" />
+                {esParcialidad(form) && (
+                  <span style={{ fontSize: 11, color: T.textDim, marginTop: 4, display: "block" }}>
+                    Escribe el % o el importe; el otro se calcula con el total de la compra
+                    ({money(padreDe(form)?.importe, padreDe(form)?.moneda)}).
+                  </span>
+                )}
               </Field>
               <Field label="Moneda">
                 <Select

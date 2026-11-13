@@ -445,8 +445,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.1.1";
+const APP_VERSION = "3.2.0";
 const CHANGELOG = [
+  { v: "3.2.0", desc: "Pegar desde Excel: nueva columna Parcialidad de, que marca a mano quien captura (no se deduce de la tabla de las zonas). Ahi se elige una compra PPD registrada de la compania y moneda con saldo por asignar; la fila entra como su siguiente parcialidad (P3, P4...), con el % calculado del importe (exacto si completa la compra) y todo lo demas heredado de la compra: partida, proveedor, cuenta, concepto, proyecto, zona, categoria y desglose fiscal. Si pasa de lo que falta, la fila sale en rojo. Varios pagos de la misma compra en un bloque se numeran en orden y se validan juntos" },
   { v: "3.1.1", desc: "Transacciones, Agrupar por: la opcion Zona agrupa ahora por el Grupo de Catalogo > Zonas (como la ve Direccion); la zona capturada tal cual queda como Zona (detalle). Quien ya tenia guardado el agrupamiento por Zona pasa una vez al grupo" },
   { v: "3.1.0", desc: "Transacciones > Importar / Exportar > Pegar desde Excel: una cuadricula con las mismas columnas de la tabla que mandan las zonas (Numero, Solicitante, Area, Folio de factura, Forma y Metodo de pago, Nombre o razon social, Concepto, Importe). Se copia en Excel y se pega con Ctrl + V; los encabezados se saltan solos y los importes con $ y comas se limpian. Cada fila se revisa (lista, aviso o error) antes de insertar; el renglon de total se ignora. Todo el bloque es de la compania seleccionada y de una moneda; la partida es opcional (para todas o despues en cada una). Se insertan como borradores, con el proveedor y su cuenta del catalogo cuando coinciden, y la categoria sugerida por el concepto" },
   { v: "3.0.7", desc: "Transacciones: nueva columna Folio Factura, disponible en el listado de Columnas (se capturaba en el formulario pero no existia como columna). Tambien se puede ordenar por ella" },
@@ -9787,7 +9788,9 @@ function parsearTablaPegada(texto) {
 
 const esEncabezadoPegado = (f) => f.some((c) => /^(solicitante|importe|concepto del pago|n[uú]mero|area|área)$/i.test(c));
 
-function PegarTransaccionesPanel({ unidad, partidas, proveedores, cuentas = [], transaccionesApi }) {
+const CAMPOS_DESGLOSE_PPD = ["subtotal", "iva", "ret_isr", "ret_iva", "descuento"];
+
+function PegarTransaccionesPanel({ unidad, partidas, proveedores, cuentas = [], transaccionesApi, transacciones = [] }) {
   const [filas, setFilas] = useState(() => Array.from({ length: 12 }, filaPegarVacia));
   const [moneda, setMoneda] = useState("MXP");
   const [partidaId, setPartidaId] = useState("");
@@ -9800,6 +9803,26 @@ function PegarTransaccionesPanel({ unidad, partidas, proveedores, cuentas = [], 
     .sort((a, b) => (Number(b.anio) - Number(a.anio)) || (MESES.indexOf(b.mes) - MESES.indexOf(a.mes))
       || String(a.folio || "").localeCompare(String(b.folio || "")));
   const partidaSel = partidasMoneda.find((p) => p.id === partidaId) || null;
+
+  /* Compras PPD a las que se puede ligar una fila como parcialidad: de esta
+     compañía y moneda, registradas (la parcialidad toma su folio de la
+     compra), no canceladas y con % por asignar. La fila la marca a mano quien
+     captura: lo que diga la tabla de las zonas (PPD, folios) no se toma en
+     cuenta, porque no es confiable. */
+  const hijasActivas = (padre) => transacciones.filter((h) => h.transaccion_padre_id === padre.id && !estaCancelada(h));
+  const comprasPPD = transacciones
+    .filter((t) => esPadrePPD(t) && t.unidad_detectada === unidad && !estaCancelada(t) && !pendienteDeRegistro(t)
+      && mismaMoneda(t.moneda, moneda))
+    .map((t) => {
+      const hijas = hijasActivas(t);
+      const pctAsignado = hijas.reduce((sm, h) => sm + (Number(h.pct_pago) || 0), 0);
+      const todas = transacciones.filter((h) => h.transaccion_padre_id === t.id);
+      return { t, hijas, pctLibre: 100 - pctAsignado,
+               siguienteNum: todas.reduce((m, h) => Math.max(m, Number(h.num_parcialidad) || 0), 0) + 1 };
+    })
+    .filter((c) => c.pctLibre > 1e-6)
+    .sort((a, b) => String(a.t.folio_transaccion).localeCompare(String(b.t.folio_transaccion)));
+  const compraPorId = new Map(comprasPPD.map((c) => [c.t.id, c]));
 
   const setCelda = (i, key, v) => setFilas((fs) => fs.map((f, j) => (j === i ? { ...f, [key]: v } : f)));
 
@@ -9832,10 +9855,61 @@ function PegarTransaccionesPanel({ unidad, partidas, proveedores, cuentas = [], 
     });
   };
 
-  /* Lo que se va a guardar de cada fila, o por qué no se puede. */
-  const analizar = (f) => {
+  /* Lo que se va a guardar de cada fila, o por qué no se puede. `usoBloque`
+     lleva, por compra PPD, lo que ya tomaron las filas anteriores del mismo
+     bloque: dos pagos de la misma compra se numeran en orden y entre los dos
+     no pueden pasar de lo que falta. */
+  const analizarParcialidad = (f, compra, usoBloque) => {
+    const padre = compra.t;
+    const importe = Number(limpiarNumeroPegado(f.importe) ?? NaN);
+    const total = Number(padre.importe) || 0;
+    const previo = usoBloque.get(padre.id) || { pct: 0, n: 0, pseudo: [] };
+    const pctLibre = compra.pctLibre - previo.pct;
+    const libreMonto = r2(total * pctLibre / 100);
+    if (!(importe > 0)) return { errores: ["Falta el importe o no es un número."], avisos: [] };
+    let pct = Math.round((importe / total) * 100 * 10000) / 10000;
+    // Si es justo lo que falta (al centavo), el % es exactamente lo que falta:
+    // así la compra cierra en 100 % y la base no la rechaza por 100.0001 %.
+    if (Math.abs(pct - pctLibre) * total / 100 < 0.015) pct = pctLibre;
+    if (pct > pctLibre + 1e-9) {
+      return { errores: [`Pasa de lo que falta por asignar de ${padre.folio_transaccion}: ${money(libreMonto, padre.moneda)}.`], avisos: [] };
+    }
+    const num = compra.siguienteNum + previo.n;
+    const otras = [...compra.hijas, ...previo.pseudo];
+    usoBloque.set(padre.id, { pct: previo.pct + pct, n: previo.n + 1,
+                              pseudo: [...previo.pseudo, { pct_pago: pct, num_parcialidad: num, status: "No Pagado" }] });
+    const desglose = {};
+    CAMPOS_DESGLOSE_PPD.forEach((c) => {
+      if (padre[c] !== null && padre[c] !== undefined && padre[c] !== "") desglose[c] = montoParcialidadPura(padre[c], pct, num, otras, c);
+    });
+    return {
+      errores: [], avisos: [], esParcialidad: true, num, pct,
+      // Como "Agregar parcialidad" en la tabla: todo se hereda de la compra;
+      // de la fila solo se toma el importe (y el día de pago del bloque).
+      registro: {
+        id: uid(), folio_transaccion: null, registrada_en: null,
+        unidad_detectada: padre.unidad_detectada || unidad, dia: dia || null, status: "No Pagado",
+        es_padre: false, transaccion_padre_id: padre.id, num_parcialidad: num, pct_pago: pct, tipo_pago: "Parcialidad",
+        partida_id: padre.partida_id || null, moneda: padre.moneda || moneda,
+        solicitante: padre.solicitante || "", smi: padre.smi || "", proyecto: padre.proyecto || "",
+        zona: padre.zona || "", area: padre.area || "", categoria: padre.categoria || "",
+        proveedor: padre.proveedor || "", proveedor_id: padre.proveedor_id || null, cuenta_id: padre.cuenta_id || null,
+        concepto_detallado: padre.concepto_detallado || "",
+        folio_compra_sae: padre.folio_compra_sae || "", folio_factura: padre.folio_factura || "",
+        forma_pago: padre.forma_pago || "03", metodo_pago: padre.metodo_pago || "PPD",
+        importe: Math.round(importe * 100) / 100, ...desglose,
+      },
+    };
+  };
+
+  const analizar = (f, usoBloque) => {
     const llena = COLS_PEGAR.some((c) => c.key !== "num" && String(f[c.key] || "").trim());
     if (!llena) return { vacia: true };
+    if (f._padreId) {
+      const compra = compraPorId.get(f._padreId);
+      if (!compra) return { errores: ["La compra PPD elegida ya no tiene saldo por asignar o es de otra moneda: elige otra o quítala."], avisos: [] };
+      return analizarParcialidad(f, compra, usoBloque);
+    }
     const importe = Number(limpiarNumeroPegado(f.importe) ?? NaN);
     const proveedorTxt = String(f.proveedor || "").trim();
     const concepto = String(f.concepto || "").trim();
@@ -9880,17 +9954,22 @@ function PegarTransaccionesPanel({ unidad, partidas, proveedores, cuentas = [], 
     };
   };
 
-  const analisis = filas.map(analizar);
+  const usoBloque = new Map();
+  const analisis = filas.map((f) => analizar(f, usoBloque));
   const listas = analisis.filter((a) => a.registro);
   const conError = analisis.filter((a) => a.errores && a.errores.length);
   const total = listas.reduce((s, a) => s + a.registro.importe, 0);
 
+  const nParc = listas.filter((a) => a.esParcialidad).length;
   const insertar = async () => {
     setAviso(null);
     if (!listas.length) { setAviso({ tono: "red", texto: "No hay filas listas para insertar. Pega la tabla o corrige las que están en rojo." }); return; }
     if (!confirm(
       `Se van a insertar ${listas.length} transacción(es) de ${unidad} en ${moneda}, por ${money(total, moneda)}, como BORRADORES.\n\n` +
-      (partidaSel ? `Todas quedan en la partida ${partidaSel.folio || partidaSel.concepto}.` : "Quedan SIN partida: asígnasela a cada una en la tabla.") +
+      (nParc ? `${nParc} entran como parcialidades de su compra PPD (con la partida y los datos de la compra).\n` : "") +
+      (listas.length > nParc
+        ? (partidaSel ? `Las demás quedan en la partida ${partidaSel.folio || partidaSel.concepto}.` : "Las demás quedan SIN partida: asígnasela a cada una en la tabla.")
+        : "") +
       (conError.length ? `\n\n${conError.length} fila(s) en rojo NO se insertan y se quedan aquí para corregirlas.` : "") +
       "\n\n¿Continuar?")) return;
     setInsertando(true);
@@ -9942,10 +10021,11 @@ function PegarTransaccionesPanel({ unidad, partidas, proveedores, cuentas = [], 
       </div>
 
       <div style={{ overflowX: "auto", border: `1px solid ${T.border}`, borderRadius: 8 }}>
-        <table style={{ borderCollapse: "collapse", tableLayout: "fixed", minWidth: COLS_PEGAR.reduce((s, c) => s + c.w, 0) + 260 }}>
+        <table style={{ borderCollapse: "collapse", tableLayout: "fixed", minWidth: COLS_PEGAR.reduce((s, c) => s + c.w, 0) + 480 }}>
           <colgroup>
             <col style={{ width: 34 }} />
             {COLS_PEGAR.map((c) => <col key={c.key} style={{ width: c.w }} />)}
+            <col style={{ width: 220 }} />
             <col style={{ width: 196 }} />
             <col style={{ width: 30 }} />
           </colgroup>
@@ -9958,6 +10038,8 @@ function PegarTransaccionesPanel({ unidad, partidas, proveedores, cuentas = [], 
                   {c.label}
                 </th>
               ))}
+              <th style={{ ...thStyle, padding: "8px 7px", color: COLOR_PPD }}
+                title="Lo marcas tú: si este pago es parcialidad de una compra PPD ya registrada">Parcialidad de</th>
               <th style={{ ...thStyle, padding: "8px 7px" }}>Revisión</th>
               <th style={{ ...thStyle, padding: "8px 4px" }}></th>
             </tr>
@@ -9979,10 +10061,28 @@ function PegarTransaccionesPanel({ unidad, partidas, proveedores, cuentas = [], 
                                  color: c.key === "num" ? T.textFaint : T.text }} />
                     </td>
                   ))}
+                  <td style={{ padding: 0, borderBottom: `1px solid ${T.borderSoft}`, borderLeft: `1px solid ${T.borderSoft}`,
+                               background: f._padreId ? `${COLOR_PPD}14` : undefined }}>
+                    <select value={f._padreId || ""} aria-label={`Parcialidad de, fila ${i + 1}`}
+                      onChange={(e) => setCelda(i, "_padreId", e.target.value)}
+                      style={{ ...celdaInput, cursor: "pointer", color: f._padreId ? COLOR_PPD : T.textFaint }}>
+                      <option value="">— No, transacción normal —</option>
+                      {comprasPPD.map((c) => (
+                        <option key={c.t.id} value={c.t.id}>
+                          {c.t.folio_transaccion} · {c.t.proveedor} · falta {money(r2(Number(c.t.importe) * c.pctLibre / 100), c.t.moneda)}
+                        </option>
+                      ))}
+                    </select>
+                  </td>
                   <td style={{ padding: "5px 7px", fontSize: 11, lineHeight: 1.4, borderBottom: `1px solid ${T.borderSoft}`, borderLeft: `1px solid ${T.borderSoft}` }}>
                     {a.vacia ? null
                       : a.ignorar ? <span style={{ color: T.textDim }}>{a.ignorar}</span>
                       : a.errores.length ? <span style={{ color: T.red }}>{a.errores.join(" ")}</span>
+                      : a.esParcialidad ? (
+                        <span style={{ color: COLOR_PPD }}>
+                          Lista como P{a.num} ({fmtPct(a.pct)}): toma partida, proveedor y concepto de la compra.
+                        </span>
+                      )
                       : (
                         <span style={{ color: a.avisos.length ? T.amber : T.teal }}>
                           {a.avisos.length ? a.avisos.join(" ") : "Lista"}
@@ -10007,7 +10107,7 @@ function PegarTransaccionesPanel({ unidad, partidas, proveedores, cuentas = [], 
         <Button variant="ghost" onClick={() => { if (confirm("¿Vaciar toda la cuadrícula?")) { setFilas(Array.from({ length: 12 }, filaPegarVacia)); setAviso(null); } }}>Vaciar</Button>
         <div style={{ flex: 1 }} />
         <span style={{ fontSize: 12.5, color: T.textDim }}>
-          {listas.length} lista(s){conError.length ? ` · ${conError.length} con error` : ""} · Total{" "}
+          {listas.length} lista(s){nParc ? ` (${nParc} parcialidades)` : ""}{conError.length ? ` · ${conError.length} con error` : ""} · Total{" "}
           <b style={{ fontFamily: T.fontMono, color: T.text }}>{money(total, moneda)} {moneda}</b>
         </span>
         <Button disabled={insertando || !listas.length} onClick={insertar}>
@@ -13042,7 +13142,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             </div>
             <div style={{ display: seccionIo === "pegar" ? "block" : "none" }}>
               <PegarTransaccionesPanel unidad={unidad} partidas={partidas} proveedores={proveedoresApi.rows}
-                cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />
+                cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} transacciones={transUnidad} />
             </div>
             <div style={{ display: seccionIo === "masiva" ? "block" : "none" }}>
               <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />

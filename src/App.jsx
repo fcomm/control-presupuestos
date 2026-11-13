@@ -215,7 +215,10 @@ const GROUP_OPCIONES = [
   ];
 const GROUP_OPCIONES_TRANS = [
   { value: "dia", label: "Día de Pago Programado" },
-  { value: "zona", label: "Zona" },
+  // Zona agrupa por el GRUPO de Catálogo › Zonas (como lo ve Dirección);
+  // la zona tal cual se capturó queda como "Zona (detalle)".
+  { value: "_zonaGrupo", label: "Zona (como la ve Dirección)" },
+  { value: "zona", label: "Zona (detalle)" },
   { value: "area", label: "Área" },
   { value: "proveedor", label: "Proveedor" },
   { value: "proyecto", label: "Proyecto (transacción)" },
@@ -442,8 +445,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.1.0";
+const APP_VERSION = "3.1.1";
 const CHANGELOG = [
+  { v: "3.1.1", desc: "Transacciones, Agrupar por: la opcion Zona agrupa ahora por el Grupo de Catalogo > Zonas (como la ve Direccion); la zona capturada tal cual queda como Zona (detalle). Quien ya tenia guardado el agrupamiento por Zona pasa una vez al grupo" },
   { v: "3.1.0", desc: "Transacciones > Importar / Exportar > Pegar desde Excel: una cuadricula con las mismas columnas de la tabla que mandan las zonas (Numero, Solicitante, Area, Folio de factura, Forma y Metodo de pago, Nombre o razon social, Concepto, Importe). Se copia en Excel y se pega con Ctrl + V; los encabezados se saltan solos y los importes con $ y comas se limpian. Cada fila se revisa (lista, aviso o error) antes de insertar; el renglon de total se ignora. Todo el bloque es de la compania seleccionada y de una moneda; la partida es opcional (para todas o despues en cada una). Se insertan como borradores, con el proveedor y su cuenta del catalogo cuando coinciden, y la categoria sugerida por el concepto" },
   { v: "3.0.7", desc: "Transacciones: nueva columna Folio Factura, disponible en el listado de Columnas (se capturaba en el formulario pero no existia como columna). Tambien se puede ordenar por ella" },
   { v: "3.0.6", desc: "Campos numericos de todos los dialogos (importes, %, tipo de cambio): al pegar un valor con formato como $85,256.00, USD 1,200.50, 35.5 % o con espacios, se limpia y queda como numero. Antes el navegador dejaba el campo vacio y al guardar faltaba el dato" },
@@ -11140,11 +11144,25 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     // exportación pueda mostrarlos sin volver a buscar la partida por fila.
     return { ...t, _proyecto: p?.proyecto || SIN_DATO, _rubro: p?.rubro || SIN_DATO, _mes: p?.mes || SIN_DATO, _anio: p?.anio || null,
       _folioPartida: p?.folio || "", _conceptoPartida: p?.concepto || "",
-      _vinculo: t.partida_id ? "Vinculada" : "Sin vincular" };
+      _vinculo: t.partida_id ? "Vinculada" : "Sin vincular",
+      // Grupo de la zona según Catálogo › Zonas; si la zona no tiene grupo,
+      // se agrupa con su propio nombre.
+      _zonaGrupo: t.zona ? (gruposZona[String(t.zona).trim().toLowerCase()] || t.zona) : SIN_DATO };
   };
   const transEnriquecidas = transOrdenadas.map(enriquecer);
 
   const [groupBys, setGroupBys] = usePrefState("pref-transacciones-groupbys", [], sanearGroupBys(GROUP_OPCIONES_TRANS));
+  /* Quien ya tenía guardado "agrupar por Zona" pasa una sola vez al grupo de
+     Dirección (v3.1.1). Después puede volver a elegir "Zona (detalle)". */
+  useEffect(() => {
+    try {
+      if (localStorage.getItem("mig-trans-zona-grupo") === "1") return;
+      localStorage.setItem("mig-trans-zona-grupo", "1");
+      if (groupBys.some((g) => g.field === "zona")) {
+        setGroupBys(groupBys.map((g) => (g.field === "zona" ? { ...g, field: "_zonaGrupo" } : g)));
+      }
+    } catch { /* sin almacenamiento: no pasa nada */ }
+  }, []);
   const [collapsedGroups, setCollapsedGroups] = useState(new Set());
   const toggleGroup = (path) => setCollapsedGroups((prev) => alternarEnSet(prev, path));
   const groupKeys = groupBys.map((g) => g.field);

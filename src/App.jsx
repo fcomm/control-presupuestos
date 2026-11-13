@@ -442,8 +442,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.0.1";
+const APP_VERSION = "3.0.2";
 const CHANGELOG = [
+  { v: "3.0.2", desc: "Fix parcialidades: el campo % de la compra solo aceptaba 2 decimales, y al calcular el % desde el importe (p. ej. 35.4178) el navegador no dejaba guardar. Ahora acepta los decimales que haga falta" },
   { v: "3.0.1", desc: "Parcialidades PPD: al editar o crear una, se puede escribir el % de la compra o el importe a pagar; el otro se calcula con el total de la compra. Si se escribe el importe, se guarda exactamente ese importe (el % se deriva de el). Siguen valiendo los limites: el % no puede pasar de lo que falta por asignar" },
   { v: "3.0.0", desc: "Transacciones, nueva cara de la tabla (segun el previo aprobado): el importe va alineado a la derecha con el equivalente en pesos y el tipo de cambio en sus propias lineas, ya sin encimarse con el Status; la compra PPD muestra en Status su avance (Parcial · 60 %, barra y saldo); encabezados cortos (Pago prog., Folio SAE, ID SAE) con el nombre completo al pasar el raton; ID SAE sin comillas; concepto a dos lineas; la etiqueta USD solo cuando hay monedas mezcladas; acciones reducidas a Editar (y Registrar en borradores) mas un menu ⋯ con Generar solicitud de pago, Duplicar, Duplicar al mes siguiente y Cancelar; parcialidades con fondo suave y una linea morada que las agrupa; sin la columna de numeracion; status en verde, ambar y morado" },
   { v: "2.99.3", desc: "Parcialidades PPD en la tabla de Transacciones: debajo de cada una se ven la fecha de pago programado y la fecha en que se pago (o Sin pagar)" },
@@ -13022,7 +13023,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               )}
               {esParcialidad(form) && (
                 <Field label="% de la compra">
-                  <TextInput type="number" step="0.01" min="0.01" max="100" value={form.pct_pago ?? ""}
+                  <TextInput type="number" step="any" min="0.0001" max="100" value={form.pct_pago ?? ""}
+                    title="Hasta 4 decimales: así un importe capturado a mano cuadra al centavo"
                     onChange={(e) => {
                       const padre = padreDe(form);
                       const pct = e.target.value;
@@ -13044,8 +13046,18 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   onChange={(e) => {
                     const v = e.target.value;
                     if (!esParcialidad(form)) { setForm({ ...form, importe: v }); return; }
-                    const total = Number(padreDe(form)?.importe) || 0;
-                    const pct = total > 0 && v !== "" ? Math.round((Number(v) / total) * 100 * 10000) / 10000 : "";
+                    const padre = padreDe(form);
+                    const total = Number(padre?.importe) || 0;
+                    let pct = total > 0 && v !== "" ? Math.round((Number(v) / total) * 100 * 10000) / 10000 : "";
+                    /* Si el importe es lo que falta de la compra (al centavo), el %
+                       es EXACTAMENTE lo que falta: con 4 decimales podía quedar en
+                       99.9999 % y la compra nunca se marcaría Pagada, o en
+                       100.0001 % y la base rechazaría la parcialidad. */
+                    if (pct !== "" && padre) {
+                      const restante = 100 - hijasDe(padre).filter((h) => !estaCancelada(h) && h.id !== editId)
+                        .reduce((sm, h) => sm + (Number(h.pct_pago) || 0), 0);
+                      if (Math.abs(pct - restante) * total / 100 < 0.015) pct = restante;
+                    }
                     setForm({ ...form, importe: v, pct_pago: pct, _importeManual: true });
                   }} placeholder="0.00" />
                 {esParcialidad(form) && (

@@ -445,8 +445,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.2.2";
+const APP_VERSION = "3.3.0";
 const CHANGELOG = [
+  { v: "3.3.0", desc: "Indicador de usuarios en linea en el encabezado (punto verde y N en linea). Al darle clic muestra quien tiene la app abierta, en que compania y en que pestana. Usa la presencia en tiempo real de Supabase: no guarda nada en la base, y quien cierra la app desaparece de la lista en unos segundos" },
   { v: "3.2.2", desc: "Campo Importe de las transacciones (formulario completo y edicion rapida desde Partidas): acepta operaciones basicas como en Excel: sumas, restas, multiplicaciones, divisiones y parentesis (1500+320.50, 12010.03*1.16, (4000-250)/2). Mientras se escribe muestra el resultado; se aplica al salir del campo o con Enter. Una operacion mal escrita no deja guardar y lo dice" },
   { v: "3.2.1", desc: "El grupo de las zonas (como lo ve Direccion) pasa a llamarse Region en toda la app: columna de Catalogo > Zonas, opcion de Agrupar por en Transacciones (Region; la zona capturada queda como Zona), columna del Excel del reporte semanal, columna del Excel de partidas y seccion del PDF ejecutivo mensual" },
   { v: "3.2.0", desc: "Pegar desde Excel: nueva columna Parcialidad de, que marca a mano quien captura (no se deduce de la tabla de las zonas). Ahi se elige una compra PPD registrada de la compania y moneda con saldo por asignar; la fila entra como su siguiente parcialidad (P3, P4...), con el % calculado del importe (exacto si completa la compra) y todo lo demas heredado de la compra: partida, proveedor, cuenta, concepto, proyecto, zona, categoria y desglose fiscal. Si pasa de lo que falta, la fila sale en rojo. Varios pagos de la misma compra en un bloque se numeran en orden y se validan juntos" },
@@ -25059,6 +25060,107 @@ function VehiculosTab({ vehiculos, vehiculosApi, mantenimientos, mantenimientosA
   );
 }
 
+/* ----------------------------------------------------------------------
+   USUARIOS EN LÍNEA (v3.3.0)
+   Con Supabase Realtime Presence: cada pestaña abierta de la app anuncia
+   quién es, en qué compañía y pestaña está. No escribe nada en la base: al
+   cerrar la pestaña (o perder la conexión) el usuario desaparece solo, en
+   unos segundos. Una misma persona con varias pestañas cuenta una vez.
+---------------------------------------------------------------------- */
+const NOMBRES_TAB_PRESENCIA = {
+  dashboard: "Dashboard", partidas: "Partidas", transacciones: "Transacciones", vehiculos: "Vehículos",
+  solicitudes: "Solicitudes", contratos: "Contratos", herramientas: "Herramientas", catalogo: "Catálogo",
+};
+
+function usePresencia(session, perfil, unidad, tab) {
+  const [enLinea, setEnLinea] = useState([]);
+  const canal = useRef(null);
+  const datos = { nombre: perfil?.nombre || session?.user?.email || "", unidad, tab };
+  const datosRef = useRef(datos);
+  datosRef.current = datos;
+
+  useEffect(() => {
+    if (!session) return;
+    const yo = session.user.id;
+    const ch = supabase.channel("presencia-app", { config: { presence: { key: yo } } });
+    canal.current = ch;
+    ch.on("presence", { event: "sync" }, () => {
+      const estado = ch.presenceState();
+      // Una entrada por persona: si tiene varias pestañas, la más reciente.
+      const lista = Object.entries(estado).map(([id, metas]) => {
+        const m = [...metas].sort((a, b) => String(b.desde).localeCompare(String(a.desde)))[0] || {};
+        return { id, ...m, pestanas: metas.length, soyYo: id === yo };
+      });
+      lista.sort((a, b) => Number(b.soyYo) - Number(a.soyYo) || String(a.nombre).localeCompare(String(b.nombre)));
+      setEnLinea(lista);
+    });
+    ch.subscribe((estado) => {
+      if (estado === "SUBSCRIBED") ch.track({ ...datosRef.current, desde: new Date().toISOString() });
+    });
+    return () => { supabase.removeChannel(ch); canal.current = null; };
+  }, [session?.user?.id]);
+
+  // Al cambiar de compañía, de pestaña o de nombre, se vuelve a anunciar.
+  useEffect(() => {
+    const ch = canal.current;
+    if (ch && ch.state === "joined") ch.track({ ...datos, desde: new Date().toISOString() });
+  }, [datos.nombre, unidad, tab]);
+
+  return enLinea;
+}
+
+function IndicadorEnLinea({ usuarios }) {
+  const [abierto, setAbierto] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!abierto) return;
+    const fuera = (e) => { if (!ref.current?.contains(e.target)) setAbierto(false); };
+    const tecla = (e) => { if (e.key === "Escape") setAbierto(false); };
+    window.addEventListener("mousedown", fuera);
+    window.addEventListener("keydown", tecla);
+    return () => { window.removeEventListener("mousedown", fuera); window.removeEventListener("keydown", tecla); };
+  }, [abierto]);
+  if (!usuarios.length) return null;
+  const otros = usuarios.filter((u) => !u.soyYo).length;
+  return (
+    <span ref={ref} style={{ position: "relative", display: "inline-flex" }}>
+      <button type="button" onClick={() => setAbierto(!abierto)} aria-expanded={abierto}
+        title="Quién tiene la app abierta en este momento"
+        style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: T.textDim,
+                 border: `1px solid ${T.border}`, background: abierto ? T.accentBg : "none", borderRadius: 5,
+                 padding: "3px 9px", cursor: "pointer", fontFamily: T.fontUI }}>
+        <span style={{ width: 8, height: 8, borderRadius: "50%", background: T.teal, boxShadow: `0 0 0 2px ${T.teal}33` }} />
+        {usuarios.length} en línea
+      </button>
+      {abierto && (
+        <div role="dialog" style={{ position: "absolute", top: "calc(100% + 6px)", right: 0, zIndex: 950, width: 290,
+                                    background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8,
+                                    boxShadow: `0 10px 28px ${T.sombra}`, padding: 8 }}>
+          <div style={{ fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, padding: "4px 6px 8px" }}>
+            En línea ahora{otros === 0 ? " · solo tú" : ""}
+          </div>
+          {usuarios.map((u) => (
+            <div key={u.id} style={{ display: "flex", alignItems: "center", gap: 9, padding: "7px 6px",
+                                     borderTop: `1px solid ${T.borderSoft}` }}>
+              <span style={{ width: 8, height: 8, borderRadius: "50%", background: T.teal, flexShrink: 0 }} />
+              <span style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: T.text,
+                               overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  {u.nombre || "Sin nombre"}{u.soyYo ? " (tú)" : ""}
+                </span>
+                <span style={{ display: "block", fontSize: 11, color: T.textDim }}>
+                  {[u.unidad, NOMBRES_TAB_PRESENCIA[u.tab] || u.tab].filter(Boolean).join(" · ")}
+                  {u.pestanas > 1 ? ` · ${u.pestanas} pestañas` : ""}
+                </span>
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+}
+
 export default function App() {
   const { session, recovery, clearRecovery } = useAuth();
   const proyectosApi = useCollection("proyectos");
@@ -25146,6 +25248,7 @@ export default function App() {
      Entrada, sin que nadie las haya tomado. Se consulta solo el conteo (no
      las filas) al cambiar de compañía o de pestaña, al volver a la ventana y
      cada minuto: las SMI llegan del formulario público, sin avisar a la app. */
+  const enLinea = usePresencia(session, miPerfil, unidad, tab);
   const [smiEnEntrada, setSmiEnEntrada] = useState(0);
   useEffect(() => {
     if (!session || !unidad) return;
@@ -25314,6 +25417,7 @@ export default function App() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+          <IndicadorEnLinea usuarios={enLinea} />
           <span style={{ fontSize: 11.5, color: T.textFaint }}>
             {perfilesApi.rows.find((p) => p.id === session.user.id)?.nombre || session.user.email}
           </span>

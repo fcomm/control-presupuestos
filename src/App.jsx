@@ -445,8 +445,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.3.0";
+const APP_VERSION = "3.3.1";
 const CHANGELOG = [
+  { v: "3.3.1", desc: "Fix pantalla en negro: al enviar el reporte semanal y elegir reasignar las transacciones con partida de un mes anterior, la app se caia (ws.current is not a function) porque el envio no quedaba listo para retomarse. Ademas, si una pantalla vuelve a fallar, ya no se queda en negro: muestra que paso y un boton para recargar" },
   { v: "3.3.0", desc: "Indicador de usuarios en linea en el encabezado (punto verde y N en linea). Al darle clic muestra quien tiene la app abierta, en que compania y en que pestana. Usa la presencia en tiempo real de Supabase: no guarda nada en la base, y quien cierra la app desaparece de la lista en unos segundos" },
   { v: "3.2.2", desc: "Campo Importe de las transacciones (formulario completo y edicion rapida desde Partidas): acepta operaciones basicas como en Excel: sumas, restas, multiplicaciones, divisiones y parentesis (1500+320.50, 12010.03*1.16, (4000-250)/2). Mientras se escribe muestra el resultado; se aplica al salir del campo o con Enter. Una operacion mal escrita no deja guardar y lo dice" },
   { v: "3.2.1", desc: "El grupo de las zonas (como lo ve Direccion) pasa a llamarse Region en toda la app: columna de Catalogo > Zonas, opcion de Agrupar por en Transacciones (Region; la zona capturada queda como Zona), columna del Excel del reporte semanal, columna del Excel de partidas y seccion del PDF ejecutivo mensual" },
@@ -3640,7 +3641,12 @@ function useRevisionPartidasMes({ partidas, transacciones, transaccionesApi }) {
     const p = pendiente.current;
     if (!p) return;
     const listo = [...p.esperado].every(([id, pid]) => transacciones.find((t) => t.id === id)?.partida_id === pid);
-    if (listo) { pendiente.current = null; clearTimeout(p.timer); p.continuar?.(); }
+    if (listo) {
+      pendiente.current = null; clearTimeout(p.timer);
+      // Retomar el reporte nunca debe tirar la app: si falla, se avisa.
+      try { Promise.resolve(p.continuar?.()).catch((err) => alert("Las partidas se reasignaron, pero no se pudo generar el reporte: " + (err.message || err) + "\n\nVuelve a generarlo.")); }
+      catch (err) { alert("Las partidas se reasignaron, pero no se pudo generar el reporte: " + (err.message || err) + "\n\nVuelve a generarlo."); }
+    }
   }, [transacciones]);
 
   const revisar = (lista, que, continuar) => {
@@ -11952,6 +11958,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       alert("No se pudo enviar: " + (err.message || err));
     } finally { setOficialSem(false); }
   };
+  /* Faltaba: al reasignar partidas desde el aviso de "partida de un mes
+     anterior", el envío se retoma llamando a este ref, que estaba vacío, y la
+     app se caía con la pantalla en negro (v3.3.1). */
+  enviarSemRef.current = enviarSemanalADireccion;
   const [generandoTx, setGenerandoTx] = useState(false);
 
   const etiquetaCampoTx = (campo) =>
@@ -25161,7 +25171,41 @@ function IndicadorEnLinea({ usuarios }) {
   );
 }
 
+/* Red de seguridad: si una pantalla falla, en lugar de dejar todo en negro
+   se muestra qué pasó y cómo seguir (v3.3.1). */
+class BoundaryErrores extends React.Component {
+  constructor(props) { super(props); this.state = { error: null }; }
+  static getDerivedStateFromError(error) { return { error }; }
+  componentDidCatch(error, info) { console.error("Error en la pantalla:", error, info?.componentStack); }
+  render() {
+    if (!this.state.error) return this.props.children;
+    return (
+      <div style={{ minHeight: "100vh", background: T.bg, color: T.text, fontFamily: T.fontUI,
+                    display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div style={{ maxWidth: 520, background: T.panel, border: `1px solid ${T.border}`, borderRadius: 10, padding: "22px 24px" }}>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>Algo falló en esta pantalla</div>
+          <div style={{ fontSize: 13, color: T.textDim, lineHeight: 1.6, marginTop: 8 }}>
+            Lo que ya estaba guardado no se perdió. Recarga la página para seguir trabajando.
+            Si vuelve a pasar al hacer lo mismo, avísale al administrador con este detalle:
+          </div>
+          <pre style={{ fontSize: 11.5, color: T.red, background: T.panelAlt, borderRadius: 6, padding: "8px 10px",
+                        marginTop: 12, whiteSpace: "pre-wrap", fontFamily: T.fontMono }}>{String(this.state.error?.message || this.state.error)}</pre>
+          <button type="button" onClick={() => window.location.reload()}
+            style={{ marginTop: 14, padding: "9px 16px", borderRadius: 6, border: "none", background: T.accent,
+                     color: T.onAccent, fontWeight: 600, fontSize: 13, cursor: "pointer", fontFamily: T.fontUI }}>
+            Recargar la página
+          </button>
+        </div>
+      </div>
+    );
+  }
+}
+
 export default function App() {
+  return <BoundaryErrores><AppPrincipal /></BoundaryErrores>;
+}
+
+function AppPrincipal() {
   const { session, recovery, clearRecovery } = useAuth();
   const proyectosApi = useCollection("proyectos");
   const zonasApi = useCollection("zonas");

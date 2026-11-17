@@ -445,8 +445,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.2.1";
+const APP_VERSION = "3.2.2";
 const CHANGELOG = [
+  { v: "3.2.2", desc: "Campo Importe de las transacciones (formulario completo y edicion rapida desde Partidas): acepta operaciones basicas como en Excel: sumas, restas, multiplicaciones, divisiones y parentesis (1500+320.50, 12010.03*1.16, (4000-250)/2). Mientras se escribe muestra el resultado; se aplica al salir del campo o con Enter. Una operacion mal escrita no deja guardar y lo dice" },
   { v: "3.2.1", desc: "El grupo de las zonas (como lo ve Direccion) pasa a llamarse Region en toda la app: columna de Catalogo > Zonas, opcion de Agrupar por en Transacciones (Region; la zona capturada queda como Zona), columna del Excel del reporte semanal, columna del Excel de partidas y seccion del PDF ejecutivo mensual" },
   { v: "3.2.0", desc: "Pegar desde Excel: nueva columna Parcialidad de, que marca a mano quien captura (no se deduce de la tabla de las zonas). Ahi se elige una compra PPD registrada de la compania y moneda con saldo por asignar; la fila entra como su siguiente parcialidad (P3, P4...), con el % calculado del importe (exacto si completa la compra) y todo lo demas heredado de la compra: partida, proveedor, cuenta, concepto, proyecto, zona, categoria y desglose fiscal. Si pasa de lo que falta, la fila sale en rojo. Varios pagos de la misma compra en un bloque se numeran en orden y se validan juntos" },
   { v: "3.1.1", desc: "Transacciones, Agrupar por: la opcion Zona agrupa ahora por el Grupo de Catalogo > Zonas (como la ve Direccion); la zona capturada tal cual queda como Zona (detalle). Quien ya tenia guardado el agrupamiento por Zona pasa una vez al grupo" },
@@ -4732,6 +4733,117 @@ function limpiarNumeroPegado(texto) {
   return (negativo ? "-" : "") + t.replace(/\.$/, "");
 }
 
+/* ----------------------------------------------------------------------
+   IMPORTE CON FÓRMULAS (v3.2.2)
+   En el campo Importe se puede escribir una operación básica, como en
+   Excel: 1500+320.50, 12010.03*1.16, (4000-250)/2, =3*1,250. Se calcula al
+   salir del campo o con Enter. Acepta $, comas de miles y espacios, y "x"
+   o "×" para multiplicar. No usa eval: un analizador propio que solo
+   entiende números, + - * / y paréntesis.
+---------------------------------------------------------------------- */
+function evaluarFormulaImporte(texto) {
+  const s = String(texto ?? "").trim().replace(/^=/, "")
+    .replace(/[$\s ]/g, "").replace(/,/g, "").replace(/[x×]/gi, "*").replace(/÷/g, "/");
+  if (!s) return null;
+  let i = 0;
+  const ver = () => s[i];
+  const numero = () => {
+    const m = /^(\d*\.?\d+|\d+\.)/.exec(s.slice(i));
+    if (!m) throw new Error("num");
+    i += m[0].length;
+    return parseFloat(m[0]);
+  };
+  const factor = () => {
+    if (ver() === "-") { i++; return -factor(); }
+    if (ver() === "+") { i++; return factor(); }
+    if (ver() === "(") {
+      i++;
+      const v = expr();
+      if (ver() !== ")") throw new Error("paren");
+      i++;
+      return v;
+    }
+    return numero();
+  };
+  const termino = () => {
+    let v = factor();
+    while (ver() === "*" || ver() === "/") {
+      const op = s[i++];
+      const d = factor();
+      if (op === "/" && d === 0) throw new Error("div0");
+      v = op === "*" ? v * d : v / d;
+    }
+    return v;
+  };
+  const expr = () => {
+    let v = termino();
+    while (ver() === "+" || ver() === "-") {
+      const op = s[i++];
+      const d = termino();
+      v = op === "+" ? v + d : v - d;
+    }
+    return v;
+  };
+  try {
+    const v = expr();
+    if (i !== s.length || !Number.isFinite(v)) return null;
+    return Math.round(v * 100) / 100;
+  } catch { return null; }
+}
+// ¿Es una operación y no solo un número? (un "-" inicial es solo el signo)
+const esFormulaImporte = (t) => /[+*/x×÷()=]|\d\s*-/i.test(String(t ?? "").trim().replace(/^-/, ""));
+
+function ImporteInput({ value, onChange, style, onBlur, onKeyDown, ...resto }) {
+  const [texto, setTexto] = useState(value ?? "");
+  const emitido = useRef(value ?? "");
+  // Si el importe cambia desde fuera (p. ej. calculado del %), se muestra.
+  useEffect(() => {
+    if (String(value ?? "") !== String(emitido.current ?? "")) { setTexto(value ?? ""); emitido.current = value ?? ""; }
+  }, [value]);
+  const emitir = (v) => { emitido.current = v; onChange?.({ target: { value: v } }); };
+  const formula = esFormulaImporte(texto);
+  const resultado = formula ? evaluarFormulaImporte(texto) : null;
+  const ref = useRef(null);
+  useEffect(() => {
+    // Una operación mal escrita bloquea el Guardar con un mensaje claro.
+    ref.current?.setCustomValidity(formula && resultado === null
+      ? "La operación no es válida. Usa solo números y + - * / ( ), por ejemplo 1500+320.50" : "");
+  }, [formula, resultado]);
+  const calcular = () => {
+    if (!formula || resultado === null) return;
+    const v = resultado.toFixed(2);
+    setTexto(v);
+    emitir(v);
+  };
+  return (
+    <>
+      <input ref={ref} type="text" inputMode="decimal" value={texto} {...resto}
+        style={{ ...inputStyle, fontFamily: T.fontMono, ...(style || {}) }}
+        onChange={(e) => {
+          const t = e.target.value;
+          setTexto(t);
+          if (!esFormulaImporte(t)) {
+            // Número normal: se limpia ($, comas, espacios) y se avisa al momento.
+            const limpio = t.trim() === "" ? "" : limpiarNumeroPegado(t);
+            emitir(limpio ?? t);
+          }
+        }}
+        onBlur={(e) => { calcular(); onBlur?.(e); }}
+        onKeyDown={(e) => {
+          // Enter calcula la operación; el siguiente Enter ya guarda.
+          if (e.key === "Enter" && formula) { e.preventDefault(); calcular(); }
+          onKeyDown?.(e);
+        }} />
+      {formula && (
+        <span style={{ fontSize: 11, marginTop: 4, display: "block", fontFamily: T.fontMono,
+                       color: resultado === null ? T.red : T.teal }}>
+          {resultado === null ? "Operación no válida" : `= ${money(resultado, "MXP")} · Enter o Tab para aplicar`}
+        </span>
+      )}
+    </>
+  );
+}
+
 function TextInput(props) {
   if (props.type === "date") {
     const { type, ...resto } = props;
@@ -8383,7 +8495,8 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
           <TextInput value={form.referencia_pago || ""} onChange={(e) => setForm({ ...form, referencia_pago: e.target.value })} placeholder="Folio SPEI, cheque, etc." />
         </Field>
         <Field label="Importe">
-          <TextInput type="number" step="0.01" value={form.importe ?? ""} onChange={(e) => setForm({ ...form, importe: e.target.value })} />
+          <ImporteInput value={form.importe ?? ""} onChange={(e) => setForm((f) => ({ ...f, importe: e.target.value }))}
+            placeholder="0.00 o una operación: 1500+320" />
         </Field>
         <Field label="Moneda">
           <Select value={form.moneda || "MXP"} onChange={(e) => setForm({ ...form, moneda: e.target.value })}>
@@ -13510,7 +13623,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   otro se calcula con el total de la compra. Si se escribió el
                   importe, ese es el que se guarda tal cual (ver submit). */}
               <Field label="Importe">
-                <TextInput type="number" step="0.01" value={form.importe}
+                <ImporteInput value={form.importe}
                   title={esParcialidad(form)
                     ? (form.status === "Pagado" && editId && transUnidad.find((x) => x.id === editId)?.status === "Pagado"
                         ? "Ya pagada: conserva el importe que se pagó"
@@ -13518,7 +13631,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     : undefined}
                   onChange={(e) => {
                     const v = e.target.value;
-                    if (!esParcialidad(form)) { setForm({ ...form, importe: v }); return; }
+                    if (!esParcialidad(form)) { setForm((f) => ({ ...f, importe: v })); return; }
                     const padre = padreDe(form);
                     const total = Number(padre?.importe) || 0;
                     let pct = total > 0 && v !== "" ? Math.round((Number(v) / total) * 100 * 10000) / 10000 : "";
@@ -13531,8 +13644,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                         .reduce((sm, h) => sm + (Number(h.pct_pago) || 0), 0);
                       if (Math.abs(pct - restante) * total / 100 < 0.015) pct = restante;
                     }
-                    setForm({ ...form, importe: v, pct_pago: pct, _importeManual: true });
-                  }} placeholder="0.00" />
+                    setForm((f) => ({ ...f, importe: v, pct_pago: pct, _importeManual: true }));
+                  }} placeholder="0.00 o una operación: 1500+320" />
                 {esParcialidad(form) && (
                   <span style={{ fontSize: 11, color: T.textDim, marginTop: 4, display: "block" }}>
                     Escribe el % o el importe; el otro se calcula con el total de la compra

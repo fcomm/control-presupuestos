@@ -476,8 +476,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.7.0";
+const APP_VERSION = "3.7.1";
 const CHANGELOG = [
+  { v: "3.7.1", desc: "Reporte de Pagos, Resaltar lo que cambio respecto a: los envios hechos antes de la 3.7.0 no tienen guardado que pagos llevaban y no se pueden comparar. Ahora salen marcados sin detalle guardado y desactivados en la lista, la opcion por omision es el ultimo envio que si se puede comparar, y un aviso explica por que no hay comparacion cuando ninguno se puede usar" },
   { v: "3.7.0", desc: "Reporte de Pagos: (1) es de un solo dia: en lugar de Desde / Hasta hay un selector de Fecha de pago con flechas para el dia anterior y siguiente y el boton Hoy. (2) Al reenviar una fecha (R1, R2...) el PDF y el Excel dicen que cambio respecto al envio elegido (por omision el ultimo; se puede elegir otro o Sin comparar): primero el total contra ese envio y la diferencia, despues los pagos nuevos en verde, los que cambiaron en ambar (importe, proveedor, concepto, cuenta, forma de pago, referencia, zona, con su valor anterior) y los retirados en gris; en el detalle se colorean las filas nuevas y cambiadas. Cada envio guarda su detalle para poder compararlo. Requiere correr envios-pagos-detalle.sql" },
   { v: "3.6.0", desc: "Solicitudes: nuevo estado Pagado, despues de Agendado a pago, como columna del tablero. Lo pone el sistema: una SMI pasa a Pagado cuando todas sus transacciones vigentes estan en status Pagado (en compras PPD, cuando se paga el 100 %), y regresa a Agendado a pago si alguna vuelve a No Pagado. Requiere correr smi-estado-pagado.sql" },
   { v: "3.5.0", desc: "Avisos de escritorio de SMI nuevas: boton de campana en el encabezado. Al activarlo (pide permiso al navegador una vez) aparece una notificacion de Windows cada vez que entra una SMI en cualquiera de las companias que el usuario ve, con folio, solicitante y descripcion; al darle clic abre Solicitudes en esa compania. Funciona mientras la app este abierta en alguna pestana, aunque este minimizada. Se recuerda por navegador" },
@@ -14391,21 +14392,40 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   const [enviosFecha, setEnviosFecha] = useState([]);
   const [baseEnvio, setBaseEnvio] = useState(""); // "" = el último · "sin" = no comparar · "<n>" = esa revisión
   const [recargaEnvios, setRecargaEnvios] = useState(0);
+  /* Qué envíos tienen su detalle guardado. Los hechos antes de la v3.7.0 no
+     lo tienen y no se pueden comparar: se marcan así en la lista (v3.7.1). */
+  const [conDetalle, setConDetalle] = useState(() => new Set());
   useEffect(() => {
     let vivo = true;
     setBaseEnvio("");
-    if (!fechaPago) { setEnviosFecha([]); return; }
-    supabase.from("envios_pagos").select("id, revision, enviado_en, num_transacciones")
-      .eq("unidad", unidad).eq("fecha_pago", fechaPago).order("revision", { ascending: false })
-      .then(({ data, error }) => { if (vivo) setEnviosFecha(error ? [] : (data || [])); });
+    if (!fechaPago) { setEnviosFecha([]); setConDetalle(new Set()); return; }
+    (async () => {
+      const { data, error } = await supabase.from("envios_pagos").select("id, revision, enviado_en, num_transacciones")
+        .eq("unidad", unidad).eq("fecha_pago", fechaPago).order("revision", { ascending: false });
+      const lista = error ? [] : (data || []);
+      let ids = new Set();
+      if (lista.length) {
+        const det = await supabase.from("envios_pagos_detalle").select("envio_id")
+          .in("envio_id", lista.map((e) => String(e.id)));
+        if (!det.error) ids = new Set((det.data || []).map((d) => String(d.envio_id)));
+      }
+      if (!vivo) return;
+      setEnviosFecha(lista);
+      setConDetalle(ids);
+      // Por omisión, el último envío que SÍ se puede comparar.
+      const ultimoConDetalle = lista.find((e) => ids.has(String(e.id)));
+      setBaseEnvio(!lista.length || ids.has(String(lista[0].id)) ? "" : ultimoConDetalle ? String(ultimoConDetalle.revision) : "sin");
+    })();
     return () => { vivo = false; };
   }, [unidad, fechaPago, recargaEnvios]);
+  const envioBase = baseEnvio === "sin" ? null : (enviosFecha.find((e) => String(e.revision) === baseEnvio) || enviosFecha[0] || null);
+  const baseSinDetalle = !!envioBase && !conDetalle.has(String(envioBase.id));
   const filasOrdenadas = sortRows(filasFiltradas, sort, { importe: (r) => r.importe });
 
   /* La comparación que va en el PDF y el Excel, o por qué no hay. */
   const obtenerComparacion = async () => {
     if (baseEnvio === "sin" || !enviosFecha.length) return { comparacion: null, nota: "" };
-    const env = enviosFecha.find((e) => String(e.revision) === baseEnvio) || enviosFecha[0];
+    const env = envioBase;
     const { data, error } = await supabase.from("envios_pagos_detalle").select("*").eq("envio_id", String(env.id));
     if (error) {
       if (/envios_pagos_detalle|does not exist|relation|schema cache/i.test(error.message || "")) {
@@ -15087,13 +15107,24 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
                   <Field label="Resaltar lo que cambió respecto a" style={{ marginBottom: 10 }}>
                     <Select value={enviosFecha.some((e) => String(e.revision) === baseEnvio) || baseEnvio === "sin" ? baseEnvio : ""}
                       onChange={(e) => setBaseEnvio(e.target.value)}>
-                      <option value="">El último envío (R{enviosFecha[0].revision})</option>
-                      {enviosFecha.slice(1).map((e) => (
-                        <option key={e.id} value={String(e.revision)}>R{e.revision} — {formatFechaHora(e.enviado_en)}</option>
+                      {conDetalle.has(String(enviosFecha[0].id)) && (
+                        <option value="">El último envío (R{enviosFecha[0].revision})</option>
+                      )}
+                      {enviosFecha.slice(conDetalle.has(String(enviosFecha[0].id)) ? 1 : 0).map((e) => (
+                        <option key={e.id} value={String(e.revision)} disabled={!conDetalle.has(String(e.id))}>
+                          R{e.revision} — {formatFechaHora(e.enviado_en)}{conDetalle.has(String(e.id)) ? "" : " · sin detalle guardado, no se puede comparar"}
+                        </option>
                       ))}
                       <option value="sin">Sin comparar</option>
                     </Select>
                   </Field>
+                )}
+                {enviosFecha.length > 0 && (baseSinDetalle || !enviosFecha.some((e) => conDetalle.has(String(e.id)))) && (
+                  <div style={{ fontSize: 11, color: T.amber, marginTop: -4, marginBottom: 10, lineHeight: 1.5 }}>
+                    Los envíos de esta fecha se hicieron antes de que la app guardara qué pagos llevaba cada uno,
+                    así que no hay contra qué comparar. Este envío sí se guarda: el próximo reenvío de esta fecha
+                    ya saldrá comparado.
+                  </div>
                 )}
                 <div style={{ marginBottom: 10 }}>
                   <ColumnVisibilityControl

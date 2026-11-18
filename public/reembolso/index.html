@@ -53,7 +53,7 @@
 .login .acc{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap}
 .login .msg{font-size:13px;min-height:1.2em}
 .login .msg.mal{color:var(--dif)}
-body.sin-sesion #paqbar,body.sin-sesion #drop,body.sin-sesion #dir,body.sin-sesion #summary,body.sin-sesion #toolbar,body.sin-sesion #view{display:none !important}body.sin-permiso #paqbar,body.sin-permiso #drop,body.sin-permiso #dir,body.sin-permiso #summary,body.sin-permiso #toolbar,body.sin-permiso #view{display:none !important}
+body.sin-sesion #paqbar,body.sin-sesion #drop,body.sin-sesion #dir,body.sin-sesion #summary,body.sin-sesion #toolbar,body.sin-sesion #view{display:none !important}
 html{scroll-padding-top:env(safe-area-inset-top,0px)}
 body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--font);font-variant-numeric:tabular-nums}
 main{max-width:1500px;margin:0 auto;padding:28px 24px 64px}
@@ -557,6 +557,7 @@ function pdfDoc(path, texto, paginas) {
     kind: "pdf", path, carpetaFecha: fechaCarpeta(path), texto, paginas,
     vacio: plano.replace(/\s/g, "").length < 60,
     montos: montosEnTexto(plano), uuids: (plano.match(RE_UUID) || []).map(u => u.toUpperCase()),
+    rfcs: [...new Set((plano.toUpperCase().match(/\b[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}\b/g) || []).filter(r => !/^X[AE]XX010101000$/.test(r)))],
     factura: inv ? inv[1].toUpperCase() : null,
     recibo: /\b(receipt|date paid|amount paid|comprobante de pago)\b/i.test(plano),
     folioFiscal: /folio fiscal|timbre fiscal|cfdi/i.test(plano),
@@ -734,6 +735,30 @@ function empatar() {
     const cand = pdfs.filter(p => libre(p) && p.cfdiPdf && tieneMonto(p, cg.importe)).sort((p, q) => cercania(p, cg) - cercania(q, cg));
     if (cand.length && (cercania(cand[0], cg) <= 20 || (!fechaDoc(cand[0]) && !cand[0].carpetaFecha))) asignar(cg, "cfdiPdf", [cand[0]]);
   }
+  // 5b) un comprobante para varios cargos del mismo comercio (dos pagos de un hotel con una sola
+  // factura): 2 a 4 cargos con la misma descripción, a menos de 7 días entre sí, que suman el total.
+  {
+    const comercio = cg => norm(cg.descripcion).replace(/[^a-z0-9 ]/g, " ").split(" ").filter(w => w.length > 2).slice(0, 3).join(" ");
+    const cercaDe = (d, combo) => {
+      const fs = [fechaDoc(d), d.carpetaFecha, ...(d.kind === "pdf" ? fechasEnTexto(d.texto || "") : [])].filter(Boolean);
+      return !fs.length || combo.some(cg => fs.some(x => dias(x, cg.compra) <= 20));
+    };
+    const grupos = {};
+    pendientes().forEach(cg => (grupos[comercio(cg)] ||= []).push(cg));
+    for (const g of Object.values(grupos)) {
+      if (g.length < 2) continue;
+      for (const n of [2, 3, 4]) for (const combo of combos(g.slice(0, 10), n)) {
+        if (combo.some(c => A[c.id].tipo)) continue;
+        const fs = combo.map(c => +c.compra);
+        if ((Math.max(...fs) - Math.min(...fs)) / 864e5 > 7) continue;
+        const suma = combo.reduce((t, c) => t + c.importe, 0);
+        const cx = cfdis.find(c => libre(c) && c.moneda === "MXN" && Math.abs(c.total - suma) <= TOL && cercaDe(c, combo));
+        const d = cx || pdfs.find(p => libre(p) && p.cfdiPdf && tieneMonto(p, suma) && cercaDe(p, combo));
+        if (!d) continue;
+        for (const cg of combo) asignar(cg, cx ? "cfdi" : "cfdiPdf", [d]);
+      }
+    }
+  }
   // 6) facturas extranjeras en PDF, por monto + proveedor + fecha
   for (const cg of pendientes()) {
     const cand = pdfs.filter(p => libre(p) && !p.cfdiPdf && !p.vacio && !p.pase && (tieneMonto(p, cg.montoExt) || tieneMonto(p, cg.importe)))
@@ -796,7 +821,7 @@ function verificar(cg, a, doc, notas) {
   }
   if (doc.kind !== "pdf") return;
   if (doc.vacio) { V("w", "PDF escaneado: no tiene texto para verificar monto, proveedor ni fecha. Ábrelo y confirma que es el correcto"); return; }
-  if (!tieneMonto(doc, cg.importe) && !tieneMonto(doc, cg.montoExt)) V("b", `El PDF no menciona ${fmt(cg.importe)}${cg.montoExt ? ` ni ${fmt(cg.montoExt)} ${cg.monedaExt}` : ""}, que es lo que cargó AMEX`);
+  if (!a.parte && !tieneMonto(doc, cg.importe) && !tieneMonto(doc, cg.montoExt)) V("b", `El PDF no menciona ${fmt(cg.importe)}${cg.montoExt ? ` ni ${fmt(cg.montoExt)} ${cg.monedaExt}` : ""}, que es lo que cargó AMEX`);
   if (!coincideProv(cg, doc.texto)) V("w", `El PDF no menciona a «${quien}»`);
   const fs = fechasEnTexto(doc.texto);
   if (fs.length && !fs.some(x => dias(x, cg.compra) <= 40)) {
@@ -804,11 +829,42 @@ function verificar(cg, a, doc, notas) {
     V("w", `La fecha más cercana en el PDF es el ${fFechaL(cerca)} y el cargo es del ${fFechaL(cg.compra)}`);
   }
 }
+// Base e IVA de la impresión de un CFDI: un par de montos del PDF donde uno es el 16% del otro y
+// los dos caben en el total. Lo que sobra (ISH u otros impuestos locales) va como «otros».
+function taxPdfCfdi(doc, total) {
+  const ms = (doc.montos || []).filter(m => m > 0 && m <= total + .01);
+  let mejor = null;
+  for (const b of ms) for (const i of ms) if (b > i && Math.abs(b * .16 - i) <= .02 && b + i <= total + .02 && (!mejor || b > mejor.b)) mejor = { b, i };
+  if (!mejor) return null;
+  const t = TAX0(); t.total = total; t.b16 = mejor.b; t.iva16 = mejor.i; t.subtotal = mejor.b;
+  const resto = Math.round((total - mejor.b - mejor.i) * 100) / 100;
+  if (resto > .01) t.otros = resto;
+  return t;
+}
+let RFC_PROPIO = "";
 function calcular() {
   const { A, usado, crUsados } = empatar();
+  // Un comprobante que respalda varios cargos (automático o asignado a mano a cada uno) se reparte
+  // entre ellos en proporción a su importe, siempre que los cargos sumen el total del comprobante.
+  {
+    const porDoc = new Map();
+    for (const cg of S.cargos) {
+      const a = A[cg.id];
+      if ((S.excluir[cg.id] ?? esExcluidoAmex(cg)) || !a.principal || a.tipo === "pase" || (a.tipo === "cfdi" && a.cfdis.length !== 1)) continue;
+      if (!porDoc.has(a.principal)) porDoc.set(a.principal, []);
+      porDoc.get(a.principal).push(cg);
+    }
+    porDoc.forEach((cs, d) => {
+      if (cs.length < 2) return;
+      const suma = cs.reduce((t, c) => t + c.importe, 0);
+      const cuadra = d.kind === "cfdi" ? d.moneda === "MXN" && Math.abs(d.total - suma) <= TOL : tieneMonto(d, suma);
+      if (cuadra) cs.forEach(cg => { A[cg.id].parte = { doc: d, suma, f: cg.importe / suma, otros: cs.filter(o => o !== cg) }; });
+    });
+  }
   const rfcs = {};
   S.docs.filter(d => d.kind === "cfdi").forEach(c => rfcs[c.receptorRfc] = (rfcs[c.receptorRfc] || 0) + 1);
   const rfcPropio = Object.entries(rfcs).sort((a, b) => b[1] - a[1])[0]?.[0] || "";
+  RFC_PROPIO = rfcPropio;
   const filas = S.cargos.map(cg => {
     const a = A[cg.id];
     const fuera = S.excluir[cg.id] ?? esExcluidoAmex(cg);
@@ -835,7 +891,8 @@ function calcular() {
         const f = cg.importe / t.total;
         tax = escala(t, f); totalDoc = tax.total;
         notas.push(["i", `CFDI en ${doc.moneda} por ${fmt(t.total)}; convertido al importe que cargó AMEX (TC ${f.toFixed(4)})`]);
-      } else { tax = t; totalDoc = t.total; }
+      } else if (a.parte) { tax = escala(t, a.parte.f); totalDoc = tax.total; totalDocOrig = t.total; }
+      else { tax = t; totalDoc = t.total; }
       estado = Math.abs(totalDoc - cg.importe) <= TOL ? "ok" : "dif";
       if (cs.length > 1) notas.push(["i", `${cs.length} CFDI del mismo emisor suman el cargo`]);
       for (const c of cs) {
@@ -847,10 +904,15 @@ function calcular() {
       }
     } else if (a.tipo === "cfdiPdf") {
       doc = a.principal; totalDoc = cg.importe;
-      tax = TAX0(); tax.total = cg.importe;
-      const iva = doc.montos.find(m => Math.abs(m - cg.importe * .16 / 1.16) <= .06);
-      if (iva) { tax.iva16 = iva; tax.b16 = cg.importe - iva; tax.subtotal = tax.b16; notas.push(["w", "Impuestos leídos del PDF: falta el XML para comprobar"]); }
-      else { tax.noObjeto = cg.importe; tax.subtotal = cg.importe; notas.push(["w", "No pude leer el IVA del PDF; falta el XML"]); }
+      const total = a.parte ? a.parte.suma : cg.importe;
+      let t = TAX0(); t.total = total;
+      const iva = doc.montos.find(m => Math.abs(m - total * .16 / 1.16) <= .06);
+      const leido = iva ? null : taxPdfCfdi(doc, total);
+      if (iva) { t.iva16 = iva; t.b16 = total - iva; t.subtotal = t.b16; notas.push(["w", "Impuestos leídos del PDF: falta el XML para comprobar"]); }
+      else if (leido) { t = leido; notas.push(["w", `Impuestos leídos del PDF${t.otros ? `, con ${fmt(t.otros)} de impuestos locales (ISH u otros)` : ""}: falta el XML para comprobar`]); }
+      else { t.noObjeto = total; t.subtotal = total; notas.push(["w", "No pude leer el IVA del PDF; falta el XML"]); }
+      tax = a.parte ? escala(t, a.parte.f) : t;
+      if (a.parte) totalDocOrig = total;
       estado = "sinxml";
     } else if (a.tipo === "ext") {
       doc = a.principal; tax = porTrat(); totalDoc = cg.importe;
@@ -863,6 +925,10 @@ function calcular() {
       tax = porTrat(); estado = "falta";
       if (a.tipo === "ninguno") notas.push(["i", "Marcado sin comprobante"]);
     }
+    if (a.parte && !fuera) {
+      const d = a.parte.doc, nom = d.kind === "cfdi" ? `${d.serie || ""}${d.folio || ""}`.trim() || d.uuid : basename(d.path);
+      notas.unshift(["i", `Una sola factura (${nom}, ${fmt(a.parte.suma)}) cubre ${a.parte.otros.length + 1} cargos: a este le toca ${fmt(cg.importe)} (${(a.parte.f * 100).toFixed(1)} %) y el resto a ${a.parte.otros.map(o => `«${o.descripcion}» del ${fFecha(o.compra)} por ${fmt(o.importe)}`).join(", ")}. Los impuestos se reparten en la misma proporción.`]);
+    }
     const dif = totalDoc != null && (a.tipo === "cfdi" || a.tipo === "pase") ? totalDoc - cg.importe : 0;
     if (Math.abs(dif) > TOL) notas.unshift(["b", `El comprobante suma ${fmt(totalDoc)}: ${fmt(Math.abs(dif))} ${dif > 0 ? "más" : "menos"} que el cargo`]);
     else if (Math.abs(dif) >= .005) notas.push(["i", `Diferencia de centavos contra AMEX: ${fmt(dif)}`]);
@@ -874,7 +940,7 @@ function calcular() {
   // Un mismo comprobante asignado a mano a dos cargos.
   const porDoc = new Map();
   filas.forEach(f => { if (f.a.tipo !== "pase" && f.estado !== "fuera") f.a.docs.forEach(d => { if (!porDoc.has(d)) porDoc.set(d, []); porDoc.get(d).push(f); }); });
-  porDoc.forEach(fs => { if (fs.length > 1) fs.forEach(f => fs.filter(o => o !== f).forEach(o => f.notas.unshift(["b", `Este comprobante también está asignado a «${o.cg.descripcion}» del ${fFecha(o.cg.compra)} por ${fmt(o.cg.importe)}`, "verif"]))); });
+  porDoc.forEach((fs, d) => { if (fs.length > 1 && !fs.every(f => f.a.parte?.doc === d)) fs.forEach(f => fs.filter(o => o !== f).forEach(o => f.notas.unshift(["b", `Este comprobante también está asignado a «${o.cg.descripcion}» del ${fFecha(o.cg.compra)} por ${fmt(o.cg.importe)}`, "verif"]))); });
   // Un CFDI asignado a mano que por monto y proveedor era de otro cargo: ese otro se queda sin él.
   filas.forEach(f => {
     if (!f.a.manual || f.estado === "fuera") return;
@@ -1266,6 +1332,10 @@ function emisorDe(f) {
   const d = f.doc;
   if (d?.kind === "cfdi") return { k: "RFC:" + d.rfc, nombre: d.emisor, rfc: d.rfc };
   const nombre = esPase(f.cg) ? "PASE, Servicios Electrónicos" : nombreProv(f.cg) || f.cg.descripcion.replace(/\s+(CIUDAD DE MEXIC|SAN FRANCISCO|SAN DIEGO|MEXICO CITY|SINGAPORE).*$/i, "");
+  // La impresión de un CFDI trae el RFC del emisor (el primero que no es el nuestro): con él se busca
+  // en el maestro. Lo guardado antes por nombre se sigue encontrando (alt).
+  const rfc = d?.cfdiPdf ? (d.rfcs || []).find(r => r !== RFC_PROPIO) : "";
+  if (rfc) return { k: "RFC:" + rfc, alt: "N:" + normProv(nombre), nombre, rfc };
   return { k: "N:" + normProv(nombre), nombre, rfc: "" };
 }
 function sugerencias(nombre, max = 3) {
@@ -1281,7 +1351,7 @@ function sugerencias(nombre, max = 3) {
 }
 // Clave para un emisor: la liga confirmada; si no, la coincidencia exacta y única de nombre.
 function claveDe(em) {
-  const v = CAT.vinculos[em.k];
+  const v = CAT.vinculos[em.k] || (em.alt && CAT.vinculos[em.alt]);
   if (v) { const p = provPorClave(v.clave); return { clave: v.clave, nombre: p ? p.n : v.nombreSae || "", origen: "confirmado", falta: !p && !v.nombreSae }; }
   // En línea, un CFDI se liga solo por el RFC del emisor contra el maestro de ASPEL.
   if (modoNube && em.rfc && NB.porRfc) {
@@ -1435,7 +1505,7 @@ function renderProv() {
 const nombreCC = c => CAT.centros.find(x => x.c === c)?.n || "";
 function ccDe(f) {
   if (f.cg.id in S.cc) return S.cc[f.cg.id] ? { c: S.cc[f.cg.id], origen: "manual" } : null;
-  const c = CAT.ccEmisor[f.emisor.k];
+  const c = CAT.ccEmisor[f.emisor.k] || (f.emisor.alt && CAT.ccEmisor[f.emisor.alt]);
   return c && CAT.centros.some(x => x.c === c) ? { c, origen: "auto" } : null;
 }
 function ccSelect(f) {
@@ -1536,7 +1606,7 @@ function indexarDescripciones() {
 }
 function descDe(f) {
   if (f.cg.id in S.desc) return S.desc[f.cg.id] ? { t: S.desc[f.cg.id], origen: "manual" } : null;
-  const t = CAT.descEmisor[f.emisor.k];
+  const t = CAT.descEmisor[f.emisor.k] || (f.emisor.alt && CAT.descEmisor[f.emisor.alt]);
   return t ? { t, origen: "auto" } : null;
 }
 function canonDesc(t) {
@@ -1645,14 +1715,7 @@ function renderDesc() {
 const NUBE = { url: "https://clxxsxrtxcdvqcthytws.supabase.co", key: "sb_publishable_cLqvKuqh3cUcjfmar2JZ7Q_urZSnZSi" };
 const UNIDADES_TODAS = ["OSB", "CTM", "ISE"];
 const modoNube = /^\/reembolso(\/|$)/.test(location.pathname) || new URLSearchParams(location.search).has("nube");
-const NB = { sb: null, sesion: null, perfil: null, unidades: [], unidad: null, conexion: "", lectura: false };
-/* Permisos (v2.99.0 de Control de Presupuestos): esta herramienta es SOLO para
-   administradores, y dentro de ella se respeta el nivel por compañía: con
-   "Solo lectura" en una compañía se consulta pero no se guarda. La base lo
-   hace cumplir de todos modos (reembolso-solo-admin.sql); aquí se avisa
-   antes, con un mensaje claro, en vez de dejar que el cambio falle. */
-const MSG_LECTURA = () => `Tu acceso en ${NB.unidad} es de solo lectura: no se guardó el cambio. Puedes consultar y descargar; si necesitas modificar algo, pídeselo a un administrador.`;
-const esErrorPermiso = t => /row-level security|violates row-level|permission denied|42501|Unauthorized|not authorized/i.test(String(t || ""));
+const NB = { sb: null, sesion: null, perfil: null, unidades: [], unidad: null, conexion: "" };
 async function iniciarNube() {
   if (!window.supabase?.createClient) { NB.conexion = "No se pudo cargar la librería de Supabase. Revisa la conexión a internet."; return; }
   NB.sb = window.supabase.createClient(NUBE.url, NUBE.key, { auth: { persistSession: true, autoRefreshToken: true } });
@@ -1668,19 +1731,8 @@ async function iniciarNube() {
 async function cargarPerfil() {
   NB.perfil = null; NB.conexion = "";
   if (!NB.sesion) return;
-  const { data, error: err } = await NB.sb.from("perfiles").select("id, email, nombre, unidades_permitidas, es_admin, permisos").eq("id", NB.sesion.user.id).maybeSingle();
-  if (err) {
-    NB.conexion = /es_admin|permisos/.test(err.message)
-      ? "Falta correr permisos-usuario.sql en Supabase: sin eso no se puede saber quién es administrador."
-      : "No pude leer tu perfil: " + err.message;
-    API.ok = false; return;
-  }
-  if (!data?.es_admin) {
-    NB.perfil = data || { email: NB.sesion.user.email, nombre: NB.sesion.user.email };
-    NB.unidades = []; NB.unidad = null;
-    NB.conexion = "Esta herramienta es solo para administradores. Si necesitas usarla, pídele acceso a un administrador.";
-    API.ok = false; return;
-  }
+  const { data, error: err } = await NB.sb.from("perfiles").select("id, email, nombre, unidades_permitidas").eq("id", NB.sesion.user.id).maybeSingle();
+  if (err) { NB.conexion = "No pude leer tu perfil: " + err.message; return; }
   NB.perfil = data || { email: NB.sesion.user.email, nombre: NB.sesion.user.email };
   NB.unidades = data?.unidades_permitidas?.length ? data.unidades_permitidas : UNIDADES_TODAS;
   let guardada = null; try { guardada = localStorage.getItem("amex.unidad"); } catch {}
@@ -1692,7 +1744,7 @@ async function cargarPerfil() {
   if (API.ok) { try { await cargarDirectorio(); } catch (err) { error(err.message); } }
 }
 // Catálogos de la compañía elegida, desde Control de Presupuestos y las tablas del reembolso.
-const chk = r => { if (r.error) throw new Error(esErrorPermiso(r.error.message) ? MSG_LECTURA() : r.error.message); return r.data; };
+const chk = r => { if (r.error) throw new Error(r.error.message); return r.data; };
 async function cargarCatalogoNube() {
   const U = NB.unidad, sb = NB.sb;
   progreso(`Leyendo catálogos de ${U}…`);
@@ -1740,8 +1792,6 @@ function fotoNube() {
 }
 async function guardarNube() {
   if (!NB.sb || !NB.snap) return;
-  // Con solo lectura los catálogos no se guardan; se avisa una vez.
-  if (NB.lectura) { if (!guardarNube.avisado) { guardarNube.avisado = true; aviso(MSG_LECTURA()); } return; }
   const ahora = fotoNube(), antes = NB.snap, U = NB.unidad, sb = NB.sb;
   const cambia = (a, b) => JSON.stringify(a) !== JSON.stringify(b);
   const up = [...ahora.ligas.values()].filter(r => cambia(r, antes.ligas.get(r.emisor_k)));
@@ -1786,8 +1836,6 @@ async function apiNube(url, opts = {}) {
   const cuerpo = () => JSON.parse(opts.body || "{}");
   const sb = NB.sb, U = NB.unidad;
   if (!sb || !NB.sesion) throw new Error("Inicia sesión para trabajar en línea.");
-  // Solo lectura: nada que no sea consultar llega a la base.
-  if (m !== "GET" && NB.lectura) throw new Error(MSG_LECTURA());
   switch (u.pathname) {
     case "/api/paquetes": {
       const d = chk(await sb.from("reembolso_paquetes").select("id, nombre, resumen, updated_at, bloqueado_por, bloqueado_en").eq("unidad", U));
@@ -1896,21 +1944,17 @@ window.addEventListener("pagehide", () => { if (NB.bloqueado) soltarBloqueo(); }
 // Comprueba que las tablas del reembolso respondan con los permisos de este usuario.
 async function verificarNube() {
   const r = await NB.sb.from("reembolso_paquetes").select("id", { count: "exact", head: true }).eq("unidad", NB.unidad);
-  NB.conexion = r.error ? "Sin acceso a los paquetes: " + (esErrorPermiso(r.error.message) ? "esta herramienta es solo para administradores." : r.error.message) : "";
-  NB.lectura = NB.perfil?.permisos?.[NB.unidad] === "lectura";
+  NB.conexion = r.error ? "Sin acceso a los paquetes: " + r.error.message : "";
   NB.paquetesEnNube = r.count ?? 0;
 }
 function renderCuenta() {
   const c = $("#cuenta");
   document.body.classList.toggle("sin-sesion", modoNube && !NB.sesion);
-  // Sin ser administrador no se muestra la herramienta: solo el aviso de arriba.
-  document.body.classList.toggle("sin-permiso", modoNube && !!NB.sesion && !NB.perfil?.es_admin);
   $("#login").hidden = !(modoNube && !NB.sesion);
   c.hidden = !modoNube || !NB.sesion;
   if (c.hidden) return;
   c.innerHTML = `<span><b>${esc(NB.perfil?.nombre || NB.sesion.user.email)}</b> · ${esc(NB.sesion.user.email)}</span>
     <label>Compañía <select id="sel-unidad" ${NB.unidades.length < 2 ? "disabled" : ""}>${NB.unidades.map(u => `<option ${u === NB.unidad ? "selected" : ""}>${esc(u)}</option>`).join("")}</select></label>
-    ${NB.lectura && !NB.conexion ? `<span class="mal" title="Puedes consultar y descargar, pero no guardar cambios">👁 Solo lectura en ${esc(NB.unidad)}</span>` : ""}
     ${NB.conexion ? `<span class="mal">${esc(NB.conexion)}</span>` : `<span class="ok" title="Las tablas del reembolso responden con tus permisos">● En línea</span>`}
     <button class="btn small" id="btn-salir">Salir</button>`;
   $("#sel-unidad").onchange = async e => {

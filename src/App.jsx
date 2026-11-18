@@ -476,8 +476,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.5.0";
+const APP_VERSION = "3.6.0";
 const CHANGELOG = [
+  { v: "3.6.0", desc: "Solicitudes: nuevo estado Pagado, despues de Agendado a pago, como columna del tablero. Lo pone el sistema: una SMI pasa a Pagado cuando todas sus transacciones vigentes estan en status Pagado (en compras PPD, cuando se paga el 100 %), y regresa a Agendado a pago si alguna vuelve a No Pagado. Requiere correr smi-estado-pagado.sql" },
   { v: "3.5.0", desc: "Avisos de escritorio de SMI nuevas: boton de campana en el encabezado. Al activarlo (pide permiso al navegador una vez) aparece una notificacion de Windows cada vez que entra una SMI en cualquiera de las companias que el usuario ve, con folio, solicitante y descripcion; al darle clic abre Solicitudes en esa compania. Funciona mientras la app este abierta en alguna pestana, aunque este minimizada. Se recuerda por navegador" },
   { v: "3.4.0", desc: "La app carga mucho mas rapido: las herramientas de Excel, PDF y ZIP ya no van en el archivo principal (de 5.4 MB a una fraccion); se descargan en segundo plano en cuanto abre la pagina. Mientras carga se ve un aviso de Cargando en lugar de la pantalla en blanco" },
   { v: "3.3.1", desc: "Fix pantalla en negro: al enviar el reporte semanal y elegir reasignar las transacciones con partida de un mes anterior, la app se caia (ws.current is not a function) porque el envio no quedaba listo para retomarse. Ademas, si una pantalla vuelve a fallar, ya no se queda en negro: muestra que paso y un boton para recargar" },
@@ -20998,6 +20999,11 @@ const ESTADOS_SOLICITUD = [
      solicitud en transacción. Si se pudiera marcar a mano, el tablero diría
      que hay pagos agendados sin que exista ninguna transacción detrás. */
   { value: "agendado_pago",   label: "Agendado a pago",    tablero: true, quien: "Pagos", soloSistema: true },
+  /* También lo pone el sistema (v3.6.0): la base marca la SMI como Pagada
+     cuando todas sus transacciones vigentes quedan en status Pagado, y la
+     regresa a Agendado a pago si alguna vuelve a No Pagado. Ver
+     smi-estado-pagado.sql. */
+  { value: "pagado",          label: "Pagado",             tablero: true, quien: "Nadie: ya se pagó", soloSistema: true },
   { value: "rechazada",       label: "Rechazada" },
   /* En el tablero, al final: una cancelada sigue a la vista en vez de
      desaparecer, por si se canceló por error o alguien pregunta por ella. */
@@ -21009,7 +21015,9 @@ const ESTADOS_SOLICITUD = [
 function confirmarCancelacionSmi(s) {
   return confirm(
     `¿Cancelar la solicitud ${s.folio}?\n\n` +
-    (s.estado === "agendado_pago"
+    (s.estado === "pagado"
+      ? "Esta SMI ya está PAGADA. Cancelarla no revierte el pago ni toca su transacción.\n\n"
+      : s.estado === "agendado_pago"
       ? "Ya se convirtió en transacción. Esa transacción NO se cancela con esto: cancélala aparte en Transacciones si corresponde.\n\n"
       : "") +
     "Queda en la columna Cancelada y se puede regresar a cualquier paso.");
@@ -21144,8 +21152,8 @@ function SolicitudDetallePanel({ solicitud, session, onVolver, onCambiada, onEdi
                 transacción y cambiarlo aquí la dejaría desfasada. */}
             <Button
               onClick={() => onEditar(conceptos || [])}
-              disabled={!conceptos || solicitud.estado === "agendado_pago"}
-              title={solicitud.estado === "agendado_pago" ? "Ya se convirtió en transacción" : undefined}
+              disabled={!conceptos || solicitud.estado === "agendado_pago" || solicitud.estado === "pagado"}
+              title={solicitud.estado === "agendado_pago" || solicitud.estado === "pagado" ? "Ya se convirtió en transacción" : undefined}
             >Editar</Button>
             <Button
               variant="ghost"
@@ -21986,7 +21994,9 @@ function TableroSolicitudes({ filas, onMover, onAbrir }) {
 
             {!dela.length ? (
               <div style={{ fontSize: 11, color: T.textFaint, padding: "10px 2px", lineHeight: 1.5 }}>
-                {col.soloSistema
+                {col.value === "pagado"
+                  ? "Aquí llegan solas cuando su transacción queda pagada."
+                  : col.soloSistema
                   ? "Aquí llegan solas al convertirse en transacción."
                   : "Vacío"}
               </div>

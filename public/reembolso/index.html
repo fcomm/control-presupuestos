@@ -308,6 +308,7 @@ table.fijo .tagauto{display:none}
     </div>
     <input type="file" id="input" multiple accept=".zip,.xlsx,.xls,.xml,.pdf,.csv,.jpg,.jpeg,.png" hidden>
     <input type="file" id="input-cargo" multiple accept=".zip,.xml,.pdf,.csv,.jpg,.jpeg,.png" hidden>
+    <input type="file" id="input-soporte" multiple hidden>
     <input type="file" id="input-sust" accept=".xml,.pdf,.csv,.jpg,.jpeg,.png" hidden>
   </section>
   <div id="progress" class="progress" hidden></div>
@@ -606,7 +607,7 @@ const esExcluidoAmex = c => /no reconocido|aclaraci/i.test(c.status + " " + c.no
 /* ================= estado de la app ================= */
 const S = {
   archivos: [], cargos: [], periodo: null, docs: [], buffers: {},
-  manual: {}, tratamiento: {}, excluir: {}, abiertos: new Set(), filtro: null, tab: "cargos", R: null,
+  manual: {}, soporte: {}, tratamiento: {}, excluir: {}, abiertos: new Set(), filtro: null, tab: "cargos", R: null,
   orden: { k: "fecha", dir: 1 }, grupos: [null, null], colapsados: new Set(), q: "", qDocs: "",
   paquete: null, rutaPaquete: "", lista: [], carpetas: new Set(), arbolCerradas: new Set(), pend: null,
 };
@@ -675,12 +676,19 @@ function empatar() {
   const activos = cargos.filter(c => !(S.excluir[c.id] ?? esExcluidoAmex(c)));
   const pendientes = () => activos.filter(c => !A[c.id].tipo && !(c.id in S.manual) && !esPase(c));
 
+  // 0a) soporte agregado a mano (SMI, solicitud, cotización…): acompaña al gasto sin ser su
+  // comprobante, así que no entra a ningún empate.
+  for (const cg of activos) for (const id of S.soporte[cg.id] || []) {
+    const d = docs.find(x => x.id === id);
+    if (!d || usado.has(d)) continue;
+    A[cg.id].soporte.push(d); usado.set(d, cg.id); (A[cg.id].soporteManual ||= new Set()).add(d);
+  }
   // 0) asignaciones manuales
   for (const cg of activos) {
     if (!(cg.id in S.manual)) continue;
     const a = A[cg.id]; a.manual = true;
     // Un PDF que es la impresión de un CFDI cuenta como su XML; un duplicado, como su original.
-    const ds0 = S.manual[cg.id].map(id => docs.find(d => d.id === id)).filter(Boolean);
+    const ds0 = S.manual[cg.id].map(id => docs.find(d => d.id === id)).filter(d => d && !a.soporteManual?.has(d));
     const ds = [...new Set(ds0.map(d => d.rep || d.dupDe || d))].filter(d => d.kind !== "listado");
     if (ds0.some(d => d.rep)) a.notas.push(["i", "El PDF asignado es la impresión de un CFDI: se tomó su XML"]);
     if (!ds.length) { a.tipo = S.manual[cg.id].length ? "ninguno" : "ninguno"; continue; }
@@ -1062,7 +1070,7 @@ async function agregarInterno(lista, op = {}) {
     const id = await huella(e.buf);
     const ya = S.docs.find(d => d.id === id);
     if (ya) { repetidos.push(e.nombre); if (op.cargo) nuevos.push(ya); continue; }
-    if (esHoja(e)) {
+    if (esHoja(e) && !op.soporte) { // un Excel de soporte (cotización, SMI) se guarda tal cual
       let r = null;
       try { r = leerAmex(XLSX.read(e.buf, { type: "array" })); } catch {}
       if (r) { await ponerListado(r, e, id); continue; }
@@ -1081,7 +1089,7 @@ async function agregarInterno(lista, op = {}) {
   const imp = S.estadoImportado;
   if (imp && S.cargos.length) {
     S.estadoImportado = null;
-    for (const k of ["manual", "tratamiento", "excluir", "cc", "desc"]) S[k] = { ...(imp[k] || {}), ...S[k] };
+    for (const k of ["manual", "soporte", "tratamiento", "excluir", "cc", "desc"]) S[k] = { ...(imp[k] || {}), ...S[k] };
     aviso(`Se importaron las decisiones del paquete local: ${Object.keys(imp.cc || {}).length} centros de costo, ${Object.keys(imp.desc || {}).length} descripciones y ${Object.keys(imp.manual || {}).length} asignaciones manuales.`);
   }
   if (repetidos.length) aviso(`Ya estaban en el paquete y no se duplicaron: ${repetidos.slice(0, 6).join(", ")}${repetidos.length > 6 ? ` y ${repetidos.length - 6} más` : ""}.`);
@@ -1115,7 +1123,7 @@ async function ponerListado(r, e, id) {
   if (viejo) {
     if (enPaquete()) await post("/api/quitar", { p: S.paquete, r: viejo.path });
     S.docs = S.docs.filter(d => d !== viejo);
-    S.manual = {}; S.tratamiento = {}; S.excluir = {}; S.cc = {}; S.desc = {}; S.abiertos.clear();
+    S.manual = {}; S.soporte = {}; S.tratamiento = {}; S.excluir = {}; S.cc = {}; S.desc = {}; S.abiertos.clear();
     aviso("Se reemplazó el listado AMEX; las asignaciones manuales del anterior se reiniciaron.");
   }
   let path = e.nombre;
@@ -1127,7 +1135,7 @@ async function ponerListado(r, e, id) {
 function agregar(lista, op = {}) {
   return tarea(async () => {
     const nuevos = await agregarInterno(lista, op);
-    if (op.cargo && nuevos.length) asignarACargo(op.cargo, nuevos);
+    if (op.cargo && nuevos.length) (op.soporte ? agregarSoporte : asignarACargo)(op.cargo, nuevos);
     await sincronizar();
   });
 }
@@ -1140,6 +1148,22 @@ function asignarACargo(cid, nuevos) {
   delete S.excluir[cid];
   S.abiertos.add(cid);
 }
+// Soporte secundario: se suma a lo que ya tiene el gasto y no cambia su comprobante.
+function agregarSoporte(cid, nuevos) {
+  const ids = nuevos.map(d => d.id);
+  for (const k of Object.keys(S.manual)) { S.manual[k] = S.manual[k].filter(x => !ids.includes(x)); if (!S.manual[k].length && k !== cid) delete S.manual[k]; }
+  for (const k of Object.keys(S.soporte)) { S.soporte[k] = S.soporte[k].filter(x => !ids.includes(x)); if (!S.soporte[k].length) delete S.soporte[k]; }
+  S.soporte[cid] = [...new Set([...(S.soporte[cid] || []), ...ids])];
+  delete S.excluir[cid];
+  S.abiertos.add(cid);
+}
+function desligarSoporte(cid, id) {
+  return tarea(async () => {
+    S.soporte[cid] = (S.soporte[cid] || []).filter(x => x !== id);
+    if (!S.soporte[cid].length) delete S.soporte[cid];
+    await sincronizar();
+  });
+}
 function quitarDoc(id) {
   const d = S.docs.find(x => x.id === id);
   if (!d) return;
@@ -1148,6 +1172,7 @@ function quitarDoc(id) {
     if (enPaquete()) await post("/api/quitar", { p: S.paquete, r: d.path });
     S.docs = S.docs.filter(x => x !== d); delete S.buffers[id];
     for (const k of Object.keys(S.manual)) { S.manual[k] = S.manual[k].filter(x => x !== id); if (!S.manual[k].length) delete S.manual[k]; }
+    for (const k of Object.keys(S.soporte)) { S.soporte[k] = S.soporte[k].filter(x => x !== id); if (!S.soporte[k].length) delete S.soporte[k]; }
     await sincronizar();
   });
 }
@@ -1160,6 +1185,7 @@ function sustituirDoc(id, lista) {
     const ids = nuevos.map(d => d.id);
     let estaba = false;
     for (const k of Object.keys(S.manual)) { const i = S.manual[k].indexOf(id); if (i >= 0) { S.manual[k].splice(i, 1, ...ids); estaba = true; } }
+    for (const k of Object.keys(S.soporte)) { const i = S.soporte[k].indexOf(id); if (i >= 0) { S.soporte[k].splice(i, 1, ...ids); estaba = true; } }
     // Si el viejo respaldaba un gasto por empate automático, el nuevo se queda con ese gasto.
     const u = S.R?.uso.get(viejo) || (viejo.rep && S.R?.uso.get(viejo.rep));
     if (!estaba && u && !u.f.a.cruce) S.manual[u.f.cg.id] = [...new Set([...[...u.f.a.docs, ...u.f.a.soporte].map(d => d.id).filter(x => x !== id && x !== viejo.rep?.id), ...ids])];
@@ -1170,7 +1196,7 @@ function sustituirDoc(id, lista) {
 }
 
 function limpiarTrabajo() {
-  Object.assign(S, { archivos: [], cargos: [], periodo: null, docs: [], buffers: {}, manual: {}, tratamiento: {}, excluir: {}, cc: {}, desc: {}, filtro: null, R: null, tab: "cargos", q: "", qDocs: "", carpetas: new Set() });
+  Object.assign(S, { archivos: [], cargos: [], periodo: null, docs: [], buffers: {}, manual: {}, soporte: {}, tratamiento: {}, excluir: {}, cc: {}, desc: {}, filtro: null, R: null, tab: "cargos", q: "", qDocs: "", carpetas: new Set() });
   S.abiertos.clear(); S.colapsados.clear(); S.arbolCerradas = new Set(["_Duplicados"]);
 }
 async function cargarDirectorio() { S.lista = (await apiJSON("/api/paquetes")).paquetes; }
@@ -1197,7 +1223,7 @@ async function abrirInterno(nombre) {
     S.docs.push(await leerDoc(e, a.r, id));
   }
   const est = j.estado || {};
-  S.manual = est.manual || {}; S.tratamiento = est.tratamiento || {}; S.excluir = est.excluir || {}; S.cc = est.cc || {}; S.desc = est.desc || {};
+  S.manual = est.manual || {}; S.soporte = est.soporte || {}; S.tratamiento = est.tratamiento || {}; S.excluir = est.excluir || {}; S.cc = est.cc || {}; S.desc = est.desc || {};
   progreso("");
 }
 const abrirPaquete = nombre => tarea(async () => { if (modoNube && !(await tomarBloqueo(nombre))) return; await abrirInterno(nombre); await sincronizar(); });
@@ -1262,7 +1288,7 @@ async function guardarEstado() {
     sinDescripcion: F.filter(f => f.estado !== "fuera" && !f.desc?.t).length,
     archivos: S.docs.length, actualizado: new Date().toISOString(),
   };
-  const estado = { version: 1, manual: S.manual, tratamiento: S.tratamiento, excluir: S.excluir, cc: S.cc, desc: S.desc, resumen };
+  const estado = { version: 1, manual: S.manual, soporte: S.soporte, tratamiento: S.tratamiento, excluir: S.excluir, cc: S.cc, desc: S.desc, resumen };
   await apiJSON(`/api/estado?${qp({ p: S.paquete })}`, { method: "PUT", body: JSON.stringify(estado, null, 1) });
 }
 async function sincronizar() {
@@ -1719,8 +1745,9 @@ function renderDesc() {
 /* ================= versión ================= */
 // Cambiar APP_VERSION en cada entrega (año.mes.día y un consecutivo del día) y anotar el cambio
 // en CAMBIOS. La app compara su versión con la del archivo publicado y avisa si ya hay otra.
-const APP_VERSION = "2026.11.18-1";
+const APP_VERSION = "2026.11.18-2";
 const CAMBIOS = [
+  ["2026.11.18-2", "Soporte adicional por gasto (SMI, solicitud…): se agrega sin quitar el comprobante y va al ZIP como «…-Soporte»."],
   ["2026.11.18-1", "Número de versión y aviso cuando hay una versión nueva publicada."],
   ["2026.11.18-0", "Una sola factura para varios cargos del mismo comercio (p. ej. dos pagos de hotel): se detecta y los impuestos se reparten; ISH leído del PDF."],
 ];
@@ -2491,9 +2518,9 @@ function detalleHtml(f) {
 
   const archivos = [
     ...a.docs.flatMap(d => d.kind === "cfdi" ? [[d, "XML del CFDI"], ...d.pdfs.map(p => [p, "PDF del CFDI"])] : [[d, a.tipo === "pase" ? "Estado PASE" : "Comprobante"]]),
-    ...a.soporte.map(d => [d, d.recibo ? "Recibo de pago" : "Soporte"]),
+    ...a.soporte.map(d => [d, a.soporteManual?.has(d) ? "Soporte adicional" : d.recibo ? "Recibo de pago" : "Soporte"]),
   ];
-  const acciones = d => `<span class="acc">${d.kind === "pdf" ? `<button class="btn small" data-ver="${d.id}">Ver</button>` : ""}${a.tipo !== "pase" ? `<button class="btn small" data-sust="${d.id}">Sustituir</button><button class="btn small" data-quitar="${d.id}">Quitar</button>` : ""}</span>`;
+  const acciones = d => `<span class="acc">${d.kind === "pdf" ? `<button class="btn small" data-ver="${d.id}">Ver</button>` : ""}${a.soporteManual?.has(d) ? `<button class="btn small" data-desligar="${d.id}" data-cargo="${cg.id}" title="Lo deja en _Sin asignar, sin borrarlo">Desligar</button>` : ""}${a.tipo !== "pase" ? `<button class="btn small" data-sust="${d.id}">Sustituir</button><button class="btn small" data-quitar="${d.id}">Quitar</button>` : ""}</span>`;
   const lista = archivos.length ? `<ul class="flist">${archivos.map(([d, rol]) => `<li><span class="role">${rol}</span><span class="path">${esc(d.path)}</span>${acciones(d)}</li>`).join("")}</ul>` : "";
   const warns = f.notas.length ? `<ul class="warns">${f.notas.map(([k, t]) => `<li class="${k}">${esc(t)}</li>`).join("")}</ul>` : "";
 
@@ -2518,6 +2545,10 @@ function detalleHtml(f) {
   ${f.estado !== "fuera" && a.tipo !== "pase" ? `<div class="addcargo" data-dropcargo="${cg.id}">
     <button class="btn small primary" data-agregar="${cg.id}">Agregar factura a este gasto</button>
     <span class="sub">o suelta aquí el XML y el PDF. ${f.estado === "ok" ? "Como ya está comprobado, se agrega como soporte." : "Toma el lugar del comprobante actual."}</span>
+  </div>` : ""}
+  ${f.estado !== "fuera" ? `<div class="addcargo" data-dropsoporte="${cg.id}">
+    <button class="btn small" data-agregarsop="${cg.id}">Agregar soporte</button>
+    <span class="sub">SMI, solicitud, cotización, correo… o suéltalo aquí. Se suma a los archivos del gasto sin quitar ni cambiar su comprobante.</span>
   </div>` : ""}`;
 
   const T = tax || TAX0();
@@ -2570,6 +2601,13 @@ function enlazarDetalle() {
   v.querySelectorAll("[data-trat]").forEach(s => s.onchange = () => { S.tratamiento[s.dataset.trat] = s.value; cambio(); });
   v.querySelectorAll("[data-excluir]").forEach(c => c.onchange = () => { S.excluir[c.dataset.excluir] = c.checked; cambio(); });
   v.querySelectorAll("[data-agregar]").forEach(b => b.onclick = e => { e.stopPropagation(); S.pend = { cargo: b.dataset.agregar }; $("#input-cargo").click(); });
+  v.querySelectorAll("[data-agregarsop]").forEach(b => b.onclick = e => { e.stopPropagation(); S.pend = { cargo: b.dataset.agregarsop, soporte: true }; $("#input-soporte").click(); });
+  v.querySelectorAll("[data-desligar]").forEach(b => b.onclick = e => { e.stopPropagation(); desligarSoporte(b.dataset.cargo, b.dataset.desligar); });
+  v.querySelectorAll("[data-dropsoporte]").forEach(z => {
+    z.ondragover = e => { e.preventDefault(); e.stopPropagation(); z.classList.add("over"); };
+    z.ondragleave = () => z.classList.remove("over");
+    z.ondrop = e => { e.preventDefault(); e.stopPropagation(); z.classList.remove("over"); if (e.dataTransfer.files.length) agregar([...e.dataTransfer.files], { cargo: z.dataset.dropsoporte, soporte: true }); };
+  });
   v.querySelectorAll("[data-dropcargo]").forEach(z => {
     z.ondragover = e => { e.preventDefault(); e.stopPropagation(); z.classList.add("over"); };
     z.ondragleave = () => z.classList.remove("over");
@@ -2630,6 +2668,7 @@ async function verPdf(id) {
 const drop = $("#drop"), input = $("#input");
 $("#pick").onclick = () => input.click();
 input.onchange = () => { const fs = [...input.files]; input.value = ""; agregar(fs); };
+$("#input-soporte").onchange = e => { const fs = [...e.target.files]; e.target.value = ""; if (fs.length && S.pend?.cargo) agregar(fs, { cargo: S.pend.cargo, soporte: true }); };
 $("#input-cargo").onchange = e => { const fs = [...e.target.files]; e.target.value = ""; if (fs.length && S.pend?.cargo) agregar(fs, { cargo: S.pend.cargo }); };
 $("#input-cat").onchange = e => { const fs = [...e.target.files]; e.target.value = ""; if (fs.length) agregar(fs, { catalogo: true }); };
 $("#input-sust").onchange = e => { const fs = [...e.target.files]; e.target.value = ""; if (fs.length && S.pend?.sust) sustituirDoc(S.pend.sust, fs); };
@@ -2774,7 +2813,7 @@ function nombresZip() {
     if (f.estado === "fuera") continue;
     const docs = [...f.a.docs, ...f.a.soporte].flatMap(d => [d, ...(d.pdfs || [])]);
     for (const d of new Set(docs)) {
-      if (!info.has(d)) info.set(d, { monto: 0, clave: f.prov?.clave || "SIN CLAVE", nombre: f.prov?.nombre || f.emisor.nombre });
+      if (!info.has(d)) info.set(d, { monto: 0, clave: f.prov?.clave || "SIN CLAVE", nombre: f.prov?.nombre || f.emisor.nombre, sop: !!f.a.soporteManual?.has(d) });
       info.get(d).monto += f.cg.importe;
     }
   }
@@ -2782,7 +2821,7 @@ function nombresZip() {
     const i = info.get(d);
     if (!i) return basename(d.path);
     const ext = (basename(d.path).match(/\.[^.]+$/) || [""])[0];
-    return limpiarNombre(`${i.monto.toFixed(2)}-${i.clave}-${i.nombre}`).slice(0, 150) + ext;
+    return limpiarNombre(`${i.monto.toFixed(2)}-${i.clave}-${i.nombre}`).slice(0, 140) + (i.sop ? "-Soporte" : "") + ext;
   };
 }
 // ZIP con lo útil del paquete: listado AMEX, carpetas de fecha, PASE y el reporte. Sin

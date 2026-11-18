@@ -476,8 +476,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.6.0";
+const APP_VERSION = "3.7.0";
 const CHANGELOG = [
+  { v: "3.7.0", desc: "Reporte de Pagos: (1) es de un solo dia: en lugar de Desde / Hasta hay un selector de Fecha de pago con flechas para el dia anterior y siguiente y el boton Hoy. (2) Al reenviar una fecha (R1, R2...) el PDF y el Excel dicen que cambio respecto al envio elegido (por omision el ultimo; se puede elegir otro o Sin comparar): primero el total contra ese envio y la diferencia, despues los pagos nuevos en verde, los que cambiaron en ambar (importe, proveedor, concepto, cuenta, forma de pago, referencia, zona, con su valor anterior) y los retirados en gris; en el detalle se colorean las filas nuevas y cambiadas. Cada envio guarda su detalle para poder compararlo. Requiere correr envios-pagos-detalle.sql" },
   { v: "3.6.0", desc: "Solicitudes: nuevo estado Pagado, despues de Agendado a pago, como columna del tablero. Lo pone el sistema: una SMI pasa a Pagado cuando todas sus transacciones vigentes estan en status Pagado (en compras PPD, cuando se paga el 100 %), y regresa a Agendado a pago si alguna vuelve a No Pagado. Requiere correr smi-estado-pagado.sql" },
   { v: "3.5.0", desc: "Avisos de escritorio de SMI nuevas: boton de campana en el encabezado. Al activarlo (pide permiso al navegador una vez) aparece una notificacion de Windows cada vez que entra una SMI en cualquiera de las companias que el usuario ve, con folio, solicitante y descripcion; al darle clic abre Solicitudes en esa compania. Funciona mientras la app este abierta en alguna pestana, aunque este minimizada. Se recuerda por navegador" },
   { v: "3.4.0", desc: "La app carga mucho mas rapido: las herramientas de Excel, PDF y ZIP ya no van en el archivo principal (de 5.4 MB a una fraccion); se descargan en segundo plano en cuanto abre la pagina. Mientras carga se ve un aviso de Cargando en lugar de la pantalla en blanco" },
@@ -14151,6 +14152,177 @@ function anchosProporcionalesPDF(columnas, filas, disponible) {
   return natural.map((w) => Math.round(w * factor));
 }
 
+/* ----------------------------------------------------------------------
+   COMPARACIÓN ENTRE ENVÍOS A PAGOS DE UNA FECHA (v3.7.0)
+   Igual que el reporte semanal a Dirección: al reenviar una fecha (R1, R2…)
+   el PDF y el Excel dicen qué pagos son nuevos, cuáles cambiaron y cuáles
+   se quitaron respecto al envío elegido. Se compara contra lo GUARDADO de
+   ese envío (envios_pagos_detalle), no contra cómo están hoy.
+---------------------------------------------------------------------- */
+const cuentaTexto = (f) => [f.banco, f.clabe || f.numero_cuenta].filter(Boolean).join(" · ");
+const CAMPOS_CAMBIO_PAGOS = [
+  { etq: "proveedor", get: (f) => f.proveedor },
+  { etq: "concepto", get: (f) => f.concepto },
+  { etq: "cuenta", get: cuentaTexto },
+  { etq: "forma de pago", get: (f) => f.forma_pago },
+  { etq: "referencia", get: (f) => f.referencia_pago },
+  { etq: "zona", get: (f) => f.zona },
+];
+function compararEnvioPagos(actual, anterior, vsRevision) {
+  const porId = new Map(anterior.map((p) => [String(p.transaccion_id), p]));
+  const usadas = new Set();
+  const filas = actual.map((f) => {
+    const p = porId.get(String(f.id));
+    if (!p) return { ...f, _cambio: "nueva" };
+    usadas.add(p);
+    const que = [];
+    if (Math.abs((Number(f.importe) || 0) - (Number(p.importe) || 0)) > 0.005) que.push("importe");
+    if ((f.moneda || "MXP") !== (p.moneda || "MXP")) que.push(`moneda (antes: ${p.moneda || "MXP"})`);
+    CAMPOS_CAMBIO_PAGOS.forEach(({ etq, get }) => {
+      if (nh(get(f)) !== nh(get(p))) que.push(`${etq} (antes: ${get(p) || "—"})`);
+    });
+    return que.length ? { ...f, _cambio: "modificada", _antes: p, _queCambio: que.join("; ") } : { ...f, _cambio: null };
+  });
+  return {
+    vsRevision, filas,
+    nuevas: filas.filter((f) => f._cambio === "nueva"),
+    modificadas: filas.filter((f) => f._cambio === "modificada"),
+    retiradas: anterior.filter((p) => !usadas.has(p)),
+    totalActual: totPorMonedaSem(actual),
+    totalAnterior: totPorMonedaSem(anterior),
+  };
+}
+const textoResumenCambiosPagos = (c) =>
+  `Respecto a R${c.vsRevision}: ${c.nuevas.length} pago(s) nuevo(s) por ${txtTotSem(totPorMonedaSem(c.nuevas))}, ` +
+  `${c.modificadas.length} con cambio y ${c.retiradas.length} retirado(s).`;
+const folioPago = (f) => f.folio || "(borrador)";
+
+/* Bloque de cambios del PDF (carta horizontal). Primero el total contra el
+   envío anterior, después lo nuevo, lo que cambió y lo retirado. Devuelve la
+   `y` donde sigue el detalle. */
+function dibujarCambiosPagosPdf(doc, c, { y, M, ancho, altoPag }) {
+  const { VERDE, VERDE_S, AMBAR, AMBAR_S } = COLORES_CAMBIO;
+  const salto = (alto) => { if (y + alto > altoPag - 40) { doc.addPage(); y = 34; } };
+  const titulo = (texto, color) => {
+    salto(46);
+    doc.setFontSize(10).setFont(undefined, "bold").setTextColor(...color);
+    doc.text(texto, M, y + 10);
+    doc.setFont(undefined, "normal");
+    y += 16;
+  };
+  const tabla = (opts) => {
+    autoTabla(doc, { startY: y, margin: { left: M, right: M, bottom: 40 }, tableWidth: ancho, ...opts });
+    y = doc.lastAutoTable.finalY + 14;
+  };
+  // Totales contra el envío anterior, por moneda.
+  const monedas = [...new Set([...Object.keys(c.totalActual), ...Object.keys(c.totalAnterior)])].sort();
+  doc.setFillColor(...VERDE_S).rect(M, y, ancho, 22 + monedas.length * 13, "F");
+  doc.setFillColor(...VERDE).rect(M, y, 4, 22 + monedas.length * 13, "F");
+  doc.setFontSize(9).setFont(undefined, "bold").setTextColor(...VERDE);
+  doc.text(`CAMBIOS RESPECTO AL ENVÍO R${c.vsRevision}`, M + 12, y + 14);
+  doc.setFont(undefined, "normal").setTextColor(35, 42, 49);
+  monedas.forEach((m, i) => {
+    const a = c.totalActual[m] || 0, b = c.totalAnterior[m] || 0;
+    doc.text(`${m}: ahora $${numMx(a)}   ·   en R${c.vsRevision} $${numMx(b)}   ·   diferencia ${textoDiferencia(a - b)}`, M + 12, y + 28 + i * 13);
+  });
+  y += 22 + monedas.length * 13 + 12;
+  const colsBase = { 0: { cellWidth: 92 } };
+  titulo(c.nuevas.length ? `NUEVOS — no venían en R${c.vsRevision} · ${c.nuevas.length} · ${txtTotSem(totPorMonedaSem(c.nuevas))}` : "Sin pagos nuevos", VERDE);
+  if (c.nuevas.length) tabla({
+    head: [["Folio", "Proveedor", "Concepto", "Zona", "Importe", "Mon."]],
+    body: c.nuevas.map((f) => [folioPago(f), f.proveedor || "", f.concepto || "", f.zona || "", `$${numMx(f.importe)}`, f.moneda || "MXP"]),
+    styles: { fontSize: 7.5, cellPadding: 3, fillColor: VERDE_S }, alternateRowStyles: { fillColor: VERDE_S },
+    headStyles: { fillColor: VERDE, textColor: 255, halign: "center" },
+    columnStyles: { ...colsBase, 4: { halign: "right", cellWidth: 74, fontStyle: "bold" }, 5: { cellWidth: 32 } },
+  });
+  if (c.modificadas.length) {
+    titulo(`CAMBIARON RESPECTO A R${c.vsRevision} · ${c.modificadas.length}`, AMBAR);
+    tabla({
+      head: [["Folio", "Proveedor", "Qué cambió", "Antes", "Ahora", "Mon."]],
+      body: c.modificadas.map((f) => [folioPago(f), f.proveedor || "", f._queCambio,
+        `$${numMx(f._antes.importe)}`, `$${numMx(f.importe)}`, f.moneda || "MXP"]),
+      styles: { fontSize: 7.5, cellPadding: 3, fillColor: AMBAR_S }, alternateRowStyles: { fillColor: AMBAR_S },
+      headStyles: { fillColor: AMBAR, textColor: 255, halign: "center" },
+      columnStyles: { ...colsBase, 3: { halign: "right", cellWidth: 74 }, 4: { halign: "right", cellWidth: 74, fontStyle: "bold" }, 5: { cellWidth: 32 } },
+    });
+  }
+  if (c.retiradas.length) {
+    titulo(`RETIRADOS — venían en R${c.vsRevision} y ya no están · ${c.retiradas.length}`, [107, 119, 133]);
+    tabla({
+      head: [["Folio", "Proveedor", "Concepto", "Importe", "Mon."]],
+      body: c.retiradas.map((f) => [folioPago(f), f.proveedor || "", f.concepto || "", `$${numMx(f.importe)}`, f.moneda || "MXP"]),
+      styles: { fontSize: 7.5, cellPadding: 3, textColor: [107, 119, 133] },
+      headStyles: { fillColor: [139, 153, 166], textColor: 255, halign: "center" },
+      columnStyles: { ...colsBase, 3: { halign: "right", cellWidth: 74 }, 4: { cellWidth: 32 } },
+    });
+  }
+  return y + 6;
+}
+
+/* Hoja "Cambios vs Rn": se crea ANTES que la del reporte para que sea la
+   primera que se ve al abrir el archivo. */
+function hojaCambiosPagosExcel(wbx, c, { unidad, fecha, revision }) {
+  const { xVERDE, xVERDE_S, xAMBAR, xAMBAR_S } = COLORES_CAMBIO;
+  const GRIS = "FFECEEF1", fmt = '"$"#,##0.00';
+  const COLS = [
+    { h: "Folio", w: 20 }, { h: "Proveedor", w: 34, izq: 1 }, { h: "Concepto", w: 42, izq: 1 },
+    { h: "Zona", w: 14 }, { h: "Qué cambió", w: 40, izq: 1 },
+    { h: "Importe antes", w: 15, money: 1 }, { h: "Importe", w: 15, money: 1 }, { h: "Moneda", w: 9 },
+  ];
+  const ws = wbx.addWorksheet(`Cambios vs R${c.vsRevision}`.slice(0, 31));
+  ws.columns = COLS.map((x) => ({ width: x.w }));
+  const fusion = (row) => ws.mergeCells(row.number, 1, row.number, COLS.length);
+  const t = ws.addRow([`Pagos ${unidad} — ${fmtFecha(fecha)} — R${revision}: cambios respecto a R${c.vsRevision}`]);
+  t.font = { bold: true, size: 14, name: "Calibri" }; fusion(t);
+  ws.addRow([]);
+  const monedas = [...new Set([...Object.keys(c.totalActual), ...Object.keys(c.totalAnterior)])].sort();
+  monedas.forEach((m) => {
+    const a = c.totalActual[m] || 0, b = c.totalAnterior[m] || 0;
+    const r = ws.addRow([`TOTAL ${m}:  $${numMx(a)}   ·   en R${c.vsRevision}: $${numMx(b)}   ·   diferencia: ${textoDiferencia(a - b)}`]);
+    fusion(r); r.font = { bold: true, size: 12, name: "Calibri" };
+    r.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: GRIS } };
+  });
+  ws.addRow([]);
+  const banda = (texto, color, fondo) => {
+    const r = ws.addRow([texto]); fusion(r);
+    r.font = { bold: true, size: 11, name: "Calibri", color: { argb: color } };
+    r.getCell(1).fill = { type: "pattern", pattern: "solid", fgColor: { argb: fondo } };
+  };
+  const encabezado = (color) => {
+    const r = ws.addRow(COLS.map((x) => x.h));
+    r.eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" }, name: "Calibri" };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: color } };
+      cell.alignment = { horizontal: "center", vertical: "middle", wrapText: true };
+    });
+  };
+  const renglon = (f, que, antes, fondo, gris) => {
+    const r = ws.addRow([folioPago(f), f.proveedor || "", f.concepto || "", f.zona || "", que, antes, Number(f.importe) || 0, f.moneda || "MXP"]);
+    COLS.forEach((x, i) => {
+      const cell = r.getCell(i + 1);
+      cell.font = { name: "Calibri", size: 10, color: gris ? { argb: "FF6B7785" } : undefined };
+      cell.alignment = { horizontal: x.money ? "right" : (x.izq ? "left" : "center"), vertical: "top", wrapText: !!x.izq };
+      if (x.money) cell.numFmt = fmt;
+      if (fondo) cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: fondo } };
+    });
+  };
+  banda(`NUEVOS — no venían en R${c.vsRevision}   ·   ${c.nuevas.length}   ·   ${txtTotSem(totPorMonedaSem(c.nuevas))}`, xVERDE, xVERDE_S);
+  if (c.nuevas.length) { encabezado(xVERDE); c.nuevas.forEach((f) => renglon(f, "Nuevo", "", xVERDE_S)); }
+  ws.addRow([]);
+  banda(`CAMBIARON RESPECTO A R${c.vsRevision}   ·   ${c.modificadas.length}`, xAMBAR, xAMBAR_S);
+  if (c.modificadas.length) { encabezado(xAMBAR); c.modificadas.forEach((f) => renglon(f, f._queCambio, Number(f._antes.importe) || 0, xAMBAR_S)); }
+  ws.addRow([]);
+  banda(`RETIRADOS — venían en R${c.vsRevision} y ya no están   ·   ${c.retiradas.length}`, "FF6B7785", GRIS);
+  if (c.retiradas.length) { encabezado("FF8B99A6"); c.retiradas.forEach((f) => renglon(f, "Retirado", "", null, true)); }
+  ws.views = [{ state: "frozen", ySplit: 1 }];
+}
+
+const moverDiaISO = (iso, delta) => {
+  const [y, m, d] = String(iso || hoyLocalISO()).split("-").map(Number);
+  const f = new Date(y, m - 1, d + delta);
+  return `${f.getFullYear()}-${String(f.getMonth() + 1).padStart(2, "0")}-${String(f.getDate()).padStart(2, "0")}`;
+};
+
 function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, proveedoresApi, cuentasApi, gruposZona = {}, listasSat }) {
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const proveedoresUnidad = proveedoresApi.rows.filter((p) => p.unidad === unidad);
@@ -14169,6 +14341,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     const cuenta = t.cuenta_id ? cuentasApi.rows.find((c) => c.id === t.cuenta_id) : null;
     return {
       id: t.id,
+      folio: t.folio_transaccion || "",
       dia: t.dia || "",
       solicitante: t.solicitante || "",
       area: t.area || "",
@@ -14199,21 +14372,52 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   });
 
   const [buscar, setBuscar] = useSessionState("ss-reporte-buscar", "");
-  const [fechaDesde, setFechaDesde] = useSessionState("ss-reporte-desde", "");
-  const [fechaHasta, setFechaHasta] = useSessionState("ss-reporte-hasta", "");
+  /* Un solo día (v3.7.0): los pagos se manejan por día, y Enviar a Pagos es
+     de UNA fecha. Antes había Desde / Hasta y había que poner la misma fecha
+     en los dos. */
+  const [fechaPago, setFechaPago] = useSessionState("ss-reporte-fecha", hoyLocalISO());
+  const fechaDesde = fechaPago, fechaHasta = fechaPago;
   const [panelExportRP, setPanelExportRP] = useState(false);
   const [sort, setSort] = usePrefState("pref-reporte-sort", { key: "dia", dir: "desc" }, sanearSort(["dia","solicitante","area","numero_solicitud","no_sae","folio_compra_sae","folio_factura","forma_pago","metodo_pago","proveedor","referencia_pago","concepto","banco","clabe","numero_cuenta","swift","importe","moneda","notas"]));
   const filasFiltradas = filas.filter((f) => {
-    if (fechaDesde && (!f.dia || f.dia < fechaDesde)) return false;
-    if (fechaHasta && (!f.dia || f.dia > fechaHasta)) return false;
+    if (!fechaPago || f.dia !== fechaPago) return false;
     if (!buscar.trim()) return true;
     const q = buscar.trim().toLowerCase();
     return [f.solicitante, f.proveedor, f.concepto, f.folio_factura, f.folio_compra_sae, f.no_sae, f.referencia_pago]
       .some((v) => (v || "").toString().toLowerCase().includes(q));
   });
-  const filtrosFechaActivos = fechaDesde || fechaHasta;
-  const limpiarFechas = () => { setFechaDesde(""); setFechaHasta(""); };
+
+  /* Envíos ya hechos de esta fecha, para elegir contra cuál comparar. */
+  const [enviosFecha, setEnviosFecha] = useState([]);
+  const [baseEnvio, setBaseEnvio] = useState(""); // "" = el último · "sin" = no comparar · "<n>" = esa revisión
+  const [recargaEnvios, setRecargaEnvios] = useState(0);
+  useEffect(() => {
+    let vivo = true;
+    setBaseEnvio("");
+    if (!fechaPago) { setEnviosFecha([]); return; }
+    supabase.from("envios_pagos").select("id, revision, enviado_en, num_transacciones")
+      .eq("unidad", unidad).eq("fecha_pago", fechaPago).order("revision", { ascending: false })
+      .then(({ data, error }) => { if (vivo) setEnviosFecha(error ? [] : (data || [])); });
+    return () => { vivo = false; };
+  }, [unidad, fechaPago, recargaEnvios]);
   const filasOrdenadas = sortRows(filasFiltradas, sort, { importe: (r) => r.importe });
+
+  /* La comparación que va en el PDF y el Excel, o por qué no hay. */
+  const obtenerComparacion = async () => {
+    if (baseEnvio === "sin" || !enviosFecha.length) return { comparacion: null, nota: "" };
+    const env = enviosFecha.find((e) => String(e.revision) === baseEnvio) || enviosFecha[0];
+    const { data, error } = await supabase.from("envios_pagos_detalle").select("*").eq("envio_id", String(env.id));
+    if (error) {
+      if (/envios_pagos_detalle|does not exist|relation|schema cache/i.test(error.message || "")) {
+        return { comparacion: null, nota: "Falta correr envios-pagos-detalle.sql en Supabase: por eso no se puede comparar contra envíos anteriores." };
+      }
+      throw error;
+    }
+    if (!data?.length) {
+      return { comparacion: null, nota: `R${env.revision} se envió antes de que la app guardara el detalle de cada envío: no se puede comparar contra ella. Desde este envío, los reenvíos sí se comparan.` };
+    }
+    return { comparacion: compararEnvioPagos(filasOrdenadas, data, env.revision), nota: "" };
+  };
 
   /* Compartido entre el PDF y el Excel: antes cada uno lo calculaba por su
      cuenta (y el PDF ni siquiera tenía el resumen). Con una sola versión,
@@ -14270,10 +14474,13 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   /* Construye el Excel sin descargarlo, igual que construirPDF: la exportación
      suelta y Enviar a Pagos salen del mismo armado. Con `revision`, el título
      de cada bloque la lleva, para que la hoja impresa diga qué envío es. */
-  const construirExcel = async (revision = null) => {
+  const construirExcel = async (revision = null, comparacion = null) => {
     await esperarLibrerias();
     const etqRev = revision === null ? "" : ` R${revision}`;
     const wbx = new ExcelJS.Workbook();
+    // La hoja de cambios va primero: es lo que Pagos no ha visto.
+    if (comparacion) hojaCambiosPagosExcel(wbx, comparacion, { unidad, fecha: fechaPago, revision });
+    const cambioDe = new Map((comparacion?.filas || []).map((f) => [f.id, f._cambio]));
     const ws = wbx.addWorksheet("Reporte de pagos");
     ws.columns = columnasExcel.map((c) => ({ width: c.width }));
 
@@ -14329,7 +14536,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         const { grupo, moneda, filas: filasGrupo } = bq;
 
         const tituloCell = ws.getCell(`B${fila}`);
-        tituloCell.value = `Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad}${etqRev} - ${moneda}`;
+        tituloCell.value = `Solicitud de Pagos del dia ${inicio} Compañía ${unidad}${etqRev} - ${moneda}`;
         tituloCell.font = { bold: true, size: 14, name: "Calibri" };
         fila += 1;
 
@@ -14363,6 +14570,10 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
             };
             cell.font = { name: "Calibri", size: 11 };
             if (c.money) cell.numFmt = '"$"#,##0.00';
+            // En un reenvío: verde lo nuevo, ámbar lo que cambió.
+            const cambio = cambioDe.get(f.id);
+            if (cambio) cell.fill = { type: "pattern", pattern: "solid",
+              fgColor: { argb: cambio === "nueva" ? COLORES_CAMBIO.xVERDE_S : COLORES_CAMBIO.xAMBAR_S } };
           });
           fila += 1;
         });
@@ -14414,8 +14625,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
    * archivo final salen los dos de aquí: con dos generadores distintos, el
    * preview acabaría mostrando algo que no es lo que se descarga.
    */
-  const construirPDF = (revision = null) => {
+  const construirPDF = (revision = null, comparacion = null) => {
     exigirLibrerias();
+      const cambioDe = new Map((comparacion?.filas || []).map((f) => [f.id, f._cambio]));
       const etqRev = revision === null ? "" : ` R${revision}`;
       const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
       const inicio = fechaDesde || diasOrdenados[0] || "";
@@ -14454,6 +14666,12 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         doc.setFont(undefined, "normal");
         cursorY += altoResumen + 14;
       }
+      // Reenvío: después del total, lo que cambió respecto al envío elegido.
+      if (comparacion) {
+        cursorY = dibujarCambiosPagosPdf(doc, comparacion, { y: cursorY, M: 30, ancho: 732, altoPag: alturaPagina });
+        doc.setDrawColor(200, 206, 213).line(30, cursorY, 762, cursorY);
+        cursorY += 22;
+      }
 
       // Se calcula UNA sola vez, con todas las filas del reporte — no por
       // bloque — para que las tablas de todas las zonas compartan el mismo
@@ -14476,7 +14694,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
           doc.setFontSize(13);
           doc.setTextColor(0);
-          doc.text(`Solicitud de Pagos del dia ${inicio} al dia ${fin} Compañía ${unidad}${etqRev} - ${moneda}`, 30, cursorY);
+          doc.text(`Solicitud de Pagos del dia ${inicio} Compañía ${unidad}${etqRev} - ${moneda}`, 30, cursorY);
           doc.setFontSize(10);
           doc.setTextColor(120);
           doc.text(grupo, 30, cursorY + 16);
@@ -14499,6 +14717,12 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               }])
             ),
             margin: { bottom: margenInferior },
+            didParseCell: (d) => {
+              if (d.section !== "body") return;
+              const cambio = cambioDe.get(filasGrupo[d.row.index]?.id);
+              if (cambio === "nueva") d.cell.styles.fillColor = COLORES_CAMBIO.VERDE_S;
+              else if (cambio === "modificada") d.cell.styles.fillColor = COLORES_CAMBIO.AMBAR_S;
+            },
           });
 
           cursorY = doc.lastAutoTable.finalY;
@@ -14512,13 +14736,16 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
    * Muestra el PDF real en un visor, sin guardarlo y —lo importante— sin
    * marcar nada como enviado a Pagos. Es para revisar antes de comprometerse.
    */
-  const vistaPreviaPDF = () => {
+  const vistaPreviaPDF = async () => {
     if (!filasOrdenadas.length) {
       alert("No hay transacciones en el filtro actual para previsualizar.");
       return;
     }
     try {
-      const doc = construirPDF();
+      await esperarLibrerias();
+      let cmp = { comparacion: null };
+      try { cmp = await obtenerComparacion(); } catch { /* la vista previa sale sin comparar */ }
+      const doc = construirPDF(null, cmp.comparacion);
       const url = URL.createObjectURL(doc.output("blob"));
       setPreviewPDF({ url, paginas: doc.internal.getNumberOfPages(), ancho: anchoEstimadoPDF() });
     } catch (err) {
@@ -14610,6 +14837,15 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     }
     const revPrevista = previo ? previo.revision + 1 : 0;
 
+    let cmp;
+    try {
+      cmp = await obtenerComparacion();
+    } catch (err) {
+      alert("No se pudo leer el envío anterior para comparar. Revisa tu conexión e inténtalo de nuevo. Detalle: " + (err.message || err));
+      return;
+    }
+    const { comparacion } = cmp;
+
     const ancho = anchoEstimadoPDF();
     const aviso = ancho.cabe ? "" :
       `\n\nOJO: con ${columnasPDF.length} columnas la tabla del PDF se pasa del ancho de la hoja ` +
@@ -14622,7 +14858,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       (previo
         ? `\nEsta fecha ya se envió: R${previo.revision}, ${formatFechaHora(previo.enviado_en)}. ` +
           `Este será un REENVÍO, R${revPrevista}` +
-          (yaEnviadas ? ` (${yaEnviadas} de las transacciones ya iban en un envío anterior).` : ".")
+          (yaEnviadas ? ` (${yaEnviadas} de las transacciones ya iban en un envío anterior).` : ".") +
+          (comparacion ? `\n${textoResumenCambiosPagos(comparacion)} Lo que cambió va al inicio del PDF y del Excel.`
+            : cmp.nota ? `\n${cmp.nota}` : "")
         : `\nPrimer envío de esta fecha: R0.`) +
       `\n\nSe descargan ${nombreEnvioPagos(unidad, fecha, revPrevista)}.pdf y .xlsx. ¿Continuar?${aviso}`
       + avisoSatTransacciones(trans, proveedoresApi.rows, listasSat)
@@ -14634,8 +14872,9 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     let revision = revPrevista;
     const polizasFallidas = [];
     try {
-      let pdfBlob = construirPDF(revision).output("blob");
-      let xlsBlob = (await construirExcel(revision)).blob;
+      await esperarLibrerias();
+      let pdfBlob = construirPDF(revision, comparacion).output("blob");
+      let xlsBlob = (await construirExcel(revision, comparacion)).blob;
 
       /* Una por una, igual que en Transacciones: cada folio se confirma
          contra la base y se reintenta si choca. */
@@ -14666,11 +14905,12 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       paso = "guardar el envío";
       const { data: sesion } = await supabase.auth.getSession();
       const monedas = Object.keys(porMoneda);
+      const envioId = uid();
       for (let intento = 0; intento < 5; intento++) {
         const ult = await ultimaRevision();
         revision = ult ? ult.revision + 1 : 0;
         const { error } = await supabase.from("envios_pagos").insert({
-          id: uid(), unidad, fecha_pago: fecha, revision,
+          id: envioId, unidad, fecha_pago: fecha, revision,
           num_transacciones: trans.length,
           // Un solo importe solo tiene sentido en una sola moneda; con las dos,
           // el desglose va en notas en vez de sumar pesos con dólares.
@@ -14682,10 +14922,29 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         if (error.code !== "23505" || intento === 4) throw error;
       }
 
+      /* El detalle de lo enviado, para que el siguiente reenvío de esta fecha
+         pueda decir qué cambió. Si falla, el envío ya es válido: solo se avisa. */
+      let avisoDetalle = "";
+      {
+        const folioDe = new Map([...trans, ...conPoliza].map((t) => [t.id, t.folio_transaccion || ""]));
+        const { error: eDet } = await supabase.from("envios_pagos_detalle").insert(filasOrdenadas.map((f) => ({
+          id: uid(), envio_id: String(envioId), unidad, fecha_pago: fecha, revision,
+          transaccion_id: String(f.id), folio: folioDe.get(f.id) || f.folio || "",
+          proveedor: f.proveedor || "", concepto: f.concepto || "", zona: f.zona || "",
+          importe: Number(f.importe) || 0, moneda: f.moneda || "MXP",
+          forma_pago: f.forma_pago || "", referencia_pago: f.referencia_pago || "",
+          banco: f.banco || "", clabe: f.clabe || "", numero_cuenta: f.numero_cuenta || "",
+          folio_factura: f.folio_factura || "",
+        })));
+        if (eDet) avisoDetalle = `\nNo se guardó el detalle del envío (${eDet.message}): el siguiente reenvío de esta fecha no podrá compararse contra este.` +
+          (/envios_pagos_detalle|does not exist|relation|schema cache/i.test(eDet.message || "") ? " Falta correr envios-pagos-detalle.sql." : "");
+      }
+      setRecargaEnvios((x) => x + 1);
+
       // Si otro envío se adelantó, la revisión cambió y los archivos se rehacen.
       if (revision !== revPrevista) {
-        pdfBlob = construirPDF(revision).output("blob");
-        xlsBlob = (await construirExcel(revision)).blob;
+        pdfBlob = construirPDF(revision, comparacion).output("blob");
+        xlsBlob = (await construirExcel(revision, comparacion)).blob;
       }
       const base = nombreEnvioPagos(unidad, fecha, revision);
       descargarBlob(pdfBlob, `${base}.pdf`);
@@ -14699,7 +14958,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         (polizasFallidas.length
           ? `\nNo se pudo generar el REG de: ${polizasFallidas.join(", ")}. El envío es válido; ` +
             `rehazlos desde el detalle de cada transacción.`
-          : "")
+          : "") + avisoDetalle
       );
     } catch (err) {
       const guardado = paso === "guardar el envío" ? "" :
@@ -14727,7 +14986,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
   const hayAvisos = sinProveedorVinculado > 0 || sinCuentaVinculada > 0;
 
-  const pagRP = usePaginacion("reporte-pagos", filasOrdenadas, { reinicio: [unidad, buscar, fechaDesde, fechaHasta, sort] });
+  const pagRP = usePaginacion("reporte-pagos", filasOrdenadas, { reinicio: [unidad, buscar, fechaPago, sort] });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, paddingBottom: hayAvisos ? 70 : 0 }}>
       {filasOrdenadas.some((f) => f._borrador) && (
@@ -14790,20 +15049,29 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               style={{ width: 280 }}
             />
           </Field>
-          <Field label="Desde">
-            <TextInput type="date" value={fechaDesde} onChange={(e) => setFechaDesde(e.target.value)} />
+          <Field label="Fecha de pago">
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Button variant="ghost" title="Día anterior" aria-label="Día anterior" style={{ padding: "7px 10px" }}
+                onClick={() => setFechaPago(moverDiaISO(fechaPago, -1))}>‹</Button>
+              <TextInput type="date" value={fechaPago} onChange={(e) => { if (e.target.value) setFechaPago(e.target.value); }}
+                style={{ width: 150 }} />
+              <Button variant="ghost" title="Día siguiente" aria-label="Día siguiente" style={{ padding: "7px 10px" }}
+                onClick={() => setFechaPago(moverDiaISO(fechaPago, 1))}>›</Button>
+              {fechaPago !== hoyLocalISO() && <Button variant="ghost" onClick={() => setFechaPago(hoyLocalISO())}>Hoy</Button>}
+            </div>
           </Field>
-          <Field label="Hasta">
-            <TextInput type="date" value={fechaHasta} onChange={(e) => setFechaHasta(e.target.value)} />
-          </Field>
-          {filtrosFechaActivos && <Button variant="ghost" onClick={limpiarFechas}>Limpiar fechas</Button>}
+          {enviosFecha.length > 0 && (
+            <span style={{ fontSize: 11.5, color: T.textDim, alignSelf: "center" }}>
+              Esta fecha ya se envió: R{enviosFecha[0].revision}{enviosFecha.length > 1 ? ` (${enviosFecha.length} envíos)` : ""}
+            </span>
+          )}
         </div>
 
         {panelExportRP && (
           <div style={{ background: T.panelAlt, border: `1px solid ${T.borderSoft}`, borderRadius: 8,
                         padding: 14, marginBottom: 16 }}>
             <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
-              Las salidas respetan los filtros de arriba — {filasOrdenadas.length} de {filas.length} transacciones.
+              Las salidas son del {fmtFecha(fechaPago)} y respetan la búsqueda — {filasOrdenadas.length} transacción(es).
             </div>
             <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
 
@@ -14811,10 +15079,22 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
                             display: "flex", flexDirection: "column" }}>
                 <div style={{ fontSize: 12.5, fontWeight: 700 }}>Enviar a Pagos</div>
                 <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
-                  Para UNA fecha de pago: registra los borradores, genera los REG que falten,
+                  Del {fmtFecha(fechaPago)}: registra los borradores, genera los REG que falten,
                   marca como enviadas y descarga PDF y Excel como Programacion Pagos-{unidad}-DDMMAA-R0.
-                  Reenviar la misma fecha da R1, R2…
+                  Reenviar la misma fecha da R1, R2…, con lo que cambió marcado.
                 </div>
+                {enviosFecha.length > 0 && (
+                  <Field label="Resaltar lo que cambió respecto a" style={{ marginBottom: 10 }}>
+                    <Select value={enviosFecha.some((e) => String(e.revision) === baseEnvio) || baseEnvio === "sin" ? baseEnvio : ""}
+                      onChange={(e) => setBaseEnvio(e.target.value)}>
+                      <option value="">El último envío (R{enviosFecha[0].revision})</option>
+                      {enviosFecha.slice(1).map((e) => (
+                        <option key={e.id} value={String(e.revision)}>R{e.revision} — {formatFechaHora(e.enviado_en)}</option>
+                      ))}
+                      <option value="sin">Sin comparar</option>
+                    </Select>
+                  </Field>
+                )}
                 <div style={{ marginBottom: 10 }}>
                   <ColumnVisibilityControl
                     columns={COLUMNAS_PDF}

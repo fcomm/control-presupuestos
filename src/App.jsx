@@ -3,14 +3,45 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
   LineChart, Line, Legend
 } from "recharts";
-import * as XLSX from "xlsx";
-import ExcelJS from "exceljs";
-import jsPDF from "jspdf";
-import autoTable from "jspdf-autotable";
-import JSZip from "jszip";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf";
-import pdfjsWorker from "pdfjs-dist/legacy/build/pdf.worker.entry";
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker;
+/* Librerías pesadas (Excel, PDF, ZIP): ya NO van en el archivo principal
+   (v3.4.0). Pesaban casi 4 MB de los 5.4 que había que descargar antes de
+   ver la app. Empiezan a bajar en paralelo en cuanto abre la página, así que
+   cuando alguien exporta o genera un reporte ya están listas. Las funciones
+   que las usan esperan a `esperarLibrerias()` (las asíncronas) o revisan con
+   `exigirLibrerias()` (las que no pueden esperar). */
+let XLSX = null, ExcelJS = null, jsPDF = null, autoTable = null, JSZip = null, pdfjsLib = null;
+let libreriasListas = false;
+let promesaLibrerias = null;
+function esperarLibrerias() {
+  if (!promesaLibrerias) {
+    promesaLibrerias = Promise.all([
+      import("xlsx"), import("exceljs"), import("jspdf"), import("jspdf-autotable"), import("jszip"),
+      import("pdfjs-dist/legacy/build/pdf"), import("pdfjs-dist/legacy/build/pdf.worker.entry"),
+    ]).then(([mXlsx, mExcel, mPdf, mAuto, mZip, mPdfjs, mWorker]) => {
+      XLSX = mXlsx;
+      ExcelJS = mExcel.default || mExcel;
+      jsPDF = mPdf.default || mPdf.jsPDF;
+      autoTable = mAuto.default || mAuto.autoTable;
+      JSZip = mZip.default || mZip;
+      pdfjsLib = mPdfjs;
+      pdfjsLib.GlobalWorkerOptions.workerSrc = mWorker.default || mWorker;
+      libreriasListas = true;
+    }).catch((err) => {
+      // Sin red en ese momento: se reintenta la próxima vez que se pidan.
+      promesaLibrerias = null;
+      throw new Error("No se pudieron descargar las herramientas de Excel y PDF. Revisa tu conexión e inténtalo de nuevo. (" + (err?.message || err) + ")");
+    });
+  }
+  return promesaLibrerias;
+}
+function exigirLibrerias() {
+  if (!libreriasListas) {
+    esperarLibrerias().catch(() => {});
+    throw new Error("Las herramientas de Excel y PDF todavía se están descargando. Espera unos segundos e inténtalo de nuevo.");
+  }
+}
+// Arrancan a bajar desde ya, en segundo plano.
+esperarLibrerias().catch(() => {});
 import { useCollection } from "./useCollection";
 import { supabase } from "./supabaseClient";
 
@@ -445,8 +476,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.3.1";
+const APP_VERSION = "3.4.0";
 const CHANGELOG = [
+  { v: "3.4.0", desc: "La app carga mucho mas rapido: las herramientas de Excel, PDF y ZIP ya no van en el archivo principal (de 5.4 MB a una fraccion); se descargan en segundo plano en cuanto abre la pagina. Mientras carga se ve un aviso de Cargando en lugar de la pantalla en blanco" },
   { v: "3.3.1", desc: "Fix pantalla en negro: al enviar el reporte semanal y elegir reasignar las transacciones con partida de un mes anterior, la app se caia (ws.current is not a function) porque el envio no quedaba listo para retomarse. Ademas, si una pantalla vuelve a fallar, ya no se queda en negro: muestra que paso y un boton para recargar" },
   { v: "3.3.0", desc: "Indicador de usuarios en linea en el encabezado (punto verde y N en linea). Al darle clic muestra quien tiene la app abierta, en que compania y en que pestana. Usa la presencia en tiempo real de Supabase: no guarda nada en la base, y quien cierra la app desaparece de la lista en unos segundos" },
   { v: "3.2.2", desc: "Campo Importe de las transacciones (formulario completo y edicion rapida desde Partidas): acepta operaciones basicas como en Excel: sumas, restas, multiplicaciones, divisiones y parentesis (1500+320.50, 12010.03*1.16, (4000-250)/2). Mientras se escribe muestra el resultado; se aplica al salir del campo o con Enter. Una operacion mal escrita no deja guardar y lo dice" },
@@ -2265,6 +2297,7 @@ const nh = (v) => String(v || "").trim().toLowerCase();
  * entonces la línea base mentiría — justo lo que se quiere evitar.
  */
 function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, etiqueta = (x) => x, comparacion = null }) {
+  exigirLibrerias();
   const esPres = tipo === "presupuesto";
   // Con comparación, las filas llevan su marca de nueva / cambió.
   if (comparacion) filas = comparacion.filas;
@@ -2373,6 +2406,7 @@ function generarPdfOficial({ compania, tipo, periodo, version, filas, grupos, et
  * vinculadas en hoja aparte porque es para analizarse.
  */
 async function generarExcelOficial({ compania, tipo, periodo, version, filas, transacciones, grupos, etiqueta = (x) => x, comparacion = null, notaTransacciones = "" }) {
+  await esperarLibrerias();
   const esPres = tipo === "presupuesto";
   const wbx = new ExcelJS.Workbook();
   if (comparacion) {
@@ -2918,6 +2952,7 @@ function hojaCambiosPresupuestoExcel(wbx, comparacion, { compania, periodo, vers
  * el resumen de arriba ya dio la vista agrupada.
  */
 function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas, gruposZona = {}, comparacion = null }) {
+  exigirLibrerias();
   const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
   const marcadas = comparacion ? comparacion.filas : filas;
   const VERDE = [30, 120, 80], VERDE_S = [226, 243, 233], AMBAR = [176, 110, 20], AMBAR_S = [253, 240, 214];
@@ -3081,6 +3116,7 @@ function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas, g
  * dinámicas. Es la misma división que ya usamos en el reporte presupuestal.
  */
 async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, filas, gruposZona = {}, comparacion = null }) {
+  await esperarLibrerias();
   const rango = rangoSemana(periodoIni, periodoFin);
   if (comparacion) filas = comparacion.filas;
   const bloques = bloquesZonaMoneda(filas, gruposZona);
@@ -4132,6 +4168,7 @@ function findExactCol(headers, candidates) {
 // Parses an ArrayBuffer (.xlsx) and returns { rows, sheetsFound, sheetsIgnored }
 // rows: array of partida objects ready to merge into state.
 function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
+  exigirLibrerias();
   const { anioDefault = new Date().getFullYear(), existingPartidas = [] } = options;
   const wb = XLSX.read(arrayBuffer, { type: "array" });
   const rows = [];
@@ -4319,6 +4356,7 @@ function toISODate(val) {
 // Días de crédito). Marca cada fila como actualización (mismo RFC, o mismo
 // Nombre si no hay RFC, dentro de esa unidad) o alta nueva.
 function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
+  exigirLibrerias();
   const wb = XLSX.read(arrayBuffer, { type: "array" });
   const porClave = new Map(); // "unidad|rfcOnombre" -> fila agregada (para agrupar varias cuentas del mismo proveedor en un solo archivo)
   const sheetsFound = [];
@@ -4411,6 +4449,7 @@ function parseProveedoresWorkbook(arrayBuffer, existingProveedores = []) {
 }
 
 function parseTransaccionesWorkbook(arrayBuffer, partidas, proveedores = [], cuentas = []) {
+  exigirLibrerias();
   const wb = XLSX.read(arrayBuffer, { type: "array", cellDates: true });
   const rows = [];
   const sheetsFound = [];
@@ -7009,6 +7048,7 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
   const [importing, setImporting] = useState(false);
 
   const descargarPlantilla = async () => {
+    await esperarLibrerias();
     const wbx = new ExcelJS.Workbook();
     // El importador ya leía Año y Zona, pero la plantilla no los ofrecía, así
     // que nadie sabía que podía usarlos y todo caía al año por defecto sin zona.
@@ -7331,6 +7371,7 @@ function validarMonedaContraPartida(form, partidas) {
  * el documento y no tenga que buscar dónde quedó cada cosa.
  */
 async function generarExcelSPP(r) {
+  await esperarLibrerias();
   const wbx = new ExcelJS.Workbook();
   const ws = wbx.addWorksheet(`SPP ${r.folio}`);
   ws.columns = [{ width: 30 }, { width: 46 }, { width: 14 }, { width: 15 },
@@ -7440,6 +7481,7 @@ async function generarExcelSPP(r) {
  * consulta al ejecutar la transferencia.
  */
 function generarPdfSPP(r) {
+  exigirLibrerias();
   const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
   const M = 40;                    // margen
   const A = 612 - M * 2;           // ancho útil
@@ -8637,6 +8679,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   // Encabezado, ancho y valor viven juntos en un solo arreglo para que agregar
   // una columna no pueda desalinear el archivo.
   const exportarExcel = async (todasLasCompanias = false) => {
+    await esperarLibrerias();
     /* Catálogo completo de lo exportable. `col` amarra cada columna con la de
        la tabla: las que la tienen se incluyen solo si están visibles, y las
        que no —Unidad, Usado, Disponible— van siempre, porque no existen en
@@ -8866,6 +8909,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const [generandoReporteXls, setGenerandoReporteXls] = useState(false);
 
   const generarReporteExcel = async (opts = {}) => {
+    await esperarLibrerias();
     /* El reporte oficial pasa su propio conjunto, su revisión y fuerza el
        detalle de transacciones, que en el oficial va SIEMPRE. */
     const { rows = null, revision = null, forzarDetalle = false, periodo: periodoForzado = null, comparacion = null } = opts;
@@ -9125,6 +9169,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
      ESTE mismo formato ejecutivo —el que ya estaba definido para Dirección—
      pero sobre todas las partidas del mes, no sobre las filtradas. */
   const generarReportePDF = async (rowsArg = null, revision = null, comparacion = null) => {
+    await esperarLibrerias();
     // Desde un botón llega el evento del clic, no una lista de partidas.
     const rows = Array.isArray(rowsArg) ? rowsArg : null;
     const partidasOrdenadas = rows || partidasOrdenadasVistaBase;
@@ -10258,6 +10303,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
   const [importing, setImporting] = useState(false);
 
   const descargarPlantilla = async () => {
+    await esperarLibrerias();
     const wbx = new ExcelJS.Workbook();
     const headers = [
       "Dia", "SMI", "SOLICITANTE", "Proyecto", "Zona", "ÁREA",
@@ -11968,6 +12014,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     (GROUP_OPCIONES_TRANS.find((o) => o.value === campo) || {}).label || campo;
 
   const exportarTransacciones = async () => {
+    await esperarLibrerias();
     if (!transEnriquecidas.length) { alert("No hay transacciones en el filtro actual."); return; }
     const COLS = expVis.visibles;
     setGenerandoTx(true);
@@ -14222,6 +14269,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
      suelta y Enviar a Pagos salen del mismo armado. Con `revision`, el título
      de cada bloque la lleva, para que la hoja impresa diga qué envío es. */
   const construirExcel = async (revision = null) => {
+    await esperarLibrerias();
     const etqRev = revision === null ? "" : ` R${revision}`;
     const wbx = new ExcelJS.Workbook();
     const ws = wbx.addWorksheet("Reporte de pagos");
@@ -14365,6 +14413,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
    * preview acabaría mostrando algo que no es lo que se descarga.
    */
   const construirPDF = (revision = null) => {
+    exigirLibrerias();
       const etqRev = revision === null ? "" : ` R${revision}`;
       const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
       const inicio = fechaDesde || diasOrdenados[0] || "";
@@ -14979,6 +15028,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
   const onColDrop = (e, targetKey) => { e.preventDefault(); if (dragKeyRef.current) { moveColumn(dragKeyRef.current, targetKey); dragKeyRef.current = null; } };
 
   const exportarExcel = async () => {
+    await esperarLibrerias();
     if (!filasOrdenadas.length) {
       alert("No hay transacciones en el filtro actual para exportar.");
       return;
@@ -15084,6 +15134,7 @@ function ReportePagosDireccionTab({ unidad, partidas, transacciones, transaccion
   };
 
   const generarReportePDF = async () => {
+    await esperarLibrerias();
     if (!filasOrdenadas.length) {
       alert("No hay transacciones en el filtro actual para generar el reporte.");
       return;
@@ -15940,6 +15991,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
   const visibles = filtro === "Todas" ? filas : filtro === "Nuevas" ? filas.filter((f) => f.cambio === "nueva") : por(filtro);
 
   const exportar = async () => {
+    await esperarLibrerias();
     const wbx = new ExcelJS.Workbook();
     const ws = wbx.addWorksheet("Seguimiento");
     const COLS = [
@@ -15985,6 +16037,7 @@ function SeguimientoPagosSemanal({ unidad, versiones, transacciones }) {
      que se generó, porque el estado cambia conforme se paga y una copia vieja
      sin fecha diría algo distinto sin que nadie lo note. */
   const exportarPDF = () => {
+    exigirLibrerias();
     const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
     const M = 32, A = 792 - M * 2;
     const rango = rangoSemana(rep.periodo_ini, rep.periodo_fin);
@@ -16369,6 +16422,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   const gruposContraidos = rutasGrupo.length > 0 && rutasGrupo.every((r) => contraidos.has(r));
 
   const exportarPDF = () => {
+    exigirLibrerias();
     const doc = new jsPDF({ orientation: "portrait", unit: "pt", format: "letter" });
     const M = 36;
     doc.setFontSize(14).setFont(undefined, "bold").setTextColor(35, 42, 49);
@@ -16409,6 +16463,7 @@ function ComparativoPresupuesto({ unidad, partidas, transacciones, reportes }) {
   };
 
   const exportarExcel = async () => {
+    await esperarLibrerias();
     const wbx = new ExcelJS.Workbook();
     const ws = wbx.addWorksheet("Presupuesto vs real");
     ws.columns = [{ width: 16 }, { width: 50 }, { width: 16 }, { width: 16 }, { width: 14 }, { width: 22 }];
@@ -17471,6 +17526,7 @@ function datosDesdeCSF(texto) {
 }
 
 async function leerTextoPDF(archivo) {
+  await esperarLibrerias();
   const buffer = await archivo.arrayBuffer();
   const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
   let texto = "";
@@ -18333,6 +18389,7 @@ function mayusculasXml(xml) {
 }
 
 async function llenarPlantilla(storagePath, valores, clausuladoXML) {
+  await esperarLibrerias();
   const { data, error } = await supabase.storage.from("contratos-plantillas").download(storagePath);
   if (error) throw new Error(`No se pudo descargar la plantilla (${storagePath}): ${error.message}`);
 
@@ -20134,6 +20191,7 @@ function NuevaSolicitudPanel({ unidad, session, parametros, correos, proyectos, 
  * imprima el equivocado.
  */
 async function guardarPdfEnDrive(solicitud, conceptos, centroCosto) {
+  await esperarLibrerias();
   const previos = await supabase.from("adjuntos").select("*")
     .eq("entidad", "solicitud").eq("entidad_id", solicitud.id).eq("categoria", "smi")
     .neq("estado", "por_borrar");
@@ -20557,6 +20615,7 @@ const GRIS = [235, 235, 235];
  * muestra en español en vez de "Pending".
  */
 function pdfSolicitud(solicitud, conceptos, centroCosto) {
+  exigirLibrerias();
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const M = 12;
   const ancho = doc.internal.pageSize.getWidth() - M * 2;
@@ -20727,6 +20786,7 @@ function pdfSolicitud(solicitud, conceptos, centroCosto) {
  * reciente manda.
  */
 function pdfPoliza(t, { partida, centroCosto, razonSocial, idSae } = {}) {
+  exigirLibrerias();
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const M = 14;
   const ancho = doc.internal.pageSize.getWidth() - M * 2;
@@ -20852,6 +20912,7 @@ async function bytesEnBuferAdjuntos() {
  * nueva solo sirve para que alguien imprima el importe equivocado.
  */
 async function guardarPolizaEnExpediente(transaccionesApi, t, datos) {
+  await esperarLibrerias();
   // Su propio expediente, venga o no de una SMI: ver 2.51.1.
   const carpeta = t.id;
   const previas = await supabase.from("adjuntos").select("*")
@@ -22512,6 +22573,7 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
      espera era exportar el catálogo existente — que no sirve si aún no hay
      proveedores capturados. */
   const descargarPlantilla = async () => {
+    await esperarLibrerias();
     const headers = ["Compañía", "Nombre", "RFC", "ID SAE", "Referencia", "Notas",
       "Banco", "Sucursal", "SWIFT", "CLABE", "Numero de Cuenta", "Divisa"];
     const anchos = [12, 40, 16, 12, 18, 30, 20, 12, 14, 24, 20, 9];
@@ -22948,6 +23010,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi, lis
   // con dos cuentas ocupa dos renglones). Así el preparador de transacciones
   // puede comparar la CLABE que viene en el correo contra la registrada.
   const exportarProveedores = async () => {
+    await esperarLibrerias();
     const COLS = [
       { header: "Unidad",     width: 9,  get: (p, c) => p.unidad },
       { header: "Proveedor",  width: 38, get: (p, c) => p.nombre || "" },
@@ -23245,7 +23308,7 @@ async function leerPdfParaHerramienta(file) {
 
 /* Dibuja páginas con pdf.js como imágenes. OJO: pdf.js se queda con el
    buffer que recibe (lo transfiere al worker), por eso se le pasa una copia. */
-const abrirPdfVista = (bytes) => pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+const abrirPdfVista = async (bytes) => { await esperarLibrerias(); return pdfjsLib.getDocument({ data: bytes.slice() }).promise; };
 
 async function dibujarPagina(docVista, numero, ancho) {
   const pagina = await docVista.getPage(numero);
@@ -23676,6 +23739,7 @@ function SepararPdfPanel() {
   };
 
   const separar = async () => {
+    await esperarLibrerias();
     setAviso(null);
     const indices = [...seleccion].sort((a, b) => a - b);
     if (!indices.length) {

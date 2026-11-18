@@ -58,6 +58,9 @@ html{scroll-padding-top:env(safe-area-inset-top,0px)}
 body{margin:0;background:var(--paper);color:var(--ink);font:15px/1.5 var(--font);font-variant-numeric:tabular-nums}
 main{max-width:1500px;margin:0 auto;padding:28px 24px 64px}
 h1{font:600 26px/1.2 var(--font-c);margin:0 0 4px;letter-spacing:-.01em}
+.ver{font:500 12px/1 var(--font);color:var(--muted);border:1px solid var(--line,#ccc);border-radius:999px;padding:3px 8px;margin-left:10px;vertical-align:middle;cursor:help;letter-spacing:0}
+.nuevaver{position:sticky;top:0;z-index:50;display:flex;flex-wrap:wrap;gap:8px 14px;align-items:center;justify-content:space-between;background:#fff4d6;color:#5a4300;border:1px solid #e8c766;border-radius:8px;padding:9px 14px;margin:0 0 14px;font-size:14px}
+@media (prefers-color-scheme:dark){.nuevaver{background:#3a2f0b;color:#f3dc95;border-color:#7a6320}}
 .lede{color:var(--muted);margin:0 0 22px;max-width:72ch}
 button,input,select{font:inherit;color:inherit}
 button{cursor:pointer}
@@ -280,7 +283,8 @@ table.fijo .tagauto{display:none}
 <body>
 <main>
   <div id="cuenta" class="cuenta" hidden></div>
-  <h1>Previo de comprobación AMEX</h1>
+  <div id="nuevaver" class="nuevaver" role="status" hidden></div>
+  <h1>Previo de comprobación AMEX<span class="ver" id="ver"></span></h1>
   <p class="lede">Cada cargo del listado AMEX con la factura que lo respalda y sus impuestos. Revisa aquí antes de pasar nada al formato de reembolso.</p>
 
   <section id="login" class="login" hidden>
@@ -1712,6 +1716,39 @@ function renderDesc() {
    probarla). Usa la misma sesión que Presupuestos: en el mismo dominio, quien ya entró allá
    no vuelve a escribir su contraseña. La llave es la publicable: lo que cada quien puede ver
    o cambiar lo deciden las reglas de la base (tiene_acceso_unidad), no la app. */
+/* ================= versión ================= */
+// Cambiar APP_VERSION en cada entrega (año.mes.día y un consecutivo del día) y anotar el cambio
+// en CAMBIOS. La app compara su versión con la del archivo publicado y avisa si ya hay otra.
+const APP_VERSION = "2026.11.18-1";
+const CAMBIOS = [
+  ["2026.11.18-1", "Número de versión y aviso cuando hay una versión nueva publicada."],
+  ["2026.11.18-0", "Una sola factura para varios cargos del mismo comercio (p. ej. dos pagos de hotel): se detecta y los impuestos se reparten; ISH leído del PDF."],
+];
+function pintarVersion() {
+  const el = document.getElementById("ver"); if (!el) return;
+  el.textContent = "v" + APP_VERSION;
+  el.title = "Versión " + APP_VERSION + "\n\nÚltimos cambios:\n" + CAMBIOS.slice(0, 6).map(([v, t]) => "• " + v + ": " + t).join("\n");
+}
+async function revisarVersion() {
+  if (!/^https?:$/.test(location.protocol) || !(modoNube || /^(127\.0\.0\.1|localhost)$/.test(location.hostname))) return;
+  try {
+    const r = await fetch(location.pathname + "?v=" + Date.now(), { cache: "no-store" });
+    if (!r.ok) return;
+    const m = (await r.text()).match(/const APP_VERSION = "([^"]+)"/);
+    const caja = document.getElementById("nuevaver");
+    if (!m || m[1] === APP_VERSION || !caja) return;
+    caja.innerHTML = "";
+    const t = document.createElement("span");
+    t.innerHTML = `Hay una versión nueva publicada: <b>v${m[1]}</b> (estás en v${APP_VERSION}). Guarda lo que tengas pendiente y recarga.`;
+    const b = document.createElement("button"); b.className = "btn small primary"; b.textContent = "Recargar ahora";
+    b.onclick = () => location.reload();
+    caja.append(t, b); caja.hidden = false;
+  } catch (e) { /* sin conexión: se intenta en la siguiente revisión */ }
+}
+pintarVersion();
+setTimeout(revisarVersion, 4000);
+setInterval(revisarVersion, 10 * 60 * 1000);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) revisarVersion(); });
 const NUBE = { url: "https://clxxsxrtxcdvqcthytws.supabase.co", key: "sb_publishable_cLqvKuqh3cUcjfmar2JZ7Q_urZSnZSi" };
 const UNIDADES_TODAS = ["OSB", "CTM", "ISE"];
 const modoNube = /^\/reembolso(\/|$)/.test(location.pathname) || new URLSearchParams(location.search).has("nube");
@@ -2784,7 +2821,7 @@ function descargar(nombre, buf, tipo) {
 }
 const fechaCorta = s => { if (!s) return ""; const [y, m, d] = s.split("-"); return `${d}/${m}/${y}`; };
 async function excelReporte(P, info) {
-  const wb = new ExcelJS.Workbook(); wb.creator = "Reembolso AMEX";
+  const wb = new ExcelJS.Workbook(); wb.creator = "Reembolso AMEX v" + APP_VERSION;
   const NUM = '#,##0.00;-#,##0.00;"-"';
   const borde = { top: { style: "thin", color: { argb: "FFBFBFBF" } }, left: { style: "thin", color: { argb: "FFBFBFBF" } }, bottom: { style: "thin", color: { argb: "FFBFBFBF" } }, right: { style: "thin", color: { argb: "FFBFBFBF" } } };
   const amarillo = { type: "pattern", pattern: "solid", fgColor: { argb: "FFFFF9C4" } };
@@ -2845,7 +2882,7 @@ function pdfReporte(P, info) {
     headStyles: { fillColor: [255, 249, 196], textColor: 20, fontStyle: "bold" },
     columnStyles: { 0: { cellWidth: 30, halign: "center" }, 1: { cellWidth: 36 }, 2: { cellWidth: 120 }, 3: num, 4: { cellWidth: 32 }, 5: { cellWidth: 110 }, 6: { cellWidth: 150 }, 8: num, 9: num } });
   const pags = doc.getNumberOfPages();
-  for (let i = 1; i <= pags; i++) { doc.setPage(i); doc.setFontSize(7); doc.setFont("helvetica", "normal"); doc.text(`${S.paquete || "Reembolso AMEX"} · página ${i} de ${pags}`, 30, doc.internal.pageSize.getHeight() - 16); }
+  for (let i = 1; i <= pags; i++) { doc.setPage(i); doc.setFontSize(7); doc.setFont("helvetica", "normal"); doc.text(`${S.paquete || "Reembolso AMEX"} · página ${i} de ${pags} · app v${APP_VERSION}`, 30, doc.internal.pageSize.getHeight() - 16); }
   return doc.output("arraybuffer");
 }
 $("#viewer").addEventListener("click", e => { if (e.target.id === "viewer") e.target.close(); });

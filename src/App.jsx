@@ -476,8 +476,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.4.0";
+const APP_VERSION = "3.5.0";
 const CHANGELOG = [
+  { v: "3.5.0", desc: "Avisos de escritorio de SMI nuevas: boton de campana en el encabezado. Al activarlo (pide permiso al navegador una vez) aparece una notificacion de Windows cada vez que entra una SMI en cualquiera de las companias que el usuario ve, con folio, solicitante y descripcion; al darle clic abre Solicitudes en esa compania. Funciona mientras la app este abierta en alguna pestana, aunque este minimizada. Se recuerda por navegador" },
   { v: "3.4.0", desc: "La app carga mucho mas rapido: las herramientas de Excel, PDF y ZIP ya no van en el archivo principal (de 5.4 MB a una fraccion); se descargan en segundo plano en cuanto abre la pagina. Mientras carga se ve un aviso de Cargando en lugar de la pantalla en blanco" },
   { v: "3.3.1", desc: "Fix pantalla en negro: al enviar el reporte semanal y elegir reasignar las transacciones con partida de un mes anterior, la app se caia (ws.current is not a function) porque el envio no quedaba listo para retomarse. Ademas, si una pantalla vuelve a fallar, ya no se queda en negro: muestra que paso y un boton para recargar" },
   { v: "3.3.0", desc: "Indicador de usuarios en linea en el encabezado (punto verde y N en linea). Al darle clic muestra quien tiene la app abierta, en que compania y en que pestana. Usa la presencia en tiempo real de Supabase: no guarda nada en la base, y quien cierra la app desaparece de la lista en unos segundos" },
@@ -25235,6 +25236,96 @@ function IndicadorEnLinea({ usuarios }) {
   );
 }
 
+/* ----------------------------------------------------------------------
+   AVISOS DE ESCRITORIO DE SMI NUEVAS (v3.5.0)
+   Notificaciones del sistema (Windows) cuando entra una SMI a Entrada en
+   cualquiera de las compañías que la persona puede ver. Funcionan mientras
+   la app esté abierta en alguna pestaña, aunque esté minimizada o en otra
+   pestaña. Se revisa cada 30 s y al volver a la ventana. Se activan en este
+   navegador con el botón de la campana; la elección se recuerda aquí.
+   Con varias pestañas abiertas, el `tag` de la notificación evita que la
+   misma SMI se avise dos veces.
+---------------------------------------------------------------------- */
+const CLAVE_AVISOS_SMI = "cp.avisosSmi";
+const soportaAvisos = () => typeof window !== "undefined" && "Notification" in window;
+
+function useAvisosSmi({ session, unidades, activo, onAbrir }) {
+  const desde = useRef(null);
+  const avisadas = useRef(new Set());
+  const onAbrirRef = useRef(onAbrir);
+  onAbrirRef.current = onAbrir;
+  const clave = unidades.join(",");
+  useEffect(() => {
+    if (!session || !activo || !soportaAvisos() || Notification.permission !== "granted") return;
+    let vivo = true;
+    // Solo lo que llegue desde ahora: al activar no se avisan las viejas.
+    if (!desde.current) desde.current = new Date().toISOString();
+    const revisar = async () => {
+      const { data, error } = await supabase.from("solicitudes")
+        .select("id, folio, unidad, descripcion_general, nombre_solicitante, creado_en")
+        .eq("estado", "entrada").in("unidad", unidades).gt("creado_en", desde.current)
+        .order("creado_en", { ascending: true }).limit(20);
+      if (!vivo || error || !data) return;
+      data.forEach((s) => {
+        if (avisadas.current.has(s.id)) return;
+        avisadas.current.add(s.id);
+        if (s.creado_en > desde.current) desde.current = s.creado_en;
+        try {
+          const n = new Notification(`Nueva SMI ${s.folio || ""} · ${s.unidad}`, {
+            body: [s.nombre_solicitante, s.descripcion_general].filter(Boolean).join(" — ").slice(0, 180),
+            tag: `smi-${s.id}`,
+            icon: "/icon.svg",
+          });
+          n.onclick = () => { window.focus(); onAbrirRef.current?.(s.unidad); n.close(); };
+        } catch { /* el navegador no dejó mostrarla */ }
+      });
+    };
+    revisar();
+    const cada = setInterval(revisar, 30000);
+    const alVolver = () => { if (document.visibilityState === "visible") revisar(); };
+    document.addEventListener("visibilitychange", alVolver);
+    return () => { vivo = false; clearInterval(cada); document.removeEventListener("visibilitychange", alVolver); };
+  }, [session?.user?.id, activo, clave]);
+}
+
+function BotonAvisosSmi({ activo, setActivo }) {
+  const [permiso, setPermiso] = useState(() => (soportaAvisos() ? Notification.permission : "no"));
+  if (permiso === "no") return null;
+  const encendido = activo && permiso === "granted";
+  const alternar = async () => {
+    if (encendido) { setActivo(false); return; }
+    let p = Notification.permission;
+    if (p === "default") p = await Notification.requestPermission();
+    setPermiso(p);
+    if (p === "granted") {
+      setActivo(true);
+      try { new Notification("Avisos de SMI activados", { body: "Te avisaré aquí cada vez que llegue una SMI nueva, mientras la app esté abierta.", icon: "/icon.svg", tag: "smi-prueba" }); } catch { /* */ }
+    } else {
+      alert("El navegador tiene bloqueadas las notificaciones de este sitio.\n\n" +
+            "Para activarlas: da clic en el candado (o el ícono de ajustes) a la izquierda de la dirección, " +
+            "busca Notificaciones, elige Permitir y vuelve a dar clic en la campana.");
+    }
+  };
+  const titulo = encendido
+    ? "Avisos de SMI nuevas: activados en este navegador. Clic para desactivarlos"
+    : permiso === "denied"
+      ? "Las notificaciones están bloqueadas para este sitio. Clic para ver cómo activarlas"
+      : "Activar avisos de escritorio cuando llegue una SMI nueva";
+  return (
+    <button type="button" onClick={alternar} title={titulo} aria-label={titulo} aria-pressed={encendido}
+      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 30, height: 26,
+               border: `1px solid ${encendido ? T.accent : T.border}`, background: encendido ? T.accentBg : "none",
+               color: encendido ? T.accent : T.textFaint, borderRadius: 5, cursor: "pointer", padding: 0 }}>
+      <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9" />
+        <path d="M10.3 21a1.94 1.94 0 0 0 3.4 0" />
+        {!encendido && <path d="M3 3l18 18" />}
+      </svg>
+    </button>
+  );
+}
+
 /* Red de seguridad: si una pantalla falla, en lugar de dejar todo en negro
    se muestra qué pasó y cómo seguir (v3.3.1). */
 class BoundaryErrores extends React.Component {
@@ -25357,6 +25448,11 @@ function AppPrincipal() {
      las filas) al cambiar de compañía o de pestaña, al volver a la ventana y
      cada minuto: las SMI llegan del formulario público, sin avisar a la app. */
   const enLinea = usePresencia(session, miPerfil, unidad, tab);
+  const [avisosSmi, setAvisosSmiEstado] = useState(() => { try { return localStorage.getItem(CLAVE_AVISOS_SMI) === "1"; } catch { return false; } });
+  const setAvisosSmi = (v) => { setAvisosSmiEstado(v); try { localStorage.setItem(CLAVE_AVISOS_SMI, v ? "1" : "0"); } catch { /* */ } };
+  // Al dar clic en el aviso: a Solicitudes, en la compañía de esa SMI.
+  useAvisosSmi({ session, unidades: unidadesPermitidas, activo: avisosSmi,
+                 onAbrir: (u) => { if (unidadesPermitidas.includes(u)) setUnidad(u); setTab("solicitudes"); } });
   const [smiEnEntrada, setSmiEnEntrada] = useState(0);
   useEffect(() => {
     if (!session || !unidad) return;
@@ -25525,6 +25621,7 @@ function AppPrincipal() {
           </div>
         </div>
         <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+          <BotonAvisosSmi activo={avisosSmi} setActivo={setAvisosSmi} />
           <IndicadorEnLinea usuarios={enLinea} />
           <span style={{ fontSize: 11.5, color: T.textFaint }}>
             {perfilesApi.rows.find((p) => p.id === session.user.id)?.nombre || session.user.email}

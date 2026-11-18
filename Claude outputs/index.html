@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Control de Presupuestos</title>
+    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" href="/icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <meta name="theme-color" content="#E11F1C" />
+    <style>
+      /* Aviso mientras baja la app (v3.4.0): React lo reemplaza al arrancar.
+         Respeta el tema elegido en la app (claro u oscuro). */
+      #cargando { min-height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center;
+        gap: 14px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        background: #F5F6F8; color: #5B6B79; font-size: 14px; }
+      html.oscuro #cargando { background: #16181A; color: #A2A6A9; }
+      #cargando .giro { width: 28px; height: 28px; border-radius: 50%; border: 3px solid #DCDFE3;
+        border-top-color: #3E5C76; animation: giro 0.9s linear infinite; }
+      html.oscuro #cargando .giro { border-color: #33373B; border-top-color: #7FA7C9; }
+      #cargando .lento { display: none; font-size: 12px; max-width: 320px; text-align: center; line-height: 1.5; }
+      @keyframes giro { to { transform: rotate(360deg); } }
+    </style>
+    <script>
+      try { if (localStorage.getItem("cp.tema") === "oscuro") document.documentElement.classList.add("oscuro"); } catch (e) {}
+      // Si tarda mucho, se dice qué hacer en vez de dejar solo el círculo.
+      setTimeout(function () { var l = document.querySelector("#cargando .lento"); if (l) l.style.display = "block"; }, 15000);
+    </script>
+  </head>
+  <body style="margin:0;">
+    <div id="root">
+      <div id="cargando">
+        <div class="giro"></div>
+        <div>Cargando Control de Presupuestos…</div>
+        <div class="lento">Está tardando más de lo normal. Revisa tu conexión a internet; si sigue igual, recarga la página con Ctrl + Shift + R.</div>
+      </div>
+    </div>
+    <script type="module" src="/src/main.jsx"></script>
+  </body>
+</html>

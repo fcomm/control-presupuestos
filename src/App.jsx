@@ -476,8 +476,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.8.0";
+const APP_VERSION = "3.8.1";
 const CHANGELOG = [
+  { v: "3.8.1", desc: "Tablas agrupadas: tambien hay espacio entre los subgrupos (p. ej. entre Agua Dulce y QRO dentro de un dia), menor que el que separa los grupos principales" },
   { v: "3.8.0", desc: "Tablas agrupadas (Transacciones, Partidas y Sin vincular) mas legibles, segun el previo aprobado: el primer nivel es una banda con fondo de acento, el valor grande (las fechas con dia de la semana: Miercoles 18/11/26), N registros y el total; hay espacio entre un grupo y el siguiente. Los subniveles tienen fondo intermedio, el valor en negritas con un color propio por grupo y una linea de ese color a la izquierda de sus filas. Ya no se repite el nombre del campo en cada encabezado (queda al pasar el raton)" },
   { v: "3.7.1", desc: "Reporte de Pagos, Resaltar lo que cambio respecto a: los envios hechos antes de la 3.7.0 no tienen guardado que pagos llevaban y no se pueden comparar. Ahora salen marcados sin detalle guardado y desactivados en la lista, la opcion por omision es el ultimo envio que si se puede comparar, y un aviso explica por que no hay comparacion cuando ninguno se puede usar" },
   { v: "3.7.0", desc: "Reporte de Pagos: (1) es de un solo dia: en lugar de Desde / Hasta hay un selector de Fecha de pago con flechas para el dia anterior y siguiente y el boton Hoy. (2) Al reenviar una fecha (R1, R2...) el PDF y el Excel dicen que cambio respecto al envio elegido (por omision el ultimo; se puede elegir otro o Sin comparar): primero el total contra ese envio y la diferencia, despues los pagos nuevos en verde, los que cambiaron en ambar (importe, proveedor, concepto, cuenta, forma de pago, referencia, zona, con su valor anterior) y los retirados en gris; en el detalle se colorean las filas nuevas y cambiadas. Cada envio guarda su detalle para poder compararlo. Requiere correr envios-pagos-detalle.sql" },
@@ -7003,9 +7004,10 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
   node.entries.forEach((entry, idx) => {
     const groupPath = `${path}/${node.key}:${entry.value}`;
     const levelColor = depth === 0 ? T.accent : COLORES_SUBGRUPO[idx % COLORES_SUBGRUPO.length];
-    // Espacio entre grupos del primer nivel: cada uno se lee como un bloque.
-    if (depth === 0 && idx > 0) {
-      out.push(<tr key={`${groupPath}-esp`} aria-hidden="true"><td colSpan={colSpan} style={{ height: 16, padding: 0, border: "none", background: "transparent" }} /></tr>);
+    // Espacio entre grupos del mismo nivel, para que cada uno se lea como un
+    // bloque: más amplio entre los del primer nivel, menor entre subgrupos.
+    if (idx > 0) {
+      out.push(<tr key={`${groupPath}-esp`} aria-hidden="true"><td colSpan={colSpan} style={{ height: depth === 0 ? 16 : 8, padding: 0, border: "none", background: "transparent" }} /></tr>);
     }
     const isCollapsed = collapsed.has(groupPath);
     /* Con posResumen, el total va en su propia celda, en la columna de los

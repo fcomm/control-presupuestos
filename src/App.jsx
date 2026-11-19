@@ -476,8 +476,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.8.1";
+const APP_VERSION = "3.9.0";
 const CHANGELOG = [
+  { v: "3.9.0", desc: "Elegir partida (en Transacciones): cada partida trae un boton de lapiz para editarla ahi mismo, sin ir a Partidas: concepto, mes, ano, rubro, proyecto, monto estimado y moneda. El folio no cambia. La moneda no se puede cambiar si la partida ya tiene transacciones vinculadas (quedarian en una partida de otra moneda). Si se cambia el rubro, avisa cuantas transacciones vinculadas quedan con una categoria fuera del nuevo rubro. Al guardar regresa a la lista en el periodo de la partida, para que se vea el cambio" },
   { v: "3.8.1", desc: "Tablas agrupadas: tambien hay espacio entre los subgrupos (p. ej. entre Agua Dulce y QRO dentro de un dia), menor que el que separa los grupos principales" },
   { v: "3.8.0", desc: "Tablas agrupadas (Transacciones, Partidas y Sin vincular) mas legibles, segun el previo aprobado: el primer nivel es una banda con fondo de acento, el valor grande (las fechas con dia de la semana: Miercoles 18/11/26), N registros y el total; hay espacio entre un grupo y el siguiente. Los subniveles tienen fondo intermedio, el valor en negritas con un color propio por grupo y una linea de ese color a la izquierda de sus filas. Ya no se repite el nombre del campo en cada encabezado (queda al pasar el raton)" },
   { v: "3.7.1", desc: "Reporte de Pagos, Resaltar lo que cambio respecto a: los envios hechos antes de la 3.7.0 no tienen guardado que pagos llevaban y no se pueden comparar. Ahora salen marcados sin detalle guardado y desactivados en la lista, la opcion por omision es el ultimo envio que si se puede comparar, y un aviso explica por que no hay comparacion cuando ninguno se puede usar" },
@@ -1665,7 +1666,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
   const filtroPeriodoActivo = filtroMes !== "Todos" || filtroAnio !== "Todos";
 
   const elegir = (id) => {
-    setOpen(false); setBusqueda(""); setFiltroRubro("Todos"); setCreando(false);
+    setOpen(false); setBusqueda(""); setFiltroRubro("Todos"); setCreando(false); setEditando(null); setResaltada("");
     try { onChange(id); } catch (err) { console.error("Error al elegir partida:", err); }
   };
 
@@ -1695,6 +1696,52 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
   const [creando, setCreando] = useState(false);
   const [nuevaPartida, setNuevaPartida] = useState(nuevaPartidaBlank);
   const [guardandoPartida, setGuardandoPartida] = useState(false);
+  /* Edición en el mismo modal (v3.9.0): antes, para corregir una partida
+     mientras se capturaba una transacción había que salir a Partidas y
+     perder lo capturado. `editando` es la partida original; `nuevaPartida`
+     sirve de formulario para los dos casos, así ambos se ven igual. */
+  const [editando, setEditando] = useState(null);
+  const [resaltada, setResaltada] = useState("");
+  const enFormulario = creando || !!editando;
+  const vinculadasDe = (id) => transacciones.filter((t) => t.partida_id === id);
+  const cerrarFormulario = () => { setCreando(false); setEditando(null); setNuevaPartida(nuevaPartidaBlank); };
+  const empezarEdicion = (p) => {
+    setCreando(false);
+    setEditando(p);
+    setNuevaPartida({
+      mes: p.mes || MESES[new Date().getMonth()],
+      anio: p.anio || new Date().getFullYear(),
+      concepto: p.concepto || "",
+      rubro: p.rubro || "",
+      proyecto: p.proyecto || "",
+      monto_estimado: p.monto_estimado ?? "",
+      moneda: p.moneda || "MXP",
+    });
+  };
+  const guardarEdicion = async () => {
+    if (!editando) return;
+    if (!nuevaPartida.concepto.trim()) { alert("Escribe el concepto de la partida."); return; }
+    if (nuevaPartida.monto_estimado === "" || isNaN(Number(nuevaPartida.monto_estimado))) { alert("Escribe el monto estimado de la partida (puede ser 0)."); return; }
+    setGuardandoPartida(true);
+    try {
+      const anio = Number(nuevaPartida.anio) || editando.anio || new Date().getFullYear();
+      await partidasApi.update(editando.id, {
+        mes: nuevaPartida.mes, anio, concepto: nuevaPartida.concepto.trim(),
+        rubro: nuevaPartida.rubro, proyecto: (nuevaPartida.proyecto || "").trim(),
+        monto_estimado: Number(nuevaPartida.monto_estimado) || 0,
+        // Con transacciones vinculadas la moneda queda como estaba.
+        moneda: vinculadasDe(editando.id).length ? editando.moneda : nuevaPartida.moneda,
+      });
+      // De vuelta a la lista, en el periodo nuevo de la partida y marcada.
+      setFiltroMes(nuevaPartida.mes); setFiltroAnio(String(anio));
+      setResaltada(editando.id);
+      cerrarFormulario();
+    } catch (err) {
+      alert("No se pudo guardar la partida: " + (err.message || err) + "\n\nRevisa los datos e intenta de nuevo. Si tu acceso en esta compañía es de solo lectura, pídele el cambio a un administrador.");
+    } finally {
+      setGuardandoPartida(false);
+    }
+  };
 
   /* Un botón externo a este componente (uno por fila, en "Sin vincular")
      puede pedir que se abra YA directo en el formulario de creación, en vez
@@ -1705,6 +1752,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
   useEffect(() => {
     if (!abrirEnCrear) return;
     setNuevaPartida(nuevaPartidaBlank);
+    setEditando(null);
     setCreando(true);
     setOpen(true);
     onAbierto?.();
@@ -1736,12 +1784,13 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
     const usado = usadoDe(p);
     const pct = total ? (usado / total) * 100 : 0;
     const tone = pct > 100 ? T.red : pct > 85 ? T.amber : T.teal;
+    const marcada = p.id === value || p.id === resaltada;
     return (
+      <div key={p.id} style={{ display: "flex", alignItems: "stretch", borderBottom: `1px solid ${T.borderSoft}`, background: marcada ? T.accentBg : "transparent" }}>
       <button
         type="button"
-        key={p.id}
         onClick={() => elegir(p.id)}
-        style={{ display: "block", width: "100%", textAlign: "left", border: "none", padding: "9px 12px", cursor: "pointer", borderBottom: `1px solid ${T.borderSoft}`, background: p.id === value ? T.accentBg : "transparent" }}
+        style={{ display: "block", flex: 1, minWidth: 0, textAlign: "left", border: "none", padding: "9px 12px", cursor: "pointer", background: "transparent" }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
           <div style={{ minWidth: 0 }}>
@@ -1754,6 +1803,18 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
           </div>
         </div>
       </button>
+      {partidasApi && (
+        <button
+          type="button"
+          title="Editar esta partida"
+          aria-label={`Editar partida ${p.folio || p.concepto}`}
+          onClick={() => empezarEdicion(p)}
+          style={{ border: "none", borderLeft: `1px solid ${T.borderSoft}`, background: "transparent", color: T.accent, cursor: "pointer", padding: "0 12px", fontSize: 14 }}
+        >
+          ✎
+        </button>
+      )}
+      </div>
     );
   };
 
@@ -1774,16 +1835,33 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
       </button>
 
       {open && (
-        <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto — Total y Usado por partida" onClose={() => { setOpen(false); setCreando(false); }} width={620} zIndex={1100} cerrarAlHacerClicFuera={!creando}>
-          {partidasApi && !creando && (
+        <Modal title="Elegir partida" subtitle="Busca por concepto, folio, rubro o proyecto — Total y Usado por partida" onClose={() => { setOpen(false); cerrarFormulario(); setResaltada(""); }} width={620} zIndex={1100} cerrarAlHacerClicFuera={!enFormulario}>
+          {partidasApi && !enFormulario && (
             <Button type="button" variant="ghost" onClick={() => { setNuevaPartida(nuevaPartidaBlank); setCreando(true); }} style={{ marginBottom: 10 }}>
               + Nueva partida
             </Button>
           )}
 
-          {creando ? (
+          {enFormulario ? (() => {
+            const vinculadas = editando ? vinculadasDe(editando.id) : [];
+            const monedaFija = !!editando && vinculadas.length > 0;
+            /* Cambiar el rubro no toca las transacciones (la regla de categoría
+               es hacia adelante), pero conviene decir cuántas quedan fuera. */
+            const cambiaRubro = !!editando && !igualTxt(nuevaPartida.rubro, editando.rubro);
+            const permitidasNuevas = cambiaRubro ? categoriasPermitidas({ ...editando, rubro: nuevaPartida.rubro }) : null;
+            const fueraDeRubro = permitidasNuevas
+              ? vinculadas.filter((t) => t.categoria && !permitidasNuevas.some((c) => igualTxt(c, t.categoria))).length : 0;
+            const cambiaPeriodo = !!editando && (nuevaPartida.mes !== editando.mes || String(nuevaPartida.anio) !== String(editando.anio));
+            const opcionesProyecto = [...proyectosOpciones];
+            if (nuevaPartida.proyecto && !opcionesProyecto.includes(nuevaPartida.proyecto)) opcionesProyecto.push(nuevaPartida.proyecto);
+            const rubroFueraCatalogo = nuevaPartida.rubro && !RUBROS.some((r) => r.rubro === nuevaPartida.rubro);
+            return (
             <div style={{ border: `1px solid ${T.borderSoft}`, borderRadius: 6, padding: 14 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>Nueva partida — {unidad}</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: T.text, marginBottom: 10 }}>
+                {editando
+                  ? <>Editar partida <span style={{ fontFamily: T.fontMono, color: T.accent }}>{editando.folio || ""}</span> — {unidad}</>
+                  : <>Nueva partida — {unidad}</>}
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 10 }}>
                 <Field label="Concepto" style={{ gridColumn: "span 2" }}>
                   <TextInput autoFocus value={nuevaPartida.concepto} onChange={(e) => setNuevaPartida({ ...nuevaPartida, concepto: e.target.value })} />
@@ -1799,29 +1877,52 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
                 <Field label="Rubro">
                   <Select value={nuevaPartida.rubro} onChange={(e) => setNuevaPartida({ ...nuevaPartida, rubro: e.target.value })}>
                     {RUBROS.map((r) => <option key={r.rubro}>{r.rubro}</option>)}
+                    {rubroFueraCatalogo && <option key={nuevaPartida.rubro}>{nuevaPartida.rubro}</option>}
                   </Select>
                 </Field>
                 <Field label="Proyecto">
                   <Select value={nuevaPartida.proyecto} onChange={(e) => setNuevaPartida({ ...nuevaPartida, proyecto: e.target.value })}>
-                    {proyectosOpciones.length === 0 && <option value="">Sin proyectos configurados — ve a Catálogo</option>}
-                    {proyectosOpciones.map((m) => <option key={m}>{m}</option>)}
+                    {opcionesProyecto.length === 0 && <option value="">Sin proyectos configurados — ve a Catálogo</option>}
+                    {opcionesProyecto.map((m) => <option key={m}>{m}</option>)}
                   </Select>
                 </Field>
                 <Field label="Monto estimado">
                   <TextInput type="number" step="0.01" value={nuevaPartida.monto_estimado} onChange={(e) => setNuevaPartida({ ...nuevaPartida, monto_estimado: e.target.value })} placeholder="0.00" />
                 </Field>
                 <Field label="Moneda">
-                  <Select value={nuevaPartida.moneda} onChange={(e) => setNuevaPartida({ ...nuevaPartida, moneda: e.target.value })}>
+                  <Select value={nuevaPartida.moneda} disabled={monedaFija} onChange={(e) => setNuevaPartida({ ...nuevaPartida, moneda: e.target.value })}
+                    title={monedaFija ? "No se puede cambiar: la partida ya tiene transacciones vinculadas" : undefined}>
                     {MONEDAS.map((m) => <option key={m}>{m}</option>)}
+                    {nuevaPartida.moneda && !MONEDAS.includes(nuevaPartida.moneda) && <option key={nuevaPartida.moneda}>{nuevaPartida.moneda}</option>}
                   </Select>
                 </Field>
               </div>
+              {editando && (
+                <div style={{ marginTop: 10, fontSize: 11.5, color: T.textDim, lineHeight: 1.5 }}>
+                  {vinculadas.length
+                    ? <>Tiene <b>{vinculadas.length}</b> transacción(es) vinculada(s). La moneda no se puede cambiar.</>
+                    : <>Sin transacciones vinculadas.</>}
+                  {" "}El folio se conserva.
+                  {cambiaPeriodo && <> Cambias el periodo a <b>{nuevaPartida.mes} {nuevaPartida.anio}</b>: el folio sigue siendo {editando.folio || "el mismo"}.</>}
+                  {!monedaFija && nuevaPartida.moneda !== editando.moneda && moneda && !mismaMoneda(nuevaPartida.moneda, moneda) &&
+                    <> Al pasarla a {nuevaPartida.moneda} dejará de aparecer en esta lista, porque esta transacción es en {moneda}.</>}
+                  {fueraDeRubro > 0 && (
+                    <div style={{ marginTop: 6, color: T.amberDim }}>
+                      Con el rubro <b>{nuevaPartida.rubro}</b>, {fueraDeRubro} transacción(es) vinculada(s) quedan con una categoría de otro rubro.
+                      No se cambian solas: se marcarán en rojo en la columna Categoría hasta que se corrijan.
+                    </div>
+                  )}
+                </div>
+              )}
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-                <Button type="button" onClick={crearPartida} disabled={guardandoPartida}>{guardandoPartida ? "Creando…" : "Crear y usar esta partida"}</Button>
-                <Button type="button" variant="ghost" onClick={() => { setCreando(false); setNuevaPartida(nuevaPartidaBlank); }}>Cancelar</Button>
+                {editando
+                  ? <Button type="button" onClick={guardarEdicion} disabled={guardandoPartida}>{guardandoPartida ? "Guardando…" : "Guardar cambios"}</Button>
+                  : <Button type="button" onClick={crearPartida} disabled={guardandoPartida}>{guardandoPartida ? "Creando…" : "Crear y usar esta partida"}</Button>}
+                <Button type="button" variant="ghost" onClick={cerrarFormulario}>Cancelar</Button>
               </div>
             </div>
-          ) : (
+            );
+          })() : (
             <>
               <TextInput
                 autoFocus

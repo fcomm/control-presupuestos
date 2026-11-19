@@ -476,8 +476,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.10.0";
+const APP_VERSION = "3.11.0";
 const CHANGELOG = [
+  { v: "3.11.0", desc: "Nueva pestana Revision (solo administradores): revisar las compras exportadas de Aspel SAE. Los datos viven en una tabla aparte (revision_compras_sae) que nada de la app suma ni cruza, y se cargan desde la propia pestana con Cargar archivo de Aspel (reemplaza los de esa compania). Busqueda, filtros por fecha, status, serie, almacen, tipo y moneda, Agrupar por (hasta 3 niveles con subtotales), columnas, orden y exportar lo filtrado a Excel. Es temporal: para retirarla se quita la pestana y se borra la tabla. Requiere 67-revision-compras-sae.sql" },
   { v: "3.10.0", desc: "Editar transaccion: junto a Cuenta bancaria hay un icono (i) que, al pasar el mouse, muestra todas las cuentas del proveedor con banco, sucursal, CLABE, numero de cuenta, SWIFT y divisa, y marca la elegida. Antes habia que abrir el proveedor para verlas. Aplica tambien en la edicion rapida desde Partidas" },
   { v: "3.9.0", desc: "Elegir partida (en Transacciones): cada partida trae un boton de lapiz para editarla ahi mismo, sin ir a Partidas: concepto, mes, ano, rubro, proyecto, monto estimado y moneda. El folio no cambia. La moneda no se puede cambiar si la partida ya tiene transacciones vinculadas (quedarian en una partida de otra moneda). Si se cambia el rubro, avisa cuantas transacciones vinculadas quedan con una categoria fuera del nuevo rubro. Al guardar regresa a la lista en el periodo de la partida, para que se vea el cambio" },
   { v: "3.8.1", desc: "Tablas agrupadas: tambien hay espacio entre los subgrupos (p. ej. entre Agua Dulce y QRO dentro de un dia), menor que el que separa los grupos principales" },
@@ -7236,6 +7237,378 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
 const tableStyle = { width: "100%", borderCollapse: "collapse", fontSize: 12.5 };
 const thStyle = { textAlign: "left", padding: "8px 10px", color: T.textFaint, fontSize: 10.5, textTransform: "uppercase", letterSpacing: "0.05em", borderBottom: `1px solid ${T.border}`, overflowWrap: "break-word", wordBreak: "break-word" };
 const tdStyle = { padding: "9px 10px", borderBottom: `1px solid ${T.borderSoft}`, color: T.text, overflowWrap: "break-word", wordBreak: "break-word" };
+
+/* ----------------------------------------------------------------------
+   REVISIÓN DE COMPRAS (Aspel SAE) — TEMPORAL
+   Datos exportados de las compras de Aspel SAE, cargados solo para
+   revisarlos. Viven en su propia tabla (revision_compras_sae), sin liga con
+   transacciones, partidas ni proveedores de la app, y nada de la app los
+   suma. Solo administradores. Para retirarlo: quitar la pestaña "revision"
+   de TABS y correr  drop table public.revision_compras_sae;
+   Requiere 67-revision-compras-sae.sql
+---------------------------------------------------------------------- */
+const REV_STATUS = { O: "O · Original", E: "E · Emitida", C: "C · Cancelada" };
+const revAnioMes = (f) => (f ? String(f).slice(0, 7) : "");
+
+const REV_COLUMNAS = [
+  { key: "cve_doc", label: "Documento", render: (r) => r.cve_doc },
+  { key: "fecha_doc", label: "Fecha doc.", render: (r) => r.fecha_doc },
+  { key: "proveedor", label: "Proveedor", render: (r) => r.proveedor },
+  { key: "rfc", label: "RFC", render: (r) => r.rfc },
+  { key: "cve_clpv", label: "Clave prov.", render: (r) => r.cve_clpv },
+  { key: "su_refer", label: "Su referencia", render: (r) => r.su_refer },
+  { key: "status_txt", label: "Status", render: (r) => r.status_txt },
+  { key: "serie", label: "Serie", render: (r) => r.serie },
+  { key: "almacen", label: "Almacén", render: (r) => r.almacen },
+  { key: "tipo", label: "Tipo", render: (r) => r.tipo },
+  { key: "fecha_rec", label: "Fecha recepción", render: (r) => r.fecha_rec },
+  { key: "fecha_pag", label: "Fecha pago", render: (r) => r.fecha_pag },
+  { key: "fecha_cancela", label: "Fecha cancelación", render: (r) => r.fecha_cancela },
+  { key: "subtotal", label: "Subtotal", num: true },
+  { key: "descuento", label: "Descuento", num: true },
+  { key: "iva", label: "IVA", num: true },
+  { key: "ret_isr", label: "Ret. ISR", num: true },
+  { key: "ret_iva", label: "Ret. IVA", num: true },
+  { key: "importe", label: "Importe (MXN)", num: true },
+  { key: "moneda_doc", label: "Moneda doc.", render: (r) => r.moneda_doc },
+  { key: "tipcamb", label: "T. cambio", render: (r) => (r.moneda_doc === "USD" ? Number(r.tipcamb || 0).toFixed(4) : "") },
+  { key: "importe_usd", label: "Importe USD", num: true, usd: true },
+  { key: "escfd", label: "CFDI", render: (r) => r.escfd },
+  { key: "doc_ant", label: "Doc. anterior", render: (r) => r.doc_ant },
+  { key: "metodo_pago", label: "Método pago", render: (r) => r.metodo_pago },
+  { key: "fecha_elab", label: "Elaborado", render: (r) => r.fecha_elab },
+];
+const REV_OCULTAS_INICIO = ["cve_clpv", "fecha_rec", "fecha_cancela", "descuento", "tipcamb", "escfd", "doc_ant", "metodo_pago", "fecha_elab"];
+const REV_GRUPOS = [
+  { value: "proveedor", label: "Proveedor" },
+  { value: "_anio", label: "Año" },
+  { value: "_anio_mes", label: "Año-Mes" },
+  { value: "status_txt", label: "Status" },
+  { value: "serie", label: "Serie" },
+  { value: "almacen", label: "Almacén" },
+  { value: "tipo", label: "Tipo" },
+  { value: "moneda_doc", label: "Moneda doc." },
+  { value: "rfc", label: "RFC" },
+];
+const REV_FILTROS_VACIOS = { texto: "", desde: "", hasta: "", status: [], serie: [], almacen: [], tipo: [], moneda: [] };
+
+/* Lo que llega de la base se prepara una vez para buscar, agrupar y sumar.
+   `moneda` queda fija en MXP: el IMPORTE de Aspel viene en pesos aunque el
+   documento sea en dólares (por eso hay Importe USD aparte), y las sumas por
+   moneda de las tablas usan ese campo. */
+function revPreparar(r) {
+  const anio = r.fecha_doc ? String(r.fecha_doc).slice(0, 4) : "";
+  return {
+    ...r,
+    moneda_doc: r.moneda || "MXP",
+    moneda: "MXP",
+    status_txt: REV_STATUS[r.status] || r.status || "",
+    almacen: r.num_alma != null ? `Almacén ${r.num_alma}` : "",
+    _anio: anio,
+    _anio_mes: revAnioMes(r.fecha_doc),
+    _busca: [r.cve_doc, r.proveedor, r.rfc, r.su_refer, r.tipo, r.cve_clpv, r.doc_ant, r.obs_cond]
+      .map((v) => String(v ?? "").toLowerCase()).join(" | "),
+  };
+}
+
+/* Lectura del archivo exportado de Aspel (hoja con TIP_DOC, CVE_DOC…).
+   Las fechas se leen como número de serie de Excel y se convierten a mano:
+   con cellDates, SheetJS las corre un día según la zona horaria. */
+function revLeerArchivo(arrayBuffer, compania) {
+  exigirLibrerias();
+  const wb = XLSX.read(arrayBuffer, { type: "array" });
+  let aoa = null;
+  for (const nombre of wb.SheetNames) {
+    const filas = XLSX.utils.sheet_to_json(wb.Sheets[nombre], { header: 1, defval: null, raw: true });
+    const enc = (filas[0] || []).map((h) => String(h ?? "").trim().toUpperCase());
+    if (enc.includes("CVE_DOC") && enc.includes("IMPORTE")) { aoa = filas; break; }
+  }
+  if (!aoa) throw new Error("No encontré una hoja con las columnas CVE_DOC e IMPORTE. ¿Es la exportación de compras de Aspel SAE?");
+  const enc = aoa[0].map((h) => String(h ?? "").trim().toUpperCase());
+  const col = (n) => enc.indexOf(n);
+  const v = (fila, n) => { const i = col(n); return i === -1 ? null : fila[i]; };
+  const txt = (fila, n) => { const x = v(fila, n); return x == null || String(x).trim() === "" ? null : String(x).trim(); };
+  const num = (fila, n) => { const x = v(fila, n); const y = Number(x); return x == null || x === "" || !isFinite(y) ? null : y; };
+  const ent = (fila, n) => { const y = num(fila, n); return y == null ? null : Math.round(y); };
+  const fecha = (fila, n, conHora = false) => {
+    const x = v(fila, n);
+    if (x == null || x === "") return null;
+    if (typeof x === "number") {
+      const d = new Date(Math.round((x - 25569) * 86400000));
+      const iso = d.toISOString();
+      return conHora ? iso.slice(0, 19) : iso.slice(0, 10);
+    }
+    const s = String(x).trim();
+    return /^\d{4}-\d{2}-\d{2}/.test(s) ? (conHora ? s.slice(0, 19) : s.slice(0, 10)) : null;
+  };
+  const filas = [];
+  for (let i = 1; i < aoa.length; i++) {
+    const f = aoa[i];
+    const cve = txt(f, "CVE_DOC");
+    if (!cve) continue; // renglones vacíos o de totales al final
+    const usd = ent(f, "NUM_MONED") === 2;
+    const importe = num(f, "IMPORTE");
+    const tc = num(f, "TIPCAMB");
+    filas.push({
+      compania,
+      cve_doc: cve, serie: txt(f, "SERIE"), folio: ent(f, "FOLIO"), status: txt(f, "STATUS"), tipo: txt(f, "TIPO"),
+      cve_clpv: ent(f, "CVE_CLPV"), proveedor: txt(f, "NOMBRE"), rfc: txt(f, "RFC"), su_refer: txt(f, "SU_REFER"),
+      fecha_doc: fecha(f, "FECHA_DOC"), fecha_rec: fecha(f, "FECHA_REC"), fecha_pag: fecha(f, "FECHA_PAG"),
+      fecha_cancela: fecha(f, "FECHA_CANCELA"), fecha_elab: fecha(f, "FECHAELAB", true),
+      num_alma: ent(f, "NUM_ALMA"),
+      subtotal: num(f, "CAN_TOT"), descuento: num(f, "DES_TOT"),
+      ret_isr: num(f, "IMP_TOT2"), ret_iva: num(f, "IMP_TOT3"), iva: num(f, "IMP_TOT4"),
+      importe, moneda: usd ? "USD" : "MXP", tipcamb: tc,
+      importe_usd: usd && importe != null && tc ? Math.round((importe / tc) * 100) / 100 : null,
+      escfd: txt(f, "ESCFD"), bloq: txt(f, "BLOQ"), cve_obs: ent(f, "CVE_OBS"), obs_cond: txt(f, "OBS_COND"),
+      doc_ant: txt(f, "DOC_ANT"), forma_envio: txt(f, "FORMAENVIO"), metodo_pago: txt(f, "METODODEPAGO"),
+    });
+  }
+  return filas;
+}
+
+function RevisionComprasTab({ unidad }) {
+  const [filas, setFilas] = useState(null); // null = cargando
+  const [error, setError] = useState("");
+  const [progreso, setProgreso] = useState("");
+  const [recarga, setRecarga] = useState(0);
+  const inputRef = useRef(null);
+
+  /* Se baja todo al entrar (no al abrir la app): 40 mil filas en bloques de
+     1,000, cuatro a la vez. Con todo en memoria, buscar, filtrar y agrupar
+     es inmediato. */
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      setFilas(null); setError("");
+      try {
+        const { count, error: e1 } = await supabase.from("revision_compras_sae")
+          .select("id", { count: "exact", head: true }).eq("compania", unidad);
+        if (e1) throw e1;
+        const total = count || 0;
+        const bloque = 1000;
+        const paginas = Math.ceil(total / bloque);
+        const todas = [];
+        for (let p = 0; p < paginas; p += 4) {
+          const lotes = await Promise.all(Array.from({ length: Math.min(4, paginas - p) }, (_, k) => {
+            const ini = (p + k) * bloque;
+            return supabase.from("revision_compras_sae").select("*").eq("compania", unidad)
+              .order("id").range(ini, ini + bloque - 1);
+          }));
+          for (const { data, error: e } of lotes) { if (e) throw e; todas.push(...(data || [])); }
+          if (!vivo) return;
+          setProgreso(`Cargando ${todas.length.toLocaleString("es-MX")} de ${total.toLocaleString("es-MX")}…`);
+        }
+        if (vivo) { setFilas(todas.map(revPreparar)); setProgreso(""); }
+      } catch (err) {
+        if (vivo) { setError("No se pudieron traer los datos: " + (err.message || err)); setFilas([]); setProgreso(""); }
+      }
+    })();
+    return () => { vivo = false; };
+  }, [unidad, recarga]);
+
+  const [cargandoArchivo, setCargandoArchivo] = useState(false);
+  const cargarArchivo = async (archivo) => {
+    if (!archivo) return;
+    setCargandoArchivo(true);
+    try {
+      setProgreso("Leyendo el archivo…");
+      await esperarLibrerias();
+      const nuevas = revLeerArchivo(await archivo.arrayBuffer(), unidad);
+      if (!nuevas.length) throw new Error("El archivo no trae renglones con documento (CVE_DOC).");
+      const yaHay = filas?.length || 0;
+      if (!window.confirm(`Se cargarán ${nuevas.length.toLocaleString("es-MX")} compras como datos de ${unidad}.` +
+        (yaHay ? `\n\nSe reemplazan las ${yaHay.toLocaleString("es-MX")} que hay ahora de ${unidad}.` : "") +
+        "\n\nSolo afecta esta pestaña de revisión; no toca nada más de la app. ¿Continuar?")) return;
+      setProgreso("Quitando los datos anteriores…");
+      const { error: eV } = await supabase.rpc("revision_compras_sae_vaciar", { p_compania: unidad });
+      if (eV) throw eV;
+      const bloque = 1000;
+      for (let i = 0; i < nuevas.length; i += bloque) {
+        const { error: eI } = await supabase.from("revision_compras_sae").insert(nuevas.slice(i, i + bloque));
+        if (eI) throw new Error(`Se cortó la carga en el renglón ${i + 1}: ${eI.message}. Vuelve a cargar el archivo completo; la carga reemplaza todo.`);
+        setProgreso(`Subiendo ${Math.min(i + bloque, nuevas.length).toLocaleString("es-MX")} de ${nuevas.length.toLocaleString("es-MX")}…`);
+      }
+      setRecarga((n) => n + 1);
+    } catch (err) {
+      alert("No se pudo cargar el archivo: " + (err.message || err));
+      setProgreso("");
+    } finally {
+      setCargandoArchivo(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
+
+  const [filtros, setFiltros] = usePrefState("pref-revision-filtros", REV_FILTROS_VACIOS,
+    (g, d) => (g && typeof g === "object" ? { ...d, ...g } : d));
+  const set = (k, val) => setFiltros((f) => ({ ...f, [k]: val }));
+  const [sort, setSort] = usePrefState("pref-revision-sort", { key: "fecha_doc", dir: "desc" });
+  const [groupBys, setGroupBys] = usePrefState("pref-revision-groupbys", [], sanearGroupBys(REV_GRUPOS));
+  const [collapsed, setCollapsed] = useState(new Set());
+  const toggleGroup = (path) => setCollapsed((prev) => alternarEnSet(prev, path));
+
+  const datos = filas || [];
+  const opciones = useMemo(() => {
+    const unicos = (k) => [...new Set(datos.map((r) => r[k]).filter(Boolean))].sort((a, b) => String(a).localeCompare(String(b), "es", { numeric: true }));
+    return { status: unicos("status_txt"), serie: unicos("serie"), almacen: unicos("almacen"), tipo: unicos("tipo"), moneda: unicos("moneda_doc") };
+  }, [filas]);
+
+  const filtradas = useMemo(() => {
+    const q = filtros.texto.trim().toLowerCase();
+    const enLista = (lista, val) => !lista.length || lista.includes(val);
+    return datos.filter((r) =>
+      (!q || r._busca.includes(q)) &&
+      (!filtros.desde || (r.fecha_doc && r.fecha_doc >= filtros.desde)) &&
+      (!filtros.hasta || (r.fecha_doc && r.fecha_doc <= filtros.hasta)) &&
+      enLista(filtros.status, r.status_txt) && enLista(filtros.serie, r.serie) && enLista(filtros.almacen, r.almacen) &&
+      enLista(filtros.tipo, r.tipo) && enLista(filtros.moneda, r.moneda_doc));
+  }, [filas, filtros]);
+  const ordenadas = useMemo(() => sortRows(filtradas, sort), [filtradas, sort]);
+  const filtrosActivos = JSON.stringify(filtros) !== JSON.stringify(REV_FILTROS_VACIOS);
+
+  const groupKeys = groupBys.map((g) => g.field);
+  const agrupado = useMemo(() => (groupKeys.length ? agruparRows(ordenadas, groupBys, "importe") : null), [ordenadas, groupBys]);
+
+  /* Primera vez: se ocultan las columnas de detalle para que la tabla quepa.
+     Se siembra antes del hook, que lee su valor inicial de localStorage. */
+  try {
+    if (localStorage.getItem("colv-revision-compras") == null)
+      localStorage.setItem("colv-revision-compras", JSON.stringify(REV_OCULTAS_INICIO));
+  } catch { /* */ }
+  const colVisibility = useColumnVisibility("colv-revision-compras", REV_COLUMNAS);
+  const visiblesBase = REV_COLUMNAS.filter((c) => !groupKeys.includes(c.key) && !colVisibility.hidden.has(c.key));
+  const colWidths = useColumnWidths("colw-revision-compras", 130);
+  const { ordered: columnas, moveColumn } = useColumnOrder("colo-revision-compras", visiblesBase);
+  const dragKey = useRef(null);
+
+  const pag = usePaginacion("revision-compras", ordenadas, { agrupado, reinicio: [unidad, filtros, sort, groupBys], porDefecto: 100 });
+
+  const celda = (c, r) => {
+    if (c.num) {
+      const n = r[c.key];
+      return n == null || n === "" ? "" : money(n, c.usd ? "USD" : "MXP");
+    }
+    return mostrarFecha(c.render(r) ?? "");
+  };
+  const renderFila = (r, depth = 0, n) => (
+    <tr key={r.id}>
+      <td style={{ ...tdStyle, color: T.textFaint, fontSize: 11, fontFamily: T.fontMono, paddingLeft: depth ? 14 + depth * 22 : undefined }}>{n}</td>
+      {columnas.map((c) => (
+        <td key={c.key} style={{ ...tdStyle, ...(c.num ? { textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" } : {}),
+                                 ...(r.status === "C" ? { color: T.textFaint, textDecoration: c.key === "importe" ? "line-through" : undefined } : {}) }}>
+          {celda(c, r)}
+        </td>
+      ))}
+    </tr>
+  );
+
+  const exportar = async () => {
+    try {
+      await esperarLibrerias();
+      const cols = REV_COLUMNAS.filter((c) => !colVisibility.hidden.has(c.key));
+      const aoa = [cols.map((c) => c.label), ...ordenadas.map((r) => cols.map((c) => (c.num ? (r[c.key] ?? "") : (c.render(r) ?? ""))))];
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, "Compras");
+      XLSX.writeFile(wb, `Revision compras ${unidad} ${new Date().toISOString().slice(0, 10)}.xlsx`);
+    } catch (err) {
+      alert("No se pudo exportar: " + (err.message || err));
+    }
+  };
+
+  const sumaUsd = filtradas.reduce((s, r) => s + (Number(r.importe_usd) || 0), 0);
+  const nCanceladas = filtradas.filter((r) => r.status === "C").length;
+
+  return (
+    <Panel
+      title={`Revisión de compras — ${unidad} (Aspel SAE)`}
+      subtitle="Datos temporales, solo para revisar: no se mezclan con transacciones, partidas ni reportes de la app. Solo los administradores ven esta pestaña."
+      right={
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input ref={inputRef} type="file" accept=".xlsx,.xls,.xlsm" style={{ display: "none" }}
+            onChange={(e) => cargarArchivo(e.target.files?.[0])} />
+          <Button variant="ghost" onClick={exportar} disabled={!filtradas.length}>Exportar lo filtrado</Button>
+          <Button variant="ghost" onClick={() => inputRef.current?.click()} disabled={cargandoArchivo}
+            title={`Sube la exportación de compras de Aspel SAE. Reemplaza los datos de ${unidad} de esta pestaña.`}>
+            {cargandoArchivo ? "Cargando…" : "Cargar archivo de Aspel"}
+          </Button>
+        </div>
+      }
+    >
+      {progreso && <div style={{ fontSize: 12, color: T.textDim, marginBottom: 10 }}>{progreso}</div>}
+      {error && <div style={{ fontSize: 12, color: T.red, marginBottom: 10 }}>{error}</div>}
+      {filas === null ? null : !filas.length ? (
+        <EmptyState title={`Sin datos de ${unidad}`}
+          body={`Usa "Cargar archivo de Aspel" para subir la exportación de compras (Excel con columnas CVE_DOC, NOMBRE, IMPORTE…). Se guardan en una tabla aparte de la app.`} />
+      ) : (<>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
+          <Field label="Buscar" style={{ minWidth: 260, flex: 1 }}>
+            <TextInput value={filtros.texto} onChange={(e) => set("texto", e.target.value)}
+              placeholder="Proveedor, RFC, documento, referencia, tipo…" />
+          </Field>
+          <Field label="Desde (fecha doc.)">
+            <TextInput type="date" value={filtros.desde} onChange={(e) => set("desde", e.target.value)} />
+          </Field>
+          <Field label="Hasta">
+            <TextInput type="date" value={filtros.hasta} onChange={(e) => set("hasta", e.target.value)} />
+          </Field>
+          <Field label="Status"><MultiSelect opciones={opciones.status} seleccionados={filtros.status} onChange={(v) => set("status", v)} todosLabel="Todos" /></Field>
+          <Field label="Serie"><MultiSelect opciones={opciones.serie} seleccionados={filtros.serie} onChange={(v) => set("serie", v)} todosLabel="Todas" /></Field>
+          <Field label="Almacén"><MultiSelect opciones={opciones.almacen} seleccionados={filtros.almacen} onChange={(v) => set("almacen", v)} todosLabel="Todos" /></Field>
+          <Field label="Tipo"><MultiSelect opciones={opciones.tipo} seleccionados={filtros.tipo} onChange={(v) => set("tipo", v)} todosLabel="Todos" /></Field>
+          <Field label="Moneda doc."><MultiSelect opciones={opciones.moneda} seleccionados={filtros.moneda} onChange={(v) => set("moneda", v)} todosLabel="Todas" /></Field>
+          {filtrosActivos && <Button variant="ghost" onClick={() => setFiltros(REV_FILTROS_VACIOS)}>Limpiar filtros</Button>}
+          <div style={{ width: 1, alignSelf: "stretch", background: T.borderSoft, margin: "0 4px" }} />
+          <GroupByControl options={REV_GRUPOS} value={groupBys}
+            onChange={(v) => { setGroupBys(v); setCollapsed(new Set()); }}
+            maxLevels={3} groupedTree={agrupado} collapsed={collapsed} setCollapsed={setCollapsed} />
+          {groupKeys.length > 0 && (
+            <Button variant="ghost" onClick={() => setCollapsed(new Set(collectGroupPaths(agrupado)))}>Contraer todo</Button>
+          )}
+          <ColumnVisibilityControl columns={REV_COLUMNAS} hidden={colVisibility.hidden}
+            onToggle={colVisibility.toggle} onShowAll={colVisibility.showAll} />
+        </div>
+        <div style={{ fontSize: 12, color: T.textDim, marginBottom: 10 }}>
+          <b style={{ color: T.text }}>{filtradas.length.toLocaleString("es-MX")}</b> de {filas.length.toLocaleString("es-MX")} compras
+          {nCanceladas > 0 && <> · {nCanceladas.toLocaleString("es-MX")} canceladas (se ven en gris; sí entran en las sumas — fíltralas por Status si no las quieres)</>}
+          {sumaUsd > 0 && <> · documentos en dólares: {money(sumaUsd, "USD")}</>}
+        </div>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ ...tableStyle, tableLayout: "fixed" }}>
+            <colgroup>
+              <col style={{ width: 56 }} />
+              {columnas.map((c) => <col key={c.key} style={{ width: colWidths.getWidth(c.key) }} />)}
+            </colgroup>
+            <thead>
+              <tr>
+                <th style={thStyle}>#</th>
+                {columnas.map((c) => (
+                  <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
+                    width={colWidths.getWidth(c.key)} onResizeStart={(e) => colWidths.startResize(c.key, e)}
+                    onDragStart={(e) => { dragKey.current = c.key; e.dataTransfer.effectAllowed = "move"; }}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => { e.preventDefault(); if (dragKey.current) { moveColumn(dragKey.current, c.key); dragKey.current = null; } }}
+                    alinear={c.num ? "right" : undefined}
+                    sumLabel={c.key === "importe" ? sumaPorMoneda(filtradas, "importe") : undefined} />
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {groupKeys.length
+                ? buildGroupedTrs(pag.agrupado, "", collapsed, toggleGroup, columnas.length + 1, 0, renderFila,
+                    Object.fromEntries(REV_GRUPOS.map((o) => [o.value, o.label])), { n: pag.offset })
+                : pag.filas.map((r, i) => renderFila(r, 0, pag.offset + i + 1))}
+              {!filtradas.length && (
+                <tr><td colSpan={columnas.length + 1} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna compra coincide con estos filtros</td></tr>
+              )}
+            </tbody>
+          </table>
+          <Paginador pag={pag} etiqueta="compras" />
+        </div>
+      </>)}
+    </Panel>
+  );
+}
 
 /* ----------------------------------------------------------------------
    TABS: PARTIDAS
@@ -26071,6 +26444,8 @@ function AppPrincipal() {
     { id: "contratos", label: "Contratos" },
     { id: "herramientas", label: "Herramientas" },
     { id: "catalogo", label: "Catálogo" },
+    // Temporal (v3.11.0): revisión de compras de Aspel, solo administradores.
+    ...(miPerfil?.es_admin ? [{ id: "revision", label: "Revisión" }] : []),
   ];
 
   if (session === undefined) {
@@ -26218,6 +26593,7 @@ function AppPrincipal() {
           {tab === "solicitudes" && <SolicitudesTab onConvertir={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} unidad={unidad} session={session} unidades={unidades} proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} zonas={zonas.map((z) => (typeof z === "string" ? z : z.nombre))} />}
           {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} clausulasApi={contratosClausulasApi} session={session} />}
           {tab === "herramientas" && <HerramientasTab />}
+          {tab === "revision" && miPerfil?.es_admin && <RevisionComprasTab unidad={unidad} />}
           {tab === "catalogo" && <CatalogoTab key={catalogoVersion} listasSat={listasSat} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} esAdmin={!!miPerfil?.es_admin} session={session} />}
         </>
       )}

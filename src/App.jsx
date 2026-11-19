@@ -476,8 +476,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.7.1";
+const APP_VERSION = "3.8.0";
 const CHANGELOG = [
+  { v: "3.8.0", desc: "Tablas agrupadas (Transacciones, Partidas y Sin vincular) mas legibles, segun el previo aprobado: el primer nivel es una banda con fondo de acento, el valor grande (las fechas con dia de la semana: Miercoles 18/11/26), N registros y el total; hay espacio entre un grupo y el siguiente. Los subniveles tienen fondo intermedio, el valor en negritas con un color propio por grupo y una linea de ese color a la izquierda de sus filas. Ya no se repite el nombre del campo en cada encabezado (queda al pasar el raton)" },
   { v: "3.7.1", desc: "Reporte de Pagos, Resaltar lo que cambio respecto a: los envios hechos antes de la 3.7.0 no tienen guardado que pagos llevaban y no se pueden comparar. Ahora salen marcados sin detalle guardado y desactivados en la lista, la opcion por omision es el ultimo envio que si se puede comparar, y un aviso explica por que no hay comparacion cuando ninguno se puede usar" },
   { v: "3.7.0", desc: "Reporte de Pagos: (1) es de un solo dia: en lugar de Desde / Hasta hay un selector de Fecha de pago con flechas para el dia anterior y siguiente y el boton Hoy. (2) Al reenviar una fecha (R1, R2...) el PDF y el Excel dicen que cambio respecto al envio elegido (por omision el ultimo; se puede elegir otro o Sin comparar): primero el total contra ese envio y la diferencia, despues los pagos nuevos en verde, los que cambiaron en ambar (importe, proveedor, concepto, cuenta, forma de pago, referencia, zona, con su valor anterior) y los retirados en gris; en el detalle se colorean las filas nuevas y cambiadas. Cada envio guarda su detalle para poder compararlo. Requiere correr envios-pagos-detalle.sql" },
   { v: "3.6.0", desc: "Solicitudes: nuevo estado Pagado, despues de Agendado a pago, como columna del tablero. Lo pone el sistema: una SMI pasa a Pagado cuando todas sus transacciones vigentes estan en status Pagado (en compras PPD, cuando se paga el 100 %), y regresa a Agendado a pago si alguna vuelve a No Pagado. Requiere correr smi-estado-pagado.sql" },
@@ -6951,25 +6952,61 @@ function sumaGrupoPorMoneda(filas, campo) {
    encabezado de grupo lleva una casilla que selecciona o quita TODAS las
    filas del grupo, también las de subgrupos colapsados y las de otras
    páginas: el grupo es la unidad, no lo que se ve. */
-function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}, counter = { n: 0 }, resumen = null, posResumen = null, seleccion = null) {
-  if (node.type === "rows") return node.rows.map((r) => renderRowTr(r, depth, ++counter.n));
+/* Agrupación legible (v3.8.0, según el previo aprobado):
+   - Primer nivel: banda con fondo de acento, el valor grande (una fecha lleva
+     su día de la semana), "N registros" y el total; espacio antes de cada uno.
+   - Niveles de abajo: fondo intermedio, el valor en negritas y en un color
+     propio por grupo, y una línea de ese color a la izquierda de sus filas.
+   - Ya no se repite el nombre del campo ("DÍA DE PAGO PROGRAMADO",
+     "REGIÓN") en cada encabezado: lo dice el botón de agrupar, y queda en el
+     texto que sale al pasar el ratón. */
+const DIAS_SEMANA = ["Domingo", "Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado"];
+const valorGrupoLegible = (v) => {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(v ?? ""));
+  if (!m) return mostrarFecha(v);
+  return `${DIAS_SEMANA[new Date(+m[1], +m[2] - 1, +m[3]).getDay()]} ${mostrarFecha(v)}`;
+};
+// La línea de color de las filas de un grupo va en su primera celda (CSS),
+// porque las filas las arma cada tabla y aquí solo se les pone el color.
+try {
+  if (typeof document !== "undefined" && !document.getElementById("estilo-guia-grupo")) {
+    const st = document.createElement("style");
+    st.id = "estilo-guia-grupo";
+    st.textContent = "tr[data-guia] > td:first-child { box-shadow: inset 3px 0 0 var(--guia); }";
+    document.head.appendChild(st);
+  }
+} catch { /* sin DOM */ }
+const COLORES_SUBGRUPO = [T.teal, T.amber, T.accent, T.ppd, T.blue];
+function marcarGuia(el, color) {
+  if (Array.isArray(el)) return el.map((x) => marcarGuia(x, color));
+  if (el && el.type === "tr") {
+    return React.cloneElement(el, { "data-guia": "", style: { ...(el.props.style || {}), "--guia": color } });
+  }
+  // Partidas devuelve la fila y su detalle dentro de un Fragment.
+  if (el && el.type === React.Fragment) {
+    return React.cloneElement(el, {}, ...React.Children.toArray(el.props.children).map((c) => marcarGuia(c, color)));
+  }
+  return el;
+}
+
+function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}, counter = { n: 0 }, resumen = null, posResumen = null, seleccion = null, colorGuia = null) {
+  if (node.type === "rows") return node.rows.map((r) => (colorGuia ? marcarGuia(renderRowTr(r, depth, ++counter.n), colorGuia) : renderRowTr(r, depth, ++counter.n)));
   const campoSuma = node.sumField || null;
   let out = [];
-  const levelColor = GROUP_LEVEL_COLORS[depth % GROUP_LEVEL_COLORS.length];
-  // La jerarquía visual baja de intensidad mientras más profundo el nivel:
-  // fondo más oscuro y texto más grande/grueso arriba, más sutil abajo.
-  const bgShade = T.niveles[Math.min(depth, 2)];
-  const valueFontSize = [13, 12, 11.5][Math.min(depth, 2)];
-  const valueFontWeight = [700, 600, 600][Math.min(depth, 2)];
-  const labelFontSize = [12, 11, 10.5][Math.min(depth, 2)];
-  const labelFontWeight = [800, 700, 600][Math.min(depth, 2)];
-  const labelColor = [T.text, T.textDim, T.textFaint][Math.min(depth, 2)];
-  const rowPadding = depth === 0 ? "12px 10px" : "8px 10px";
-  const borderWidth = depth === 0 ? 4 : depth === 1 ? 3 : 2;
-  const pillTone = depth === 0 ? "accent" : depth === 1 ? "teal" : "dim";
+  const nivel = Math.min(depth, 2);
+  const bgShade = depth === 0 ? T.accentBg : T.niveles[Math.min(depth - 1, 2)];
+  const valueFontSize = [16, 13, 12][nivel];
+  const valueFontWeight = [700, 700, 600][nivel];
+  const rowPadding = depth === 0 ? "13px 10px" : "8px 10px";
+  const borderWidth = depth === 0 ? 4 : 3;
 
-  node.entries.forEach((entry) => {
+  node.entries.forEach((entry, idx) => {
     const groupPath = `${path}/${node.key}:${entry.value}`;
+    const levelColor = depth === 0 ? T.accent : COLORES_SUBGRUPO[idx % COLORES_SUBGRUPO.length];
+    // Espacio entre grupos del primer nivel: cada uno se lee como un bloque.
+    if (depth === 0 && idx > 0) {
+      out.push(<tr key={`${groupPath}-esp`} aria-hidden="true"><td colSpan={colSpan} style={{ height: 16, padding: 0, border: "none", background: "transparent" }} /></tr>);
+    }
     const isCollapsed = collapsed.has(groupPath);
     /* Con posResumen, el total va en su propia celda, en la columna de los
        montos que suma: se lee de arriba hacia abajo. Sin ella, al extremo
@@ -6984,12 +7021,14 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
       <tr key={groupPath} onClick={() => toggleGroup(groupPath)} style={{ cursor: "pointer" }}>
         <td
           colSpan={enColumna ? posResumen.antes : colSpan}
+          title={`${fieldLabels[node.key] || node.key}: ${mostrarFecha(entry.value)}`}
           style={{
             ...tdStyle, background: bgShade,
             padding: rowPadding,
-            paddingLeft: 14 + depth * 24,
+            paddingLeft: 14 + depth * 22,
             borderLeft: `${borderWidth}px solid ${levelColor}`,
-            borderBottom: `1px solid ${T.borderSoft}`,
+            borderBottom: `1px solid ${depth === 0 ? `${T.accent}55` : T.border}`,
+            borderTop: depth === 0 ? `1px solid ${T.accent}55` : undefined,
           }}
         >
           <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
@@ -7007,31 +7046,36 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
                   style={{ flexShrink: 0, cursor: "pointer" }} />
               );
             })()}
-            <span style={{ color: T.textFaint, fontSize: depth === 0 ? 11 : 9.5, width: 12, flexShrink: 0 }}>{isCollapsed ? "▶" : "▼"}</span>
-            <span style={{ fontSize: labelFontSize, fontWeight: labelFontWeight, color: labelColor, textTransform: "uppercase", letterSpacing: "0.04em", flexShrink: 0 }}>{fieldLabels[node.key] || node.key}</span>
-            <Pill tone={pillTone}>
-              <span style={{ fontSize: valueFontSize, fontWeight: valueFontWeight, fontFamily: T.fontUI, letterSpacing: 0 }}>{mostrarFecha(entry.value)}</span>
-            </Pill>
-            <span style={{ fontSize: 10.5, color: T.textFaint, background: T.panel, borderRadius: 999, padding: "1px 7px", flexShrink: 0 }}>{entry.count}</span>
+            <span style={{ color: depth === 0 ? T.accent : T.textFaint, fontSize: depth === 0 ? 11 : 9.5, width: 12, flexShrink: 0 }}>{isCollapsed ? "▶" : "▼"}</span>
+            <span style={{ fontSize: valueFontSize, fontWeight: valueFontWeight, color: depth === 0 ? T.text : levelColor, flexShrink: 0 }}>
+              {valorGrupoLegible(entry.value)}
+            </span>
+            <span style={{ fontSize: depth === 0 ? 12 : 11.5, color: T.textDim, flexShrink: 0 }}>
+              {entry.count} {entry.count === 1 ? "registro" : "registros"}
+            </span>
             {!enColumna && (
-              <span style={{ fontSize: depth === 0 ? 13 : 11.5, fontWeight: depth === 0 ? 700 : 600, fontFamily: T.fontMono, color: T.text, marginLeft: "auto", flexShrink: 0, textAlign: "right" }}>
+              <span style={{ fontSize: depth === 0 ? 14 : 12, fontWeight: depth === 0 ? 700 : 600, fontFamily: T.fontMono, color: depth === 0 ? T.text : T.textDim, marginLeft: "auto", flexShrink: 0, textAlign: "right" }}>
                 {contenidoResumen}
               </span>
             )}
           </div>
         </td>
         {enColumna && (
-          <td style={{ ...tdStyle, background: bgShade, borderBottom: `1px solid ${T.borderSoft}`, padding: rowPadding,
-                       fontSize: depth === 0 ? 13 : 12, fontWeight: depth === 0 ? 700 : 600, fontFamily: T.fontMono }}>
+          <td style={{ ...tdStyle, background: bgShade, padding: rowPadding,
+                       borderBottom: `1px solid ${depth === 0 ? `${T.accent}55` : T.border}`, borderTop: depth === 0 ? `1px solid ${T.accent}55` : undefined,
+                       fontSize: depth === 0 ? 14 : 12, fontWeight: depth === 0 ? 700 : 600, fontFamily: T.fontMono,
+                       color: depth === 0 ? T.text : T.textDim }}>
             {contenidoResumen}
           </td>
         )}
         {enColumna && posResumen.despues > 0 && (
-          <td colSpan={posResumen.despues} style={{ ...tdStyle, background: bgShade, borderBottom: `1px solid ${T.borderSoft}`, padding: rowPadding }} />
+          <td colSpan={posResumen.despues} style={{ ...tdStyle, background: bgShade, padding: rowPadding,
+                       borderBottom: `1px solid ${depth === 0 ? `${T.accent}55` : T.border}`, borderTop: depth === 0 ? `1px solid ${T.accent}55` : undefined }} />
         )}
       </tr>
     );
-    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels, counter, resumen, posResumen, seleccion));
+    if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels, counter, resumen, posResumen, seleccion,
+      depth === 0 && entry.child.type === "rows" ? T.accent : depth === 0 ? null : levelColor));
   });
   return out;
 }

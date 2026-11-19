@@ -8,8 +8,9 @@ el archivo a Supabase, que sí acepta carga anónima, y este proceso lo lleva a
 Drive con credenciales que nunca tocan el navegador.
 
 Qué hace, por cada adjunto en tránsito:
-  1. Busca o crea Compras/<COMPAÑÍA>/<AÑO>/<FOLIO> en Drive. La raíz que se
-     configura en los parámetros es la de la compañía; el nivel del año lo
+  1. Busca o crea Compras/<COMPAÑÍA>/<AÑO>/<TIPO>/<FOLIO> en Drive, donde
+     TIPO es Solicitudes (SMI) o Transacciones. La raíz que se configura en
+     los parámetros es la de la compañía; los niveles del año y del tipo los
      crea este proceso, para no tener que cambiar el parámetro cada enero.
   2. Descarga el archivo del búfer.
   3. Lo sube a Drive.
@@ -194,7 +195,7 @@ def expediente_de(adj):
         if not f:
             return None
         s = f[0]
-        return {"tabla": "solicitudes", "id": s["id"], "folio": s["folio"],
+        return {"tabla": "solicitudes", "tipo": CARPETA_SOLICITUDES, "id": s["id"], "folio": s["folio"],
                 "unidad": s["unidad"], "anio": s.get("anio"),
                 "carpeta": s.get("drive_folder_id")}
 
@@ -213,7 +214,7 @@ def expediente_de(adj):
             return "pendiente"
 
         anio = int(str(t["dia"])[:4]) if t.get("dia") else datetime.now().year
-        return {"tabla": "transacciones", "id": t["id"], "folio": t["folio_transaccion"],
+        return {"tabla": "transacciones", "tipo": CARPETA_TRANSACCIONES, "id": t["id"], "folio": t["folio_transaccion"],
                 "unidad": t.get("unidad_detectada"), "anio": anio,
                 "carpeta": t.get("drive_folder_id")}
 
@@ -302,14 +303,24 @@ def subcarpeta(drive, padre, nombre):
     return creada["id"]
 
 
-def carpeta_de_solicitud(drive, raiz, anio, folio):
-    """Compras/<COMPAÑÍA>/<AÑO>/<FOLIO>.
+# Dentro de cada año, un nivel por tipo de expediente. Antes las carpetas de
+# las SMI (OSB-308-26) y las de las transacciones (OSB-NOV26-060) quedaban
+# revueltas en la misma carpeta del año.
+CARPETA_SOLICITUDES = "Solicitudes"
+CARPETA_TRANSACCIONES = "Transacciones"
+
+
+def carpeta_de_solicitud(drive, raiz, anio, folio, tipo):
+    """Compras/<COMPAÑÍA>/<AÑO>/<TIPO>/<FOLIO>.
 
        La raíz configurada en los parámetros es la de la compañía; el nivel
        del año lo crea el proceso. Si el año estuviera en la raíz habría que
        cambiar el parámetro a mano cada enero, y el primero que capturara en
-       enero dejaría su solicitud en la carpeta del año anterior."""
-    return subcarpeta(drive, subcarpeta(drive, raiz, anio), folio)
+       enero dejaría su solicitud en la carpeta del año anterior.
+
+       Solo aplica a expedientes nuevos: el que ya tiene drive_folder_id
+       sigue recibiendo sus archivos en la carpeta donde se creó."""
+    return subcarpeta(drive, subcarpeta(drive, subcarpeta(drive, raiz, anio), tipo), folio)
 
 
 def subir_a_drive(drive, carpeta, nombre, contenido, mime):
@@ -642,7 +653,7 @@ def main():
                     fallidos += 1
                     continue
                 anio = exp.get("anio") or datetime.now().year
-                carpeta = carpeta_de_solicitud(drive, raiz, anio, exp["folio"])
+                carpeta = carpeta_de_solicitud(drive, raiz, anio, exp["folio"], exp["tipo"])
                 requests.patch(f"{SUPABASE_URL}/rest/v1/{exp['tabla']}",
                                headers={**CAB, "Prefer": "return=minimal"},
                                params={"id": f"eq.{exp['id']}"},

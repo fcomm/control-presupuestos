@@ -476,8 +476,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.9.0";
+const APP_VERSION = "3.10.0";
 const CHANGELOG = [
+  { v: "3.10.0", desc: "Editar transaccion: junto a Cuenta bancaria hay un icono (i) que, al pasar el mouse, muestra todas las cuentas del proveedor con banco, sucursal, CLABE, numero de cuenta, SWIFT y divisa, y marca la elegida. Antes habia que abrir el proveedor para verlas. Aplica tambien en la edicion rapida desde Partidas" },
   { v: "3.9.0", desc: "Elegir partida (en Transacciones): cada partida trae un boton de lapiz para editarla ahi mismo, sin ir a Partidas: concepto, mes, ano, rubro, proyecto, monto estimado y moneda. El folio no cambia. La moneda no se puede cambiar si la partida ya tiene transacciones vinculadas (quedarian en una partida de otra moneda). Si se cambia el rubro, avisa cuantas transacciones vinculadas quedan con una categoria fuera del nuevo rubro. Al guardar regresa a la lista en el periodo de la partida, para que se vea el cambio" },
   { v: "3.8.1", desc: "Tablas agrupadas: tambien hay espacio entre los subgrupos (p. ej. entre Agua Dulce y QRO dentro de un dia), menor que el que separa los grupos principales" },
   { v: "3.8.0", desc: "Tablas agrupadas (Transacciones, Partidas y Sin vincular) mas legibles, segun el previo aprobado: el primer nivel es una banda con fondo de acento, el valor grande (las fechas con dia de la semana: Miercoles 18/11/26), N registros y el total; hay espacio entre un grupo y el siguiente. Los subniveles tienen fondo intermedio, el valor en negritas con un color propio por grupo y una linea de ese color a la izquierda de sus filas. Ya no se repite el nombre del campo en cada encabezado (queda al pasar el raton)" },
@@ -1617,6 +1618,55 @@ function marcadoresDisponibles(proyectosUnidad) {
   const grupos = [...new Set(proyectosUnidad.map((p) => p.grupo))].filter(Boolean);
   const marcadores = grupos.filter((g) => proyectosUnidad.filter((p) => p.grupo === g).length > 1).map((g) => `${g} Gral`);
   return [...proyectosUnidad.map((p) => p.nombre), ...marcadores, "Todos"];
+}
+
+/* Ícono ⓘ con las cuentas del proveedor en un globo al pasar el mouse
+   (v3.10.0): el detalle completo sin abrir el proveedor ni ocupar espacio
+   fijo en el formulario. La cuenta elegida en la transacción va marcada. */
+function CuentasProveedorTip({ cuentas = [], seleccionadaId }) {
+  const [visible, setVisible] = useState(false);
+  if (!cuentas.length) return null;
+  const dato = (etq, v, mono) => v ? (
+    <div style={{ display: "flex", gap: 8 }}>
+      <span style={{ color: T.textFaint, width: 70, flexShrink: 0 }}>{etq}</span>
+      <span style={{ color: T.text, fontFamily: mono ? T.fontMono : undefined, wordBreak: "break-all" }}>{v}</span>
+    </div>
+  ) : null;
+  return (
+    <span style={{ position: "relative", display: "inline-flex", flexShrink: 0 }}
+      onMouseEnter={() => setVisible(true)} onMouseLeave={() => setVisible(false)}
+      onClick={(e) => { e.preventDefault(); setVisible((v) => !v); }}>
+      <span aria-label={`Ver ${cuentas.length} cuenta(s) del proveedor`}
+        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 34, height: 34,
+                 border: `1px solid ${T.border}`, borderRadius: 6, color: T.accent, cursor: "help", fontSize: 13, fontWeight: 700 }}>
+        ⓘ
+      </span>
+      {visible && (
+        <div role="tooltip" style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 1300, width: 340,
+                                     background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8,
+                                     boxShadow: "0 8px 24px rgba(0,0,0,0.25)", padding: 10, fontSize: 11.5,
+                                     textTransform: "none", letterSpacing: "normal", cursor: "default" }}>
+          <div style={{ fontWeight: 600, color: T.text, marginBottom: 6 }}>
+            {cuentas.length === 1 ? "1 cuenta del proveedor" : `${cuentas.length} cuentas del proveedor`}
+          </div>
+          {cuentas.map((c, i) => (
+            <div key={c.id} style={{ padding: "6px 8px", borderRadius: 6, marginTop: i ? 6 : 0, display: "grid", gap: 2,
+                                     border: `1px solid ${c.id === seleccionadaId ? T.accent : T.borderSoft}`,
+                                     background: c.id === seleccionadaId ? T.accentBg : "transparent" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8, fontWeight: 600, color: T.text }}>
+                <span>{c.banco || "Banco N/D"}</span>
+                <span style={{ fontWeight: 400, color: T.textDim }}>{c.divisa || "MXP"}{c.id === seleccionadaId ? " · elegida" : ""}</span>
+              </div>
+              {dato("Sucursal", c.sucursal)}
+              {dato("CLABE", c.clabe, true)}
+              {dato("No. cuenta", c.numero_cuenta, true)}
+              {dato("SWIFT", c.swift, true)}
+            </div>
+          ))}
+        </div>
+      )}
+    </span>
+  );
 }
 
 // Botón que abre un popup con buscador para elegir una partida — más cómodo
@@ -8664,10 +8714,13 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
         </Field>
         {form.proveedor_id && (
           <Field label="Cuenta bancaria" style={{ gridColumn: "span 2" }}>
-            <Select value={form.cuenta_id || ""} onChange={(e) => setForm({ ...form, cuenta_id: e.target.value })}>
-              <option value="">— Elige una cuenta —</option>
-              {cuentasDelProveedorSeleccionado.map((c) => <option key={c.id} value={c.id}>{c.banco} · {c.clabe} ({c.divisa})</option>)}
-            </Select>
+            <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+              <Select value={form.cuenta_id || ""} onChange={(e) => setForm({ ...form, cuenta_id: e.target.value })} style={{ flex: 1, minWidth: 0 }}>
+                <option value="">— Elige una cuenta —</option>
+                {cuentasDelProveedorSeleccionado.map((c) => <option key={c.id} value={c.id}>{c.banco} · {c.clabe} ({c.divisa})</option>)}
+              </Select>
+              <CuentasProveedorTip cuentas={cuentasDelProveedorSeleccionado} seleccionadaId={form.cuenta_id} />
+            </div>
           </Field>
         )}
         <Field label="Concepto de pago (detallado)" style={{ gridColumn: "span 4" }}>
@@ -13782,12 +13835,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 />}
               </Field>
               <Field label="Cuenta bancaria">
-                <Select value={form.cuenta_id} onChange={(e) => setForm({ ...form, cuenta_id: e.target.value })} disabled={!form.proveedor_id}>
-                  <option value="">{form.proveedor_id ? "— Elegir cuenta —" : "— Elige un proveedor primero —"}</option>
-                  {cuentasDelProveedorSeleccionado.map((c) => (
-                    <option key={c.id} value={c.id}>{c.banco || "Banco N/D"} · {c.clabe || c.numero_cuenta || "—"} ({c.divisa})</option>
-                  ))}
-                </Select>
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  <Select value={form.cuenta_id} onChange={(e) => setForm({ ...form, cuenta_id: e.target.value })} disabled={!form.proveedor_id} style={{ flex: 1, minWidth: 0 }}>
+                    <option value="">{form.proveedor_id ? "— Elegir cuenta —" : "— Elige un proveedor primero —"}</option>
+                    {cuentasDelProveedorSeleccionado.map((c) => (
+                      <option key={c.id} value={c.id}>{c.banco || "Banco N/D"} · {c.clabe || c.numero_cuenta || "—"} ({c.divisa})</option>
+                    ))}
+                  </Select>
+                  <CuentasProveedorTip cuentas={cuentasDelProveedorSeleccionado} seleccionadaId={form.cuenta_id} />
+                </div>
               </Field>
               <Field label="Proveedor / razón social (texto)" style={{ gridColumn: "span 2" }}>
                 <TextInput value={form.proveedor} readOnly={esParcialidad(form)} onChange={(e) => setForm({ ...form, proveedor: e.target.value })} placeholder="Se llena solo al elegir del catálogo, o captúralo si no está dado de alta" />

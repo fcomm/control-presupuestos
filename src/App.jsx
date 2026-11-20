@@ -476,8 +476,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.11.0";
+const APP_VERSION = "3.11.1";
 const CHANGELOG = [
+  { v: "3.11.1", desc: "Transacciones: el buscador tambien busca en Folio compra SAE, Folio de factura, SMI, Area y Referencia de pago. El area ya venia en el texto de ayuda del buscador pero no se buscaba" },
   { v: "3.11.0", desc: "Nueva pestana Revision (solo administradores): revisar las compras exportadas de Aspel SAE. Los datos viven en una tabla aparte (revision_compras_sae) que nada de la app suma ni cruza, y se cargan desde la propia pestana con Cargar archivo de Aspel (reemplaza los de esa compania). Busqueda, filtros por fecha, status, serie, almacen, tipo y moneda, Agrupar por (hasta 3 niveles con subtotales), columnas, orden y exportar lo filtrado a Excel. Es temporal: para retirarla se quita la pestana y se borra la tabla. Requiere 67-revision-compras-sae.sql" },
   { v: "3.10.0", desc: "Editar transaccion: junto a Cuenta bancaria hay un icono (i) que, al pasar el mouse, muestra todas las cuentas del proveedor con banco, sucursal, CLABE, numero de cuenta, SWIFT y divisa, y marca la elegida. Antes habia que abrir el proveedor para verlas. Aplica tambien en la edicion rapida desde Partidas" },
   { v: "3.9.0", desc: "Elegir partida (en Transacciones): cada partida trae un boton de lapiz para editarla ahi mismo, sin ir a Partidas: concepto, mes, ano, rubro, proyecto, monto estimado y moneda. El folio no cambia. La moneda no se puede cambiar si la partida ya tiene transacciones vinculadas (quedarian en una partida de otra moneda). Si se cambia el rubro, avisa cuantas transacciones vinculadas quedan con una categoria fuera del nuevo rubro. Al guardar regresa a la lista en el periodo de la partida, para que se vea el cambio" },
@@ -11963,8 +11964,9 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     if (filtros.texto.trim()) {
       const q = filtros.texto.trim().toLowerCase();
       const partida = partidaDe(t);
-      const enTexto = [t.proveedor, idSaeProv(t), t.concepto_detallado, t.solicitante, t.zona, t.folio_transaccion, partida?.folio, partida?.concepto]
-        .some((v) => (v || "").toLowerCase().includes(q));
+      const enTexto = [t.proveedor, idSaeProv(t), t.concepto_detallado, t.solicitante, t.zona, t.area, t.folio_transaccion,
+                       t.folio_compra_sae, t.folio_factura, t.smi, t.referencia_pago, partida?.folio, partida?.concepto]
+        .some((v) => String(v ?? "").toLowerCase().includes(q));
       if (!enTexto) return false;
     }
     return true;
@@ -13524,7 +13526,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               <TextInput
                 value={filtros.texto}
                 onChange={(e) => setFiltros({ ...filtros, texto: e.target.value })}
-                placeholder="Proveedor, concepto, folio, área…"
+                placeholder="Proveedor, concepto, folio, folio SAE, factura, SMI, área…"
                 style={{ width: "100%" }}
               />
             </Field>

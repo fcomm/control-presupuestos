@@ -286,6 +286,10 @@ const GROUP_OPCIONES_PANEL = [
 // cualquiera sabe que va ahí.
 const PISTAS_CATEGORIA = {
   "Combustible": ["gasolina", "diesel", "diésel", "magna", "premium"],
+  "Hospedaje": ["hotel", "hospedaje", "motel", "posada"],
+  "Boletos de avión": ["vuelo", "avion", "aeromexico", "volaris", "viva aerobus", "boleto"],
+  "Alimentación": ["comida", "alimento", "restaurante", "desayuno", "cena"],
+  "Casetas": ["caseta", "peaje", "iave", "capufe"],
   "Mantenimiento vehicular": ["mantto unidad", "mantto unidades", "mantto vehicular",
     "mantenimiento vehicular", "unidades ligeras", "unidades pesadas", "unidad vehicular"],
   "Llantas": ["llanta", "neumatico", "rin"],
@@ -476,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.11.1";
+const APP_VERSION = "3.12.0";
 const CHANGELOG = [
+  { v: "3.12.0", desc: "Editar transaccion > Clasificacion: buscador \"Que rubro aplica\". Se escribe una palabra (p. ej. llanta, cfe, hotel) y propone categorias con su rubro, juntando tres fuentes: el nombre de la categoria o el rubro, las palabras clave del catalogo y como se clasificaron antes las transacciones de la compania con ese texto en el concepto o el proveedor. Clic en una sugerencia pone la categoria; si su rubro no es el de la partida, aparece el aviso de siempre con la partida que si corresponde" },
   { v: "3.11.1", desc: "Transacciones: el buscador tambien busca en Folio compra SAE, Folio de factura, SMI, Area y Referencia de pago. El area ya venia en el texto de ayuda del buscador pero no se buscaba" },
   { v: "3.11.0", desc: "Nueva pestana Revision (solo administradores): revisar las compras exportadas de Aspel SAE. Los datos viven en una tabla aparte (revision_compras_sae) que nada de la app suma ni cruza, y se cargan desde la propia pestana con Cargar archivo de Aspel (reemplaza los de esa compania). Busqueda, filtros por fecha, status, serie, almacen, tipo y moneda, Agrupar por (hasta 3 niveles con subtotales), columnas, orden y exportar lo filtrado a Excel. Es temporal: para retirarla se quita la pestana y se borra la tabla. Requiere 67-revision-compras-sae.sql" },
   { v: "3.10.0", desc: "Editar transaccion: junto a Cuenta bancaria hay un icono (i) que, al pasar el mouse, muestra todas las cuentas del proveedor con banco, sucursal, CLABE, numero de cuenta, SWIFT y divisa, y marca la elegida. Antes habia que abrir el proveedor para verlas. Aplica tambien en la edicion rapida desde Partidas" },
@@ -5087,6 +5092,91 @@ function TextInput(props) {
    "Material eléctrico".
    `grupos` = [{ label, destacado, cats: [..] }], en el orden en que se ven. */
 const normCat = (s) => String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().trim();
+/* "¿Qué rubro aplica?" (v3.12.0): de una palabra o texto a categoría y rubro.
+   Junta tres fuentes y las puntúa:
+     · el nombre de la categoría o del rubro contiene la palabra;
+     · las palabras clave del catálogo (PISTAS_CATEGORIA);
+     · cómo se clasificaron antes las transacciones de la compañía cuyo
+       concepto o proveedor contiene el texto — la que más pesa, porque es
+       como se ha hecho de verdad.
+   Solo propone: elegir pone la categoría, y si su rubro no es el de la
+   partida, el aviso de "fuera del rubro" ofrece la partida correcta. */
+function sugerirRubrosPorTexto(texto, transacciones = [], partidas = []) {
+  const q = normSug(texto);
+  if (q.length < 3) return [];
+  const palabras = q.split(" ").filter((w) => w.length >= 3);
+  const res = new Map();
+  const sumar = (rubro, cat, pts, fuente) => {
+    if (!rubro || !cat) return;
+    const k = `${rubro}|${cat}`;
+    const r = res.get(k) || { rubro, categoria: cat, pts: 0, fuentes: new Set(), previas: 0 };
+    r.pts += pts; if (fuente) r.fuentes.add(fuente);
+    res.set(k, r);
+    return r;
+  };
+  RUBROS.forEach((r) => {
+    const nr = normSug(r.rubro);
+    r.categorias.forEach((c) => {
+      const nc = normSug(c);
+      if (nc === "diversos") return;
+      let pts = 0, fuente = null;
+      if (nc.includes(q) || palabras.some((w) => nc.split(" ").some((x) => x.startsWith(w)))) { pts += 50; fuente = "nombre"; }
+      if (palabras.some((w) => nr.split(" ").some((x) => x.startsWith(w)))) { pts += 20; fuente = fuente || "nombre"; }
+      const claves = (PISTAS_NORM[nc] || []).map(normSug);
+      if (claves.some((k) => q.includes(k) || palabras.some((w) => w.length >= 4 && k.startsWith(w)))) { pts += 60; fuente = "palabra clave"; }
+      if (pts) sumar(r.rubro, c, pts, fuente);
+    });
+  });
+  const partidaPorId = new Map(partidas.map((p) => [p.id, p]));
+  transacciones.forEach((t) => {
+    if (!t.categoria) return;
+    if (!normSug(`${t.concepto_detallado || ""} ${t.proveedor || ""}`).includes(q)) return;
+    const pr = partidaPorId.get(t.partida_id);
+    const rubro = (pr && pr.rubro && pr.rubro !== RUBRO_NO_CLASIFICADO) ? pr.rubro : rubroDeCategoria(t.categoria);
+    const r = sumar(rubro, t.categoria, 0, "previas");
+    if (r) r.previas += 1;
+  });
+  res.forEach((r) => { if (r.previas) r.pts += 40 + Math.min(r.previas, 20) * 8; });
+  return [...res.values()].sort((a, b) => b.pts - a.pts).slice(0, 8);
+}
+
+function BuscadorRubro({ transacciones, partidas, partidaActual, categoriaActual, onElegir }) {
+  const [texto, setTexto] = useState("");
+  const sugerencias = useMemo(() => sugerirRubrosPorTexto(texto, transacciones, partidas), [texto, transacciones, partidas]);
+  const q = normSug(texto);
+  return (
+    <div>
+      <TextInput value={texto} onChange={(e) => setTexto(e.target.value)}
+        placeholder="Escribe qué se compró: llanta, cfe, hotel, toner, calibración…" style={{ width: "100%" }} />
+      {q.length >= 3 && (
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 6 }}>
+          {!sugerencias.length && <span style={{ fontSize: 11.5, color: T.textFaint }}>Sin sugerencias para "{texto.trim()}". Prueba con otra palabra.</span>}
+          {sugerencias.map((s) => {
+            const deLaPartida = partidaActual && igualTxt(partidaActual.rubro, s.rubro);
+            const elegida = igualTxt(categoriaActual, s.categoria);
+            const detalle = s.previas
+              ? `${s.previas} transacción(es) anteriores clasificadas así`
+              : (s.fuentes.has("palabra clave") ? "Por palabra clave del catálogo" : "Por el nombre de la categoría");
+            return (
+              <button key={`${s.rubro}|${s.categoria}`} type="button" onClick={() => onElegir(s)}
+                title={`${detalle}.${deLaPartida ? " Es el rubro de la partida elegida." : partidaActual ? ` La partida elegida es de ${partidaActual.rubro}: al elegir esta categoría te sugerirá la partida que sí corresponde.` : ""}`}
+                style={{ display: "inline-flex", alignItems: "baseline", gap: 6, padding: "4px 9px", borderRadius: 14, cursor: "pointer",
+                         fontSize: 11.5, fontFamily: T.fontUI, textAlign: "left",
+                         border: `1px solid ${elegida ? T.accent : deLaPartida ? T.teal : T.border}`,
+                         background: elegida ? T.accentBg : "transparent", color: T.text }}>
+                <b style={{ fontWeight: 600 }}>{s.categoria}</b>
+                <span style={{ color: T.textDim }}>· {s.rubro}</span>
+                {s.previas > 0 && <span style={{ color: T.textFaint, fontFamily: T.fontMono, fontSize: 10.5 }}>×{s.previas}</span>}
+                {deLaPartida && <span style={{ color: T.teal }}>✓</span>}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CategoriaCombo({ value, onChange, grupos }) {
   const [abierto, setAbierto] = useState(false);
   const [query, setQuery] = useState(null);   // null = no se ha tecleado: se ven todas
@@ -14047,6 +14137,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   value={form.partida_id}
                   onChange={(id) => setForm({ ...form, partida_id: id })}
                 />}
+              </Field>
+              <Field label="¿Qué rubro aplica? — busca por palabra" style={{ gridColumn: "span 4" }}>
+                <BuscadorRubro
+                  transacciones={transUnidad}
+                  partidas={partidasUnidad}
+                  partidaActual={partidasUnidad.find((x) => x.id === form.partida_id)}
+                  categoriaActual={form.categoria}
+                  onElegir={(s) => setForm((f) => ({ ...f, categoria: s.categoria }))}
+                />
               </Field>
               <Field label="Área">
                 <TextInput value={form.area} onChange={(e) => setForm({ ...form, area: e.target.value })} />

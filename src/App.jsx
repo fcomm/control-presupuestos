@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.13.0";
+const APP_VERSION = "3.13.1";
 const CHANGELOG = [
+  { v: "3.13.1", desc: "Transacciones: marcar la casilla de una compra PPD marca tambien todas sus parcialidades (sin las canceladas), y desmarcarla las desmarca. Las parcialidades se pueden seguir marcando o desmarcando una por una" },
   { v: "3.13.0", desc: "Clic en la fila abre la edicion, igual que el lapiz, en las tablas que la tienen: Partidas (y las transacciones de su cajon), Transacciones, Proveedores, Proyectos del catalogo, Solicitudes de pago (SPP), Vehiculos, Mantenimientos, las cuentas bancarias del proveedor, Proveedores de Contratos y Solicitantes. No se activa al dar clic en un boton, casilla, liga o campo de la fila, ni al seleccionar texto para copiarlo. En Transacciones, la compra PPD sigue abriendo y cerrando sus parcialidades con el clic; se edita con el lapiz" },
   { v: "3.12.0", desc: "Editar transaccion > Clasificacion: buscador \"Que rubro aplica\". Se escribe una palabra (p. ej. llanta, cfe, hotel) y propone categorias con su rubro, juntando tres fuentes: el nombre de la categoria o el rubro, las palabras clave del catalogo y como se clasificaron antes las transacciones de la compania con ese texto en el concepto o el proveedor. Clic en una sugerencia pone la categoria; si su rubro no es el de la partida, aparece el aviso de siempre con la partida que si corresponde" },
   { v: "3.11.1", desc: "Transacciones: el buscador tambien busca en Folio compra SAE, Folio de factura, SMI, Area y Referencia de pago. El area ya venia en el texto de ayuda del buscador pero no se buscaba" },
@@ -13269,7 +13270,18 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     transaccionesApi.remove(id).catch((err) => alert("No se pudo eliminar: " + (err.message || err)));
   };
 
-  const toggleSeleccion = (id) => setSeleccionadas((prev) => alternarEnSet(prev, id));
+  /* Una compra PPD arrastra a sus parcialidades (v3.13.1): marcarla marca
+     también todas las vigentes, y desmarcarla las desmarca. Cada parcialidad
+     se puede seguir quitando o agregando sola. */
+  const toggleSeleccion = (id) => setSeleccionadas((prev) => {
+    const t = transUnidad.find((x) => x.id === id);
+    if (!t?.es_padre) return alternarEnSet(prev, id);
+    const ids = [id, ...hijasDe(t).filter((h) => !estaCancelada(h)).map((h) => h.id)];
+    const next = new Set(prev);
+    if (prev.has(id)) ids.forEach((x) => next.delete(x));
+    else ids.forEach((x) => next.add(x));
+    return next;
+  });
   /* Casilla de un grupo: si ya estaban todas, las quita; si no, agrega las
      que falten. No toca lo seleccionado fuera del grupo. */
   const alternarGrupoSeleccion = (filas) => setSeleccionadas((prev) => {

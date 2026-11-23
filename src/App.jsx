@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.13.1";
+const APP_VERSION = "3.13.2";
 const CHANGELOG = [
+  { v: "3.13.2", desc: "Adjuntos: la lista ya no se queda vieja. Abrir consulta el estado actual del archivo antes de abrirlo: si ya paso a Drive abre el de Drive, y si se regenero (p. ej. el REG al guardar) o se quito, lo dice y actualiza la lista en vez de mostrar Object not found. Ademas la lista se actualiza sola cada 30 segundos y al volver a la ventana, asi el En transito cambia a En Drive sin cerrar la transaccion" },
   { v: "3.13.1", desc: "Transacciones: marcar la casilla de una compra PPD marca tambien todas sus parcialidades (sin las canceladas), y desmarcarla las desmarca. Las parcialidades se pueden seguir marcando o desmarcando una por una" },
   { v: "3.13.0", desc: "Clic en la fila abre la edicion, igual que el lapiz, en las tablas que la tienen: Partidas (y las transacciones de su cajon), Transacciones, Proveedores, Proyectos del catalogo, Solicitudes de pago (SPP), Vehiculos, Mantenimientos, las cuentas bancarias del proveedor, Proveedores de Contratos y Solicitantes. No se activa al dar clic en un boton, casilla, liga o campo de la fila, ni al seleccionar texto para copiarlo. En Transacciones, la compra PPD sigue abriendo y cerrando sus parcialidades con el clic; se edita con el lapiz" },
   { v: "3.12.0", desc: "Editar transaccion > Clasificacion: buscador \"Que rubro aplica\". Se escribe una palabra (p. ej. llanta, cfe, hotel) y propone categorias con su rubro, juntando tres fuentes: el nombre de la categoria o el rubro, las palabras clave del catalogo y como se clasificaron antes las transacciones de la compania con ese texto en el concepto o el proveedor. Clic en una sugerencia pone la categoria; si su rubro no es el de la partida, aparece el aviso de siempre con la partida que si corresponde" },
@@ -21366,13 +21367,33 @@ async function borrarAdjunto(r) {
   if (e2) throw e2;
 }
 
+/* Abre con el estado ACTUAL del adjunto, no con el de la lista en pantalla
+   (v3.13.2): mientras la ventana está abierta, el proceso puede pasarlo a
+   Drive (y vaciar el búfer) o la app regenerarlo, como el REG al guardar.
+   Con el renglón viejo, la liga al búfer fallaba con "Object not found".
+   La pestaña se abre ANTES de consultar, dentro del clic: abierta después
+   de un await, el bloqueador de ventanas emergentes la puede detener. */
 async function abrirAdjunto(r) {
-  if (r.drive_link) { window.open(r.drive_link, "_blank"); return; }
-  if (!r.storage_path) throw new Error("Este adjunto no tiene archivo ni enlace.");
-  const { data, error } = await supabase.storage.from(BUCKET_ADJUNTOS)
-    .createSignedUrl(r.storage_path, 60);
-  if (error) throw error;
-  window.open(data.signedUrl, "_blank");
+  const ventana = window.open("", "_blank");
+  const ir = (url) => { if (ventana) ventana.location.href = url; else window.open(url, "_blank"); };
+  try {
+    const { data: actual, error: e0 } = await supabase.from("adjuntos").select("*").eq("id", r.id).maybeSingle();
+    if (e0) throw e0;
+    if (!actual || actual.estado === "por_borrar") {
+      const err = new Error(`"${r.nombre}" ya no está: se regeneró o se quitó. La lista se actualizó; abre el que aparece ahora.`);
+      err.adjuntoCambio = true;
+      throw err;
+    }
+    if (actual.drive_link) { ir(actual.drive_link); return actual; }
+    if (!actual.storage_path) throw new Error("Este adjunto no tiene archivo ni enlace.");
+    const { data, error } = await supabase.storage.from(BUCKET_ADJUNTOS).createSignedUrl(actual.storage_path, 60);
+    if (error) throw error;
+    ir(data.signedUrl);
+    return actual;
+  } catch (err) {
+    try { ventana?.close(); } catch { /* */ }
+    throw err;
+  }
 }
 
 /**
@@ -21468,6 +21489,16 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta, onCambio }) {
     if (e) setError(e.message); else setFilas(data || []);
   };
   useEffect(() => { cargar(); }, [entidad, entidadId]);
+  /* La lista se refresca sola (v3.13.2): cada 30 s mientras está a la vista
+     y al volver a la ventana. Así "En tránsito" pasa a "En Drive" sin cerrar
+     y abrir, y un REG regenerado aparece en lugar del anterior. */
+  useEffect(() => {
+    const refrescar = () => { if (document.visibilityState === "visible") cargar(); };
+    const id = setInterval(refrescar, 30000);
+    window.addEventListener("focus", refrescar);
+    document.addEventListener("visibilitychange", refrescar);
+    return () => { clearInterval(id); window.removeEventListener("focus", refrescar); document.removeEventListener("visibilitychange", refrescar); };
+  }, [entidad, entidadId]);
 
   const subir = async (e) => {
     const archivos = [...(e.target.files || [])];
@@ -21493,7 +21524,12 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta, onCambio }) {
     }
   };
 
-  const abrir = (r) => abrirAdjunto(r).catch((e) => setError(e.message || String(e)));
+  const abrir = (r) => {
+    setError("");
+    abrirAdjunto(r)
+      .then((actual) => { if (actual && (actual.estado !== r.estado || actual.drive_link !== r.drive_link)) cargar(); })
+      .catch((e) => { setError(e.message || String(e)); cargar(); });
+  };
 
   const eliminar = async (r) => {
     if (!confirm(r.drive_file_id

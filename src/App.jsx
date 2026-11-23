@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.12.0";
+const APP_VERSION = "3.13.0";
 const CHANGELOG = [
+  { v: "3.13.0", desc: "Clic en la fila abre la edicion, igual que el lapiz, en las tablas que la tienen: Partidas (y las transacciones de su cajon), Transacciones, Proveedores, Proyectos del catalogo, Solicitudes de pago (SPP), Vehiculos, Mantenimientos, las cuentas bancarias del proveedor, Proveedores de Contratos y Solicitantes. No se activa al dar clic en un boton, casilla, liga o campo de la fila, ni al seleccionar texto para copiarlo. En Transacciones, la compra PPD sigue abriendo y cerrando sus parcialidades con el clic; se edita con el lapiz" },
   { v: "3.12.0", desc: "Editar transaccion > Clasificacion: buscador \"Que rubro aplica\". Se escribe una palabra (p. ej. llanta, cfe, hotel) y propone categorias con su rubro, juntando tres fuentes: el nombre de la categoria o el rubro, las palabras clave del catalogo y como se clasificaron antes las transacciones de la compania con ese texto en el concepto o el proveedor. Clic en una sugerencia pone la categoria; si su rubro no es el de la partida, aparece el aviso de siempre con la partida que si corresponde" },
   { v: "3.11.1", desc: "Transacciones: el buscador tambien busca en Folio compra SAE, Folio de factura, SMI, Area y Referencia de pago. El area ya venia en el texto de ayuda del buscador pero no se buscaba" },
   { v: "3.11.0", desc: "Nueva pestana Revision (solo administradores): revisar las compras exportadas de Aspel SAE. Los datos viven en una tabla aparte (revision_compras_sae) que nada de la app suma ni cruza, y se cargan desde la propia pestana con Cargar archivo de Aspel (reemplaza los de esa compania). Busqueda, filtros por fecha, status, serie, almacen, tipo y moneda, Agrupar por (hasta 3 niveles con subtotales), columnas, orden y exportar lo filtrado a Excel. Es temporal: para retirarla se quita la pestana y se borra la tabla. Requiere 67-revision-compras-sae.sql" },
@@ -2276,7 +2277,8 @@ function ProveedorPickerButton({ proveedores, value, onChange, placeholder = "El
                       </thead>
                       <tbody>
                         {cuentasDeEditando.map((c) => (
-                          <tr key={c.id} style={c.id === cuentaEditId ? { background: T.accentBg } : undefined}>
+                          <tr key={c.id} style={c.id === cuentaEditId ? { background: T.accentBg } : undefined}
+                            data-clic-fila="" onClick={clicFila(() => iniciarEditarCuenta(c))}>
                             <td style={tdStyle}>{c.banco || "—"}</td>
                             <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.clabe || "—"}</td>
                             <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{c.numero_cuenta || "—"}</td>
@@ -5290,6 +5292,23 @@ function Button({ children, variant = "primary", style, ...rest }) {
 
 // Botón compacto de solo ícono, para filas de tabla con varias acciones donde
 // el texto completo ("Editar"/"Duplicar"/"Eliminar") ya no cabe bien.
+/* Clic en la fila = editar (v3.13.0), lo mismo que el lápiz. Se ignora si el
+   clic fue en un control de la fila (botón, casilla, liga, campo), si viene
+   de un modal abierto desde la fila (React propaga el evento del portal
+   aunque en el DOM no esté dentro), o si se está seleccionando texto para
+   copiarlo. Las filas llevan data-clic-fila para el cursor y el resaltado. */
+const CONTROLES_FILA = "button, a, input, select, textarea, label, [role='button'], [role='menu'], [role='dialog'], [role='tooltip'], [data-sin-clic-fila]";
+function clicFila(abrir) {
+  return (e) => {
+    if (!abrir) return;
+    if (!e.currentTarget.contains(e.target)) return;
+    if (e.target.closest?.(CONTROLES_FILA)) return;
+    const sel = window.getSelection?.();
+    if (sel && String(sel).length) return;
+    abrir();
+  };
+}
+
 function IconButton({ icon, label, tone = T.textDim, ...rest }) {
   return (
     <button
@@ -6686,6 +6705,10 @@ function Modal({ title, subtitle, onClose, children, width = 720, zIndex = 1000,
 
   return (
     <div
+      role="dialog"
+      /* Los modales no van en portal: uno abierto desde una celda vive
+         dentro de la fila en el DOM, y su clic no debe abrir la edición. */
+      data-sin-clic-fila=""
       style={{
         position: "fixed", inset: 0, background: "rgba(6,9,10,0.72)", zIndex,
         display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 20px", overflowY: "auto",
@@ -8921,7 +8944,7 @@ function SolicitudesPagoListaPanel({ unidad, session, fijo = false }) {
               <tbody>
                 {pagSol.filas.map((s) => (
                   <React.Fragment key={s.folio}>
-                    <tr style={{ borderTop: `1px solid ${T.borderSoft}` }}>
+                    <tr style={{ borderTop: `1px solid ${T.borderSoft}` }} data-clic-fila="" onClick={clicFila(() => setEditando(s))}>
                       <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{s.folio}</td>
                       <td style={tdStyle}>{fmtFecha(s.fecha_elaboracion)}</td>
                       <td style={tdStyle}>{s.proveedor || "—"}</td>
@@ -10067,7 +10090,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     const transDeEsta = transacciones.filter((t) => t.partida_id === p.id);
     return (
       <React.Fragment key={p.id}>
-        <tr style={estiloFilaUSD(p.moneda)}>
+        <tr style={estiloFilaUSD(p.moneda)} data-clic-fila="" onClick={clicFila(() => startEdit(p))}>
           <td style={{ ...tdStyle, width: 36, textAlign: "right", color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{n}</td>
           <td style={{ ...tdStyle, width: 30, textAlign: "center" }}>
             {transDeEsta.length > 0 && (
@@ -10143,7 +10166,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                   <table style={{ ...tableStyle, fontSize: 11.5 }}>
                     <tbody>
                       {transDeEsta.map((t, idx) => (
-                        <tr key={t.id}>
+                        <tr key={t.id} data-clic-fila="" onClick={clicFila(() => setTransaccionEditando(t))}>
                           <td style={{ ...tdStyle, padding: "7px 12px", width: 120, whiteSpace: "nowrap", fontFamily: T.fontMono, fontSize: 11, color: T.textDim, borderBottom: idx === transDeEsta.length - 1 ? "none" : `1px solid ${T.borderSoft}` }}
                             title={`Partida ${p.folio || "—"}`}>
                             {t.folio_transaccion || <span style={{ color: T.textFaint }}>borrador</span>}
@@ -12818,10 +12841,16 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     <tr key={v._ppdKey || v.id} style={{ ...(esHija ? {} : estiloFilaUSD(t.moneda)),
                             ...(estaCancelada(t) ? { opacity: 0.5 } : {}),
                             ...(rolPPD === "padre" || rolPPD === "padre-cerrado" ? { cursor: "pointer" } : {}) }}
+      data-clic-fila=""
       onClick={(e) => {
-        if (clicEnControl(e) || esHija) return;
-        if (rolPPD === "padre" || rolPPD === "padre-cerrado") togglePPD(v._ppdKey || v.id);
-        else if (ppdAbierta) setPpdAbierta(null);
+        /* La compra PPD abre y cierra sus parcialidades con el clic, como
+           siempre; las demás filas (parcialidades incluidas) abren la
+           edición, igual que el lápiz (v3.13.0). */
+        if (rolPPD === "padre" || rolPPD === "padre-cerrado") {
+          if (!clicEnControl(e) && e.currentTarget.contains(e.target)) togglePPD(v._ppdKey || v.id);
+          return;
+        }
+        clicFila(() => { if (ppdAbierta && !esHija) setPpdAbierta(null); startEdit(t); })(e);
       }}
       title={estaCancelada(t) ? `Cancelada: ${t.motivo_cancelacion || ""}`
         : rolPPD === "padre-cerrado" ? "Clic para ver sus parcialidades"
@@ -18887,7 +18916,7 @@ function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hay
             const pu = porUnidad(p.rfc);
             const repseVencido = p.repse_vigencia && String(p.repse_vigencia) < hoyISO();
             return (
-              <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 12, background: T.panel, padding: "10px 12px" }}>
+              <div key={p.id} data-clic-fila="" onClick={clicFila(() => abrirEditar(p))} style={{ display: "flex", alignItems: "center", gap: 12, background: T.panel, padding: "10px 12px" }}>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 12.5, color: T.text, fontWeight: 600 }}>{p.razon_social}</div>
                   <div style={{ fontSize: 11, color: T.textFaint, fontFamily: T.fontMono, marginTop: 2 }}>
@@ -22460,7 +22489,7 @@ function SolicitantesPanel({ unidad, unidades = [] }) {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
           {visibles.map((r) => (
-            <div key={r.correo} style={{ display: "flex", gap: 12, alignItems: "center", background: T.panel, padding: "10px 12px", opacity: r.activo ? 1 : 0.55 }}>
+            <div key={r.correo} data-clic-fila="" onClick={clicFila(() => setEditando({ ...r }))} style={{ display: "flex", gap: 12, alignItems: "center", background: T.panel, padding: "10px 12px", opacity: r.activo ? 1 : 0.55 }}>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 12.5, color: T.text, fontWeight: 600 }}>{r.nombre || r.correo}</div>
                 <div style={{ fontSize: 11, color: T.textFaint, fontFamily: T.fontMono, marginTop: 2 }}>{r.correo}</div>
@@ -23499,7 +23528,7 @@ function CatalogoTab({ unidad, unidades, proyectosApi, zonasApi, rubrosApi, cate
               {proyectosUnidad.map((p) => {
                 const editando = editingId === p.id;
                 return (
-                  <tr key={p.id}>
+                  <tr key={p.id} {...(editando ? {} : { "data-clic-fila": "", onClick: clicFila(() => empezarEditar(p)) })}>
                     {editando ? (
                       <>
                         <td style={tdStyle}><TextInput autoFocus value={draft.nombre} onChange={(e) => setDraft({ ...draft, nombre: e.target.value })} /></td>
@@ -24089,7 +24118,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi, lis
           </thead>
           <tbody>
             {pagProv.filas.map((p) => (
-              <tr key={p.id}>
+              <tr key={p.id} data-clic-fila="" onClick={clicFila(() => startEdit(p))}>
                 <td style={tdStyle}>{p.nombre}</td>
                 <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.textDim }}>{p.rfc || "—"}</td>
                 <td style={tdStyle}>
@@ -25790,7 +25819,7 @@ function FlotillaPanel({ vehiculos, vehiculosApi, mantenimientos, ubicaciones, p
                 const abierto = expandido === v.id;
                 return (
                   <React.Fragment key={v.id}>
-                    <tr>
+                    <tr data-clic-fila="" onClick={clicFila(() => setEditando(v))}>
                       <td style={{ ...tdStyle, textAlign: "center" }}>
                         {smis.length > 0 && (
                           <button
@@ -25968,7 +25997,7 @@ function MantenimientosPanel({ vehiculos, mantenimientos, mantenimientosApi, per
               {pagMtto.filas.map((m, i) => {
                 const v = porId[m.vehiculo_id];
                 return (
-                  <tr key={m.id}>
+                  <tr key={m.id} data-clic-fila="" onClick={clicFila(() => setEditando(m))}>
                     <td style={{ ...tdStyle, color: T.textFaint, fontFamily: T.fontMono, fontSize: 11 }}>{pagMtto.offset + i + 1}</td>
                     <td style={{ ...tdStyle, fontFamily: T.fontMono, fontWeight: 600 }}>{m.folio}</td>
                     <td style={{ ...tdStyle, fontFamily: T.fontMono }}>{v ? v.no_economico : <span style={{ color: T.textFaint }}>—</span>}</td>
@@ -26585,6 +26614,8 @@ function AppPrincipal() {
         html, body { background: ${T.bg}; color-scheme: ${T.esquema}; }
         ::selection { background: ${T.sel}; color: ${T.selText}; }
         table tbody tr:nth-child(even) > td { background-color: ${T.bg}; }
+        [data-clic-fila] { cursor: pointer; }
+        tr[data-clic-fila]:hover > td { background-color: ${T.accent}12; }
       `}</style>
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 22, flexWrap: "wrap", gap: 14 }}>

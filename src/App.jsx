@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.14.1";
+const APP_VERSION = "3.15.0";
 const CHANGELOG = [
+  { v: "3.15.0", desc: "Dashboard > Sempra simplificado: solo Pagado (acumulado del proyecto), Por ejercer (presupuesto de las partidas Sempra del mes actual en adelante menos lo ya pagado contra ellas, con su detalle por mes) y una tabla de Rubros y categorias del gasto (rubro de la partida, categoria de la transaccion; clic en el rubro para ver sus categorias) con numero, pagado y por pagar. Se quitaron el selector de periodo, la grafica por mes, las transacciones cruzadas, los principales proveedores y la lista de transacciones" },
   { v: "3.14.1", desc: "Programacion de Pagos (Enviar a Pagos y Exportar a Excel): Referencia de Pago, Banco, Cuenta CLABE, No. Cuenta y SWIFT van siempre y ya no se pueden quitar en Columnas. Si alguien las tenia ocultas, vuelven a salir" },
   { v: "3.14.0", desc: "Reportes de pagos solo en Excel: Enviar a Pagos (el del dia) y el reporte semanal a Direccion ya no generan PDF, tampoco al volver a descargar una version enviada. Se quito la vista previa del PDF; las columnas del envio a Pagos son las del Excel. El semanal ahora se llama Reporte SEMANAL de Pagos <compania> - Semana del ... <ano> - REV<n>, y la primera fila del Excel lo dice igual, para que no se confunda con el de un dia" },
   { v: "3.13.3", desc: "Transacciones: agrupar por Proyecto toma el proyecto de la partida, pero si la partida es general (Todos o un <Grupo> Gral, como las QRO- de noviembre) usa el proyecto de la transaccion. Antes casi todo noviembre caia en Todos. La opcion se llama ahora Proyecto (antes Proyecto (partida)); Proyecto (transaccion) sigue igual" },
@@ -5380,291 +5381,175 @@ function Dashboard(props) {
 }
 
 function DashboardSempra({ unidad, partidas, transacciones }) {
-  const [buscar, setBuscar] = useSessionState("ss-sempra-buscar", "");
-  const [statusSel, setStatusSel] = useSessionState("ss-sempra-status", "todas");
-
+  /* v3.15.0 — Limpio, a pedido de Paco: solo tres cosas.
+     1. Cuánto se ha pagado (acumulado del proyecto).
+     2. Cuánto falta por ejercer de lo presupuestado en el mes actual y los
+        siguientes: presupuesto de las partidas Sempra de esos meses menos lo
+        ya pagado contra esas mismas partidas.
+     3. Rubros y categorías del gasto: el rubro sale de la partida y la
+        categoría de la transacción.
+     Un gasto es Sempra si lo dice la transacción O su partida (como antes).
+     Nunca se suma MXP con USD. */
   const partidasUnidad = useMemo(() => partidas.filter((p) => p.unidad === unidad), [partidas, unidad]);
   const partidaPorId = useMemo(() => new Map(partidasUnidad.map((p) => [p.id, p])), [partidasUnidad]);
   const partidasSempra = useMemo(() => partidasUnidad.filter((p) => esSempra(p.proyecto)), [partidasUnidad]);
-
-  const periodoDe = (t) => {
-    const p = partidaPorId.get(t.partida_id);
-    if (p) return { anio: Number(p.anio), mes: p.mes };
-    const d = t.dia ? new Date(`${t.dia}T12:00:00`) : null;
-    return d ? { anio: d.getFullYear(), mes: MESES[d.getMonth()] } : { anio: null, mes: null };
-  };
-
   const transSempra = useMemo(() => transacciones.filter((t) => {
     if (estaCancelada(t)) return false;
     const p = partidaPorId.get(t.partida_id);
     if (!p && t.unidad_detectada !== unidad) return false;
     return esSempra(t.proyecto) || esSempra(p?.proyecto);
   }), [transacciones, partidaPorId, unidad]);
-
-  // Sempra arranca en "Todo": aquí importa el acumulado del proyecto, no el mes.
-  const rango = useRangoMeses("ss-sempra-rango", [
-    ...partidasSempra.map((p) => Number(p.anio)),
-    ...transSempra.map((t) => periodoDe(t).anio),
-  ], "todo");
-  const enPeriodo = ({ anio, mes }) => rango.enRango(anio, mes);
-
-  const partidasF = partidasSempra.filter((p) => enPeriodo({ anio: Number(p.anio), mes: p.mes }));
-  const transF = transSempra.filter((t) => enPeriodo(periodoDe(t)));
+  const [abiertos, setAbiertos] = useState(() => new Set());
+  const alternar = (k) => setAbiertos((prev) => alternarEnSet(prev, k));
   const monedaDe = (x) => (x.moneda === "USD" ? "USD" : "MXP");
-
-  // --- KPIs por moneda: nunca se suma MXP con USD ---
-  const kpis = { MXP: null, USD: null };
-  const nuevoKpi = () => ({ presupuestado: 0, comprometido: 0, pagado: 0, borrador: 0, nBorrador: 0 });
-  partidasF.forEach((p) => {
-    const m = monedaDe(p);
-    kpis[m] = kpis[m] || nuevoKpi();
-    kpis[m].presupuestado += Number(p.monto_estimado) || 0;
-  });
-  transF.forEach((t) => {
-    const m = monedaDe(t);
-    kpis[m] = kpis[m] || nuevoKpi();
-    const imp = Number(t.importe) || 0;
-    if (cuentaEnComprometido(t)) kpis[m].comprometido += imp;
-    else if (borradorOCancelada(t)) { kpis[m].borrador += imp; kpis[m].nBorrador++; }
-    if (cuentaEnPagado(t)) kpis[m].pagado += imp;
-  });
-  const monedas = ["MXP", "USD"].filter((m) => kpis[m]);
-
-  // --- Por mes (presupuestado vs. comprometido vs. pagado) ---
-  const variosAnios = new Set([...partidasF.map((p) => Number(p.anio)), ...transF.map((t) => periodoDe(t).anio)]).size > 1;
-  const porMes = useMemo(() => {
-    const mapas = { MXP: {}, USD: {} };
-    const fila = (m, anio, mes) => {
-      const k = (Number(anio) || 0) * 12 + MESES.indexOf(mes);
-      if (!mapas[m][k]) mapas[m][k] = { k, mes: variosAnios ? `${String(mes).slice(0, 3)} ${String(anio).slice(2)}` : mes,
-                                         presupuestado: 0, comprometido: 0, pagado: 0 };
-      return mapas[m][k];
-    };
-    partidasF.forEach((p) => { fila(monedaDe(p), p.anio, p.mes).presupuestado += Number(p.monto_estimado) || 0; });
-    transF.forEach((t) => {
-      if (!cuentaEnComprometido(t) && !cuentaEnPagado(t)) return;
-      const { anio, mes } = periodoDe(t);
-      if (!mes) return;
-      const f = fila(monedaDe(t), anio, mes);
-      if (cuentaEnComprometido(t)) f.comprometido += Number(t.importe) || 0;
-      if (cuentaEnPagado(t)) f.pagado += Number(t.importe) || 0;
-    });
-    const orden = (o) => Object.values(o).sort((a, b) => a.k - b.k);
-    return { MXP: orden(mapas.MXP), USD: orden(mapas.USD) };
-  }, [partidasF, transF, variosAnios]);
-
-  // --- Agrupados por categoría y por proveedor (solo registradas) ---
-  const agrupar = (claveDe) => {
-    const g = {};
-    transF.filter((t) => cuentaEnComprometido(t) || cuentaEnPagado(t)).forEach((t) => {
-      const m = monedaDe(t);
-      const nombre = claveDe(t);
-      const k = `${m}|${nombre}`;
-      if (!g[k]) g[k] = { moneda: m, nombre, n: 0, comprometido: 0, pagado: 0 };
-      if (cuentaEnComprometido(t)) { g[k].n++; g[k].comprometido += Number(t.importe) || 0; }
-      if (cuentaEnPagado(t)) g[k].pagado += Number(t.importe) || 0;
-    });
-    return Object.values(g).sort((a, b) => (a.moneda === b.moneda ? b.comprometido - a.comprometido : a.moneda === "MXP" ? -1 : 1));
-  };
-  const categoriaDe = (t) => (t.categoria || "").trim() || (partidaPorId.get(t.partida_id)?.categoria || "").trim() || "Sin categoría";
-  const porCategoria = agrupar(categoriaDe);
-  const porProveedor = agrupar((t) => (t.proveedor || "").trim() || "Sin proveedor");
-  const topProveedores = ["MXP", "USD"].flatMap((m) => porProveedor.filter((r) => r.moneda === m).slice(0, 10));
-
-  // --- Cruzadas: el proyecto de la transacción y el de su partida no coinciden ---
-  const cruzadas = transF.filter((t) => {
-    const p = partidaPorId.get(t.partida_id);
-    return p && esSempra(t.proyecto) !== esSempra(p.proyecto);
-  });
-
-  // --- Lista de transacciones ---
-  const q = buscar.trim().toLowerCase();
-  const filas = transF
-    .filter((t) => statusSel === "todas"
-      || (statusSel === "pagadas" && cuentaEnPagado(t))
-      || (statusSel === "porpagar" && !borradorOCancelada(t) && !esPadrePPD(t) && t.status !== "Pagado")
-      || (statusSel === "borradores" && borradorOCancelada(t)))
-    .filter((t) => !q || [t.folio_transaccion, t.proveedor, t.concepto_detallado, t.folio_compra_sae, t.folio_factura, categoriaDe(t)]
-      .some((v) => String(v || "").toLowerCase().includes(q)))
-    .sort((a, b) => String(b.dia || "").localeCompare(String(a.dia || "")));
-  const totalesFilas = {};
-  filas.forEach((t) => { const m = monedaDe(t); totalesFilas[m] = (totalesFilas[m] || 0) + (Number(t.importe) || 0); });
+  const MONEDAS_ORDEN = ["MXP", "USD"];
 
   if (!partidasSempra.length && !transSempra.length) {
     return <EmptyState title="Sin gastos de Sempra" body={`No hay partidas ni transacciones del proyecto Sempra en ${unidad}.`} />;
   }
 
-  const periodoLabel = rango.label;
-  const etiquetaMoneda = (m, primero) => (
-    <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, margin: primero ? "0 0 4px" : "18px 0 4px" }}>{m}</div>
-  );
-  const tablaAgrupada = (rows, titulo) => (
-    <div style={{ overflowX: "auto" }}>
-      <table style={tableStyle}>
-        <thead><tr>
-          <th style={thStyle}>Moneda</th><th style={thStyle}>{titulo}</th>
-          <th style={{ ...thStyle, textAlign: "right" }}>#</th>
-          <th style={{ ...thStyle, textAlign: "right" }}>Comprometido</th>
-          <th style={{ ...thStyle, textAlign: "right" }}>Pagado</th>
-          <th style={{ ...thStyle, textAlign: "right" }}>Por pagar</th>
-        </tr></thead>
-        <tbody>
-          {rows.map((r) => (
-            <tr key={`${r.moneda}|${r.nombre}`}>
-              <td style={tdStyle}><Pill tone="dim">{r.moneda}</Pill></td>
-              <td style={tdStyle}>{r.nombre}</td>
-              <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{r.n}</td>
-              <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(r.comprometido, r.moneda)}</td>
-              <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, color: T.teal }}>{money(r.pagado, r.moneda)}</td>
-              <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(r.comprometido - r.pagado, r.moneda)}</td>
-            </tr>
-          ))}
-          {!rows.length && <tr><td colSpan={6} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones registradas en este periodo</td></tr>}
-        </tbody>
-      </table>
-    </div>
-  );
+  // 1. Pagado acumulado
+  const pagado = {};
+  transSempra.forEach((t) => { if (cuentaEnPagado(t)) pagado[monedaDe(t)] = (pagado[monedaDe(t)] || 0) + (Number(t.importe) || 0); });
 
-  const pagSempra = usePaginacion("sempra", filas, { reinicio: [unidad, buscar, statusSel] });
+  // 2. Por ejercer: mes actual y siguientes
+  const hoy = new Date();
+  const claveMes = (anio, mes) => (Number(anio) || 0) * 12 + MESES.indexOf(mes);
+  const claveHoy = hoy.getFullYear() * 12 + hoy.getMonth();
+  const partidasVigentes = partidasSempra.filter((p) => claveMes(p.anio, p.mes) >= claveHoy);
+  const idsVigentes = new Set(partidasVigentes.map((p) => p.id));
+  const meses = {};
+  const filaMes = (p) => {
+    const k = `${monedaDe(p)}|${claveMes(p.anio, p.mes)}`;
+    if (!meses[k]) meses[k] = { moneda: monedaDe(p), k: claveMes(p.anio, p.mes), etiqueta: `${p.mes} ${p.anio}`, presupuestado: 0, pagado: 0 };
+    return meses[k];
+  };
+  partidasVigentes.forEach((p) => { filaMes(p).presupuestado += Number(p.monto_estimado) || 0; });
+  transacciones.forEach((t) => {
+    if (!idsVigentes.has(t.partida_id) || !cuentaEnPagado(t)) return;
+    filaMes(partidaPorId.get(t.partida_id)).pagado += Number(t.importe) || 0;
+  });
+  const filasMes = Object.values(meses).sort((a, b) => (a.moneda === b.moneda ? a.k - b.k : a.moneda === "MXP" ? -1 : 1));
+  const porEjercer = {};
+  filasMes.forEach((f) => { porEjercer[f.moneda] = (porEjercer[f.moneda] || 0) + (f.presupuestado - f.pagado); });
+
+  // 3. Rubros y categorías
+  const rubros = {};
+  transSempra.filter((t) => cuentaEnComprometido(t) || cuentaEnPagado(t)).forEach((t) => {
+    const m = monedaDe(t);
+    const rubro = (partidaPorId.get(t.partida_id)?.rubro || "").trim() || "Sin partida";
+    const cat = (t.categoria || "").trim() || "Sin categoría";
+    const kr = `${m}|${rubro}`;
+    if (!rubros[kr]) rubros[kr] = { moneda: m, rubro, n: 0, comprometido: 0, pagado: 0, cats: {} };
+    const r = rubros[kr];
+    if (!r.cats[cat]) r.cats[cat] = { categoria: cat, n: 0, comprometido: 0, pagado: 0 };
+    const c = r.cats[cat];
+    const imp = Number(t.importe) || 0;
+    if (cuentaEnComprometido(t)) { r.n++; c.n++; r.comprometido += imp; c.comprometido += imp; }
+    if (cuentaEnPagado(t)) { r.pagado += imp; c.pagado += imp; }
+  });
+  const listaRubros = Object.values(rubros)
+    .map((r) => ({ ...r, cats: Object.values(r.cats).sort((a, b) => b.pagado - a.pagado || b.comprometido - a.comprometido) }))
+    .sort((a, b) => (a.moneda === b.moneda ? b.pagado - a.pagado || b.comprometido - a.comprometido : a.moneda === "MXP" ? -1 : 1));
+  const totRubros = {};
+  listaRubros.forEach((r) => {
+    totRubros[r.moneda] = totRubros[r.moneda] || { n: 0, comprometido: 0, pagado: 0 };
+    totRubros[r.moneda].n += r.n; totRubros[r.moneda].comprometido += r.comprometido; totRubros[r.moneda].pagado += r.pagado;
+  });
+
+  const num = { ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" };
+  const mesActual = `${MESES[hoy.getMonth()]} ${hoy.getFullYear()}`;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <Panel title={`Proyecto ${PROYECTO_SEMPRA} — ${unidad}`}
-        subtitle={`Comprometido = transacciones registradas, pagadas o no; los borradores se muestran aparte · ${periodoLabel}`}
-        right={
-          <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap" }}>
-            {rango.controles}
-          </div>
-        }>
-        {!monedas.length && <div style={{ fontSize: 12, color: T.textFaint }}>Sin partidas ni transacciones de Sempra en este periodo.</div>}
-        {monedas.map((m, i) => {
-          const k = kpis[m];
-          const disponible = k.presupuestado - k.comprometido;
-          return (
-            <div key={m}>
-              {etiquetaMoneda(m, i === 0)}
-              <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-                <KpiCard label="Presupuestado" value={money(k.presupuestado, m)} />
-                <KpiCard label="Comprometido" value={money(k.comprometido, m)} accent={T.accent} />
-                <KpiCard label="Pagado" value={money(k.pagado, m)} accent={T.teal} />
-                <KpiCard label="Por pagar" value={money(k.comprometido - k.pagado, m)} accent={T.amberDim} />
-                <KpiCard label="Disponible" value={money(disponible, m)} accent={disponible < 0 ? T.red : T.text} />
-              </div>
-              {k.nBorrador > 0 && (
-                <div style={{ fontSize: 11.5, color: T.amberDim, marginTop: 6 }}>
-                  Además hay {k.nBorrador} borrador(es) por {money(k.borrador, m)} que todavía no cuentan como comprometido.
-                </div>
-              )}
+        subtitle={`Pagado: acumulado del proyecto. Por ejercer: presupuesto de ${mesActual} en adelante menos lo ya pagado contra esas partidas.`}>
+        {MONEDAS_ORDEN.filter((m) => pagado[m] !== undefined || porEjercer[m] !== undefined).map((m) => (
+          <div key={m} style={{ marginBottom: 10 }}>
+            <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>{m}</div>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              <KpiCard label="Pagado" value={money(pagado[m] || 0, m)} accent={T.teal} />
+              <KpiCard label={`Por ejercer (${mesActual} en adelante)`} value={money(porEjercer[m] || 0, m)}
+                accent={(porEjercer[m] || 0) < 0 ? T.red : T.accent} />
             </div>
-          );
-        })}
-      </Panel>
-
-      {cruzadas.length > 0 && (
-        <Panel title="Transacciones con proyecto distinto al de su partida"
-          subtitle={`${cruzadas.length} transacción(es) · aquí cuentan como gasto Sempra, pero el presupuesto que consumen es el de la partida indicada. Si la partida está mal, corrígela en Transacciones.`}>
-          <div style={{ overflowX: "auto" }}>
+          </div>
+        ))}
+        {filasMes.length > 0 ? (
+          <div style={{ overflowX: "auto", marginTop: 8 }}>
             <table style={tableStyle}>
               <thead><tr>
-                <th style={thStyle}>Folio</th><th style={thStyle}>Proveedor</th>
-                <th style={thStyle}>Proyecto (transacción)</th><th style={thStyle}>Partida</th>
-                <th style={{ ...thStyle, textAlign: "right" }}>Importe</th>
+                <th style={thStyle}>Mes</th><th style={thStyle}>Moneda</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Presupuestado</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Pagado</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Por ejercer</th>
               </tr></thead>
               <tbody>
-                {cruzadas.map((t) => {
-                  const p = partidaPorId.get(t.partida_id);
-                  return (
-                    <tr key={t.id}>
-                      <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.accent }}>{t.folio_transaccion || "—"}</td>
-                      <td style={tdStyle}>{t.proveedor || "—"}</td>
-                      <td style={tdStyle}>{t.proyecto || "—"}</td>
-                      <td style={tdStyle}><Pill tone="amber">{p.proyecto}</Pill> <span style={{ color: T.textFaint, fontSize: 11.5 }}>{p.concepto} · {p.mes} {p.anio}</span></td>
-                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(t.importe, t.moneda)}</td>
-                    </tr>
-                  );
-                })}
+                {filasMes.map((f) => (
+                  <tr key={`${f.moneda}|${f.k}`}>
+                    <td style={tdStyle}>{f.etiqueta}</td>
+                    <td style={tdStyle}><Pill tone="dim">{f.moneda}</Pill></td>
+                    <td style={num}>{money(f.presupuestado, f.moneda)}</td>
+                    <td style={{ ...num, color: T.teal }}>{money(f.pagado, f.moneda)}</td>
+                    <td style={{ ...num, fontWeight: 600, color: f.presupuestado - f.pagado < 0 ? T.red : T.text }}>{money(f.presupuestado - f.pagado, f.moneda)}</td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
-        </Panel>
-      )}
-
-      {(porMes.MXP.length > 0 || porMes.USD.length > 0) && (
-        <Panel title="Por mes" subtitle={`Presupuestado vs. comprometido vs. pagado · ${periodoLabel}`}>
-          {["MXP", "USD"].filter((m) => porMes[m].length).map((m, i) => (
-            <div key={m}>
-              {etiquetaMoneda(m, i === 0)}
-              <ResponsiveContainer width="100%" height={240}>
-                <BarChart data={porMes[m]} margin={{ left: 8, right: 16 }}>
-                  <CartesianGrid strokeDasharray="2 4" stroke={T.borderSoft} vertical={false} />
-                  <XAxis dataKey="mes" tick={{ fill: T.textFaint, fontSize: 10 }} stroke={T.border} />
-                  <YAxis tick={{ fill: T.textFaint, fontSize: 10 }} tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`} stroke={T.border} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <Legend wrapperStyle={{ fontSize: 11, color: T.textDim }} />
-                  <Bar dataKey="presupuestado" name="Presupuestado" fill={T.border} radius={[3, 3, 0, 0]} />
-                  <Bar dataKey="comprometido" name="Comprometido" fill={T.accent} radius={[3, 3, 0, 0]} />
-                  <Bar dataKey="pagado" name="Pagado" fill={T.teal} radius={[3, 3, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-          ))}
-        </Panel>
-      )}
-
-      <Panel title="Por categoría del gasto" subtitle="Si la transacción no trae categoría se toma la de su partida">
-        {tablaAgrupada(porCategoria, "Categoría")}
+        ) : (
+          <div style={{ fontSize: 12, color: T.textFaint, marginTop: 8 }}>No hay partidas Sempra de {mesActual} en adelante.</div>
+        )}
       </Panel>
 
-      <Panel title="Principales proveedores" subtitle="Los 10 con más comprometido en cada moneda">
-        {tablaAgrupada(topProveedores, "Proveedor")}
-      </Panel>
-
-      <Panel title="Transacciones Sempra"
-        subtitle={`${filas.length} transacción(es) · ${["MXP", "USD"].filter((m) => totalesFilas[m] !== undefined).map((m) => money(totalesFilas[m], m)).join(" · ") || "—"}`}>
-        <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 14 }}>
-          <Field label="Buscar">
-            <TextInput value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Folio, proveedor, concepto, categoría…" style={{ width: 260 }} />
-          </Field>
-          <Field label="Status">
-            <Select value={statusSel} onChange={(e) => setStatusSel(e.target.value)} style={{ width: 150 }}>
-              <option value="todas">Todas</option>
-              <option value="pagadas">Pagadas</option>
-              <option value="porpagar">Por pagar</option>
-              <option value="borradores">Borradores</option>
-            </Select>
-          </Field>
-        </div>
+      <Panel title="Rubros y categorías del gasto"
+        subtitle="Transacciones registradas del proyecto. El rubro es el de la partida; la categoría, la de la transacción. Clic en un rubro para ver sus categorías.">
         <div style={{ overflowX: "auto" }}>
           <table style={tableStyle}>
             <thead><tr>
-              <th style={thStyle}>Folio</th><th style={thStyle}>Periodo</th><th style={thStyle}>Fecha</th>
-              <th style={thStyle}>Proveedor</th><th style={thStyle}>Concepto</th><th style={thStyle}>Categoría</th>
-              <th style={{ ...thStyle, textAlign: "right" }}>Importe</th><th style={thStyle}>Status</th>
+              <th style={thStyle}>Rubro / categoría</th><th style={thStyle}>Moneda</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>#</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Pagado</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Por pagar</th>
             </tr></thead>
             <tbody>
-              {pagSempra.filas.map((t) => {
-                const { anio, mes } = periodoDe(t);
-                const registrada = !borradorOCancelada(t);
+              {listaRubros.map((r) => {
+                const k = `${r.moneda}|${r.rubro}`;
+                const abierto = abiertos.has(k);
                 return (
-                  <tr key={t.id}>
-                    <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.accent, whiteSpace: "nowrap" }}>{t.folio_transaccion || "—"}</td>
-                    <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{mes ? `${mes} ${anio}` : "—"}</td>
-                    <td style={{ ...tdStyle, fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{fmtFecha(t.dia) || "—"}</td>
-                    <td style={tdStyle}>{t.proveedor || "—"}</td>
-                    <td style={{ ...tdStyle, color: T.textDim }}>{t.concepto_detallado || "—"}</td>
-                    <td style={tdStyle}>{categoriaDe(t)}</td>
-                    <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{money(t.importe, t.moneda)}</td>
-                    <td style={tdStyle}>
-                      {!registrada ? <Pill tone="amber">Borrador</Pill>
-                        : t.status === "Pagado" ? <Pill tone="teal">Pagado</Pill>
-                        : <Pill tone="dim">{t.status || "No Pagado"}</Pill>}
-                    </td>
-                  </tr>
+                  <React.Fragment key={k}>
+                    <tr data-clic-fila="" onClick={() => alternar(k)} style={{ background: T.panelAlt }}>
+                      <td style={{ ...tdStyle, fontWeight: 600 }}>
+                        <span style={{ color: T.textFaint, display: "inline-block", width: 14 }}>{abierto ? "▾" : "▸"}</span>{r.rubro}
+                      </td>
+                      <td style={tdStyle}><Pill tone="dim">{r.moneda}</Pill></td>
+                      <td style={num}>{r.n}</td>
+                      <td style={{ ...num, color: T.teal, fontWeight: 600 }}>{money(r.pagado, r.moneda)}</td>
+                      <td style={{ ...num, fontWeight: 600 }}>{money(r.comprometido - r.pagado, r.moneda)}</td>
+                    </tr>
+                    {abierto && r.cats.map((c) => (
+                      <tr key={`${k}|${c.categoria}`}>
+                        <td style={{ ...tdStyle, paddingLeft: 34, color: T.textDim }}>{c.categoria}</td>
+                        <td style={tdStyle} />
+                        <td style={num}>{c.n}</td>
+                        <td style={{ ...num, color: T.teal }}>{money(c.pagado, r.moneda)}</td>
+                        <td style={num}>{money(c.comprometido - c.pagado, r.moneda)}</td>
+                      </tr>
+                    ))}
+                  </React.Fragment>
                 );
               })}
-              {!filas.length && <tr><td colSpan={8} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna transacción con estos filtros</td></tr>}
+              {MONEDAS_ORDEN.filter((m) => totRubros[m]).map((m) => (
+                <tr key={`tot-${m}`}>
+                  <td style={{ ...tdStyle, fontWeight: 700, borderTop: `2px solid ${T.border}` }}>Total</td>
+                  <td style={{ ...tdStyle, borderTop: `2px solid ${T.border}` }}><Pill tone="dim">{m}</Pill></td>
+                  <td style={{ ...num, fontWeight: 700, borderTop: `2px solid ${T.border}` }}>{totRubros[m].n}</td>
+                  <td style={{ ...num, fontWeight: 700, color: T.teal, borderTop: `2px solid ${T.border}` }}>{money(totRubros[m].pagado, m)}</td>
+                  <td style={{ ...num, fontWeight: 700, borderTop: `2px solid ${T.border}` }}>{money(totRubros[m].comprometido - totRubros[m].pagado, m)}</td>
+                </tr>
+              ))}
+              {!listaRubros.length && <tr><td colSpan={5} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones registradas</td></tr>}
             </tbody>
           </table>
-          <Paginador pag={pagSempra} etiqueta="transacciones" />
         </div>
       </Panel>
     </div>

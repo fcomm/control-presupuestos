@@ -256,7 +256,7 @@ const GROUP_OPCIONES_TRANS = [
   { value: "status", label: "Status" },
   { value: "moneda", label: "Moneda" },
   { value: "categoria", label: "Categoría" },
-  { value: "_proyecto", label: "Proyecto (partida)" },
+  { value: "_proyecto", label: "Proyecto" },
   { value: "_rubro", label: "Rubro (partida)" },
   { value: "_mes", label: "Mes (partida)" },
   { value: "_vinculo", label: "Vínculo" },
@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.13.2";
+const APP_VERSION = "3.13.3";
 const CHANGELOG = [
+  { v: "3.13.3", desc: "Transacciones: agrupar por Proyecto toma el proyecto de la partida, pero si la partida es general (Todos o un <Grupo> Gral, como las QRO- de noviembre) usa el proyecto de la transaccion. Antes casi todo noviembre caia en Todos. La opcion se llama ahora Proyecto (antes Proyecto (partida)); Proyecto (transaccion) sigue igual" },
   { v: "3.13.2", desc: "Adjuntos: la lista ya no se queda vieja. Abrir consulta el estado actual del archivo antes de abrirlo: si ya paso a Drive abre el de Drive, y si se regenero (p. ej. el REG al guardar) o se quito, lo dice y actualiza la lista en vez de mostrar Object not found. Ademas la lista se actualiza sola cada 30 segundos y al volver a la ventana, asi el En transito cambia a En Drive sin cerrar la transaccion" },
   { v: "3.13.1", desc: "Transacciones: marcar la casilla de una compra PPD marca tambien todas sus parcialidades (sin las canceladas), y desmarcarla las desmarca. Las parcialidades se pueden seguir marcando o desmarcando una por una" },
   { v: "3.13.0", desc: "Clic en la fila abre la edicion, igual que el lapiz, en las tablas que la tienen: Partidas (y las transacciones de su cajon), Transacciones, Proveedores, Proyectos del catalogo, Solicitudes de pago (SPP), Vehiculos, Mantenimientos, las cuentas bancarias del proveedor, Proveedores de Contratos y Solicitantes. No se activa al dar clic en un boton, casilla, liga o campo de la fila, ni al seleccionar texto para copiarlo. En Transacciones, la compra PPD sigue abriendo y cerrando sus parcialidades con el clic; se edita con el lapiz" },
@@ -12103,7 +12104,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     const p = partidaDe(t);
     // El folio y el concepto de la partida se agregan aquí para que la
     // exportación pueda mostrarlos sin volver a buscar la partida por fila.
-    return { ...t, _proyecto: p?.proyecto || SIN_DATO, _rubro: p?.rubro || SIN_DATO, _mes: p?.mes || SIN_DATO, _anio: p?.anio || null,
+    /* Proyecto para agrupar (v3.13.3): el de la partida, salvo que la
+       partida sea general ("Todos" o "<Grupo> Gral"); ahí manda el de la
+       transacción, que es a donde de verdad fue el gasto. */
+    const proyPartida = p?.proyecto || "";
+    const partidaGeneral = !proyPartida || proyPartida === "Todos" || / Gral$/.test(proyPartida);
+    const proyAgrupar = (partidaGeneral && t.proyecto) ? t.proyecto : (proyPartida || t.proyecto || SIN_DATO);
+    return { ...t, _proyecto: proyAgrupar, _rubro: p?.rubro || SIN_DATO, _mes: p?.mes || SIN_DATO, _anio: p?.anio || null,
       _folioPartida: p?.folio || "", _conceptoPartida: p?.concepto || "",
       _vinculo: t.partida_id ? "Vinculada" : "Sin vincular",
       // Grupo de la zona según Catálogo › Zonas; si la zona no tiene grupo,

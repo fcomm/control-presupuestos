@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.13.3";
+const APP_VERSION = "3.14.0";
 const CHANGELOG = [
+  { v: "3.14.0", desc: "Reportes de pagos solo en Excel: Enviar a Pagos (el del dia) y el reporte semanal a Direccion ya no generan PDF, tampoco al volver a descargar una version enviada. Se quito la vista previa del PDF; las columnas del envio a Pagos son las del Excel. El semanal ahora se llama Reporte SEMANAL de Pagos <compania> - Semana del ... <ano> - REV<n>, y la primera fila del Excel lo dice igual, para que no se confunda con el de un dia" },
   { v: "3.13.3", desc: "Transacciones: agrupar por Proyecto toma el proyecto de la partida, pero si la partida es general (Todos o un <Grupo> Gral, como las QRO- de noviembre) usa el proyecto de la transaccion. Antes casi todo noviembre caia en Todos. La opcion se llama ahora Proyecto (antes Proyecto (partida)); Proyecto (transaccion) sigue igual" },
   { v: "3.13.2", desc: "Adjuntos: la lista ya no se queda vieja. Abrir consulta el estado actual del archivo antes de abrirlo: si ya paso a Drive abre el de Drive, y si se regenero (p. ej. el REG al guardar) o se quito, lo dice y actualiza la lista en vez de mostrar Object not found. Ademas la lista se actualiza sola cada 30 segundos y al volver a la ventana, asi el En transito cambia a En Drive sin cerrar la transaccion" },
   { v: "3.13.1", desc: "Transacciones: marcar la casilla de una compra PPD marca tambien todas sus parcialidades (sin las canceladas), y desmarcarla las desmarca. Las parcialidades se pueden seguir marcando o desmarcando una por una" },
@@ -3113,170 +3114,6 @@ function hojaCambiosPresupuestoExcel(wbx, comparacion, { compania, periodo, vers
 }
 
 /**
- * PDF del reporte semanal de pagos.
- *
- * Encabezado con el resumen ejecutivo —lo que se va a pagar, por zona y
- * moneda— y debajo una tabla PLANA. La zona y el día van como columnas en
- * lugar de como encabezados de sección: así el documento se lee de corrido y
- * el resumen de arriba ya dio la vista agrupada.
- */
-function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas, gruposZona = {}, comparacion = null }) {
-  exigirLibrerias();
-  const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
-  const marcadas = comparacion ? comparacion.filas : filas;
-  const VERDE = [30, 120, 80], VERDE_S = [226, 243, 233], AMBAR = [176, 110, 20], AMBAR_S = [253, 240, 214];
-  const M = 36, A = 792 - M * 2;
-  const rango = rangoSemana(periodoIni, periodoFin);
-  const bloques = bloquesZonaMoneda(filas, gruposZona);
-
-  const tot = {};
-  filas.forEach((f) => { const m = (f.moneda || "MXP") === "USD" ? "USD" : "MXP"; tot[m] = (tot[m] || 0) + (Number(f.importe) || 0); });
-
-  doc.setFontSize(15).setFont(undefined, "bold").setTextColor(35, 42, 49);
-  doc.text(`Pagos ${compania} ${rango}`, M, 38);
-  doc.setFontSize(10).setFont(undefined, "normal").setTextColor(107, 119, 133);
-  doc.text(`${filas.length} pagos`
-    + (comparacion ? `   ·   respecto a la revisión ${comparacion.vsVersion}: ${comparacion.nuevas.length} nuevo(s), `
-      + `${comparacion.modificadas.length} con cambio, ${comparacion.retiradas.length} retirado(s)` : ""), M, 54);
-
-  if (version) {
-    doc.setFillColor(62, 92, 118);
-    doc.rect(M + A - 96, 22, 96, 30, "F");
-    doc.setTextColor(255).setFontSize(7.5);
-    doc.text("REVISIÓN", M + A - 86, 34);
-    doc.setFontSize(15).setFont(undefined, "bold");
-    doc.text(String(version), M + A - 10, 46, { align: "right" });
-    doc.setFont(undefined, "normal");
-  }
-
-  /* Resumen ejecutivo: lo que Dirección necesita ver primero es cuánto se va
-     a pagar y a dónde. El detalle de abajo es para consultarlo, no para
-     sumarlo a mano. */
-  let y = 70;
-  const saltoSi = (alto) => { if (y + alto > 572) { doc.addPage(); y = 40; } };
-  const tituloSec = (texto, color) => {
-    saltoSi(40);
-    doc.setFontSize(10.5).setFont(undefined, "bold").setTextColor(...color);
-    doc.text(texto, M, y + 10);
-    doc.setFont(undefined, "normal");
-    y += 16;
-  };
-  const colsCortas = { 0: { cellWidth: 54 }, 1: { cellWidth: 62 }, 2: { halign: "left" }, 3: { halign: "left" } };
-
-  /* Lo nuevo va PRIMERO y en bloque aparte: es lo único que Dirección no ha
-     visto. Lo demás ya se le envió y queda abajo, completo, como referencia. */
-  if (comparacion) {
-    const { nuevas, modificadas, retiradas, vsVersion } = comparacion;
-    doc.setFillColor(...VERDE_S).rect(M, y, A, 42, "F");
-    doc.setFillColor(...VERDE).rect(M, y, 4, 42, "F");
-    doc.setFontSize(8.5).setFont(undefined, "bold").setTextColor(...VERDE);
-    doc.text(`NUEVO EN ESTA REVISIÓN — no venía en la revisión ${vsVersion}`, M + 14, y + 15);
-    doc.setFontSize(13).setTextColor(35, 42, 49);
-    doc.text(nuevas.length ? `${nuevas.length} pago(s) nuevo(s)   ·   ${txtTotSem(totPorMonedaSem(nuevas))}` : "Sin pagos nuevos", M + 14, y + 33);
-    doc.setFont(undefined, "normal");
-    y += 50;
-    if (nuevas.length) {
-      autoTabla(doc, {
-        startY: y,
-        head: [["Día", "Zona", "Proveedor", "Concepto", "Área", "Solicitante", "Importe", "Mon."]],
-        body: nuevas.slice().sort((a, b) => String(a.dia || "").localeCompare(String(b.dia || "")))
-          .map((f) => [f.dia || "", f.zona || "", f.proveedor || "", f.concepto || "", f.area || "",
-                       f.solicitante || "", `$${numMx(f.importe)}`, f.moneda || "MXP"]),
-        styles: { fontSize: 7.5, cellPadding: 3.5, fillColor: VERDE_S },
-        alternateRowStyles: { fillColor: VERDE_S },
-        headStyles: { fillColor: VERDE, textColor: 255, halign: "center" },
-        columnStyles: { ...colsCortas, 4: { cellWidth: 70 }, 5: { cellWidth: 70 }, 6: { halign: "right", cellWidth: 66, fontStyle: "bold" }, 7: { cellWidth: 34 } },
-        margin: { left: M, right: M },
-      });
-      y = doc.lastAutoTable.finalY + 18;
-    }
-    if (modificadas.length) {
-      tituloSec(`CAMBIARON RESPECTO A LA REVISIÓN ${vsVersion} · ${modificadas.length}`, AMBAR);
-      autoTabla(doc, {
-        startY: y,
-        head: [["Día", "Zona", "Proveedor", "Concepto", "Qué cambió", "Antes", "Ahora", "Mon."]],
-        body: modificadas.map((f) => [f.dia || "", f.zona || "", f.proveedor || "", f.concepto || "", f._queCambio,
-          `${f._antes.dia !== f.dia ? `${fmtFecha(f._antes.dia)}  ` : ""}$${numMx(f._antes.importe)}${(f._antes.moneda || "MXP") !== (f.moneda || "MXP") ? ` ${f._antes.moneda || "MXP"}` : ""}`,
-          `$${numMx(f.importe)}`, f.moneda || "MXP"]),
-        styles: { fontSize: 7.5, cellPadding: 3.5, fillColor: AMBAR_S },
-        alternateRowStyles: { fillColor: AMBAR_S },
-        headStyles: { fillColor: AMBAR, textColor: 255, halign: "center" },
-        columnStyles: { ...colsCortas, 4: { cellWidth: 70 }, 5: { halign: "right", cellWidth: 100 }, 6: { halign: "right", cellWidth: 66, fontStyle: "bold" }, 7: { cellWidth: 34 } },
-        margin: { left: M, right: M },
-      });
-      y = doc.lastAutoTable.finalY + 18;
-    }
-    if (retiradas.length) {
-      tituloSec(`RETIRADOS — venían en la revisión ${vsVersion} y ya no están · ${retiradas.length}`, [107, 119, 133]);
-      autoTabla(doc, {
-        startY: y,
-        head: [["Día", "Zona", "Proveedor", "Concepto", "Importe", "Mon."]],
-        body: retiradas.map((f) => [f.dia || "", f.zona || "", f.proveedor || "", f.concepto || "", `$${numMx(f.importe)}`, f.moneda || "MXP"]),
-        styles: { fontSize: 7.5, cellPadding: 3.5, textColor: [107, 119, 133] },
-        headStyles: { fillColor: [139, 153, 166], textColor: 255, halign: "center" },
-        columnStyles: { ...colsCortas, 4: { halign: "right", cellWidth: 66 }, 5: { cellWidth: 34 } },
-        margin: { left: M, right: M },
-      });
-      y = doc.lastAutoTable.finalY + 18;
-    }
-    saltoSi(60 + bloques.length * 13);
-    doc.setDrawColor(200, 206, 213).line(M, y, M + A, y);
-    y += 8;
-    tituloSec("REPORTE COMPLETO DE LA SEMANA — incluye lo nuevo, marcado", [35, 42, 49]);
-  }
-
-  doc.setFillColor(246, 247, 249);
-  doc.rect(M, y, A, 26 + bloques.length * 13, "F");
-  doc.setFontSize(8.5).setTextColor(107, 119, 133);
-  doc.text("RESUMEN — LO QUE SE VA A PAGAR", M + 10, y + 15);
-  doc.setFontSize(9).setTextColor(35, 42, 49);
-  let yb = y + 30;
-  bloques.forEach((b) => {
-    doc.text(`${b.grupo}   ${b.moneda}`, M + 14, yb);
-    doc.text(`${b.filas.length} pago(s)`, M + 220, yb);
-    doc.setFont(undefined, "bold");
-    doc.text(`$${numMx(b.total)}`, M + 330, yb, { align: "right" });
-    doc.setFont(undefined, "normal");
-    yb += 13;
-  });
-  doc.setFont(undefined, "bold").setFontSize(11);
-  doc.text(
-    Object.entries(tot).map(([m, v]) => `TOTAL ${m}: $${numMx(v)}`).join("      "),
-    M + A - 10, y + 18, { align: "right" }
-  );
-  doc.setFont(undefined, "normal");
-  y += 26 + bloques.length * 13 + 14;
-
-  // Tabla plana: zona y día como columnas.
-  const ordenTabla = marcadas
-    .slice()
-    .sort((a, b) => String(a.zona || "").localeCompare(String(b.zona || "")) || String(a.dia || "").localeCompare(String(b.dia || "")));
-  const etiquetaCambio = (f) => (f._cambio === "nueva" ? "NUEVO" : f._cambio === "modificada" ? "CAMBIÓ" : "");
-  autoTabla(doc, {
-    startY: y,
-    head: [[...(comparacion ? ["Rev."] : []), "Día", "Zona", "Área", "Proveedor", "Concepto", "Categoría", "Solicitante", "Importe", "Mon."]],
-    body: ordenTabla.map((f) => [...(comparacion ? [etiquetaCambio(f)] : []), f.dia || "", f.zona || "", f.area || "", f.proveedor || "", f.concepto || "",
-                   f.categoria || "", f.solicitante || "", `$${numMx(f.importe)}`, f.moneda || "MXP"]),
-    styles: { fontSize: 7, cellPadding: 3.5 },
-    headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
-    columnStyles: Object.fromEntries(Object.entries({
-      0: { cellWidth: 54 }, 1: { cellWidth: 62 }, 2: { cellWidth: 62 },
-      3: { halign: "left" }, 4: { halign: "left" }, 5: { halign: "left", cellWidth: 90 },
-      6: { cellWidth: 66 }, 7: { halign: "right", cellWidth: 62 }, 8: { cellWidth: 34 },
-    }).map(([k, v]) => [Number(k) + (comparacion ? 1 : 0), v]).concat(comparacion ? [[0, { cellWidth: 40, fontStyle: "bold", fontSize: 6.5 }]] : [])),
-    didParseCell: (d) => {
-      if (!comparacion || d.section !== "body") return;
-      const c = ordenTabla[d.row.index]?._cambio;
-      if (c === "nueva") { d.cell.styles.fillColor = VERDE_S; if (d.column.index === 0) d.cell.styles.textColor = VERDE; }
-      else if (c === "modificada") { d.cell.styles.fillColor = AMBAR_S; if (d.column.index === 0) d.cell.styles.textColor = AMBAR; }
-    },
-    margin: { left: M, right: M },
-  });
-
-  doc.save(`Pagos ${compania} ${rango}${version ? `-REV${version}` : ""}.pdf`);
-}
-
-/**
  * Excel del reporte semanal: una tabla por zona y moneda, apiladas.
  *
  * Excel admite UN solo autofiltro por hoja, así que tablas apiladas no pueden
@@ -3284,6 +3121,15 @@ function generarPdfSemanal({ compania, periodoIni, periodoFin, version, filas, g
  * leer y entregar, y una plana con autofiltro para filtrar y hacer tablas
  * dinámicas. Es la misma división que ya usamos en el reporte presupuestal.
  */
+/* Nombre del reporte semanal (v3.14.0). Dice SEMANAL y "Semana del…" con el
+   año, porque "Pagos OSB Del 17 al 21 de Nov" se confundía con el reporte de
+   un día. */
+function tituloSemanal(compania, periodoIni, periodoFin) {
+  const anio = String(periodoFin || periodoIni || "").slice(0, 4);
+  const rango = rangoSemana(periodoIni, periodoFin).replace(/^Del /, "del ");
+  return `Reporte SEMANAL de Pagos ${compania} - Semana ${rango}${anio ? ` ${anio}` : ""}`;
+}
+
 async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, filas, gruposZona = {}, comparacion = null }) {
   await esperarLibrerias();
   const rango = rangoSemana(periodoIni, periodoFin);
@@ -3310,7 +3156,7 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
   const ws = wbx.addWorksheet("Por zona y moneda");
   ws.columns = COLS.map((c) => ({ width: c.w }));
 
-  const tit = ws.addRow([`Pagos ${compania} ${rango}`]);
+  const tit = ws.addRow([tituloSemanal(compania, periodoIni, periodoFin).toUpperCase()]);
   tit.font = { bold: true, size: 14, name: "Calibri" };
   ws.mergeCells(tit.number, 1, tit.number, COLS.length);
   if (version) {
@@ -3494,7 +3340,7 @@ async function generarExcelSemanal({ compania, periodoIni, periodoFin, version, 
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `Pagos ${compania} ${rango}${version ? `-REV${version}` : ""}.xlsx`;
+  a.download = `${tituloSemanal(compania, periodoIni, periodoFin)}${version ? ` - REV${version}` : ""}.xlsx`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
@@ -12694,9 +12540,6 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
         compania: unidad, tipo: "transacciones", periodo: periodoSem,
         periodoIni: semanaOf, periodoFin: finSemanaOf, filas,
       });
-      generarPdfSemanal({ compania: unidad, periodoIni: semanaOf, periodoFin: finSemanaOf,
-        version: r.version, filas, gruposZona, comparacion });
-      await new Promise((res) => setTimeout(res, 900));
       await generarExcelSemanal({ compania: unidad, periodoIni: semanaOf, periodoFin: finSemanaOf,
         version: r.version, filas, gruposZona, comparacion });
       setRecargaSem((x) => x + 1);
@@ -13998,7 +13841,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                           display: "flex", flexDirection: "column" }}>
               <div style={{ fontSize: 12.5, fontWeight: 700 }}>Enviar a Dirección (oficial)</div>
               <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, marginBottom: 10 }}>
-                PDF y Excel de la semana completa, <b>sin filtros</b>, agrupados como la vista.
+                Excel de la semana completa, <b>sin filtros</b>, agrupado como la vista.
                 Congela lo enviado como línea base para detectar gasto imprevisto.
               </div>
               <Field label="Semana (lunes)">
@@ -15183,11 +15026,8 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   });
 
   const colVisibility = useColumnVisibility("colv-reporte", COLUMNAS_REPORTE);
-  const pdfVis = useVisibilidadColumnas("colv-reporte-pdf", COLUMNAS_PDF, PDF_OCULTAS_INICIAL);
-  const columnasPDF = pdfVis.visibles;
   const excelVis = useVisibilidadColumnas("colv-reporte-excel", COLUMNAS_EXCEL);
   const columnasExcel = excelVis.visibles;
-  const [previewPDF, setPreviewPDF] = useState(null);
   const colWidths = useColumnWidths("colw-reporte");
   const { ordered: columnas, moveColumn } = useColumnOrder("colo-reporte", colVisibility.visible);
   const dragKeyRef = useRef(null);
@@ -15217,7 +15057,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     descargarBlob(blob, `Reporte de Pagos - ${unidad} - ${(!inicio ? "Sin periodo" : (inicio === fin ? inicio : `${inicio} a ${fin}`))}.xlsx`);
   };
 
-  /* Construye el Excel sin descargarlo, igual que construirPDF: la exportación
+  /* Construye el Excel sin descargarlo: la exportación
      suelta y Enviar a Pagos salen del mismo armado. Con `revision`, el título
      de cada bloque la lleva, para que la hoja impresa diga qué envío es. */
   const construirExcel = async (revision = null, comparacion = null) => {
@@ -15354,155 +15194,6 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
   };
 
   const [generandoReporte, setGenerandoReporte] = useState(false);
-  /**
-   * Estima si la tabla cabe a lo ancho de la hoja. Ahora es solo la suma de
-   * los anchos naturales — el mismo cálculo que reparte anchosProporcionalesPDF
-   * al construir el documento, así que la advertencia y lo que realmente se
-   * dibuja nunca pueden decir cosas distintas.
-   */
-  const anchoEstimadoPDF = () => {
-    const disponible = 712; // carta horizontal son 792 pt; quedan ~712 descontando márgenes
-    const usado = columnasPDF.reduce((suma, c) => suma + anchoNaturalColumnaPDF(c, filasOrdenadas), 0);
-    return { usado: Math.round(usado), disponible, cabe: usado <= disponible };
-  };
-
-  /**
-   * Construye el documento y lo devuelve SIN guardarlo. La vista previa y el
-   * archivo final salen los dos de aquí: con dos generadores distintos, el
-   * preview acabaría mostrando algo que no es lo que se descarga.
-   */
-  const construirPDF = (revision = null, comparacion = null) => {
-    exigirLibrerias();
-      const cambioDe = new Map((comparacion?.filas || []).map((f) => [f.id, f._cambio]));
-      const etqRev = revision === null ? "" : ` R${revision}`;
-      const diasOrdenados = filasOrdenadas.map((f) => f.dia).filter(Boolean).sort();
-      const inicio = fechaDesde || diasOrdenados[0] || "";
-      const fin = fechaHasta || diasOrdenados[diasOrdenados.length - 1] || "";
-
-      const doc = new jsPDF({ orientation: "landscape", unit: "pt", format: "letter" });
-      const alturaPagina = doc.internal.pageSize.getHeight();
-      const margenInferior = 40;
-      let cursorY = 30; // dónde va el próximo título — solo salta de página si de verdad no cabe
-
-      /* Resumen ejecutivo, igual que el Excel y que el reporte semanal a
-         Dirección: cuánto se va a pagar por zona y moneda, antes de entrar
-         al detalle bloque por bloque. Usa los MISMOS bloques que ya
-         calcula el Excel — un solo cálculo, no dos que puedan desalinearse. */
-      if (bloques.length) {
-        const altoResumen = 24 + bloques.length * 13 + 6;
-        doc.setFillColor(236, 238, 241);
-        doc.rect(30, cursorY, 732, altoResumen, "F");
-        doc.setFontSize(9).setTextColor(107, 119, 133);
-        doc.text("RESUMEN — LO QUE SE VA A PAGAR", 40, cursorY + 14);
-        doc.setFontSize(9).setTextColor(35, 42, 49);
-        let yb = cursorY + 28;
-        bloques.forEach((b) => {
-          doc.text(`${b.grupo}   ${b.moneda}`, 44, yb);
-          doc.text(`${b.filas.length} pago(s)`, 300, yb);
-          doc.setFont(undefined, "bold");
-          doc.text(`$${numMx(b.total)}`, 420, yb, { align: "right" });
-          doc.setFont(undefined, "normal");
-          yb += 13;
-        });
-        doc.setFont(undefined, "bold").setFontSize(10);
-        doc.text(
-          Object.entries(totGeneralRP).map(([m, v]) => `TOTAL ${m}: $${numMx(v)}`).join("      "),
-          762, cursorY + 14, { align: "right" }
-        );
-        doc.setFont(undefined, "normal");
-        cursorY += altoResumen + 14;
-      }
-      // Reenvío: después del total, lo que cambió respecto al envío elegido.
-      if (comparacion) {
-        cursorY = dibujarCambiosPagosPdf(doc, comparacion, { y: cursorY, M: 30, ancho: 732, altoPag: alturaPagina });
-        doc.setDrawColor(200, 206, 213).line(30, cursorY, 762, cursorY);
-        cursorY += 22;
-      }
-
-      // Se calcula UNA sola vez, con todas las filas del reporte — no por
-      // bloque — para que las tablas de todas las zonas compartan el mismo
-      // ancho de columna en vez de verse distintas entre sí.
-      const anchosCols = anchosProporcionalesPDF(columnasPDF, filasOrdenadas, 712);
-
-      bloques.forEach((bq) => {
-        {
-          const { grupo, moneda, filas: filasGrupo } = bq;
-
-          // Espacio mínimo para el título + al menos una fila de la tabla —
-          // si no cabe en lo que resta de la página, ahí sí se salta.
-          const alturaMinima = 58 + 24 + 20;
-          if (cursorY > 30 && cursorY + alturaMinima > alturaPagina - margenInferior) {
-            doc.addPage();
-            cursorY = 30;
-          } else if (cursorY > 30) {
-            cursorY += 26; // espacio entre un bloque y el siguiente en la misma página
-          }
-
-          doc.setFontSize(13);
-          doc.setTextColor(0);
-          doc.text(`Solicitud de Pagos del dia ${inicio} Compañía ${unidad}${etqRev} - ${moneda}`, 30, cursorY);
-          doc.setFontSize(10);
-          doc.setTextColor(120);
-          doc.text(grupo, 30, cursorY + 16);
-
-          autoTabla(doc, {
-            startY: cursorY + 28,
-            head: [columnasPDF.map((c) => c.label)],
-            body: filasGrupo.map((f) => columnasPDF.map((c) => c.get(f))),
-            styles: { fontSize: 8, cellPadding: 4 },
-            headStyles: { fillColor: [62, 92, 118], textColor: 255, halign: "center" },
-            bodyStyles: { halign: "center" },
-            // Los textos largos se alinean a la izquierda; lo demás centrado.
-            // El ancho de cada columna viene de anchosCols — repartido
-            // proporcionalmente según el contenido real de TODO el reporte,
-            // no un mínimo fijo para un par de columnas a costa del resto.
-            columnStyles: Object.fromEntries(
-              columnasPDF.map((c, i) => [i, {
-                halign: c.ancho === "left" ? "left" : "center",
-                cellWidth: anchosCols[i],
-              }])
-            ),
-            margin: { bottom: margenInferior },
-            didParseCell: (d) => {
-              if (d.section !== "body") return;
-              const cambio = cambioDe.get(filasGrupo[d.row.index]?.id);
-              if (cambio === "nueva") d.cell.styles.fillColor = COLORES_CAMBIO.VERDE_S;
-              else if (cambio === "modificada") d.cell.styles.fillColor = COLORES_CAMBIO.AMBAR_S;
-            },
-          });
-
-          cursorY = doc.lastAutoTable.finalY;
-        }
-      });
-
-      return doc;
-  };
-
-  /**
-   * Muestra el PDF real en un visor, sin guardarlo y —lo importante— sin
-   * marcar nada como enviado a Pagos. Es para revisar antes de comprometerse.
-   */
-  const vistaPreviaPDF = async () => {
-    if (!filasOrdenadas.length) {
-      alert("No hay transacciones en el filtro actual para previsualizar.");
-      return;
-    }
-    try {
-      await esperarLibrerias();
-      let cmp = { comparacion: null };
-      try { cmp = await obtenerComparacion(); } catch { /* la vista previa sale sin comparar */ }
-      const doc = construirPDF(null, cmp.comparacion);
-      const url = URL.createObjectURL(doc.output("blob"));
-      setPreviewPDF({ url, paginas: doc.internal.getNumberOfPages(), ancho: anchoEstimadoPDF() });
-    } catch (err) {
-      alert("No se pudo generar la vista previa: " + (err.message || err));
-    }
-  };
-
-  const cerrarPreviewPDF = () => {
-    if (previewPDF) URL.revokeObjectURL(previewPDF.url);
-    setPreviewPDF(null);
-  };
 
   /**
    * Enviar a Pagos: el acto que vuelve oficial el pago de una fecha.
@@ -15592,10 +15283,6 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     }
     const { comparacion } = cmp;
 
-    const ancho = anchoEstimadoPDF();
-    const aviso = ancho.cabe ? "" :
-      `\n\nOJO: con ${columnasPDF.length} columnas la tabla del PDF se pasa del ancho de la hoja ` +
-      `(~${ancho.usado} pt contra ${ancho.disponible}). Considera quitar algunas en "Columnas".`;
     const confirmado = confirm(
       `Enviar a Pagos — ${unidad}, ${fmtFecha(fecha)}\n\n` +
       `  ${trans.length} transacción(es):  ${totalesTxt}\n` +
@@ -15605,10 +15292,10 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
         ? `\nEsta fecha ya se envió: R${previo.revision}, ${formatFechaHora(previo.enviado_en)}. ` +
           `Este será un REENVÍO, R${revPrevista}` +
           (yaEnviadas ? ` (${yaEnviadas} de las transacciones ya iban en un envío anterior).` : ".") +
-          (comparacion ? `\n${textoResumenCambiosPagos(comparacion)} Lo que cambió va al inicio del PDF y del Excel.`
+          (comparacion ? `\n${textoResumenCambiosPagos(comparacion)} Lo que cambió va al inicio del Excel.`
             : cmp.nota ? `\n${cmp.nota}` : "")
         : `\nPrimer envío de esta fecha: R0.`) +
-      `\n\nSe descargan ${nombreEnvioPagos(unidad, fecha, revPrevista)}.pdf y .xlsx. ¿Continuar?${aviso}`
+      `\n\nSe descarga ${nombreEnvioPagos(unidad, fecha, revPrevista)}.xlsx. ¿Continuar?`
       + avisoSatTransacciones(trans, proveedoresApi.rows, listasSat)
     );
     if (!confirmado) return;
@@ -15619,7 +15306,6 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
     const polizasFallidas = [];
     try {
       await esperarLibrerias();
-      let pdfBlob = construirPDF(revision, comparacion).output("blob");
       let xlsBlob = (await construirExcel(revision, comparacion)).blob;
 
       /* Una por una, igual que en Transacciones: cada folio se confirma
@@ -15689,13 +15375,10 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
       // Si otro envío se adelantó, la revisión cambió y los archivos se rehacen.
       if (revision !== revPrevista) {
-        pdfBlob = construirPDF(revision, comparacion).output("blob");
         xlsBlob = (await construirExcel(revision, comparacion)).blob;
       }
       const base = nombreEnvioPagos(unidad, fecha, revision);
-      descargarBlob(pdfBlob, `${base}.pdf`);
       descargarBlob(xlsBlob, `${base}.xlsx`);
-      cerrarPreviewPDF();
 
       alert(
         `Enviado: ${base}\n\n` +
@@ -15826,7 +15509,7 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
                 <div style={{ fontSize: 12.5, fontWeight: 700 }}>Enviar a Pagos</div>
                 <div style={{ fontSize: 11, color: T.textDim, marginTop: 3, minHeight: 46 }}>
                   Del {fmtFecha(fechaPago)}: registra los borradores, genera los REG que falten,
-                  marca como enviadas y descarga PDF y Excel como Programacion Pagos-{unidad}-DDMMAA-R0.
+                  marca como enviadas y descarga el Excel como Programacion Pagos-{unidad}-DDMMAA-R0.
                   Reenviar la misma fecha da R1, R2…, con lo que cambió marcado.
                 </div>
                 {enviosFecha.length > 0 && (
@@ -15853,19 +15536,16 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
                   </div>
                 )}
                 <div style={{ marginBottom: 10 }}>
+                  {/* Sin PDF (v3.14.0), el envío lleva el Excel: sus columnas son
+                      las mismas que las de "Exportar a Excel". */}
                   <ColumnVisibilityControl
-                    columns={COLUMNAS_PDF}
-                    hidden={pdfVis.hidden} onToggle={pdfVis.toggle} onShowAll={pdfVis.showAll}
+                    columns={COLUMNAS_EXCEL}
+                    hidden={excelVis.hidden} onToggle={excelVis.toggle} onShowAll={excelVis.showAll}
                     etiqueta="Columnas"
                   />
                 </div>
                 <div style={{ flex: 1 }} />
                 <div style={{ display: "flex", gap: 6 }}>
-                  {/* La vista previa NO marca nada como enviado: existe para
-                      revisar antes de un paso que no se puede deshacer. */}
-                  <Button variant="ghost" onClick={vistaPreviaPDF} disabled={generandoReporte} style={{ flex: 1 }}>
-                    Vista previa
-                  </Button>
                   {revPartidasPag.dialogo}
                   <Button onClick={() => enviarAPagos()} disabled={generandoReporte} style={{ flex: 1 }}>
                     {generandoReporte ? "Enviando…" : "Enviar a Pagos"}
@@ -15943,38 +15623,6 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           <Paginador pag={pagRP} etiqueta="transacciones" />
         </div>
       </Panel>
-      {previewPDF && (
-        <Modal onClose={cerrarPreviewPDF} width={1100}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 10, height: "80vh" }}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-              <div>
-                <div style={{ fontSize: 14, fontWeight: 700 }}>Vista previa del reporte</div>
-                <div style={{ fontSize: 11.5, color: T.textFaint }}>
-                  {filasOrdenadas.length} transacción(es) · {columnasPDF.length} columnas · {previewPDF.paginas} página(s)
-                  {" · "}Nada se ha marcado como enviado a Pagos todavía
-                </div>
-              </div>
-              <div style={{ display: "flex", gap: 8 }}>
-                <Button variant="ghost" onClick={cerrarPreviewPDF}>Cerrar</Button>
-                <Button onClick={() => { cerrarPreviewPDF(); enviarAPagos(); }} disabled={generandoReporte}>
-                  Enviar a Pagos
-                </Button>
-              </div>
-            </div>
-            {!previewPDF.ancho.cabe && (
-              <div style={{ borderLeft: `3px solid ${T.amber}`, background: T.avisoBg, padding: "8px 12px", borderRadius: "0 6px 6px 0", fontSize: 12 }}>
-                <b>La tabla se pasa del ancho de la hoja</b> (~{previewPDF.ancho.usado} pt contra {previewPDF.ancho.disponible} disponibles).
-                Las columnas se aprietan y el texto se parte. Quita algunas en "Columnas del PDF".
-              </div>
-            )}
-            <iframe
-              title="Vista previa del reporte"
-              src={previewPDF.url}
-              style={{ flex: 1, width: "100%", border: `1px solid ${T.border}`, borderRadius: 6 }}
-            />
-          </div>
-        </Modal>
-      )}
     </div>
   );
 }
@@ -17817,9 +17465,6 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
           : await detalleRevisionAnteriorSemanal(r.compania, r.periodo, r.version, base ? Number(base) : null);
         if (prev) comparacion = compararVersionSemanal(data || [], quitarPadresPPD(prev.filas, transaccionesTodas), prev.version);
       } catch (err) { alert("No se pudo leer la revisión anterior; se descarga sin comparar. " + (err.message || err)); }
-      generarPdfSemanal({ compania: r.compania, periodoIni: r.periodo_ini, periodoFin: r.periodo_fin,
-        version: r.version, filas: data || [], gruposZona, comparacion });
-      await new Promise((res) => setTimeout(res, 900));
       await generarExcelSemanal({ compania: r.compania, periodoIni: r.periodo_ini, periodoFin: r.periodo_fin,
         version: r.version, filas: data || [], gruposZona, comparacion });
     } else {
@@ -17924,7 +17569,7 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
                   </Select>
                 </Field>
                 <Button variant="ghost" onClick={() => descargarVersion(yaEnviados.find((r) => r.version === verA), String(verB))}>
-                  Descargar PDF y Excel
+                  Descargar Excel
                 </Button>
                 <div style={{ fontSize: 11, color: T.textFaint, maxWidth: 360 }}>
                   El reporte de la v{verA} con lo nuevo respecto a la v{verB} primero y resaltado.

@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.16.0";
+const APP_VERSION = "3.16.1";
 const CHANGELOG = [
+  { v: "3.16.1", desc: "Dashboard > Sempra: Rubros y categorias del gasto se separa en dos tablas, una MXP y otra USD. Clic en un rubro muestra sus categorias y clic en una categoria muestra sus transacciones (folio, fecha, proveedor, concepto, estado, pagado y por pagar). Solo queda abierto un rubro y una categoria a la vez: abrir otro cierra el anterior" },
   { v: "3.16.0", desc: "Partidas sin proyecto: una partida nueva (en Partidas o desde el buscador de la transaccion) nace general (Todos) y con concepto sugerido <Rubro> <Mes> <Año>, que se actualiza solo al cambiar rubro, mes o año mientras no se escriba otro. El proyecto de la partida queda opcional. En la transaccion el Proyecto ahora es obligatorio (excepto parcialidades PPD). Dashboard > Sempra: Por ejercer cambia a Por pagar (lo comprometido en transacciones Sempra de partidas del mes actual en adelante que aun no se paga), con detalle por mes. Presupuesto mensual a Direccion (PDF ejecutivo): el corte por Proyecto ahora es el gasto comprometido en las transacciones, por el proyecto de cada transaccion; el presupuesto que aun no tiene transacciones se reporta aparte como Por asignar (o como por ejercer de su proyecto si la partida es de uno), asi el corte cuadra con el total" },
   { v: "3.15.0", desc: "Dashboard > Sempra simplificado: solo Pagado (acumulado del proyecto), Por ejercer (presupuesto de las partidas Sempra del mes actual en adelante menos lo ya pagado contra ellas, con su detalle por mes) y una tabla de Rubros y categorias del gasto (rubro de la partida, categoria de la transaccion; clic en el rubro para ver sus categorias) con numero, pagado y por pagar. Se quitaron el selector de periodo, la grafica por mes, las transacciones cruzadas, los principales proveedores y la lista de transacciones" },
   { v: "3.14.1", desc: "Programacion de Pagos (Enviar a Pagos y Exportar a Excel): Referencia de Pago, Banco, Cuenta CLABE, No. Cuenta y SWIFT van siempre y ya no se pueden quitar en Columnas. Si alguien las tenia ocultas, vuelven a salir" },
@@ -5414,8 +5415,12 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
     if (!p && t.unidad_detectada !== unidad) return false;
     return esSempra(t.proyecto) || esSempra(p?.proyecto);
   }), [transacciones, partidaPorId, unidad]);
-  const [abiertos, setAbiertos] = useState(() => new Set());
-  const alternar = (k) => setAbiertos((prev) => alternarEnSet(prev, k));
+  /* v3.16.1: acordeón de un solo nivel abierto a la vez (rubro → categoría →
+     transacciones). Abrir otra fila cierra la anterior para no saturar. */
+  const [rubroAbierto, setRubroAbierto] = useState("");
+  const [catAbierta, setCatAbierta] = useState("");
+  const alternarRubro = (k) => { setRubroAbierto((prev) => (prev === k ? "" : k)); setCatAbierta(""); };
+  const alternarCat = (k) => setCatAbierta((prev) => (prev === k ? "" : k));
   const monedaDe = (x) => (x.moneda === "USD" ? "USD" : "MXP");
   const MONEDAS_ORDEN = ["MXP", "USD"];
 
@@ -5458,14 +5463,26 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
     const kr = `${m}|${rubro}`;
     if (!rubros[kr]) rubros[kr] = { moneda: m, rubro, n: 0, comprometido: 0, pagado: 0, cats: {} };
     const r = rubros[kr];
-    if (!r.cats[cat]) r.cats[cat] = { categoria: cat, n: 0, comprometido: 0, pagado: 0 };
+    if (!r.cats[cat]) r.cats[cat] = { categoria: cat, n: 0, comprometido: 0, pagado: 0, txs: [] };
     const c = r.cats[cat];
     const imp = Number(t.importe) || 0;
     if (cuentaEnComprometido(t)) { r.n++; c.n++; r.comprometido += imp; c.comprometido += imp; }
     if (cuentaEnPagado(t)) { r.pagado += imp; c.pagado += imp; }
+    c.txs.push(t);
   });
+  // Por transacción: una compra PPD descuenta lo pagado en sus parcialidades,
+  // y la parcialidad solo muestra lo pagado (su compromiso es el de la compra).
+  const pagadoTx = (t) => (cuentaEnPagado(t) ? Number(t.importe) || 0 : 0);
+  const porPagarTx = (t) => {
+    if (!cuentaEnComprometido(t)) return 0;
+    const imp = Number(t.importe) || 0;
+    if (esPadrePPD(t)) return imp - transSempra.filter((h) => h.transaccion_padre_id === t.id).reduce((a, h) => a + pagadoTx(h), 0);
+    return imp - pagadoTx(t);
+  };
   const listaRubros = Object.values(rubros)
-    .map((r) => ({ ...r, cats: Object.values(r.cats).sort((a, b) => b.pagado - a.pagado || b.comprometido - a.comprometido) }))
+    .map((r) => ({ ...r, cats: Object.values(r.cats)
+      .map((c) => ({ ...c, txs: c.txs.slice().sort((a, b) => String(b.dia || "").localeCompare(String(a.dia || ""))) }))
+      .sort((a, b) => b.pagado - a.pagado || b.comprometido - a.comprometido) }))
     .sort((a, b) => (a.moneda === b.moneda ? b.pagado - a.pagado || b.comprometido - a.comprometido : a.moneda === "MXP" ? -1 : 1));
   const totRubros = {};
   listaRubros.forEach((r) => {
@@ -5518,57 +5535,78 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
         )}
       </Panel>
 
-      <Panel title="Rubros y categorías del gasto"
-        subtitle="Transacciones registradas del proyecto. El rubro es el de la partida; la categoría, la de la transacción. Clic en un rubro para ver sus categorías.">
-        <div style={{ overflowX: "auto" }}>
-          <table style={tableStyle}>
-            <thead><tr>
-              <th style={thStyle}>Rubro / categoría</th><th style={thStyle}>Moneda</th>
-              <th style={{ ...thStyle, textAlign: "right" }}>#</th>
-              <th style={{ ...thStyle, textAlign: "right" }}>Pagado</th>
-              <th style={{ ...thStyle, textAlign: "right" }}>Por pagar</th>
-            </tr></thead>
-            <tbody>
-              {listaRubros.map((r) => {
-                const k = `${r.moneda}|${r.rubro}`;
-                const abierto = abiertos.has(k);
-                return (
-                  <React.Fragment key={k}>
-                    <tr data-clic-fila="" onClick={() => alternar(k)} style={{ background: T.panelAlt }}>
-                      <td style={{ ...tdStyle, fontWeight: 600 }}>
-                        <span style={{ color: T.textFaint, display: "inline-block", width: 14 }}>{abierto ? "▾" : "▸"}</span>{r.rubro}
-                      </td>
-                      <td style={tdStyle}><Pill tone="dim">{r.moneda}</Pill></td>
-                      <td style={num}>{r.n}</td>
-                      <td style={{ ...num, color: T.teal, fontWeight: 600 }}>{money(r.pagado, r.moneda)}</td>
-                      <td style={{ ...num, fontWeight: 600 }}>{money(r.comprometido - r.pagado, r.moneda)}</td>
-                    </tr>
-                    {abierto && r.cats.map((c) => (
-                      <tr key={`${k}|${c.categoria}`}>
-                        <td style={{ ...tdStyle, paddingLeft: 34, color: T.textDim }}>{c.categoria}</td>
-                        <td style={tdStyle} />
-                        <td style={num}>{c.n}</td>
-                        <td style={{ ...num, color: T.teal }}>{money(c.pagado, r.moneda)}</td>
-                        <td style={num}>{money(c.comprometido - c.pagado, r.moneda)}</td>
+      {MONEDAS_ORDEN.filter((m) => totRubros[m]).map((m) => (
+        <Panel key={m} title={`Rubros y categorías del gasto — ${m}`}
+          subtitle="Transacciones registradas del proyecto. El rubro es el de la partida; la categoría, la de la transacción. Clic en un rubro para ver sus categorías y en una categoría para ver sus transacciones.">
+          <div style={{ overflowX: "auto" }}>
+            <table style={tableStyle}>
+              <thead><tr>
+                <th style={thStyle}>Rubro / categoría / transacción</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>#</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Pagado</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Por pagar</th>
+              </tr></thead>
+              <tbody>
+                {listaRubros.filter((r) => r.moneda === m).map((r) => {
+                  const k = `${m}|${r.rubro}`;
+                  const abierto = rubroAbierto === k;
+                  return (
+                    <React.Fragment key={k}>
+                      <tr data-clic-fila="" onClick={() => alternarRubro(k)} style={{ background: T.panelAlt }}>
+                        <td style={{ ...tdStyle, fontWeight: 600 }}>
+                          <span style={{ color: T.textFaint, display: "inline-block", width: 14 }}>{abierto ? "▾" : "▸"}</span>{r.rubro}
+                        </td>
+                        <td style={num}>{r.n}</td>
+                        <td style={{ ...num, color: T.teal, fontWeight: 600 }}>{money(r.pagado, m)}</td>
+                        <td style={{ ...num, fontWeight: 600 }}>{money(r.comprometido - r.pagado, m)}</td>
                       </tr>
-                    ))}
-                  </React.Fragment>
-                );
-              })}
-              {MONEDAS_ORDEN.filter((m) => totRubros[m]).map((m) => (
-                <tr key={`tot-${m}`}>
-                  <td style={{ ...tdStyle, fontWeight: 700, borderTop: `2px solid ${T.border}` }}>Total</td>
-                  <td style={{ ...tdStyle, borderTop: `2px solid ${T.border}` }}><Pill tone="dim">{m}</Pill></td>
+                      {abierto && r.cats.map((c) => {
+                        const kc = `${k}|${c.categoria}`;
+                        const catAb = catAbierta === kc;
+                        return (
+                          <React.Fragment key={kc}>
+                            <tr data-clic-fila="" onClick={() => alternarCat(kc)}>
+                              <td style={{ ...tdStyle, paddingLeft: 28, color: T.textDim, fontWeight: catAb ? 600 : 400 }}>
+                                <span style={{ color: T.textFaint, display: "inline-block", width: 14 }}>{catAb ? "▾" : "▸"}</span>{c.categoria}
+                              </td>
+                              <td style={num}>{c.n}</td>
+                              <td style={{ ...num, color: T.teal }}>{money(c.pagado, m)}</td>
+                              <td style={num}>{money(c.comprometido - c.pagado, m)}</td>
+                            </tr>
+                            {catAb && c.txs.map((t) => (
+                              <tr key={t.id}>
+                                <td style={{ ...tdStyle, paddingLeft: 58, fontSize: 11.5 }}>
+                                  <span style={{ fontFamily: T.fontMono, color: T.accent }}>{t.folio_transaccion || "—"}</span>
+                                  <span style={{ color: T.textFaint }}>{"  ·  "}{fmtFecha(t.dia) || "sin fecha"}{"  ·  "}</span>
+                                  <span style={{ fontWeight: 600 }}>{t.proveedor || "Sin proveedor"}</span>
+                                  {t.concepto_detallado ? <span style={{ color: T.textDim }}>{"  ·  "}{t.concepto_detallado}</span> : null}
+                                  {t.status ? <span style={{ marginLeft: 8 }}><Pill tone={t.status === "Pagado" ? "teal" : "dim"}>{esParcialidad(t) ? `Parcialidad · ${t.status}` : esPadrePPD(t) ? "Compra PPD" : t.status}</Pill></span> : null}
+                                </td>
+                                <td style={num} />
+                                <td style={{ ...num, fontSize: 11.5, color: T.teal }}>{pagadoTx(t) ? money(pagadoTx(t), m) : "—"}</td>
+                                <td style={{ ...num, fontSize: 11.5 }}>{porPagarTx(t) ? money(porPagarTx(t), m) : "—"}</td>
+                              </tr>
+                            ))}
+                          </React.Fragment>
+                        );
+                      })}
+                    </React.Fragment>
+                  );
+                })}
+                <tr>
+                  <td style={{ ...tdStyle, fontWeight: 700, borderTop: `2px solid ${T.border}` }}>Total {m}</td>
                   <td style={{ ...num, fontWeight: 700, borderTop: `2px solid ${T.border}` }}>{totRubros[m].n}</td>
                   <td style={{ ...num, fontWeight: 700, color: T.teal, borderTop: `2px solid ${T.border}` }}>{money(totRubros[m].pagado, m)}</td>
                   <td style={{ ...num, fontWeight: 700, borderTop: `2px solid ${T.border}` }}>{money(totRubros[m].comprometido - totRubros[m].pagado, m)}</td>
                 </tr>
-              ))}
-              {!listaRubros.length && <tr><td colSpan={5} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones registradas</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
+              </tbody>
+            </table>
+          </div>
+        </Panel>
+      ))}
+      {!listaRubros.length && (
+        <Panel title="Rubros y categorías del gasto"><div style={{ fontSize: 12, color: T.textFaint }}>Sin transacciones registradas.</div></Panel>
+      )}
     </div>
   );
 }

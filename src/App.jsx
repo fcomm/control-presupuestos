@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.17.0";
+const APP_VERSION = "3.18.0";
 const CHANGELOG = [
+  { v: "3.18.0", desc: "Dashboard > Sempra: filtro de periodo Desde-Hasta con un slider de dos manijas, mes a mes. El extremo izquierdo es el mes del gasto mas viejo y el derecho el mes mas nuevo con transaccion o partida Sempra. Filtra Pagado, Por pagar y las tablas de rubros; boton Todo el periodo para regresar. El mes de un gasto es el de su partida (o su fecha si no tiene)" },
   { v: "3.17.0", desc: "Folio de partida con P para no confundirlo con el de transaccion: OSB-P-OCT26-071 (antes OSB-OCT26-071, igual que una transaccion). Las partidas nuevas ya salen asi; un folio escrito a mano o importado de Excel con el formato anterior se convierte solo. El folio de las transacciones no cambia. Requiere renombrar-folios-partidas.sql" },
   { v: "3.16.1", desc: "Dashboard > Sempra: Rubros y categorias del gasto se separa en dos tablas, una MXP y otra USD. Clic en un rubro muestra sus categorias y clic en una categoria muestra sus transacciones (folio, fecha, proveedor, concepto, estado, pagado y por pagar). Solo queda abierto un rubro y una categoria a la vez: abrir otro cierra el anterior" },
   { v: "3.16.0", desc: "Partidas sin proyecto: una partida nueva (en Partidas o desde el buscador de la transaccion) nace general (Todos) y con concepto sugerido <Rubro> <Mes> <Año>, que se actualiza solo al cambiar rubro, mes o año mientras no se escriba otro. El proyecto de la partida queda opcional. En la transaccion el Proyecto ahora es obligatorio (excepto parcialidades PPD). Dashboard > Sempra: Por ejercer cambia a Por pagar (lo comprometido en transacciones Sempra de partidas del mes actual en adelante que aun no se paga), con detalle por mes. Presupuesto mensual a Direccion (PDF ejecutivo): el corte por Proyecto ahora es el gasto comprometido en las transacciones, por el proyecto de cada transaccion; el presupuesto que aun no tiene transacciones se reporta aparte como Por asignar (o como por ejercer de su proyecto si la partida es de uno), asi el corte cuadra con el total" },
@@ -5435,13 +5436,41 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
   const monedaDe = (x) => (x.moneda === "USD" ? "USD" : "MXP");
   const MONEDAS_ORDEN = ["MXP", "USD"];
 
+  /* v3.18.0 — Periodo Desde–Hasta con un slider de dos manijas, mes a mes.
+     El mes de un gasto es el de su partida (como en el resto de la app); si no
+     tiene partida, el de su fecha. Extremo izquierdo: el gasto más viejo.
+     Extremo derecho: el mes más nuevo con transacción o partida Sempra. */
+  const claveDeMes = (anio, mes) => (Number(anio) || 0) * 12 + MESES.indexOf(mes);
+  const claveTx = (t) => {
+    const p = partidaPorId.get(t.partida_id);
+    if (p && p.anio && MESES.includes(p.mes)) return claveDeMes(p.anio, p.mes);
+    const d = String(t.dia || "");
+    return /^\d{4}-\d{2}/.test(d) ? Number(d.slice(0, 4)) * 12 + Number(d.slice(5, 7)) - 1 : null;
+  };
+  const limites = useMemo(() => {
+    const kt = transSempra.map(claveTx).filter((k) => k !== null);
+    const kp = partidasSempra.filter((p) => p.anio && MESES.includes(p.mes)).map((p) => claveDeMes(p.anio, p.mes));
+    const izq = kt.length ? kt : kp;
+    if (!izq.length) return null;
+    return { min: Math.min(...izq), max: Math.max(...izq, ...kt, ...kp) };
+  }, [transSempra, partidasSempra, partidaPorId]);
+  const [rangoSel, setRangoSel] = useState(null);
+  const desde = limites ? Math.min(limites.max, Math.max(limites.min, rangoSel ? rangoSel[0] : limites.min)) : 0;
+  const hasta = limites ? Math.max(desde, Math.min(limites.max, rangoSel ? rangoSel[1] : limites.max)) : 0;
+  const rangoCompleto = !limites || (desde === limites.min && hasta === limites.max);
+  const etiquetaClave = (k) => `${MESES[((k % 12) + 12) % 12].slice(0, 3)} ${Math.floor(k / 12)}`;
+  const transRango = useMemo(() => (rangoCompleto ? transSempra : transSempra.filter((t) => {
+    const k = claveTx(t);
+    return k !== null && k >= desde && k <= hasta;
+  })), [transSempra, desde, hasta, rangoCompleto, partidaPorId]);
+
   if (!partidasSempra.length && !transSempra.length) {
     return <EmptyState title="Sin gastos de Sempra" body={`No hay partidas ni transacciones del proyecto Sempra en ${unidad}.`} />;
   }
 
   // 1. Pagado acumulado
   const pagado = {};
-  transSempra.forEach((t) => { if (cuentaEnPagado(t)) pagado[monedaDe(t)] = (pagado[monedaDe(t)] || 0) + (Number(t.importe) || 0); });
+  transRango.forEach((t) => { if (cuentaEnPagado(t)) pagado[monedaDe(t)] = (pagado[monedaDe(t)] || 0) + (Number(t.importe) || 0); });
 
   // 2. Por pagar: lo comprometido y aún no pagado de las partidas del mes actual en adelante.
   //    (Las partidas ya no llevan proyecto, así que el presupuesto no se puede separar por
@@ -5450,7 +5479,7 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
   const claveMes = (anio, mes) => (Number(anio) || 0) * 12 + MESES.indexOf(mes);
   const claveHoy = hoy.getFullYear() * 12 + hoy.getMonth();
   const meses = {};
-  transSempra.forEach((t) => {
+  transRango.forEach((t) => {
     const p = partidaPorId.get(t.partida_id);
     if (!p || claveMes(p.anio, p.mes) < claveHoy) return;
     const m = monedaDe(t);
@@ -5467,7 +5496,7 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
 
   // 3. Rubros y categorías
   const rubros = {};
-  transSempra.filter((t) => cuentaEnComprometido(t) || cuentaEnPagado(t)).forEach((t) => {
+  transRango.filter((t) => cuentaEnComprometido(t) || cuentaEnPagado(t)).forEach((t) => {
     const m = monedaDe(t);
     const rubro = (partidaPorId.get(t.partida_id)?.rubro || "").trim() || "Sin partida";
     const cat = (t.categoria || "").trim() || "Sin categoría";
@@ -5504,10 +5533,46 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
   const num = { ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" };
   const mesActual = `${MESES[hoy.getMonth()]} ${hoy.getFullYear()}`;
 
+  const pct = (k) => (limites && limites.max > limites.min ? ((k - limites.min) / (limites.max - limites.min)) * 100 : 0);
+  const sliderPeriodo = limites && (
+    <Panel title="Periodo" subtitle="Arrastra las manijas para elegir desde qué mes y hasta qué mes. Filtra todo el tablero; el mes de un gasto es el de su partida.">
+      <style>{`
+        .sempra-rango input[type=range]{position:absolute;left:0;top:0;width:100%;height:30px;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
+        .sempra-rango input[type=range]::-webkit-slider-runnable-track{background:none;border:none}
+        .sempra-rango input[type=range]::-moz-range-track{background:none;border:none}
+        .sempra-rango input[type=range]::-webkit-slider-thumb{pointer-events:auto;-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:${T.panel};border:2px solid ${T.accent};cursor:grab;margin-top:0}
+        .sempra-rango input[type=range]::-moz-range-thumb{pointer-events:auto;width:14px;height:14px;border-radius:50%;background:${T.panel};border:2px solid ${T.accent};cursor:grab}
+      `}</style>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: T.text, minWidth: 190 }}>
+          {etiquetaClave(desde)} <span style={{ color: T.textFaint, fontWeight: 400 }}>—</span> {etiquetaClave(hasta)}
+          <span style={{ fontSize: 11, color: T.textFaint, fontWeight: 400, marginLeft: 8 }}>{hasta - desde + 1} {hasta === desde ? "mes" : "meses"}</span>
+        </div>
+        {!rangoCompleto && (
+          <Button type="button" variant="ghost" onClick={() => setRangoSel(null)} style={{ padding: "4px 10px", fontSize: 11.5 }}>Todo el periodo</Button>
+        )}
+      </div>
+      <div className="sempra-rango" style={{ position: "relative", height: 30, margin: "10px 9px 0" }}>
+        <div style={{ position: "absolute", left: 0, right: 0, top: 13, height: 4, borderRadius: 2, background: T.borderSoft }} />
+        <div style={{ position: "absolute", top: 13, height: 4, borderRadius: 2, background: T.accent, left: `${pct(desde)}%`, width: `${pct(hasta) - pct(desde)}%` }} />
+        <input type="range" min={limites.min} max={limites.max} step={1} value={desde} aria-label="Desde"
+          style={{ zIndex: desde >= limites.max - 0 ? 5 : 3 }}
+          onChange={(e) => setRangoSel([Math.min(Number(e.target.value), hasta), hasta])} />
+        <input type="range" min={limites.min} max={limites.max} step={1} value={hasta} aria-label="Hasta"
+          style={{ zIndex: 4 }}
+          onChange={(e) => setRangoSel([desde, Math.max(Number(e.target.value), desde)])} />
+      </div>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: T.textFaint, fontFamily: T.fontMono, marginTop: 2 }}>
+        <span>{etiquetaClave(limites.min)}</span><span>{etiquetaClave(limites.max)}</span>
+      </div>
+    </Panel>
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {sliderPeriodo}
       <Panel title={`Proyecto ${PROYECTO_SEMPRA} — ${unidad}`}
-        subtitle={`Pagado: acumulado del proyecto. Por pagar: lo comprometido en transacciones Sempra de partidas de ${mesActual} en adelante que aún no se paga.`}>
+        subtitle={`Pagado: ${rangoCompleto ? "acumulado del proyecto" : `de ${etiquetaClave(desde)} a ${etiquetaClave(hasta)}`}. Por pagar: lo comprometido en transacciones Sempra de partidas de ${mesActual} en adelante que aún no se paga.`}>
         {MONEDAS_ORDEN.filter((m) => pagado[m] !== undefined || porPagar[m] !== undefined).map((m) => (
           <div key={m} style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>{m}</div>

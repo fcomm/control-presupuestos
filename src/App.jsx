@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.14.0";
+const APP_VERSION = "3.14.1";
 const CHANGELOG = [
+  { v: "3.14.1", desc: "Programacion de Pagos (Enviar a Pagos y Exportar a Excel): Referencia de Pago, Banco, Cuenta CLABE, No. Cuenta y SWIFT van siempre y ya no se pueden quitar en Columnas. Si alguien las tenia ocultas, vuelven a salir" },
   { v: "3.14.0", desc: "Reportes de pagos solo en Excel: Enviar a Pagos (el del dia) y el reporte semanal a Direccion ya no generan PDF, tampoco al volver a descargar una version enviada. Se quito la vista previa del PDF; las columnas del envio a Pagos son las del Excel. El semanal ahora se llama Reporte SEMANAL de Pagos <compania> - Semana del ... <ano> - REV<n>, y la primera fila del Excel lo dice igual, para que no se confunda con el de un dia" },
   { v: "3.13.3", desc: "Transacciones: agrupar por Proyecto toma el proyecto de la partida, pero si la partida es general (Todos o un <Grupo> Gral, como las QRO- de noviembre) usa el proyecto de la transaccion. Antes casi todo noviembre caia en Todos. La opcion se llama ahora Proyecto (antes Proyecto (partida)); Proyecto (transaccion) sigue igual" },
   { v: "3.13.2", desc: "Adjuntos: la lista ya no se queda vieja. Abrir consulta el estado actual del archivo antes de abrirlo: si ya paso a Drive abre el de Drive, y si se regenero (p. ej. el REG al guardar) o se quito, lo dice y actualiza la lista en vez de mostrar Object not found. Ademas la lista se actualiza sola cada 30 segundos y al volver a la ventana, asi el En transito cambia a En Drive sin cerrar la transaccion" },
@@ -14604,8 +14605,12 @@ function useVisibilidadColumnas(storageKey, columnas, ocultasIniciales = []) {
     setOcultas(next);
     try { localStorage.setItem(storageKey, JSON.stringify([...next])); } catch {}
   };
+  /* Una columna fija nunca cuenta como oculta, aunque alguien la haya
+     ocultado antes de volverse fija (v3.14.1: los datos bancarios). */
+  const fijas = new Set(columnas.filter((c) => c.fija).map((c) => c.key));
+  const ocultasEf = new Set([...ocultas].filter((k) => !fijas.has(k)));
   return {
-    hidden: ocultas,
+    hidden: ocultasEf,
     toggle: (k) => {
       const col = columnas.find((c) => c.key === k);
       if (col && col.fija) return;
@@ -14614,7 +14619,7 @@ function useVisibilidadColumnas(storageKey, columnas, ocultasIniciales = []) {
       guardar(next);
     },
     showAll: () => guardar(new Set()),
-    visibles: columnas.filter((c) => !ocultas.has(c.key)),
+    visibles: columnas.filter((c) => !ocultasEf.has(c.key)),
   };
 }
 
@@ -14657,12 +14662,12 @@ const COLUMNAS_EXCEL = [
   { key: "forma_pago",       header: "Forma de Pago",       width: 15,    get: (f) => f.forma_pago },
   { key: "metodo_pago",      header: "Método de Pago",      width: 12,    get: (f) => f.metodo_pago },
   { key: "proveedor",        header: "Proveedor",           width: 32,    fija: true, get: (f) => f.proveedor },
-  { key: "referencia_pago",  header: "Referencia de Pago",  width: 14,    get: (f) => f.referencia_pago },
+  { key: "referencia_pago",  header: "Referencia de Pago",  width: 14, fija: true,    get: (f) => f.referencia_pago },
   { key: "concepto",         header: "Concepto de pago",    width: 40,    fija: true, get: (f) => f.concepto },
-  { key: "banco",            header: "Banco",               width: 15.5,  get: (f) => f.banco },
-  { key: "clabe",            header: "Cuenta CLABE",        width: 18,    get: (f) => f.clabe },
-  { key: "numero_cuenta",    header: "No. Cuenta",          width: 12.5,  get: (f) => f.numero_cuenta },
-  { key: "swift",            header: "SWIFT",               width: 9,     get: (f) => f.swift },
+  { key: "banco",            header: "Banco",               width: 15.5, fija: true,  get: (f) => f.banco },
+  { key: "clabe",            header: "Cuenta CLABE",        width: 18, fija: true,    get: (f) => f.clabe },
+  { key: "numero_cuenta",    header: "No. Cuenta",          width: 12.5, fija: true,  get: (f) => f.numero_cuenta },
+  { key: "swift",            header: "SWIFT",               width: 9, fija: true,     get: (f) => f.swift },
   { key: "importe",          header: "Importe",             width: 10.5,  fija: true, money: true, get: (f) => f.importe },
   { key: "moneda",           header: "Moneda",              width: 10.5,  get: (f) => f.moneda },
   { key: "notas",            header: "Notas",               width: 20,    get: (f) => f.notas },

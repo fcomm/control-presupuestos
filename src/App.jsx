@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.15.0";
+const APP_VERSION = "3.16.0";
 const CHANGELOG = [
+  { v: "3.16.0", desc: "Partidas sin proyecto: una partida nueva (en Partidas o desde el buscador de la transaccion) nace general (Todos) y con concepto sugerido <Rubro> <Mes> <Año>, que se actualiza solo al cambiar rubro, mes o año mientras no se escriba otro. El proyecto de la partida queda opcional. En la transaccion el Proyecto ahora es obligatorio (excepto parcialidades PPD). Dashboard > Sempra: Por ejercer cambia a Por pagar (lo comprometido en transacciones Sempra de partidas del mes actual en adelante que aun no se paga), con detalle por mes. Presupuesto mensual a Direccion (PDF ejecutivo): el corte por Proyecto ahora es el gasto comprometido en las transacciones, por el proyecto de cada transaccion; el presupuesto que aun no tiene transacciones se reporta aparte como Por asignar (o como por ejercer de su proyecto si la partida es de uno), asi el corte cuadra con el total" },
   { v: "3.15.0", desc: "Dashboard > Sempra simplificado: solo Pagado (acumulado del proyecto), Por ejercer (presupuesto de las partidas Sempra del mes actual en adelante menos lo ya pagado contra ellas, con su detalle por mes) y una tabla de Rubros y categorias del gasto (rubro de la partida, categoria de la transaccion; clic en el rubro para ver sus categorias) con numero, pagado y por pagar. Se quitaron el selector de periodo, la grafica por mes, las transacciones cruzadas, los principales proveedores y la lista de transacciones" },
   { v: "3.14.1", desc: "Programacion de Pagos (Enviar a Pagos y Exportar a Excel): Referencia de Pago, Banco, Cuenta CLABE, No. Cuenta y SWIFT van siempre y ya no se pueden quitar en Columnas. Si alguien las tenia ocultas, vuelven a salir" },
   { v: "3.14.0", desc: "Reportes de pagos solo en Excel: Enviar a Pagos (el del dia) y el reporte semanal a Direccion ya no generan PDF, tampoco al volver a descargar una version enviada. Se quito la vista previa del PDF; las columnas del envio a Pagos son las del Excel. El semanal ahora se llama Reporte SEMANAL de Pagos <compania> - Semana del ... <ano> - REV<n>, y la primera fila del Excel lo dice igual, para que no se confunda con el de un dia" },
@@ -1628,6 +1629,21 @@ function resolverProrrateo(marcador, proyectosUnidad) {
   return [{ proyecto: marcador, fraccion: 1 }];
 }
 
+/* Partidas sin proyecto (v3.16.0): el presupuesto se lleva por rubro y el
+   proyecto lo trae cada transacción. Una partida nueva nace como general
+   ("Todos") y con concepto "<Rubro> <Mes> <Año>"; mientras el concepto sea
+   el sugerido, se actualiza solo al cambiar rubro, mes o año. */
+const PROYECTO_GENERAL = "Todos";
+const conceptoSugeridoPartida = (p) => [p.rubro, p.mes, p.anio].filter(Boolean).join(" ");
+function cambiarConSugerencia(prev, campo, valor) {
+  const sig = { ...prev, [campo]: valor };
+  const actual = String(prev.concepto || "").trim();
+  if (!actual || actual === conceptoSugeridoPartida(prev)) sig.concepto = conceptoSugeridoPartida(sig);
+  return sig;
+}
+const ordenarOpcionesProyecto = (ops) => [PROYECTO_GENERAL, ...ops.filter((m) => m !== PROYECTO_GENERAL)];
+const etiquetaProyectoPartida = (m) => (m === PROYECTO_GENERAL ? "Todos — partida general, sin proyecto" : m);
+
 function marcadoresDisponibles(proyectosUnidad) {
   const grupos = [...new Set(proyectosUnidad.map((p) => p.grupo))].filter(Boolean);
   const marcadores = grupos.filter((g) => proyectosUnidad.filter((p) => p.grupo === g).length > 1).map((g) => `${g} Gral`);
@@ -1749,9 +1765,9 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
     // el día de pago de la transacción, o Enero si no tenía.
     mes: MESES[new Date().getMonth()],
     anio: new Date().getFullYear(),
-    concepto: origenTransaccion?.concepto_detallado || "",
+    concepto: conceptoSugeridoPartida({ rubro: RUBROS[0]?.rubro || "", mes: MESES[new Date().getMonth()], anio: new Date().getFullYear() }),
     rubro: RUBROS[0]?.rubro || "",
-    proyecto: origenTransaccion?.proyecto || proyectosOpciones[0] || "",
+    proyecto: PROYECTO_GENERAL,
     monto_estimado: origenTransaccion?.importe ? String(origenTransaccion.importe) : "",
     // Antes quedaba fija en "MXP" sin importar de qué moneda era esta
     // transacción — un descuido aparte del pre-llenado, que se corrige de paso.
@@ -1831,7 +1847,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
       const folio = autoFolio(unidad, nuevaPartida.mes, anio, existingFolios);
       const creada = await partidasApi.insert({
         id: uid(), unidad, mes: nuevaPartida.mes, anio, smi: "", concepto: nuevaPartida.concepto.trim(),
-        rubro: nuevaPartida.rubro, proyecto: nuevaPartida.proyecto.trim(),
+        rubro: nuevaPartida.rubro, proyecto: (nuevaPartida.proyecto || "").trim() || PROYECTO_GENERAL,
         monto_estimado: Number(nuevaPartida.monto_estimado) || 0, moneda: nuevaPartida.moneda, folio,
       });
       setNuevaPartida(nuevaPartidaBlank);
@@ -1916,7 +1932,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
             const fueraDeRubro = permitidasNuevas
               ? vinculadas.filter((t) => t.categoria && !permitidasNuevas.some((c) => igualTxt(c, t.categoria))).length : 0;
             const cambiaPeriodo = !!editando && (nuevaPartida.mes !== editando.mes || String(nuevaPartida.anio) !== String(editando.anio));
-            const opcionesProyecto = [...proyectosOpciones];
+            const opcionesProyecto = ordenarOpcionesProyecto([...proyectosOpciones]);
             if (nuevaPartida.proyecto && !opcionesProyecto.includes(nuevaPartida.proyecto)) opcionesProyecto.push(nuevaPartida.proyecto);
             const rubroFueraCatalogo = nuevaPartida.rubro && !RUBROS.some((r) => r.rubro === nuevaPartida.rubro);
             return (
@@ -1931,23 +1947,22 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
                   <TextInput autoFocus value={nuevaPartida.concepto} onChange={(e) => setNuevaPartida({ ...nuevaPartida, concepto: e.target.value })} />
                 </Field>
                 <Field label="Mes">
-                  <Select value={nuevaPartida.mes} onChange={(e) => setNuevaPartida({ ...nuevaPartida, mes: e.target.value })}>
+                  <Select value={nuevaPartida.mes} onChange={(e) => setNuevaPartida((prev) => (editando ? { ...prev, mes: e.target.value } : cambiarConSugerencia(prev, "mes", e.target.value)))}>
                     {MESES.map((m) => <option key={m}>{m}</option>)}
                   </Select>
                 </Field>
                 <Field label="Año">
-                  <TextInput type="number" value={nuevaPartida.anio} onChange={(e) => setNuevaPartida({ ...nuevaPartida, anio: e.target.value })} />
+                  <TextInput type="number" value={nuevaPartida.anio} onChange={(e) => setNuevaPartida((prev) => (editando ? { ...prev, anio: e.target.value } : cambiarConSugerencia(prev, "anio", e.target.value)))} />
                 </Field>
                 <Field label="Rubro">
-                  <Select value={nuevaPartida.rubro} onChange={(e) => setNuevaPartida({ ...nuevaPartida, rubro: e.target.value })}>
+                  <Select value={nuevaPartida.rubro} onChange={(e) => setNuevaPartida((prev) => (editando ? { ...prev, rubro: e.target.value } : cambiarConSugerencia(prev, "rubro", e.target.value)))}>
                     {RUBROS.map((r) => <option key={r.rubro}>{r.rubro}</option>)}
                     {rubroFueraCatalogo && <option key={nuevaPartida.rubro}>{nuevaPartida.rubro}</option>}
                   </Select>
                 </Field>
                 <Field label="Proyecto">
                   <Select value={nuevaPartida.proyecto} onChange={(e) => setNuevaPartida({ ...nuevaPartida, proyecto: e.target.value })}>
-                    {opcionesProyecto.length === 0 && <option value="">Sin proyectos configurados — ve a Catálogo</option>}
-                    {opcionesProyecto.map((m) => <option key={m}>{m}</option>)}
+                    {opcionesProyecto.map((m) => <option key={m} value={m}>{etiquetaProyectoPartida(m)}</option>)}
                   </Select>
                 </Field>
                 <Field label="Monto estimado">
@@ -5383,9 +5398,9 @@ function Dashboard(props) {
 function DashboardSempra({ unidad, partidas, transacciones }) {
   /* v3.15.0 — Limpio, a pedido de Paco: solo tres cosas.
      1. Cuánto se ha pagado (acumulado del proyecto).
-     2. Cuánto falta por ejercer de lo presupuestado en el mes actual y los
-        siguientes: presupuesto de las partidas Sempra de esos meses menos lo
-        ya pagado contra esas mismas partidas.
+     2. Por pagar (v3.16.0): lo comprometido en transacciones Sempra de partidas
+        del mes actual en adelante que aún no se ha pagado. Ya no se usa el
+        presupuesto: las partidas son por rubro, sin proyecto.
      3. Rubros y categorías del gasto: el rubro sale de la partida y la
         categoría de la transacción.
      Un gasto es Sempra si lo dice la transacción O su partida (como antes).
@@ -5412,26 +5427,27 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
   const pagado = {};
   transSempra.forEach((t) => { if (cuentaEnPagado(t)) pagado[monedaDe(t)] = (pagado[monedaDe(t)] || 0) + (Number(t.importe) || 0); });
 
-  // 2. Por ejercer: mes actual y siguientes
+  // 2. Por pagar: lo comprometido y aún no pagado de las partidas del mes actual en adelante.
+  //    (Las partidas ya no llevan proyecto, así que el presupuesto no se puede separar por
+  //    Sempra; lo que sí es de Sempra es lo comprometido en sus transacciones.)
   const hoy = new Date();
   const claveMes = (anio, mes) => (Number(anio) || 0) * 12 + MESES.indexOf(mes);
   const claveHoy = hoy.getFullYear() * 12 + hoy.getMonth();
-  const partidasVigentes = partidasSempra.filter((p) => claveMes(p.anio, p.mes) >= claveHoy);
-  const idsVigentes = new Set(partidasVigentes.map((p) => p.id));
   const meses = {};
-  const filaMes = (p) => {
-    const k = `${monedaDe(p)}|${claveMes(p.anio, p.mes)}`;
-    if (!meses[k]) meses[k] = { moneda: monedaDe(p), k: claveMes(p.anio, p.mes), etiqueta: `${p.mes} ${p.anio}`, presupuestado: 0, pagado: 0 };
-    return meses[k];
-  };
-  partidasVigentes.forEach((p) => { filaMes(p).presupuestado += Number(p.monto_estimado) || 0; });
-  transacciones.forEach((t) => {
-    if (!idsVigentes.has(t.partida_id) || !cuentaEnPagado(t)) return;
-    filaMes(partidaPorId.get(t.partida_id)).pagado += Number(t.importe) || 0;
+  transSempra.forEach((t) => {
+    const p = partidaPorId.get(t.partida_id);
+    if (!p || claveMes(p.anio, p.mes) < claveHoy) return;
+    const m = monedaDe(t);
+    const k = `${m}|${claveMes(p.anio, p.mes)}`;
+    if (!meses[k]) meses[k] = { moneda: m, k: claveMes(p.anio, p.mes), etiqueta: `${p.mes} ${p.anio}`, n: 0, comprometido: 0, pagado: 0 };
+    const imp = Number(t.importe) || 0;
+    if (cuentaEnComprometido(t)) { meses[k].n++; meses[k].comprometido += imp; }
+    if (cuentaEnPagado(t)) meses[k].pagado += imp;
   });
-  const filasMes = Object.values(meses).sort((a, b) => (a.moneda === b.moneda ? a.k - b.k : a.moneda === "MXP" ? -1 : 1));
-  const porEjercer = {};
-  filasMes.forEach((f) => { porEjercer[f.moneda] = (porEjercer[f.moneda] || 0) + (f.presupuestado - f.pagado); });
+  const filasMes = Object.values(meses).filter((f) => f.n > 0)
+    .sort((a, b) => (a.moneda === b.moneda ? a.k - b.k : a.moneda === "MXP" ? -1 : 1));
+  const porPagar = {};
+  filasMes.forEach((f) => { porPagar[f.moneda] = (porPagar[f.moneda] || 0) + (f.comprometido - f.pagado); });
 
   // 3. Rubros y categorías
   const rubros = {};
@@ -5463,14 +5479,13 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
       <Panel title={`Proyecto ${PROYECTO_SEMPRA} — ${unidad}`}
-        subtitle={`Pagado: acumulado del proyecto. Por ejercer: presupuesto de ${mesActual} en adelante menos lo ya pagado contra esas partidas.`}>
-        {MONEDAS_ORDEN.filter((m) => pagado[m] !== undefined || porEjercer[m] !== undefined).map((m) => (
+        subtitle={`Pagado: acumulado del proyecto. Por pagar: lo comprometido en transacciones Sempra de partidas de ${mesActual} en adelante que aún no se paga.`}>
+        {MONEDAS_ORDEN.filter((m) => pagado[m] !== undefined || porPagar[m] !== undefined).map((m) => (
           <div key={m} style={{ marginBottom: 10 }}>
             <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>{m}</div>
             <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
               <KpiCard label="Pagado" value={money(pagado[m] || 0, m)} accent={T.teal} />
-              <KpiCard label={`Por ejercer (${mesActual} en adelante)`} value={money(porEjercer[m] || 0, m)}
-                accent={(porEjercer[m] || 0) < 0 ? T.red : T.accent} />
+              <KpiCard label={`Por pagar (${mesActual} en adelante)`} value={money(porPagar[m] || 0, m)} accent={T.accent} />
             </div>
           </div>
         ))}
@@ -5479,25 +5494,27 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
             <table style={tableStyle}>
               <thead><tr>
                 <th style={thStyle}>Mes</th><th style={thStyle}>Moneda</th>
-                <th style={{ ...thStyle, textAlign: "right" }}>Presupuestado</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>#</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Comprometido</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Pagado</th>
-                <th style={{ ...thStyle, textAlign: "right" }}>Por ejercer</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Por pagar</th>
               </tr></thead>
               <tbody>
                 {filasMes.map((f) => (
                   <tr key={`${f.moneda}|${f.k}`}>
                     <td style={tdStyle}>{f.etiqueta}</td>
                     <td style={tdStyle}><Pill tone="dim">{f.moneda}</Pill></td>
-                    <td style={num}>{money(f.presupuestado, f.moneda)}</td>
+                    <td style={num}>{f.n}</td>
+                    <td style={num}>{money(f.comprometido, f.moneda)}</td>
                     <td style={{ ...num, color: T.teal }}>{money(f.pagado, f.moneda)}</td>
-                    <td style={{ ...num, fontWeight: 600, color: f.presupuestado - f.pagado < 0 ? T.red : T.text }}>{money(f.presupuestado - f.pagado, f.moneda)}</td>
+                    <td style={{ ...num, fontWeight: 600 }}>{money(f.comprometido - f.pagado, f.moneda)}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           </div>
         ) : (
-          <div style={{ fontSize: 12, color: T.textFaint, marginTop: 8 }}>No hay partidas Sempra de {mesActual} en adelante.</div>
+          <div style={{ fontSize: 12, color: T.textFaint, marginTop: 8 }}>No hay transacciones Sempra pendientes en partidas de {mesActual} en adelante.</div>
         )}
       </Panel>
 
@@ -9016,7 +9033,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   })();
   // Mes y año en curso por omisión. Antes el mes era "Agosto" fijo y el año
   // el más alto con partidas, que podía ser uno futuro.
-  const blank = { unidad, mes: MESES[new Date().getMonth()], anio: new Date().getFullYear(), smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: "", proyecto: marcadores[0] || "", zona: "", monto_estimado: "", moneda: "MXP", folio: "" };
+  const blank = { unidad, mes: MESES[new Date().getMonth()], anio: new Date().getFullYear(), smi: "", concepto: "", rubro: RUBROS[0].rubro, categoria: "", proyecto: PROYECTO_GENERAL, zona: "", monto_estimado: "", moneda: "MXP", folio: "" };
+  blank.concepto = conceptoSugeridoPartida(blank);
   const [form, setForm] = useState(blank);
   const [editId, setEditId] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -9684,7 +9702,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
          resumen ejecutivo completo sigue debajo. */
       if (comparacion) y = dibujarCambiosPresupuestoPdf(doc, comparacion, { y, M: 30, ancho: anchoUtil, altoPag: 792 });
 
-      const seccion = (titulo, filas) => {
+      const seccion = (titulo, filas, colN = null) => {
         if (!filas.length) return;
         const cuerpo = filas.map((f) => {
           const cel = [f.clave, String(f.n)];
@@ -9696,7 +9714,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
         });
         autoTabla(doc, {
           startY: y,
-          head: [[titulo, titulo.startsWith("Gasto ejercido") ? "Transacc." : "Partidas",
+          head: [[titulo, colN || (titulo.startsWith("Gasto ejercido") ? "Transacc." : "Partidas"),
                   ...monedas.map((m) => `Importe ${m}`)]],
           body: cuerpo,
           styles: { fontSize: 8.5, cellPadding: 5 },
@@ -9764,7 +9782,38 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
 
         seccion("Flotilla: combustible y mantenimiento vehicular", filas);
       }
-      seccion("Proyecto", cortePor("proyecto", "Sin proyecto"));
+      /* Proyecto (v3.16.0). Las partidas ya son por rubro, sin proyecto: el
+         proyecto lo trae cada transacción. Por eso este corte toma lo
+         COMPROMETIDO en las transacciones de estas partidas, por el proyecto
+         de la transacción (si no lo tiene, el de la partida). Lo que aún no
+         tiene transacciones —partidas sin vincular o con saldo— también se
+         reporta: si la partida es de un proyecto, ese saldo va a su proyecto;
+         si es general, va a "Por asignar". Así el corte cuadra con el total
+         (más lo que se haya excedido). */
+      {
+        const esGeneral = (pr) => { const x = String(pr || "").trim(); return !x || x === PROYECTO_GENERAL || / Gral$/.test(x); };
+        const mapaP = {};
+        const fila = (k) => (mapaP[k] = mapaP[k] || { clave: k, MXP: 0, USD: 0, n: 0 });
+        partidasOrdenadas.forEach((p) => {
+          const m = monedaDe(p);
+          const txs = transacciones.filter((t) => t.partida_id === p.id && cuentaEnComprometido(t));
+          let usado = 0;
+          txs.forEach((t) => {
+            const imp = Number(t.importe) || 0;
+            usado += imp;
+            const k = String(t.proyecto || "").trim() || (esGeneral(p.proyecto) ? "Sin proyecto" : String(p.proyecto).trim());
+            const r = fila(k); r[m] += imp; r.n++;
+          });
+          const saldo = (Number(p.monto_estimado) || 0) - usado;
+          if (saldo > 0.005) {
+            const r = fila(esGeneral(p.proyecto) ? "Por asignar (presupuesto sin transacciones)" : `${String(p.proyecto).trim()} — por ejercer`);
+            r[m] += saldo; r.n++;
+          }
+        });
+        const filasP = Object.values(mapaP).sort((a, b) =>
+          (a.clave.startsWith("Por asignar") ? 1 : 0) - (b.clave.startsWith("Por asignar") ? 1 : 0) || (b.MXP + b.USD) - (a.MXP + a.USD));
+        seccion("Proyecto (gasto comprometido + por asignar)", filasP, "Movs.");
+      }
       /* El corte va por GRUPO de zona, que es como Dirección las conoce.
          Una zona sin grupo se reporta con su propio nombre: es preferible a
          mandarla a un cajón genérico donde nadie la buscaría. */
@@ -9953,7 +10002,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       } else {
         await partidasApi.insert({ ...record, id: uid() });
       }
-      setForm({ ...blank, proyecto: marcadores[0] || "" });
+      setForm({ ...blank });
       setModalOpen(false);
     } catch (err) {
       alert("No se pudo guardar la partida: " + (err.message || err));
@@ -9962,7 +10011,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     }
   };
 
-  const openNew = () => { setForm({ ...blank, proyecto: marcadores[0] || "" }); setEditId(null); setModalOpen(true); };
+  const openNew = () => { setForm({ ...blank }); setEditId(null); setModalOpen(true); };
   const duplicar = (p) => {
     // Copia la partida como registro NUEVO. El folio se limpia a propósito:
     // submit() respeta el que venga en el formulario, así que heredarlo haría
@@ -9975,7 +10024,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   };
   const startEdit = (p) => { setForm(p); setEditId(p.id); setModalOpen(true); };
 
-  const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank, proyecto: marcadores[0] || "" }); };
+  const closeModal = () => { setModalOpen(false); setEditId(null); setForm({ ...blank }); };
   /* Una partida con transacciones no se elimina dejándolas sueltas: primero
      se reasignan o se quitan. Cuentan también las canceladas, que no están en
      `transacciones` (aquí llegan solo las vigentes) pero siguen apuntando a la
@@ -10228,12 +10277,12 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           <AutoriaCaption record={form} perfilesApi={perfilesApi} />
           <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
             <Field label="Mes">
-              <Select value={form.mes} onChange={(e) => setForm({ ...form, mes: e.target.value })}>
+              <Select value={form.mes} onChange={(e) => setForm((prev) => (editId ? { ...prev, mes: e.target.value } : cambiarConSugerencia(prev, "mes", e.target.value)))}>
                 {MESES.map((m) => <option key={m}>{m}</option>)}
               </Select>
             </Field>
             <Field label="Año">
-              <TextInput type="number" value={form.anio} onChange={(e) => setForm({ ...form, anio: Number(e.target.value) })} style={{ width: 90 }} />
+              <TextInput type="number" value={form.anio} onChange={(e) => setForm((prev) => (editId ? { ...prev, anio: Number(e.target.value) } : cambiarConSugerencia(prev, "anio", Number(e.target.value))))} style={{ width: 90 }} />
             </Field>
             <Field label="SMI">
               <TextInput value={form.smi} onChange={(e) => setForm({ ...form, smi: e.target.value })} placeholder="Opcional" />
@@ -10242,14 +10291,14 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
               <TextInput value={form.folio} onChange={(e) => setForm({ ...form, folio: e.target.value })} placeholder="Vacío = se asigna automático" />
             </Field>
             <Field label="Rubro">
-              <Select value={form.rubro} onChange={(e) => setForm({ ...form, rubro: e.target.value })}>
+              <Select value={form.rubro} onChange={(e) => setForm((prev) => (editId ? { ...prev, rubro: e.target.value } : cambiarConSugerencia(prev, "rubro", e.target.value)))}>
                 {RUBROS.map((r) => <option key={r.rubro}>{r.rubro}</option>)}
               </Select>
             </Field>
             {/* La partida ya no lleva categoría: la elige cada transacción dentro
                 de este rubro. Lo específico de la partida lo dice su concepto. */}
             <Field label="Concepto" style={{ gridColumn: "span 2" }}>
-              <TextInput value={form.concepto} onChange={(e) => setForm({ ...form, concepto: e.target.value })} placeholder="Ej. Servicio energía eléctrica base admtva" />
+              <TextInput value={form.concepto} onChange={(e) => setForm({ ...form, concepto: e.target.value })} placeholder="Ej. Viajes y Viáticos Diciembre 2026" />
             </Field>
             <Field label="Zona">
               {/* Opcional a propósito: vacío significa que el presupuesto no
@@ -10262,10 +10311,11 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
                 {form.zona && !zonas.includes(form.zona) && <option key={form.zona}>{form.zona}</option>}
               </Select>
             </Field>
-            <Field label="Proyecto / marcador de prorrateo">
-              <Select value={form.proyecto} onChange={(e) => setForm({ ...form, proyecto: e.target.value })}>
-                {marcadores.length === 0 && <option value="">Sin proyectos configurados — ve a Catálogo</option>}
-                {marcadores.map((m) => <option key={m}>{m}</option>)}
+            <Field label="Proyecto (opcional)">
+              {/* v3.16.0: por omisión la partida es general; el proyecto lo lleva cada transacción. */}
+              <Select value={form.proyecto || PROYECTO_GENERAL} onChange={(e) => setForm({ ...form, proyecto: e.target.value })}>
+                {ordenarOpcionesProyecto([...marcadores, ...(form.proyecto && !marcadores.includes(form.proyecto) ? [form.proyecto] : [])])
+                  .map((m) => <option key={m} value={m}>{etiquetaProyectoPartida(m)}</option>)}
               </Select>
             </Field>
             <Field label="Monto estimado">
@@ -12735,6 +12785,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
        Con la conversión de SMI la partida llega vacía a propósito, así que
        ahora es un caso normal y hay que decirlo. */
     if (!form.partida_id) { alert("Elige la partida antes de crear la transacción."); return; }
+    /* v3.16.0: las partidas son por rubro, sin proyecto; el proyecto del gasto
+       lo dice la transacción, así que es obligatorio (las parcialidades PPD
+       van con el de su compra). */
+    if (!esParcialidad(form) && !String(form.proyecto || "").trim()) {
+      alert("Elige el Proyecto de la transacción (sección Clasificación).\n\nLas partidas ya se llevan por rubro, sin proyecto: el proyecto de cada gasto lo indica la transacción.");
+      return;
+    }
     {
       const pSel = partidasUnidad.find((x) => x.id === form.partida_id);
       const perm = categoriasPermitidas(pSel);
@@ -13930,7 +13987,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               </Field>
               <Field label="Proyecto">
                 <Select value={form.proyecto} onChange={(e) => setForm({ ...form, proyecto: e.target.value })}>
-                  <option value="">— Sin especificar —</option>
+                  <option value="">— Elige un proyecto —</option>
                   {marcadoresProyecto.map((m) => <option key={m}>{m}</option>)}
                 </Select>
               </Field>

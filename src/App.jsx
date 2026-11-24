@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.16.1";
+const APP_VERSION = "3.17.0";
 const CHANGELOG = [
+  { v: "3.17.0", desc: "Folio de partida con P para no confundirlo con el de transaccion: OSB-P-OCT26-071 (antes OSB-OCT26-071, igual que una transaccion). Las partidas nuevas ya salen asi; un folio escrito a mano o importado de Excel con el formato anterior se convierte solo. El folio de las transacciones no cambia. Requiere renombrar-folios-partidas.sql" },
   { v: "3.16.1", desc: "Dashboard > Sempra: Rubros y categorias del gasto se separa en dos tablas, una MXP y otra USD. Clic en un rubro muestra sus categorias y clic en una categoria muestra sus transacciones (folio, fecha, proveedor, concepto, estado, pagado y por pagar). Solo queda abierto un rubro y una categoria a la vez: abrir otro cierra el anterior" },
   { v: "3.16.0", desc: "Partidas sin proyecto: una partida nueva (en Partidas o desde el buscador de la transaccion) nace general (Todos) y con concepto sugerido <Rubro> <Mes> <Año>, que se actualiza solo al cambiar rubro, mes o año mientras no se escriba otro. El proyecto de la partida queda opcional. En la transaccion el Proyecto ahora es obligatorio (excepto parcialidades PPD). Dashboard > Sempra: Por ejercer cambia a Por pagar (lo comprometido en transacciones Sempra de partidas del mes actual en adelante que aun no se paga), con detalle por mes. Presupuesto mensual a Direccion (PDF ejecutivo): el corte por Proyecto ahora es el gasto comprometido en las transacciones, por el proyecto de cada transaccion; el presupuesto que aun no tiene transacciones se reporta aparte como Por asignar (o como por ejercer de su proyecto si la partida es de uno), asi el corte cuadra con el total" },
   { v: "3.15.0", desc: "Dashboard > Sempra simplificado: solo Pagado (acumulado del proyecto), Por ejercer (presupuesto de las partidas Sempra del mes actual en adelante menos lo ya pagado contra ellas, con su detalle por mes) y una tabla de Rubros y categorias del gasto (rubro de la partida, categoria de la transaccion; clic en el rubro para ver sus categorias) con numero, pagado y por pagar. Se quitaron el selector de periodo, la grafica por mes, las transacciones cruzadas, los principales proveedores y la lista de transacciones" },
@@ -952,7 +953,17 @@ const MES_ABR = {
 function folioPrefix(unidad, mes, anio) {
   const abr = MES_ABR[mes] || String(mes || "").slice(0, 3).toUpperCase() || "GEN";
   const yy = String(anio || new Date().getFullYear()).slice(-2);
-  return `${unidad}-${abr}${yy}-`;
+  // v3.17.0: la "P" distingue el folio de partida (OSB-P-OCT26-071) del de
+  // transacción (OSB-OCT26-020), que antes tenían el mismo formato.
+  return `${unidad}-P-${abr}${yy}-`;
+}
+
+/* Un folio de partida escrito o importado con el formato anterior
+   (OSB-OCT26-071) se convierte al nuevo (OSB-P-OCT26-071). */
+function normalizarFolioPartida(folio) {
+  const f = String(folio || "").trim();
+  const m = f.match(/^([A-Za-z]+)-([A-Za-z]{3}\d{2}-\d+)$/);
+  return m ? `${m[1].toUpperCase()}-P-${m[2].toUpperCase()}` : f;
 }
 
 // Returns the next free NNN suffix for a given prefix, based on folios already in use.
@@ -4272,7 +4283,7 @@ function parsePresupuestoWorkbook(arrayBuffer, options = {}) {
       const mes = (col.mes !== -1 && row[col.mes]) ? String(row[col.mes]).trim() : "";
       const anio = (col.anio !== -1 && row[col.anio]) ? Number(row[col.anio]) : anioDefault;
       const prefix = folioPrefix(unidad, mes, anio);
-      let folio = (col.folio !== -1 && row[col.folio] !== null && row[col.folio] !== undefined) ? String(row[col.folio]).trim() : "";
+      let folio = (col.folio !== -1 && row[col.folio] !== null && row[col.folio] !== undefined) ? normalizarFolioPartida(row[col.folio]) : "";
       if (folio) registerFolio(prefix, folio); else folio = assignFolio(prefix);
 
       const promotedIdx = new Set(
@@ -10025,7 +10036,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const submit = async (e) => {
     e.preventDefault();
     if (!form.concepto || !form.monto_estimado) return;
-    let folio = (form.folio || "").trim();
+    let folio = normalizarFolioPartida(form.folio);
     if (!folio) {
       const existingFolios = partidas.filter((p) => p.id !== editId).map((p) => p.folio);
       folio = autoFolio(unidad, form.mes, form.anio, existingFolios);
@@ -10365,7 +10376,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
               </Select>
             </Field>
             <div style={{ gridColumn: "span 4", fontSize: 10.5, color: T.textFaint, marginTop: -6 }}>
-              Formato automático del folio: UNIDAD-MESAÑO-### (ej. {unidad}-{(MES_ABR[form.mes]||"MES")}{String(form.anio).slice(-2)}-045)
+              Formato automático del folio: UNIDAD-P-MESAÑO-### (ej. {unidad}-P-{(MES_ABR[form.mes]||"MES")}{String(form.anio).slice(-2)}-045). La P distingue la partida de la transacción.
             </div>
             {form.extra && Object.keys(form.extra).length > 0 && (
               <details style={{ gridColumn: "span 4" }}>

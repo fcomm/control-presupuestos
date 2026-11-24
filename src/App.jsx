@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.18.0";
+const APP_VERSION = "3.19.0";
 const CHANGELOG = [
+  { v: "3.19.0", desc: "Compras PPD desde transacciones existentes (solo administradores). En Transacciones, con transacciones seleccionadas: Agrupar en compra PPD crea el padre (total editable, partida y concepto) y deja las seleccionadas como parcialidades 1..n en orden de fecha; Asignar a compra PPD las liga a una compra que ya existe (mismo proveedor y moneda, con % libre). En una parcialidad, Quitar de la compra PPD la regresa a transaccion normal. Las parcialidades conservan folio, estatus y pagos y pasan a la partida de su compra. Previo con % y avisos antes de confirmar. Requiere 68-ppd-agrupar-asignar.sql" },
   { v: "3.18.0", desc: "Dashboard > Sempra: filtro de periodo Desde-Hasta con un slider de dos manijas, mes a mes. El extremo izquierdo es el mes del gasto mas viejo y el derecho el mes mas nuevo con transaccion o partida Sempra. Filtra Pagado, Por pagar y las tablas de rubros; boton Todo el periodo para regresar. El mes de un gasto es el de su partida (o su fecha si no tiene)" },
   { v: "3.17.0", desc: "Folio de partida con P para no confundirlo con el de transaccion: OSB-P-OCT26-071 (antes OSB-OCT26-071, igual que una transaccion). Las partidas nuevas ya salen asi; un folio escrito a mano o importado de Excel con el formato anterior se convierte solo. El folio de las transacciones no cambia. Requiere renombrar-folios-partidas.sql" },
   { v: "3.16.1", desc: "Dashboard > Sempra: Rubros y categorias del gasto se separa en dos tablas, una MXP y otra USD. Clic en un rubro muestra sus categorias y clic en una categoria muestra sus transacciones (folio, fecha, proveedor, concepto, estado, pagado y por pagar). Solo queda abierto un rubro y una categoria a la vez: abrir otro cierra el anterior" },
@@ -11791,7 +11792,168 @@ const SECCIONES_TX_IO = [
   { id: "reporte",     label: "Reporte de Pagos",              corto: "RP" },
 ];
 
-function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO, gruposZona = {}, seedTransaccion, onSeedConsumido, listasSat }) {
+/* v3.19.0 — Compras PPD a partir de transacciones que ya existen.
+   modo "agrupar": crea la compra PPD (padre) y liga las seleccionadas como sus
+   parcialidades 1..n. modo "asignar": las liga a una compra PPD existente.
+   El trabajo lo hacen las funciones ppd_agrupar / ppd_asignar de la base
+   (68-ppd-agrupar-asignar.sql), que validan y aplican todo o nada; aquí solo
+   se arma el previo. Las parcialidades conservan su folio. */
+function CompraPPDDesdeSeleccionModal({ modo, seleccion, transUnidad, partidasUnidad, onClose, onListo }) {
+  const ordenadas = useMemo(() => seleccion.slice().sort((a, b) =>
+    String(a.dia || "9999").localeCompare(String(b.dia || "9999")) || String(a.folio_transaccion || "").localeCompare(String(b.folio_transaccion || ""))), [seleccion]);
+  const base = ordenadas[0] || {};
+  const mon = monedaNorm(base.moneda);
+  const suma = ordenadas.reduce((a, t) => a + (Number(t.importe) || 0), 0);
+  const provKey = (t) => t.proveedor_id || String(t.proveedor || "").trim().toUpperCase();
+  const problemas = [];
+  ordenadas.forEach((t) => {
+    const f = t.folio_transaccion || "(sin folio)";
+    if (estaCancelada(t)) problemas.push(`${f} está cancelada.`);
+    if (esPadrePPD(t)) problemas.push(`${f} ya es una compra PPD.`);
+    if (esParcialidad(t)) problemas.push(`${f} ya es parcialidad de otra compra PPD; quítala primero.`);
+  });
+  if (new Set(ordenadas.map((t) => t.unidad_detectada)).size > 1) problemas.push("Todas deben ser de la misma compañía.");
+  if (new Set(ordenadas.map((t) => monedaNorm(t.moneda))).size > 1) problemas.push("Todas deben estar en la misma moneda.");
+  if (new Set(ordenadas.map(provKey)).size > 1) problemas.push("Todas deben ser del mismo proveedor.");
+
+  // ---- agrupar
+  const [total, setTotal] = useState(() => String(Math.round(suma * 100) / 100));
+  const [partidaId, setPartidaId] = useState(base.partida_id || "");
+  const [concepto, setConcepto] = useState(base.concepto_detallado || "");
+  const opcionesPartida = useMemo(() => partidasUnidad
+    .filter((p) => monedaNorm(p.moneda) === mon)
+    .sort((a, b) => String(b.anio).localeCompare(String(a.anio)) || MESES.indexOf(b.mes) - MESES.indexOf(a.mes) || String(a.folio).localeCompare(String(b.folio))),
+  [partidasUnidad, mon]);
+  // ---- asignar
+  const candidatos = useMemo(() => transUnidad.filter((t) => esPadrePPD(t) && !estaCancelada(t)
+    && monedaNorm(t.moneda) === mon && provKey(t) === provKey(base) && t.unidad_detectada === base.unidad_detectada)
+    .map((p) => {
+      const usado = transUnidad.filter((h) => h.transaccion_padre_id === p.id && !estaCancelada(h)).reduce((a, h) => a + (Number(h.pct_pago) || 0), 0);
+      return { p, libre: Math.max(0, 100 - usado) };
+    })
+    .filter((c) => c.libre > 0.00001), [transUnidad, mon, base]);
+  const [padreId, setPadreId] = useState("");
+  const cand = candidatos.find((c) => c.p.id === padreId) || null;
+
+  const totalNum = modo === "agrupar" ? Number(total) || 0 : Number(cand?.p.importe) || 0;
+  const pctDe = (t) => (totalNum > 0 ? ((Number(t.importe) || 0) / totalNum) * 100 : 0);
+  const pctSel = ordenadas.reduce((a, t) => a + pctDe(t), 0);
+  const libre = modo === "agrupar" ? 100 : cand?.libre || 0;
+  const numIni = modo === "agrupar" ? 1
+    : (transUnidad.filter((h) => cand && h.transaccion_padre_id === cand.p.id).reduce((m, h) => Math.max(m, Number(h.num_parcialidad) || 0), 0) + 1);
+  const pasa = totalNum > 0 && pctSel > libre + 0.01;
+  const fueraDePartida = ordenadas.filter((t) => t.partida_id !== (modo === "agrupar" ? partidaId : cand?.p.partida_id));
+  const partidaTxt = (id) => { const p = partidasUnidad.find((x) => x.id === id); return p ? `${p.folio} · ${p.rubro} · ${p.mes} ${p.anio}` : "sin partida"; };
+
+  const [guardando, setGuardando] = useState(false);
+  const puede = !problemas.length && !pasa && totalNum > 0
+    && (modo === "agrupar" ? (!!partidaId && totalNum >= suma - 0.005) : !!cand);
+  const confirmar = async () => {
+    setGuardando(true);
+    try {
+      const ids = ordenadas.map((t) => t.id);
+      const { data, error } = modo === "agrupar"
+        ? await supabase.rpc("ppd_agrupar", { p_ids: ids, p_total: totalNum, p_partida: partidaId || null, p_concepto: concepto })
+        : await supabase.rpc("ppd_asignar", { p_ids: ids, p_padre: cand.p.id });
+      if (error) throw error;
+      onListo?.(modo === "agrupar"
+        ? `Se creó la compra PPD ${data?.folio} con ${data?.parcialidades} parcialidad(es).`
+        : `Se ligaron ${data?.parcialidades} parcialidad(es) a ${data?.folio}.`);
+    } catch (err) {
+      alert("No se pudo: " + (err.message || err));
+    } finally { setGuardando(false); }
+  };
+
+  const num = { ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" };
+  return (
+    <Modal title={modo === "agrupar" ? "Agrupar en compra PPD" : "Asignar a compra PPD"}
+      subtitle={modo === "agrupar"
+        ? "Se crea la compra PPD (padre) y las transacciones quedan como sus parcialidades. Conservan su folio, estatus y pagos."
+        : "Las transacciones quedan como parcialidades de una compra PPD que ya existe. Conservan su folio, estatus y pagos."}
+      onClose={onClose} width={860} zIndex={1100} cerrarAlHacerClicFuera={false}>
+      {problemas.length > 0 && (
+        <div style={{ background: T.redBg || T.panelAlt, border: `1px solid ${T.red}`, borderRadius: 6, padding: "8px 12px", fontSize: 12.5, color: T.red, marginBottom: 12 }}>
+          {problemas.map((p) => <div key={p}>• {p}</div>)}
+        </div>
+      )}
+      {modo === "agrupar" ? (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12, marginBottom: 12 }}>
+          <Field label={`Total de la compra (${mon})`}>
+            <TextInput type="number" step="0.01" value={total} onChange={(e) => setTotal(e.target.value)} />
+            <div style={{ fontSize: 11, color: T.textFaint, marginTop: 3 }}>
+              Suma de las seleccionadas: {money(suma, mon)}. Súbelo si faltan pagos por venir.
+            </div>
+          </Field>
+          <Field label="Partida de la compra">
+            <Select value={partidaId} onChange={(e) => setPartidaId(e.target.value)}>
+              <option value="">— Elige —</option>
+              {opcionesPartida.map((p) => <option key={p.id} value={p.id}>{p.folio} · {p.rubro} · {p.mes} {p.anio}{p.proyecto && p.proyecto !== "Todos" ? ` · ${p.proyecto}` : ""}</option>)}
+            </Select>
+          </Field>
+          <Field label="Concepto de la compra" style={{ gridColumn: "span 2" }}>
+            <TextInput value={concepto} onChange={(e) => setConcepto(e.target.value)} />
+          </Field>
+        </div>
+      ) : (
+        <div style={{ marginBottom: 12 }}>
+          <Field label="Compra PPD (mismo proveedor y moneda, con % libre)">
+            <Select value={padreId} onChange={(e) => setPadreId(e.target.value)}>
+              <option value="">{candidatos.length ? "— Elige la compra —" : "No hay compras PPD de este proveedor con % libre"}</option>
+              {candidatos.map((c) => <option key={c.p.id} value={c.p.id}>
+                {c.p.folio_transaccion} · {money(Number(c.p.importe) || 0, mon)} · libre {fmtPct(c.libre)} · {String(c.p.concepto_detallado || "").slice(0, 60)}
+              </option>)}
+            </Select>
+          </Field>
+        </div>
+      )}
+      <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto" }}>
+        <table style={tableStyle}>
+          <thead><tr>
+            <th style={thStyle}>Parc.</th><th style={thStyle}>Folio</th><th style={thStyle}>Fecha</th><th style={thStyle}>Estatus</th>
+            <th style={{ ...thStyle, textAlign: "right" }}>Importe</th><th style={{ ...thStyle, textAlign: "right" }}>%</th>
+          </tr></thead>
+          <tbody>
+            {ordenadas.map((t, i) => (
+              <tr key={t.id}>
+                <td style={tdStyle}>P{numIni + i}</td>
+                <td style={{ ...tdStyle, fontFamily: T.fontMono, color: T.accent }}>{t.folio_transaccion || "—"}</td>
+                <td style={tdStyle}>{fmtFecha(t.dia)}</td>
+                <td style={tdStyle}>{t.status || "—"}</td>
+                <td style={num}>{money(Number(t.importe) || 0, mon)}</td>
+                <td style={num}>{totalNum > 0 ? fmtPct(pctDe(t)) : "—"}</td>
+              </tr>
+            ))}
+            <tr>
+              <td style={{ ...tdStyle, fontWeight: 700 }} colSpan={4}>Total seleccionado</td>
+              <td style={{ ...num, fontWeight: 700 }}>{money(suma, mon)}</td>
+              <td style={{ ...num, fontWeight: 700, color: pasa ? T.red : T.text }}>{totalNum > 0 ? fmtPct(pctSel) : "—"}</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 12, color: T.textDim, marginTop: 10, lineHeight: 1.6 }}>
+        {pasa && <div style={{ color: T.red }}>Pasa del 100 %: a la compra solo le queda {fmtPct(libre)} libre.</div>}
+        {modo === "agrupar" && totalNum > 0 && totalNum < suma - 0.005 && <div style={{ color: T.red }}>El total no puede ser menor que la suma de las seleccionadas.</div>}
+        {modo === "agrupar" && totalNum > suma + 0.005 && <div>La compra quedará con {money(totalNum - suma, mon)} pendiente para parcialidades futuras.</div>}
+        {fueraDePartida.length > 0 && (modo === "agrupar" ? partidaId : cand) && (
+          <div style={{ color: T.amber }}>
+            {fueraDePartida.length} transacción(es) cambian de partida a {partidaTxt(modo === "agrupar" ? partidaId : cand.p.partida_id)}
+            {" "}(las parcialidades van en la partida de su compra): {fueraDePartida.map((t) => t.folio_transaccion).join(", ")}.
+          </div>
+        )}
+      </div>
+      <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
+        <Button type="button" onClick={confirmar} disabled={!puede || guardando}>
+          {guardando ? "Aplicando…" : modo === "agrupar" ? "Crear compra PPD" : "Asignar"}
+        </Button>
+        <Button type="button" variant="ghost" onClick={onClose}>Cancelar</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transacciones, transaccionesApi, proveedoresApi, cuentasApi, perfilesApi, notasApi, session, zonas = ZONAS_RESPALDO, gruposZona = {}, seedTransaccion, onSeedConsumido, listasSat, esAdmin = false }) {
+  const [ppdModo, setPpdModo] = useState(null); // v3.19.0: "agrupar" | "asignar"
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
   const tiposCambio = useTiposCambio();
   const proyectosUnidad = unidades[unidad]?.proyectos || [];
@@ -13606,6 +13768,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
           </div>
         </div>
 
+        {ppdModo && (
+          <CompraPPDDesdeSeleccionModal modo={ppdModo}
+            seleccion={[...seleccionadas].map((id) => transUnidad.find((t) => t.id === id)).filter(Boolean)}
+            transUnidad={transUnidad} partidasUnidad={partidasUnidad}
+            onClose={() => setPpdModo(null)}
+            onListo={(msg) => { setPpdModo(null); setSeleccionadas(new Set()); alert(msg); }} />
+        )}
         {seleccionadas.size > 0 && (
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14, padding: "10px 14px", background: T.accentBg, border: `1px solid ${T.accent}55`, borderRadius: 6, flexWrap: "wrap" }}>
             <span style={{ fontSize: 12.5, color: T.text }}>{seleccionadas.size} seleccionada(s)</span>
@@ -13646,6 +13815,13 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                 <Button onClick={generarRegsSeleccionadas}>{`Generar REG ${sinReg}`}</Button>
               ) : null;
             })()}
+            {esAdmin && (
+              <>
+                <div style={{ width: 1, alignSelf: "stretch", background: T.accent, opacity: 0.3, margin: "0 2px" }} />
+                <Button variant="ghost" onClick={() => setPpdModo("agrupar")} title="Crea la compra PPD (padre) y deja las seleccionadas como sus parcialidades">Agrupar en compra PPD</Button>
+                <Button variant="ghost" onClick={() => setPpdModo("asignar")} title="Liga las seleccionadas como parcialidades de una compra PPD que ya existe">Asignar a compra PPD</Button>
+              </>
+            )}
             <div style={{ width: 1, alignSelf: "stretch", background: T.accent, opacity: 0.3, margin: "0 2px" }} />
             <Button onClick={() => setEditandoMasivo(true)} disabled={aplicandoMasivo}>
               {aplicandoMasivo ? "Aplicando…" : "Editar seleccionadas"}
@@ -14056,6 +14232,17 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                     <> {" "}<button type="button" onClick={() => startEdit(padre)}
                       style={{ background: "transparent", border: "none", padding: 0, color: T.accent,
                                cursor: "pointer", fontSize: 12, fontFamily: T.fontUI }}>Abrir la compra PPD</button></>
+                  )}
+                  {esAdmin && editId && (
+                    <> {" · "}<button type="button"
+                      onClick={async () => {
+                        if (!confirm(`¿Quitar ${form.folio_transaccion || "esta transacción"} de la compra PPD ${padre?.folio_transaccion || ""}?\n\nVuelve a ser una transacción normal: conserva su folio, importe, estatus y partida. La compra recalcula su estatus.`)) return;
+                        const { error } = await supabase.rpc("ppd_quitar", { p_id: editId });
+                        if (error) { alert("No se pudo quitar: " + (error.message || error)); return; }
+                        setModalOpen(false); setEditId(null);
+                      }}
+                      style={{ background: "transparent", border: "none", padding: 0, color: T.red,
+                               cursor: "pointer", fontSize: 12, fontFamily: T.fontUI }}>Quitar de la compra PPD</button></>
                   )}
                 </div>
               );
@@ -26468,7 +26655,7 @@ function AppPrincipal() {
         <>
           {tab === "dashboard" && <Dashboard unidad={unidad} unidades={unidades} partidas={partidas} transacciones={transaccionesVigentes} proveedores={proveedoresApi.rows} listasSat={listasSat} />}
           {tab === "partidas" && <PartidasTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} perfilesApi={perfilesApi} transacciones={transaccionesVigentes} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} onCrearTransaccion={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} />}
-          {tab === "transacciones" && <TransaccionesTab zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} listasSat={listasSat} seedTransaccion={seedTransaccion} onSeedConsumido={() => setSeedTransaccion(null)} />}
+          {tab === "transacciones" && <TransaccionesTab esAdmin={!!miPerfil?.es_admin} zonas={zonas} gruposZona={gruposZona} unidad={unidad} unidades={unidades} partidas={partidas} partidasApi={partidasApi} transacciones={transacciones} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} notasApi={notasApi} session={session} listasSat={listasSat} seedTransaccion={seedTransaccion} onSeedConsumido={() => setSeedTransaccion(null)} />}
           {tab === "reporte" && <ReportePagosTab listasSat={listasSat} gruposZona={gruposZona} unidad={unidad} partidas={partidas} transacciones={transaccionesVigentes} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} />}
           {tab === "reporte-direccion" && <ReportePagosDireccionTab unidad={unidad} partidas={partidas} transacciones={transaccionesVigentes} transaccionesApi={transaccionesApi} proveedoresApi={proveedoresApi} />}
           {tab === "reportes-direccion" && <ReportesDireccionTab unidad={unidad} partidas={partidas} transacciones={transaccionesVigentes} transaccionesTodas={transacciones} session={session} gruposZona={gruposZona} />}

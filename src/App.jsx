@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.25.0";
+const APP_VERSION = "3.25.1";
 const CHANGELOG = [
+  { v: "3.25.1", desc: "Dashboard general: el slider de periodo pasa a su propia barra a todo lo ancho arriba del tablero, igual que en Dashboard > Sempra (en la fila de filtros quedaba amontonado). Los atajos de periodo se quedan junto al filtro de Proyecto" },
   { v: "3.25.0", desc: "Slider de periodo mas delgado y reutilizable: un solo renglon con el rango elegido, cuantos meses, la barra con sus extremos y el boton Todo; la explicacion de uso pasa a la (i) como texto al pasar el raton. Se usa en Dashboard > Sempra y ahora tambien en el Dashboard general, donde reemplaza los selectores de mes y ano de Desde y Hasta (los atajos Mes actual, YTD, Ano anterior y Todo se quedan)" },
   { v: "3.24.0", desc: "Solicitudes de Pago (SPP) con revisiones: si la transaccion ya tiene una SPP, volver a generarla conserva su folio y sube la revision (CTM-15-2, CTM-15-3...) en vez de tomar otro consecutivo; solo la primera SPP de una transaccion avanza el consecutivo de la compania. La ventana dice antes de generar si sera folio nuevo o revision N del folio X. Si dos personas generan a la vez, se recalcula y reintenta. Las SPP anteriores que ya tienen folios repetidos para una misma transaccion se quedan como estan" },
   { v: "3.23.0", desc: "Reporte de Pagos: se resaltan las transacciones a las que les falta Factura, Folio Compra SAE, Banco o Cuenta (CLABE o numero de cuenta). La fila va en ambar con la marca Falta N (al pasar el raton dice que falta) y la celda vacia en rojo con el texto Falta; si la columna esta oculta, la marca de la fila lo sigue diciendo. Arriba de la tabla, cuantas tienen faltantes y un boton para ver solo esas (solo en pantalla: Enviar a Pagos y el Excel siguen tomando todas)" },
@@ -5343,6 +5344,11 @@ function RangoSlider({ min, max, desde, hasta, onChange, etiqueta, singular = "m
     </div>
   );
 }
+/* El contenedor del slider de periodo: una barra propia, a todo lo ancho,
+   arriba de lo que filtra. Así se usa siempre (ver Dashboard > Sempra). */
+const BarraPeriodo = ({ children }) => (
+  <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 14px" }}>{children}</div>
+);
 const etiquetaMesCorta = (k) => `${MESES[((k % 12) + 12) % 12].slice(0, 3)} ${Math.floor(k / 12)}`;
 
 function useRangoMeses(clave, aniosConDatos, porDefecto = "ytd") {
@@ -5380,16 +5386,19 @@ function useRangoMeses(clave, aniosConDatos, porDefecto = "ytd") {
     return i >= desde && i <= hasta;
   };
 
-  /* v3.25.0: el periodo se elige con el slider de meses (los dos selectores de
-     mes y año quedaron fuera); los atajos siguen para los rangos de siempre. */
+  /* v3.25.1: el slider va en su propia barra a todo lo ancho, igual que en
+     Dashboard > Sempra (entre los otros filtros quedaba amontonado). Los
+     atajos se quedan en la fila de filtros. */
+  const barra = (
+    <BarraPeriodo>
+      <RangoSlider min={minIdx} max={Math.max(maxIdx, idxHoy)} desde={desde} hasta={hasta}
+        etiqueta={etiquetaMesCorta}
+        ayuda="Periodo: arrastra las manijas para elegir desde qué mes y hasta qué mes. Filtra todo el tablero; el mes de un gasto es el de su partida."
+        onChange={(a, b) => { setDesde(a); setHasta(b); }} />
+    </BarraPeriodo>
+  );
   const controles = (
     <>
-      <Field label="Periodo" style={{ flex: "1 1 520px", minWidth: 320 }}>
-        <RangoSlider min={minIdx} max={Math.max(maxIdx, idxHoy)} desde={desde} hasta={hasta}
-          etiqueta={etiquetaMesCorta}
-          ayuda="Arrastra las manijas para elegir desde qué mes y hasta qué mes. Filtra todo el tablero; el mes de un gasto es el de su partida."
-          onChange={(a, b) => { setDesde(a); setHasta(b); }} style={{ minHeight: 34 }} />
-      </Field>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", paddingBottom: 2 }}>
         {atajos.map((a) => {
           const activo = a.d === desde && a.h === hasta;
@@ -5407,7 +5416,7 @@ function useRangoMeses(clave, aniosConDatos, porDefecto = "ytd") {
     </>
   );
 
-  return { desde, hasta, enRango, label: etiquetaRangoMeses(desde, hasta), controles };
+  return { desde, hasta, enRango, label: etiquetaRangoMeses(desde, hasta), controles, barra };
 }
 
 /* -----------------------------------------------------------------
@@ -5588,11 +5597,11 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
   const mesActual = `${MESES[hoy.getMonth()]} ${hoy.getFullYear()}`;
 
   const sliderPeriodo = limites && (
-    <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 14px" }}>
+    <BarraPeriodo>
       <RangoSlider min={limites.min} max={limites.max} desde={desde} hasta={hasta} etiqueta={etiquetaClave}
         ayuda="Periodo: arrastra las manijas para elegir desde qué mes y hasta qué mes. Filtra todo el tablero; el mes de un gasto es el de su partida."
         onChange={(a, b) => setRangoSel([a, b])} onTodo={() => setRangoSel(null)} />
-    </div>
+    </BarraPeriodo>
   );
 
   return (
@@ -5845,6 +5854,7 @@ function DashboardGeneral({ unidad, unidades, partidas, transacciones, proveedor
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+      {rango.barra}
       <ResumenComparativoPanel
         partidasRango={partidasRango}
         idsRango={idsRango}

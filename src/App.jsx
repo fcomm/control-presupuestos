@@ -182,11 +182,11 @@ const RUBROS_RESPALDO = [
   { rubro: "No Clasificado", categorias: [] },
 ];
 
-const UNIDADES_BASE = ["OSB", "CTM", "ISE"];
+const UNIDADES_BASE = ["OSB", "CTM", "ISE", "CT"];
 
 // Vehiculos: la flotilla incluye dos companias (IZ2, JEF) que no manejan
 // presupuesto propio, por eso no estan en UNIDADES_BASE — viven solo aqui.
-const VEH_COMPANIAS = ["OSB", "CTM", "ISE", "IZ2", "JEF"];
+const VEH_COMPANIAS = ["OSB", "CTM", "ISE", "CT", "IZ2", "JEF"];
 const VEH_EST_FUNCIONAL = ["Funcional", "Mtto Requerido", "En Mtto", "Fuera de Servicio", "No Encontrado"];
 const VEH_EST_OPERACIONAL = ["En Operación", "Resguardo", "Fuera de Operacion", "No Encontrado"];
 const VEH_EST_ADMIN = ["Activa", "Vendida", "No Encontrado", "Baja"];
@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.21.1";
+const APP_VERSION = "3.22.0";
 const CHANGELOG = [
+  { v: "3.22.0", desc: "Nueva unidad de negocio CT, completa como OSB, CTM e ISE: aparece en el selector de compania (partidas, transacciones, reportes, solicitudes, contratos y permisos por compania) y en Vehiculos. Plantillas de importacion de partidas y proveedores con su hoja CT. Requiere 70-unidad-ct.sql" },
   { v: "3.21.1", desc: "Corrige: al editar una transaccion Pagada, pasarla a No Pagado, hacer cambios y volver a marcarla Pagada antes de guardar, los cambios se descartaban sin aviso (el formulario se volvia a bloquear y Guardar solo cerraba). Ahora, una vez que se pasa a No Pagado en esa edicion, queda abierta hasta guardar o cerrar, y se guardan los cambios con el status que tenga. Aplica en Transacciones y en la edicion rapida desde Partidas" },
   { v: "3.21.0", desc: "Transacciones agrupadas: el encabezado de cada grupo (y subgrupo) muestra junto a su nombre el Total y lo Pagado del grupo, por moneda, con el % pagado. En una compra PPD cuenta lo pagado de sus parcialidades. Va junto al nombre para leerse de corrido, no alineado con la columna Importe" },
   { v: "3.20.0", desc: "Transacciones > Importar / Exportar > Comprobantes de pago: se suben los PDF de BancaNet Banamex (uno o varios, de una o varias hojas) y se leen en el navegador. Reconoce los formatos Detalle de Pago (otras cuentas, mismo banco, pago de servicios y de tarjeta), Transferencia a otras cuentas, la lista Pagos registrados y el recibo del SAT; los de nomina, IMSS e inversiones se omiten. Cada pago se busca entre las transacciones de la compania por importe y moneda, y si ademas coincide la cuenta destino (CLABE, sucursal/cuenta o los ultimos digitos) o el nombre del beneficiario con el proveedor, y es la unica asi, se marca Pagada con la fecha del comprobante (en USD toma el tipo de cambio del DOF) y se le adjunta su hoja como Comprobante de pago (CP <folio> AUT<autorizacion>.pdf). Si ya estaba Pagada, solo se adjunta. Lo dudoso queda Por revisar para elegir la transaccion a mano; los rechazados, los de otra compania y los ya cargados se omiten. Cada resultado aplicado se puede Deshacer. Requiere 69-comprobantes-pago.sql (bitacora que evita cargar dos veces el mismo comprobante)" },
@@ -4170,7 +4171,7 @@ function AnticiposPanel({ transacciones, adjDe, onAbrir, onCerrar, onReabrir }) 
 /* ----------------------------------------------------------------------
    IMPORTACION DESDE EXCEL (hojas RawData-*)
 ---------------------------------------------------------------------- */
-const UNIDAD_KEYS = ["OSB", "CTM", "ISE"];
+const UNIDAD_KEYS = ["OSB", "CTM", "ISE", "CT"];
 
 /**
  * Da formato al encabezado de un archivo de INTERCAMBIO (RawData, catálogos,
@@ -7657,6 +7658,7 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
       OSB: ["Agosto", 2026, "Ejemplo: Servicio de energía eléctrica", "Servicios Básicos", "Energía eléctrica", "Todos", "Queretaro", 12000, 0, "MXP", "", ""],
       CTM: ["Agosto", 2026, "Ejemplo: Renta de oficina base Poza Rica", "Servicios Operativos", "Arrendamientos", "Todos", "Poza Rica", 27000, 0, "MXP", "", ""],
       ISE: ["Agosto", 2026, "Ejemplo: Producto químico deshidratación", "Productos Químicos", "Productos químicos de operación", "Desh Gral", "", 0, 45000, "USD", "", ""],
+      CT: ["Agosto", 2026, "Ejemplo: Servicio de energía eléctrica", "Servicios Básicos", "Energía eléctrica", "Todos", "", 10000, 0, "MXP", "", ""],
     };
     UNIDAD_KEYS.forEach((u) => {
       const ws = wbx.addWorksheet(`RawData-${u}`);
@@ -7670,7 +7672,7 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
     [
       "Cómo usar esta plantilla",
       "",
-      "1. Cada hoja \"RawData-OSB/CTM/ISE\" es el catálogo de esa compañía — no las mezcles.",
+      "1. Cada hoja \"RawData-OSB/CTM/ISE/CT\" es el catálogo de esa compañía — no las mezcles.",
       "2. BORRA la fila de ejemplo (fila 2, en cursiva gris) de cada hoja antes de subir.",
       "3. ID/Folio: déjalo vacío para que la app le asigne uno automático, o pon uno",
       "   existente (ej. CTM-AGO26-045) para ACTUALIZAR esa partida en vez de crear otra.",
@@ -7702,7 +7704,7 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
       const buf = await file.arrayBuffer();
       const { rows, sheetsFound, sheetsIgnored } = parsePresupuestoWorkbook(buf, { anioDefault: anioObjetivo, existingPartidas: partidas });
       if (!rows.length) {
-        setError('No encontré filas con Concepto en hojas "RawData-OSB / RawData-CTM / RawData-ISE" dentro de este archivo.');
+        setError('No encontré filas con Concepto en hojas "RawData-OSB / RawData-CTM / RawData-ISE / RawData-CT" dentro de este archivo.');
         return;
       }
       // Marca cada fila como "actualiza" (ya existe una partida con ese folio+unidad)
@@ -7750,7 +7752,7 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
   return (
     <Panel
       title="Carga masiva desde Excel"
-      subtitle='Sube el libro con hojas "RawData-OSB", "RawData-CTM" y/o "RawData-ISE" — se detectan automáticamente'
+      subtitle='Sube el libro con hojas "RawData-OSB", "RawData-CTM", "RawData-ISE" y/o "RawData-CT" — se detectan automáticamente'
       right={<Button variant="ghost" onClick={descargarPlantilla}>Descargar plantilla</Button>}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -9358,7 +9360,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Partidas_${todasLasCompanias ? "OSB-CTM-ISE" : unidad}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `Partidas_${todasLasCompanias ? UNIDAD_KEYS.join("-") : unidad}_${new Date().toISOString().slice(0, 10)}.xlsx`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
@@ -11589,7 +11591,7 @@ function ImportarTransaccionesPanel({ partidas, proveedores, cuentas = [], trans
     [
       "Cómo usar esta plantilla",
       "",
-      "1. El nombre de cada hoja (OSB, CTM, ISE) le dice a la app de qué compañía",
+      "1. El nombre de cada hoja (OSB, CTM, ISE, CT) le dice a la app de qué compañía",
       "   son esas transacciones — no cambies esos nombres.",
       "2. BORRA la fila de ejemplo (fila 2, en cursiva gris) de cada hoja antes de subir.",
       "3. A Partida: el folio EXACTO de la partida a la que corresponde ese pago",
@@ -24244,6 +24246,7 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
       OSB: ["OSB", "Ejemplo: Comisión Federal de Electricidad", "CFE370814QI0", "", "", "", "BANORTE", "", "", "072680013482913231", "", "MXP"],
       CTM: ["CTM", "Ejemplo: Servicio de Gasolinería Lepacaba SA de CV", "SGL010203AB1", "", "", "", "BBVA", "", "", "012680001234567890", "", "MXP"],
       ISE: ["ISE", "Ejemplo: Champion X", "", "", "", "Proveedor extranjero", "CITIBANK", "", "CITIUS33", "", "1234567890", "USD"],
+      CT: ["CT", "Ejemplo: Comisión Federal de Electricidad", "CFE370814QI0", "", "", "", "BANORTE", "", "", "072680013482913231", "", "MXP"],
     };
 
     const wbx = new ExcelJS.Workbook();
@@ -24262,7 +24265,7 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
       "CÓMO LLENAR ESTA PLANTILLA",
       "",
       "1. Borra la fila de ejemplo (va en gris cursiva) antes de importar.",
-      "2. Compañía: OSB, CTM o ISE. Si la dejas vacía se usa el nombre de la hoja.",
+      "2. Compañía: OSB, CTM, ISE o CT. Si la dejas vacía se usa el nombre de la hoja.",
       "3. Nombre: obligatorio. Es lo que empareja con los proveedores que ya existen,",
       "   junto con el RFC. Si el RFC coincide, se ACTUALIZA el proveedor en vez de",
       "   duplicarlo.",
@@ -24305,7 +24308,7 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
       const buf = await file.arrayBuffer();
       const { rows, sheetsFound, nuevas, actualizaciones, sinCompania } = parseProveedoresWorkbook(buf, proveedoresApi.rows);
       if (!rows.length) {
-        setError('No encontré filas con Nombre y Compañía (OSB/CTM/ISE) reconocible en este archivo.');
+        setError('No encontré filas con Nombre y Compañía (OSB/CTM/ISE/CT) reconocible en este archivo.');
         return;
       }
       setPreview({ rows, sheetsFound, nuevas, actualizaciones, sinCompania, fileName: file.name });
@@ -24355,7 +24358,7 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
   return (
     <Panel
       title="Carga masiva de proveedores"
-      subtitle='Una fila por proveedor, con una columna "Compañía" (OSB/CTM/ISE) que dice a cuál pertenece — o usa hojas llamadas OSB/CTM/ISE como respaldo'
+      subtitle='Una fila por proveedor, con una columna "Compañía" (OSB/CTM/ISE/CT) que dice a cuál pertenece — o usa hojas llamadas OSB/CTM/ISE/CT como respaldo'
       right={<Button variant="ghost" onClick={descargarPlantilla}>Descargar plantilla</Button>}
     >
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -24379,7 +24382,7 @@ function ImportarProveedoresPanel({ proveedoresApi, cuentasApi }) {
           </div>
           {preview.sinCompania > 0 && (
             <div style={{ fontSize: 11.5, color: T.amber, marginBottom: 12 }}>
-              {preview.sinCompania} fila(s) no se van a importar porque la columna "Compañía" viene vacía o con un valor distinto a OSB/CTM/ISE,
+              {preview.sinCompania} fila(s) no se van a importar porque la columna "Compañía" viene vacía o con un valor distinto a OSB/CTM/ISE/CT,
               y la hoja tampoco se llama así. Corrígelo en el Excel y vuelve a subirlo.
             </div>
           )}
@@ -24719,7 +24722,7 @@ function ProveedoresPanel({ unidad, proveedoresApi, cuentasApi, perfilesApi, lis
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `Proveedores_OSB-CTM-ISE_${new Date().toISOString().slice(0, 10)}.xlsx`;
+    a.download = `Proveedores_${UNIDAD_KEYS.join("-")}_${new Date().toISOString().slice(0, 10)}.xlsx`;
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };

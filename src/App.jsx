@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.19.0";
+const APP_VERSION = "3.20.0";
 const CHANGELOG = [
+  { v: "3.20.0", desc: "Transacciones > Importar / Exportar > Comprobantes de pago: se suben los PDF de BancaNet Banamex (uno o varios, de una o varias hojas) y se leen en el navegador. Reconoce los formatos Detalle de Pago (otras cuentas, mismo banco, pago de servicios y de tarjeta), Transferencia a otras cuentas, la lista Pagos registrados y el recibo del SAT; los de nomina, IMSS e inversiones se omiten. Cada pago se busca entre las transacciones de la compania por importe y moneda, y si ademas coincide la cuenta destino (CLABE, sucursal/cuenta o los ultimos digitos) o el nombre del beneficiario con el proveedor, y es la unica asi, se marca Pagada con la fecha del comprobante (en USD toma el tipo de cambio del DOF) y se le adjunta su hoja como Comprobante de pago (CP <folio> AUT<autorizacion>.pdf). Si ya estaba Pagada, solo se adjunta. Lo dudoso queda Por revisar para elegir la transaccion a mano; los rechazados, los de otra compania y los ya cargados se omiten. Cada resultado aplicado se puede Deshacer. Requiere 69-comprobantes-pago.sql (bitacora que evita cargar dos veces el mismo comprobante)" },
   { v: "3.19.0", desc: "Compras PPD desde transacciones existentes (solo administradores). En Transacciones, con transacciones seleccionadas: Agrupar en compra PPD crea el padre (total editable, partida y concepto) y deja las seleccionadas como parcialidades 1..n en orden de fecha; Asignar a compra PPD las liga a una compra que ya existe (mismo proveedor y moneda, con % libre). En una parcialidad, Quitar de la compra PPD la regresa a transaccion normal. Las parcialidades conservan folio, estatus y pagos y pasan a la partida de su compra. Previo con % y avisos antes de confirmar. Requiere 68-ppd-agrupar-asignar.sql" },
   { v: "3.18.0", desc: "Dashboard > Sempra: filtro de periodo Desde-Hasta con un slider de dos manijas, mes a mes. El extremo izquierdo es el mes del gasto mas viejo y el derecho el mes mas nuevo con transaccion o partida Sempra. Filtra Pagado, Por pagar y las tablas de rubros; boton Todo el periodo para regresar. El mes de un gasto es el de su partida (o su fecha si no tiene)" },
   { v: "3.17.0", desc: "Folio de partida con P para no confundirlo con el de transaccion: OSB-P-OCT26-071 (antes OSB-OCT26-071, igual que una transaccion). Las partidas nuevas ya salen asi; un folio escrito a mano o importado de Excel con el formato anterior se convierte solo. El folio de las transacciones no cambia. Requiere renombrar-folios-partidas.sql" },
@@ -10547,6 +10548,612 @@ const esEncabezadoPegado = (f) => f.some((c) => /^(solicitante|importe|concepto 
 
 const CAMPOS_DESGLOSE_PPD = ["subtotal", "iva", "ret_isr", "ret_iva", "descuento"];
 
+/* ==== LECTOR DE COMPROBANTES BANAMEX (inicio) ==== */
+const MESES_LARGOS_CP = { enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8,
+  septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12 };
+const sinAcentosCP = (s) => String(s || "").normalize("NFD").replace(/[̀-ͯ]/g, "");
+const importeCP = (s) => { const n = Number(String(s || "").replace(/[$,\s]/g, "")); return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null; };
+const fechaDmaCP = (s) => { const m = String(s || "").match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}` : null; };
+/* "Martes 11 de Agosto de 2026, 1:09 PM": la fecha de la operación, que es la
+   que trae TODO comprobante de BancaNet. La de aplicación solo viene en los
+   SPEI; cuando viene, manda. */
+const fechaEncabezadoCP = (texto) => {
+  const m = sinAcentosCP(texto).match(/(\d{1,2}) de ([a-z]+) del? (\d{4})/i);
+  const mes = m && MESES_LARGOS_CP[m[2].toLowerCase()];
+  return mes ? `${m[3]}-${String(mes).padStart(2, "0")}-${m[1].padStart(2, "0")}` : null;
+};
+const monedaCP = (s) => (/USD|DLL|D[OÓ]LAR/i.test(String(s || "")) ? "USD" : "MXP");
+
+/* Etiquetas de los comprobantes. El valor de una es lo que hay entre ella y la
+   siguiente etiqueta: así un valor partido en dos renglones (la referencia
+   alfanumérica, "(Fecha de / Abono)") se junta solo. */
+const ETIQUETAS_CP = ["Cliente", "Razón Social", "Detalle de Pago", "Pagos registrados", "Num.", "Nombre del Archivo", "Detalle de Pago", "Datos de la", "Cuentas", "Autorizadores", "Su transferencia ha sido", "Estatus", "Cuenta Origen", "Cuenta Destino", "Importe",
+  "Banco", "Fecha de Aplicación", "Beneficiario", "Referencia Numérica", "Referencia Alfanumérica", "Referencia",
+  "Descripción", "Concepto", "Número de autorización", "Usuario 1", "Usuario 2", "Error", "Nombre de la Empresa",
+  "RFERENCIA UNICA", "REFERENCIA UNICA", "IVA", "Moneda", "COP", "Id Cop", "Importante:", "Clave de rastreo",
+  "Concepto del pago", "Referencia numérica", "Referencia alfanumérica", "NO TARJETA", "Número de Operación:",
+  "Fecha de Pago:", "Hora de Pago:", "Llave de Pago:", "Forma de Pago:", "Medio de Presentación:", "Cuenta Cargo:",
+  "Estatus:", "Importe Pagado:", "Línea de Captura:", "Canal de Pago:", "Tipo de cuenta", "Tipo de beneficiario", "Fecha valor", "Clasificación de la operación"];
+const esEtiquetaCP = (tok) => ETIQUETAS_CP.some((e) => sinAcentosCP(tok).toLowerCase() === sinAcentosCP(e).toLowerCase())
+  || /^\* Este documento|^"Este documento|^Para poder descargar/.test(tok);
+const valorCP = (toks, etiqueta, { hasta = 6 } = {}) => {
+  const e = sinAcentosCP(etiqueta).toLowerCase();
+  const i = toks.findIndex((t) => sinAcentosCP(t).toLowerCase() === e);
+  if (i < 0) return null;
+  const partes = [];
+  for (let j = i + 1; j < toks.length && j <= i + hasta; j++) {
+    if (esEtiquetaCP(toks[j])) break;
+    partes.push(toks[j]);
+  }
+  return partes.join(" ").replace(/\s+/g, " ").trim() || null;
+};
+
+/* Una página → los pagos que trae. Tres formatos de BancaNet:
+   - "Detalle de Pago" (el actual): Otras Cuentas (SPEI), mismo banco
+     (sucursal/cuenta) y Pago de Servicios;
+   - "Transferencia a otras cuentas" (el anterior): "Su transferencia ha sido
+     Aceptada con número de autorización …";
+   - la lista "Pagos registrados" de un archivo de dispersión, un renglón por
+     pago (casi siempre nómina).
+   `toks` son los textos de la página en el orden del PDF, sin vacíos. */
+function pagosDePaginaCP(toks) {
+  const texto = toks.join(" ");
+  const fechaOp = fechaEncabezadoCP(texto);
+  const base = { banco_origen: "Banamex", fecha_operacion: fechaOp, razon_social: valorCP(toks, "Razón Social") };
+
+  // Lista de un archivo de dispersión: renglones Num · Tipo · Estatus · Retiro · Depósito · Importe · Moneda · Aut.
+  if (toks.some((t) => /^Pagos registrados$/i.test(t)) || (toks.includes("Cuenta depósito") && toks.includes("Autorización"))) {
+    const pagos = [];
+    for (let i = 0; i < toks.length; i++) {
+      const est = toks[i];
+      if (!/^(Aceptada|Aplicada|Rechazada|Pendiente|Por verificar)$/i.test(est)) continue;
+      const retiro = toks[i + 1], deposito = toks[i + 2], imp = toks[i + 3], mon = toks[i + 4];
+      if (!/^\d+\/\d+$/.test(retiro || "") || !importeCP(imp)) continue;
+      const aut = /^\d{4,}$/.test(toks[i + 5] || "") ? toks[i + 5] : null;
+      pagos.push({ ...base, formato: "lista", estatus: est, cuenta_destino: deposito, importe: importeCP(imp),
+        moneda: monedaCP(mon), autorizacion: aut, fecha: fechaOp, beneficiario: null, concepto: null });
+    }
+    return pagos;
+  }
+
+  // Recibo de pago de contribuciones federales (SAT): no tiene beneficiario
+  // ni cuenta destino; el número de operación hace de autorización.
+  if (/PAGO DE CONTRIBUCIONES/i.test(texto)) {
+    return [{ ...base, formato: "sat", estatus: valorCP(toks, "Estatus:") || "Aplicada",
+      autorizacion: valorCP(toks, "Número de Operación:"), importe: importeCP(valorCP(toks, "Importe Pagado:")),
+      moneda: "MXP", cuenta_destino: null, beneficiario: "SAT", concepto: valorCP(toks, "Línea de Captura:"),
+      fecha: fechaDmaCP(valorCP(toks, "Fecha de Pago:")) || fechaOp }].filter((x) => x.importe);
+  }
+  // El archivo de nómina de Banamex no trae transacciones de la app: se omite.
+  if (/Archivo de N[oó]mina Banamex/i.test(texto)) return [];
+
+  // Formato anterior.
+  const mAnt = texto.match(/Su transferencia ha sido\s+(\w+)\s+con n[uú]mero de autorizaci[oó]n\s+(\d+)/i);
+  if (mAnt) {
+    // "Importe MXN | $ | 24,824.00" o, en el de mismo banco, "Importe | $ 1,560.50 MXN".
+    const iImp = toks.findIndex((t) => /^Importe( (MXN|USD))?$/i.test(t));
+    const cercanos = iImp >= 0 ? toks.slice(iImp, iImp + 4).join(" ") : "";
+    const mImp = cercanos.match(/\$\s*([\d,]+\.\d{2})/);
+    const impTok = mImp ? mImp[1] : null;
+    const iDep = toks.findIndex((t) => /^Cuenta de dep[oó]sito o beneficiario$/i.test(t));
+    const dep = iDep >= 0 ? toks.slice(iDep + 1, iDep + 6).join(" ") : "";
+    const masc = dep.match(/\*+\s*(\d{3,4})/);
+    const sucCta = dep.match(/\b(\d{3,4}\/\d{5,8})\b/);
+    const nombre = (texto.match(/Nombre:\s*(.+?)\s*(?:\(Dato no|Datos de la)/i) || [])[1] || null;
+    const bancoDest = (dep.match(/^([A-ZÁÉÍÓÚÑ0-9 .&]+?)\s*-/) || [])[1] || null;
+    return [{ ...base, formato: "transferencia", estatus: mAnt[1], autorizacion: mAnt[2],
+      importe: importeCP(impTok), moneda: monedaCP(cercanos),
+      cuenta_destino: sucCta ? sucCta[1] : masc ? `***${masc[1]}` : null, banco_destino: bancoDest, beneficiario: nombre,
+      concepto: valorCP(toks, "Concepto del pago") || valorCP(toks, "Referencia alfanumérica"), clave_rastreo: valorCP(toks, "Clave de rastreo"),
+      referencia: valorCP(toks, "Referencia Numérica"),
+      fecha: fechaDmaCP(valorCP(toks, "Fecha valor")) || fechaOp }];
+  }
+
+  if (!toks.some((t) => /^Detalle de Pago$/i.test(t))) return [];
+  const impTxt = valorCP(toks, "Importe");
+  const importe = importeCP((impTxt || "").split(" ")[0]);
+  if (!importe) return [];
+  const destTxt = valorCP(toks, "Cuenta Destino") || "";
+  const mDest = destTxt.match(/^([\d/]+)\s*(.*)$/);
+  // Pago de servicios o de tarjeta de crédito: el "beneficiario" es la empresa.
+  // (El número de tarjeta que traen los de tarjeta no se lee ni se guarda.)
+  const servicio = /Pago de Servicios|Tarjeta de Cr[eé]dito/i.test(texto) || toks.includes("Nombre de la Empresa");
+  const benef = valorCP(toks, "Beneficiario") || (mDest && mDest[2]) || (servicio ? valorCP(toks, "Nombre de la Empresa") : null);
+  const iMon = valorCP(toks, "Moneda");
+  return [{ ...base, formato: servicio ? "servicio" : "detalle",
+    estatus: (valorCP(toks, "Estatus") || "").split(" ")[0] || null,
+    autorizacion: ((valorCP(toks, "Número de autorización") || "").match(/\d+/) || [])[0] || null,
+    importe, moneda: monedaCP(`${impTxt} ${iMon || ""}`),
+    cuenta_destino: mDest ? mDest[1] : null, banco_destino: valorCP(toks, "Banco"),
+    beneficiario: benef ? benef.replace(/[,/]+/g, " ").replace(/\s+/g, " ").trim() : null,
+    concepto: valorCP(toks, "Referencia Alfanumérica") || valorCP(toks, "Concepto") || valorCP(toks, "Descripción")
+      || (servicio ? valorCP(toks, "RFERENCIA UNICA") || valorCP(toks, "REFERENCIA UNICA") : null),
+    referencia: valorCP(toks, "Referencia Numérica") || valorCP(toks, "Referencia"),
+    fecha: fechaDmaCP(valorCP(toks, "Fecha de Aplicación", { hasta: 4 })) || fechaOp }];
+}
+/* ==== LECTOR DE COMPROBANTES BANAMEX (fin) ==== */
+
+/* ==== RECONOCIMIENTO DE PAGOS (inicio) ==== */
+const digitosCP = (s) => String(s || "").replace(/\D/g, "");
+/* La cuenta del comprobante contra las del proveedor. Banamex la escribe de
+   tres formas: CLABE completa (SPEI), sucursal/cuenta (mismo banco: 7008/3470567,
+   que dentro de la CLABE es 700 8 + 3470567) y enmascarada (***729). */
+function cuentaCoincideCP(dest, cuentas) {
+  if (!dest) return false;
+  const ctas = cuentas.map(digitosCP).filter((x) => x.length >= 5);
+  if (!ctas.length) return false;
+  const masc = String(dest).match(/^\*+(\d{3,4})$/);
+  if (masc) return ctas.some((x) => x.length >= 10 && x.endsWith(masc[1]));
+  const sc = String(dest).match(/^(\d{1,4})\/(\d{4,8})$/);
+  if (sc) {
+    const junto = sc[1].padStart(4, "0") + sc[2].padStart(7, "0");
+    return ctas.some((x) => x.includes(junto) || (sc[2].length >= 6 && x.endsWith(sc[2])));
+  }
+  const d = digitosCP(dest);
+  if (d.length < 10) return false;
+  return ctas.some((x) => x === d || (x.length >= 10 && (d.endsWith(x) || x.endsWith(d))));
+}
+/* Palabras que no distinguen a nadie: sobran para comparar nombres. */
+const VACIAS_CP = new Set(("SA DE CV RL SC SAPI SAB DEL LAS LOS CIA SOCIEDAD ANONIMA CAPITAL VARIABLE RESPONSABILIDAD "
+  + "LIMITADA SPR AC MEXICO SERVICIOS SERVICIO GRUPO COMERCIALIZADORA INDUSTRIAL INDUSTRIALES SOLUCIONES "
+  + "INTERNACIONAL NACIONAL CORPORATIVO EMPRESARIAL").split(" "));
+const tokensCP = (s) => sinAcentosCP(s).toUpperCase().replace(/[^A-Z0-9 ]+/g, " ").split(/\s+/)
+  .filter((w) => w.length >= 3 && !VACIAS_CP.has(w));
+/* Qué tanto se parece el beneficiario del banco al proveedor (0 a 1). El banco
+   corta el nombre a 20 letras ("JONATHAN GONZALEZ BE"), así que una palabra
+   que empieza como otra cuenta como igual. */
+function nombreCoincideCP(a, b) {
+  const ta = tokensCP(a), tb = tokensCP(b);
+  if (!ta.length || !tb.length) return 0;
+  const igual = (x, y) => x === y || (Math.min(x.length, y.length) >= 4 && (x.startsWith(y) || y.startsWith(x)));
+  /* Y pegado: el banco a veces separa o junta palabras ("TRARCTO CAMIONES" por
+     TRACTOCAMIONES), así que una palabra de 5 letras o más que aparece dentro
+     del nombre completo también cuenta. */
+  const pegadoA = ta.join(""), pegadoB = tb.join("");
+  const n1 = ta.filter((x) => tb.some((y) => igual(x, y)) || (x.length >= 5 && pegadoB.includes(x))).length;
+  const n2 = tb.filter((y) => ta.some((x) => igual(x, y)) || (y.length >= 5 && pegadoA.includes(y))).length;
+  return Math.min(1, Math.max(n1, n2) / Math.min(ta.length, tb.length));
+}
+const RAZON_CP = { OSB: "OSBOG", CTM: "CHAMPION", ISE: "INTEGRON" };
+const claveCP = (p) => `${p.autorizacion || ""}|${r2(p.importe)}|${p.fecha || ""}`;
+
+/* Decide qué hacer con cada pago leído. No escribe nada: devuelve el plan.
+   Automático solo cuando no hay duda: mismo importe y moneda, y además coincide
+   la cuenta destino o el nombre del beneficiario con el proveedor, y es la
+   única así (o la de fecha claramente más cercana). Lo demás va a revisión. */
+function reconocerPagosCP(pagos, { unidad, transacciones, cuentas, proveedores, yaCargados }) {
+  const provPorId = new Map(proveedores.map((p) => [p.id, p]));
+  const ctasDe = (t) => {
+    const xs = cuentas.filter((c) => c.id === t.cuenta_id || (t.proveedor_id && c.proveedor_id === t.proveedor_id))
+      .flatMap((c) => [c.clabe, c.numero_cuenta]);
+    if (t.clabe_importada) xs.push(t.clabe_importada);
+    return xs.filter(Boolean);
+  };
+  const vigentes = transacciones.filter((t) => !estaCancelada(t) && !pendienteDeRegistro(t) && !esPadrePPD(t));
+  const usados = new Set();
+  const evaluar = (p) => vigentes
+    .filter((t) => !usados.has(t.id) && mismaMoneda(t.moneda, p.moneda) && Math.abs(r2(t.importe) - p.importe) < 0.005)
+    .map((t) => {
+      const cuenta = cuentaCoincideCP(p.cuenta_destino, ctasDe(t));
+      const nombre = Math.max(nombreCoincideCP(p.beneficiario, t.proveedor),
+        nombreCoincideCP(p.beneficiario, provPorId.get(t.proveedor_id)?.nombre));
+      const ref = t.fecha_pago || String(t.enviado_pagos_at || "").slice(0, 10) || t.dia;
+      const dias = p.fecha && ref ? Math.abs((Date.parse(p.fecha) - Date.parse(ref)) / 864e5) : 999;
+      return { t, cuenta, nombre, fuerte: cuenta || nombre >= 0.6, dias };
+    })
+    .sort((a, b) => (b.fuerte - a.fuerte) || (a.dias - b.dias));
+  const unoClaro = (xs) => xs.length === 1 || (xs.length > 1 && xs[1].dias - xs[0].dias >= 7) ? xs[0] : null;
+  const razon = RAZON_CP[unidad];
+
+  // Primero los que traen cuenta destino: son los que se reconocen con más certeza.
+  const orden = pagos.map((p, i) => ({ p, i })).sort((a, b) => ((a.p.formato === "lista") - (b.p.formato === "lista"))
+    || (!!b.p.cuenta_destino - !!a.p.cuenta_destino) || (a.i - b.i));
+  const res = new Array(pagos.length);
+  const vistos = new Set();
+  for (const { p, i } of orden) {
+    const r = { pago: p, candidatos: [] };
+    res[i] = r;
+    if (p.autorizacion) {
+      if (vistos.has(claveCP(p))) { r.estado = "omitido"; r.motivo = "Es el mismo pago que otro comprobante de esta carga."; continue; }
+      vistos.add(claveCP(p));
+    }
+    if (razon && p.razon_social && !sinAcentosCP(p.razon_social).toUpperCase().includes(razon)) {
+      r.estado = "omitido"; r.motivo = `Es de ${p.razon_social}, no de ${unidad}. Cámbiate a esa compañía para cargarlo.`; continue;
+    }
+    if (!/^(Aceptada|Aplicada)$/i.test(p.estatus || "")) {
+      r.estado = "omitido"; r.motivo = `El banco lo marca como "${p.estatus || "sin estatus"}": no es un pago hecho.`; continue;
+    }
+    if (yaCargados.has(claveCP(p))) {
+      r.estado = "ya_cargado"; r.t = vigentes.find((t) => t.id === yaCargados.get(claveCP(p))) || null;
+      r.motivo = "Este comprobante ya se había cargado antes."; continue;
+    }
+    const cands = evaluar(p);
+    r.candidatos = cands;
+    const pend = cands.filter((c) => c.t.status !== "Pagado");
+    const pag = cands.filter((c) => c.t.status === "Pagado");
+    const fuertes = pend.filter((c) => c.fuerte);
+    const elegido = unoClaro(fuertes);
+    if (elegido) {
+      r.estado = "pagar"; r.t = elegido.t; r.por = elegido.cuenta ? "importe y cuenta" : "importe y nombre";
+      usados.add(elegido.t.id); continue;
+    }
+    if (fuertes.length) {
+      r.estado = "revisar"; r.motivo = `Hay ${fuertes.length} transacciones pendientes de este proveedor por el mismo importe. Elige cuál pagó este comprobante.`; continue;
+    }
+    if (pend.length) {
+      r.estado = "revisar";
+      r.motivo = pend.length === 1
+        ? "Coincide el importe, pero ni la cuenta ni el nombre del beneficiario coinciden con el proveedor. Confírmala si es la correcta."
+        : `Hay ${pend.length} transacciones pendientes por el mismo importe, de proveedores que no coinciden con el beneficiario. Elige la correcta.`;
+      continue;
+    }
+    const yaPag = unoClaro(pag.filter((c) => c.fuerte && c.dias <= 5));
+    if (yaPag) {
+      r.estado = "adjuntar"; r.t = yaPag.t; r.motivo = "Ya estaba Pagada: solo se le adjunta el comprobante.";
+      usados.add(yaPag.t.id); continue;
+    }
+    r.estado = pag.length ? "revisar" : "sin_transaccion";
+    r.motivo = pag.length
+      ? "Solo hay transacciones ya pagadas por este importe, y no es claro que sean de este pago. Si es una de ellas, elígela para adjuntarle el comprobante."
+      : "No hay ninguna transacción de esta compañía por este importe y moneda. Si es un gasto de la app, regístralo y vuelve a cargar el comprobante.";
+  }
+  return res;
+}
+/* ==== RECONOCIMIENTO DE PAGOS (fin) ==== */
+
+/* Lee un PDF de comprobantes: cada página por separado, porque BancaNet
+   imprime un comprobante por hoja y una lista puede ocupar varias. La fecha de
+   una hoja sin encabezado (la 2 de una lista) es la de la hoja anterior. */
+async function leerComprobantesPDF(archivo) {
+  await esperarLibrerias();
+  const bytes = new Uint8Array(await archivo.arrayBuffer());
+  const doc = await pdfjsLib.getDocument({ data: bytes.slice() }).promise;
+  const pagos = [];
+  let fechaPrev = null;
+  for (let n = 1; n <= doc.numPages; n++) {
+    const contenido = await (await doc.getPage(n)).getTextContent();
+    const toks = contenido.items.map((i) => String(i.str || "").replace(/\s+/g, " ").trim()).filter(Boolean);
+    for (const p of pagosDePaginaCP(toks)) {
+      if (!p.fecha) p.fecha = fechaPrev;
+      if (!p.importe) continue;
+      pagos.push({ ...p, archivo: archivo.name, pagina: n, paginas: doc.numPages });
+    }
+    const f = fechaEncabezadoCP(toks.join(" "));
+    if (f) fechaPrev = f;
+  }
+  return { bytes, paginas: doc.numPages, pagos };
+}
+
+/* La hoja del comprobante como PDF propio, para el expediente de la
+   transacción: un PDF de 14 comprobantes no debe quedar entero en cada una. */
+async function paginaComoPdfCP(bytes, pagina, paginas) {
+  if (paginas === 1) return bytes;
+  const { PDFDocument } = await cargarPdfLib();
+  const src = await PDFDocument.load(bytes, { ignoreEncryption: true });
+  const out = await PDFDocument.create();
+  const [pg] = await out.copyPages(src, [pagina - 1]);
+  out.addPage(pg);
+  return out.save();
+}
+
+const ESTADOS_CP = {
+  pagado:          { tono: "teal",  texto: "Marcada Pagada" },
+  adjuntado:       { tono: "teal",  texto: "Comprobante adjuntado" },
+  revisar:         { tono: "amber", texto: "Por revisar" },
+  sin_transaccion: { tono: "dim",   texto: "Sin transacción" },
+  ya_cargado:      { tono: "dim",   texto: "Ya cargado" },
+  omitido:         { tono: "dim",   texto: "Omitido" },
+  deshecho:        { tono: "dim",   texto: "Deshecho" },
+  error:           { tono: "red",   texto: "Error" },
+};
+
+/* Transacciones › Importar / Exportar › Comprobantes de pago (v3.20.0).
+   Se suben los PDF del banco; se leen en el navegador, se busca la
+   transacción de cada pago y, cuando no hay duda, se marca Pagada con la fecha
+   del comprobante y se le adjunta su hoja. Lo dudoso queda en Por revisar.
+   Requiere 69-comprobantes-pago.sql. */
+function ComprobantesPagoPanel({ unidad, transacciones = [], transaccionesApi, cuentas = [], proveedores = [] }) {
+  const tiposCambio = useTiposCambio();
+  const [archivos, setArchivos] = useState([]);
+  const [filas, setFilas] = useState([]);
+  const [trabajando, setTrabajando] = useState(null);
+  const [aviso, setAviso] = useState(null);
+  const [arrastrando, setArrastrando] = useState(false);
+  const [eleccion, setEleccion] = useState({});
+  const refInput = useRef(null);
+  const bytesPorArchivo = useRef(new Map());
+
+  const agregar = (lista) => {
+    const pdfs = [...lista].filter((f) => /\.pdf$/i.test(f.name) || f.type === "application/pdf");
+    const otros = lista.length - pdfs.length;
+    setArchivos((xs) => [...xs, ...pdfs.filter((f) => !xs.some((x) => x.name === f.name && x.size === f.size))]);
+    setAviso(otros ? { tono: "red", texto: `${otros} archivo(s) no son PDF y no se agregaron.` } : null);
+  };
+
+  const transPorId = (id) => transacciones.find((t) => t.id === id);
+
+  /* Escribe un pago contra su transacción. Primero la bitácora (es la que
+     impide cargar dos veces el mismo comprobante), luego el archivo y al
+     final el Pagado; si algo falla a medio camino se deshace lo anterior. */
+  const aplicar = async (fila, t) => {
+    const p = fila.pago;
+    const marcar = t.status !== "Pagado";
+    const fechaPago = p.fecha || hoyLocalISO();
+    const log = await supabase.from("comprobantes_pago").insert({
+      unidad, transaccion_id: t.id, autorizacion: p.autorizacion || null, clave_rastreo: p.clave_rastreo || null,
+      formato: p.formato, estatus_banco: p.estatus, importe: p.importe, moneda: monedaNorm(p.moneda), fecha: p.fecha || null,
+      cuenta_destino: p.cuenta_destino || null, beneficiario: p.beneficiario || null, concepto: p.concepto || null,
+      archivo: p.archivo, pagina: p.pagina, marco_pagado: marcar,
+    }).select("id").single();
+    if (log.error) {
+      if (log.error.code === "23505") throw new Error("Este comprobante ya se había cargado antes.");
+      if (/comprobantes_pago/.test(log.error.message || "") && /does not exist|no existe/i.test(log.error.message || ""))
+        throw new Error("Falta crear la tabla de comprobantes en la base (69-comprobantes-pago.sql). Avísale al administrador.");
+      throw log.error;
+    }
+    let adjId = null;
+    try {
+      const pdf = await paginaComoPdfCP(bytesPorArchivo.current.get(p.archivo), p.pagina, p.paginas);
+      const nombre = `CP ${t.folio_transaccion || t.id}${p.autorizacion ? ` AUT${p.autorizacion}` : ""}.pdf`;
+      adjId = await subirAdjunto({
+        archivo: new File([pdf], nombre, { type: "application/pdf" }),
+        entidad: "transaccion", entidadId: t.id, categoria: "comprobante",
+        unidad: t.unidad_detectada || unidad, carpeta: t.id,
+      });
+      await supabase.from("comprobantes_pago").update({ adjunto_id: adjId }).eq("id", log.data.id);
+      const previo = { status: t.status || "No Pagado", fecha_pago: t.fecha_pago || null, tipo_cambio: t.tipo_cambio ?? null };
+      if (marcar) {
+        const parche = { status: "Pagado", fecha_pago: fechaPago };
+        if (monedaNorm(t.moneda) === "USD" && !(Number(t.tipo_cambio) > 0)) {
+          const tc = tcDOF(tiposCambio, fechaPago)?.valor;
+          if (tc) parche.tipo_cambio = tc;
+        }
+        await transaccionesApi.update(t.id, parche);
+      }
+      return { logId: log.data.id, adjId, marcar, previo };
+    } catch (err) {
+      if (adjId) {
+        try { const { data } = await supabase.from("adjuntos").select("*").eq("id", adjId).maybeSingle(); if (data) await borrarAdjunto(data); } catch { /* queda en el búfer */ }
+      }
+      await supabase.from("comprobantes_pago").delete().eq("id", log.data.id);
+      throw err;
+    }
+  };
+
+  const leerYReconocer = async () => {
+    if (!archivos.length) return;
+    setAviso(null); setFilas([]); setEleccion({});
+    const pagos = [], ilegibles = [];
+    try {
+      for (let k = 0; k < archivos.length; k++) {
+        const f = archivos[k];
+        setTrabajando(`Leyendo ${k + 1} de ${archivos.length}: ${f.name}`);
+        try {
+          const r = await leerComprobantesPDF(f);
+          bytesPorArchivo.current.set(f.name, r.bytes);
+          if (!r.pagos.length) ilegibles.push(f.name);
+          pagos.push(...r.pagos);
+        } catch (err) {
+          console.warn("No se pudo leer", f.name, err);
+          ilegibles.push(f.name);
+        }
+      }
+      const auts = [...new Set(pagos.map((p) => p.autorizacion).filter(Boolean))];
+      const yaCargados = new Map();
+      for (let i = 0; i < auts.length; i += 200) {
+        const { data, error } = await supabase.from("comprobantes_pago").select("autorizacion,importe,fecha,transaccion_id")
+          .eq("unidad", unidad).in("autorizacion", auts.slice(i, i + 200));
+        if (error) {
+          if (/does not exist|no existe/i.test(error.message || ""))
+            throw new Error("Falta crear la tabla de comprobantes en la base (69-comprobantes-pago.sql). Avísale al administrador.");
+          throw error;
+        }
+        (data || []).forEach((x) => yaCargados.set(claveCP({ ...x, importe: Number(x.importe) }), x.transaccion_id));
+      }
+      const plan = reconocerPagosCP(pagos, { unidad, transacciones, cuentas, proveedores, yaCargados });
+      const resultado = [];
+      for (let k = 0; k < plan.length; k++) {
+        const r = { ...plan[k], key: `${k}` };
+        if (r.estado === "pagar" || r.estado === "adjuntar") {
+          setTrabajando(`Aplicando ${k + 1} de ${plan.length}…`);
+          try {
+            r.hecho = await aplicar(r, r.t);
+            r.estado = r.estado === "pagar" ? "pagado" : "adjuntado";
+          } catch (err) {
+            r.estado = "error"; r.motivo = err.message || String(err);
+          }
+        }
+        resultado.push(r);
+      }
+      ilegibles.forEach((n, j) => resultado.push({ key: `x${j}`, estado: "omitido", pago: { archivo: n },
+        motivo: "No se reconoció el formato (no parece un comprobante de BancaNet Banamex, o es de nómina, IMSS u otro pago sin transacción)." }));
+      setFilas(resultado);
+      setArchivos([]);
+      const n = (e) => resultado.filter((r) => r.estado === e).length;
+      setAviso({ tono: n("error") ? "red" : "teal",
+        texto: `${n("pagado")} marcada(s) como Pagada, ${n("adjuntado")} con comprobante adjuntado, ${n("revisar")} por revisar, `
+          + `${n("sin_transaccion")} sin transacción${n("error") ? `, ${n("error")} con error` : ""}.` });
+    } catch (err) {
+      setAviso({ tono: "red", texto: `No se pudo terminar: ${err.message || err}` });
+    } finally {
+      setTrabajando(null);
+    }
+  };
+
+  const confirmar = async (fila) => {
+    const id = eleccion[fila.key];
+    const t = id && transPorId(id);
+    if (!t) return;
+    setTrabajando(`Aplicando ${t.folio_transaccion}…`);
+    try {
+      const hecho = await aplicar(fila, t);
+      setFilas((fs) => fs.map((f) => f.key === fila.key
+        ? { ...f, t, hecho, estado: hecho.marcar ? "pagado" : "adjuntado", motivo: null } : f));
+    } catch (err) {
+      setFilas((fs) => fs.map((f) => f.key === fila.key ? { ...f, motivo: err.message || String(err) } : f));
+    } finally {
+      setTrabajando(null);
+    }
+  };
+
+  /* Deshacer: regresa el status y la fecha que tenía, retira el comprobante
+     del expediente y borra la bitácora (así se puede volver a cargar). */
+  const deshacer = async (fila) => {
+    const { hecho } = fila;
+    if (!hecho || !confirm(`¿Deshacer ${fila.t?.folio_transaccion || ""}? ${hecho.marcar ? "Vuelve a quedar como no pagada y " : ""}se quita el comprobante que se le adjuntó.`)) return;
+    setTrabajando("Deshaciendo…");
+    try {
+      if (hecho.marcar) await transaccionesApi.update(fila.t.id, hecho.previo);
+      if (hecho.adjId) {
+        const { data } = await supabase.from("adjuntos").select("*").eq("id", hecho.adjId).maybeSingle();
+        if (data) await borrarAdjunto(data);
+      }
+      await supabase.from("comprobantes_pago").delete().eq("id", hecho.logId);
+      setFilas((fs) => fs.map((f) => f.key === fila.key ? { ...f, estado: "deshecho", hecho: null, motivo: "Se deshizo." } : f));
+    } catch (err) {
+      alert("No se pudo deshacer: " + (err.message || err));
+    } finally {
+      setTrabajando(null);
+    }
+  };
+
+  /* Para elegir a mano: las candidatas del mismo importe primero, y luego
+     cualquier pendiente de la misma moneda (por si el importe no cuadra). */
+  const opcionesDe = (fila) => {
+    const ids = new Set(fila.candidatos.map((c) => c.t.id));
+    const resto = transacciones.filter((t) => !ids.has(t.id) && !estaCancelada(t) && !pendienteDeRegistro(t) && !esPadrePPD(t)
+      && t.status !== "Pagado" && mismaMoneda(t.moneda, fila.pago.moneda))
+      .sort((a, b) => Math.abs(Number(a.importe) - fila.pago.importe) - Math.abs(Number(b.importe) - fila.pago.importe));
+    return { cands: fila.candidatos.map((c) => c.t), resto };
+  };
+  const etiquetaT = (t) => `${t.folio_transaccion} · ${String(t.proveedor || "").slice(0, 40)} · ${money(t.importe, t.moneda)}${t.status === "Pagado" ? " · ya Pagada" : ""}`;
+
+  const orden = ["error", "revisar", "pagado", "adjuntado", "sin_transaccion", "ya_cargado", "omitido", "deshecho"];
+  const filasOrden = [...filas].sort((a, b) => orden.indexOf(a.estado) - orden.indexOf(b.estado));
+
+  return (
+    <Panel title="Comprobantes de pago"
+      subtitle="Sube los PDF de BancaNet (Banamex). La app los lee aquí mismo, busca la transacción de cada pago y, si no hay duda, la marca como Pagada con la fecha del comprobante y le adjunta el comprobante. Lo que no sea seguro queda en Por revisar para que tú elijas.">
+      <div style={{ display: "flex", gap: 12, alignItems: "flex-end", flexWrap: "wrap", marginBottom: 12 }}>
+        <Field label="Compañía">
+          <div style={{ ...inputStyle, display: "flex", alignItems: "center", fontWeight: 700, minWidth: 70 }}>{unidad}</div>
+        </Field>
+        <div style={{ fontSize: 11.5, color: T.textFaint, maxWidth: 520 }}>
+          Se reconoce automáticamente solo cuando coinciden el importe y la moneda <b>y</b> además la cuenta destino o el nombre
+          del beneficiario con el proveedor de la transacción. Un comprobante de otra compañía se omite.
+        </div>
+      </div>
+
+      <div
+        onDragOver={(e) => { e.preventDefault(); setArrastrando(true); }}
+        onDragLeave={() => setArrastrando(false)}
+        onDrop={(e) => { e.preventDefault(); setArrastrando(false); agregar(e.dataTransfer.files); }}
+        onClick={() => refInput.current?.click()}
+        style={{ border: `2px dashed ${arrastrando ? T.accent : T.border}`, borderRadius: 8, padding: "22px 14px",
+                 textAlign: "center", cursor: "pointer", background: arrastrando ? T.accentBg : T.panelAlt, color: T.textDim, fontSize: 13 }}>
+        Arrastra aquí los PDF de los comprobantes, o haz clic para elegirlos. Pueden ser varios, y de varias hojas.
+        <input ref={refInput} type="file" accept="application/pdf,.pdf" multiple style={{ display: "none" }}
+          onChange={(e) => { agregar(e.target.files); e.target.value = ""; }} />
+      </div>
+
+      {archivos.length > 0 && (
+        <div style={{ marginTop: 10, display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {archivos.map((f) => (
+            <span key={f.name + f.size} style={{ fontSize: 11.5, padding: "3px 8px", borderRadius: 6, border: `1px solid ${T.border}`, background: T.panel }}>
+              {f.name}
+              <button type="button" title="Quitar" onClick={() => setArchivos((xs) => xs.filter((x) => x !== f))}
+                style={{ border: "none", background: "transparent", color: T.textFaint, cursor: "pointer", marginLeft: 4 }}>✕</button>
+            </span>
+          ))}
+        </div>
+      )}
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12 }}>
+        <Button disabled={!!trabajando || !archivos.length} onClick={leerYReconocer}>
+          {trabajando ? "Trabajando…" : `Leer y reconocer ${archivos.length || ""} archivo(s)`}
+        </Button>
+        {archivos.length > 0 && !trabajando && <Button variant="ghost" onClick={() => setArchivos([])}>Quitar todos</Button>}
+        {trabajando && <span style={{ fontSize: 12, color: T.textDim }}>{trabajando}</span>}
+      </div>
+
+      {aviso && (
+        <div style={{ marginTop: 12, fontSize: 12.5, padding: "10px 12px", borderRadius: 6,
+          color: aviso.tono === "red" ? T.red : T.teal, background: aviso.tono === "red" ? `${T.red}12` : `${T.teal}14`,
+          border: `1px solid ${aviso.tono === "red" ? `${T.red}55` : `${T.teal}55`}` }}>{aviso.texto}</div>
+      )}
+
+      {filasOrden.length > 0 && (
+        <div style={{ overflowX: "auto", border: `1px solid ${T.border}`, borderRadius: 8, marginTop: 12 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: T.panelAlt }}>
+                <th style={thStyle}>Resultado</th>
+                <th style={thStyle}>Comprobante</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Importe</th>
+                <th style={thStyle}>Transacción</th>
+                <th style={thStyle}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {filasOrden.map((f) => {
+                const p = f.pago || {};
+                const e = ESTADOS_CP[f.estado] || ESTADOS_CP.omitido;
+                const ops = f.estado === "revisar" ? opcionesDe(f) : null;
+                return (
+                  <tr key={f.key}>
+                    <td style={{ ...tdStyle, whiteSpace: "nowrap" }}><Pill tone={e.tono}>{e.texto}</Pill></td>
+                    <td style={tdStyle}>
+                      <div style={{ fontWeight: 600 }}>{p.beneficiario || "—"}</div>
+                      <div style={{ fontSize: 11, color: T.textFaint }}>
+                        {[p.fecha && fmtFecha(p.fecha), p.cuenta_destino && `Cta ${p.cuenta_destino}`,
+                          p.autorizacion && `Aut ${p.autorizacion}`, p.concepto].filter(Boolean).join(" · ")}
+                      </div>
+                      <div style={{ fontSize: 10.5, color: T.textFaint }}>{p.archivo}{p.paginas > 1 ? ` · hoja ${p.pagina}` : ""}</div>
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" }}>
+                      {p.importe ? `${money(p.importe, p.moneda)} ${monedaNorm(p.moneda)}` : "—"}
+                    </td>
+                    <td style={tdStyle}>
+                      {f.t && f.estado !== "revisar" && (
+                        <div><b>{f.t.folio_transaccion}</b> · {f.t.proveedor}{f.por ? <span style={{ color: T.textFaint }}> · por {f.por}</span> : null}</div>
+                      )}
+                      {ops && (
+                        <select value={eleccion[f.key] || ""} onChange={(ev) => setEleccion((x) => ({ ...x, [f.key]: ev.target.value }))}
+                          style={{ ...inputStyle, width: "100%", maxWidth: 460, marginBottom: 4 }}>
+                          <option value="">— Elige la transacción —</option>
+                          {ops.cands.length > 0 && (
+                            <optgroup label="Mismo importe">
+                              {ops.cands.map((t) => <option key={t.id} value={t.id}>{etiquetaT(t)}</option>)}
+                            </optgroup>
+                          )}
+                          <optgroup label="Otras pendientes de la misma moneda">
+                            {ops.resto.slice(0, 60).map((t) => <option key={t.id} value={t.id}>{etiquetaT(t)}</option>)}
+                          </optgroup>
+                        </select>
+                      )}
+                      {f.motivo && <div style={{ fontSize: 11, color: f.estado === "error" ? T.red : T.textDim }}>{f.motivo}</div>}
+                    </td>
+                    <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
+                      {f.estado === "revisar" && (
+                        <Button disabled={!!trabajando || !eleccion[f.key]} onClick={() => confirmar(f)}>
+                          {transPorId(eleccion[f.key])?.status === "Pagado" ? "Adjuntar" : "Marcar Pagada"}
+                        </Button>
+                      )}
+                      {(f.estado === "pagado" || f.estado === "adjuntado") && f.hecho && (
+                        <Button variant="ghost" disabled={!!trabajando} onClick={() => deshacer(f)}>Deshacer</Button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
 function PegarTransaccionesPanel({ unidad, partidas, proveedores, cuentas = [], transaccionesApi, transacciones = [] }) {
   const [filas, setFilas] = useState(() => Array.from({ length: 12 }, filaPegarVacia));
   const [moneda, setMoneda] = useState("MXP");
@@ -11789,6 +12396,7 @@ const SECCIONES_TX_IO = [
   { id: "exportar",    label: "Exportar transacciones",        corto: "EX" },
   { id: "masiva",      label: "Carga masiva",                  corto: "CM" },
   { id: "pegar",       label: "Pegar desde Excel",             corto: "PE" },
+  { id: "comprobantes", label: "Comprobantes de pago",         corto: "CP" },
   { id: "reporte",     label: "Reporte de Pagos",              corto: "RP" },
 ];
 
@@ -14109,6 +14717,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             <div style={{ display: seccionIo === "pegar" ? "block" : "none" }}>
               <PegarTransaccionesPanel unidad={unidad} partidas={partidas} proveedores={proveedoresApi.rows}
                 cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} transacciones={transUnidad} />
+            </div>
+            <div style={{ display: seccionIo === "comprobantes" ? "block" : "none" }}>
+              <ComprobantesPagoPanel unidad={unidad} transacciones={transUnidad} transaccionesApi={transaccionesApi}
+                cuentas={cuentasApi.rows} proveedores={proveedoresApi.rows} />
             </div>
             <div style={{ display: seccionIo === "masiva" ? "block" : "none" }}>
               <ImportarTransaccionesPanel partidas={partidas} proveedores={proveedoresApi.rows} cuentas={cuentasApi.rows} transaccionesApi={transaccionesApi} />

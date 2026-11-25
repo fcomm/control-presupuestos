@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.24.0";
+const APP_VERSION = "3.25.0";
 const CHANGELOG = [
+  { v: "3.25.0", desc: "Slider de periodo mas delgado y reutilizable: un solo renglon con el rango elegido, cuantos meses, la barra con sus extremos y el boton Todo; la explicacion de uso pasa a la (i) como texto al pasar el raton. Se usa en Dashboard > Sempra y ahora tambien en el Dashboard general, donde reemplaza los selectores de mes y ano de Desde y Hasta (los atajos Mes actual, YTD, Ano anterior y Todo se quedan)" },
   { v: "3.24.0", desc: "Solicitudes de Pago (SPP) con revisiones: si la transaccion ya tiene una SPP, volver a generarla conserva su folio y sube la revision (CTM-15-2, CTM-15-3...) en vez de tomar otro consecutivo; solo la primera SPP de una transaccion avanza el consecutivo de la compania. La ventana dice antes de generar si sera folio nuevo o revision N del folio X. Si dos personas generan a la vez, se recalcula y reintenta. Las SPP anteriores que ya tienen folios repetidos para una misma transaccion se quedan como estan" },
   { v: "3.23.0", desc: "Reporte de Pagos: se resaltan las transacciones a las que les falta Factura, Folio Compra SAE, Banco o Cuenta (CLABE o numero de cuenta). La fila va en ambar con la marca Falta N (al pasar el raton dice que falta) y la celda vacia en rojo con el texto Falta; si la columna esta oculta, la marca de la fila lo sigue diciendo. Arriba de la tabla, cuantas tienen faltantes y un boton para ver solo esas (solo en pantalla: Enviar a Pagos y el Excel siguen tomando todas)" },
   { v: "3.22.0", desc: "Nueva unidad de negocio CT, completa como OSB, CTM e ISE: aparece en el selector de compania (partidas, transacciones, reportes, solicitudes, contratos y permisos por compania) y en Vehiculos. Plantillas de importacion de partidas y proveedores con su hoja CT. Requiere 70-unidad-ct.sql" },
@@ -5290,6 +5291,60 @@ function etiquetaRangoMeses(desde, hasta) {
  * `clave`: prefijo de sessionStorage. `aniosConDatos`: años que ofrecer.
  * `porDefecto`: "ytd" (enero al mes actual) o "todo" (todo lo que hay).
  */
+/* v3.25.0 — Slider de dos manijas, compacto, para filtrar un periodo. Trabaja
+   sobre enteros (índice de mes, o lo que se le dé) y no sabe de fechas: la
+   etiqueta de cada punto la da `etiqueta(k)`. La explicación de uso va como
+   texto al pasar el ratón por la (i), para que ocupe un solo renglón. */
+let _estiloRangoSlider = false;
+function RangoSlider({ min, max, desde, hasta, onChange, etiqueta, singular = "mes", plural = "meses",
+                       ayuda = "Arrastra las manijas para elegir desde y hasta.", onTodo, style }) {
+  if (!_estiloRangoSlider && typeof document !== "undefined") {
+    _estiloRangoSlider = true;
+    const st = document.createElement("style");
+    st.textContent = `
+      .rango-slider input[type=range]{position:absolute;left:0;top:0;width:100%;height:20px;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
+      .rango-slider input[type=range]::-webkit-slider-runnable-track{background:none;border:none}
+      .rango-slider input[type=range]::-moz-range-track{background:none;border:none}
+      .rango-slider input[type=range]::-webkit-slider-thumb{pointer-events:auto;-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:var(--rs-fondo);border:2px solid var(--rs-color);cursor:grab;margin-top:0}
+      .rango-slider input[type=range]::-moz-range-thumb{pointer-events:auto;width:10px;height:10px;border-radius:50%;background:var(--rs-fondo);border:2px solid var(--rs-color);cursor:grab}
+      .rango-slider input[type=range]:focus-visible::-webkit-slider-thumb{box-shadow:0 0 0 3px var(--rs-foco)}`;
+    document.head.appendChild(st);
+  }
+  if (!(max >= min)) return null;
+  const span = max - min;
+  const pct = (k) => (span > 0 ? ((k - min) / span) * 100 : 0);
+  const n = hasta - desde + 1;
+  const completo = desde === min && hasta === max;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", minWidth: 0, ...style }}>
+      <div style={{ fontSize: 12.5, fontWeight: 600, color: T.text, whiteSpace: "nowrap" }}>
+        {etiqueta(desde)}{desde !== hasta && <> <span style={{ color: T.textFaint, fontWeight: 400 }}>—</span> {etiqueta(hasta)}</>}
+        <span style={{ fontSize: 10.5, color: T.textFaint, fontWeight: 400, marginLeft: 6 }}>{n} {n === 1 ? singular : plural}</span>
+        <span title={ayuda} aria-label={ayuda} style={{ marginLeft: 6, color: T.textFaint, cursor: "help", fontWeight: 400 }}>ⓘ</span>
+      </div>
+      <div style={{ flex: "1 1 220px", minWidth: 160, display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 9.5, color: T.textFaint, fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{etiqueta(min)}</span>
+        <div className="rango-slider" style={{ position: "relative", height: 20, flex: 1, margin: "0 7px",
+               "--rs-color": T.accent, "--rs-fondo": T.panel, "--rs-foco": `${T.accent}55` }}>
+          <div style={{ position: "absolute", left: 0, right: 0, top: 8, height: 3, borderRadius: 2, background: T.borderSoft }} />
+          <div style={{ position: "absolute", top: 8, height: 3, borderRadius: 2, background: T.accent, left: `${pct(desde)}%`, width: `${pct(hasta) - pct(desde)}%` }} />
+          <input type="range" min={min} max={max} step={1} value={desde} aria-label="Desde"
+            style={{ zIndex: desde >= max ? 5 : 3 }}
+            onChange={(e) => onChange(Math.min(Number(e.target.value), hasta), hasta)} />
+          <input type="range" min={min} max={max} step={1} value={hasta} aria-label="Hasta"
+            style={{ zIndex: 4 }}
+            onChange={(e) => onChange(desde, Math.max(Number(e.target.value), desde))} />
+        </div>
+        <span style={{ fontSize: 9.5, color: T.textFaint, fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{etiqueta(max)}</span>
+      </div>
+      {onTodo && !completo && (
+        <Button type="button" variant="ghost" onClick={onTodo} style={{ padding: "3px 9px", fontSize: 11 }}>Todo</Button>
+      )}
+    </div>
+  );
+}
+const etiquetaMesCorta = (k) => `${MESES[((k % 12) + 12) % 12].slice(0, 3)} ${Math.floor(k / 12)}`;
+
 function useRangoMeses(clave, aniosConDatos, porDefecto = "ytd") {
   const hoy = new Date();
   const anioHoy = hoy.getFullYear();
@@ -5325,24 +5380,16 @@ function useRangoMeses(clave, aniosConDatos, porDefecto = "ytd") {
     return i >= desde && i <= hasta;
   };
 
-  const d = deIdxMes(desde), h = deIdxMes(hasta);
-  const selectorExtremo = (etiqueta, v, fijar) => (
-    <Field label={etiqueta}>
-      <div style={{ display: "flex", gap: 6 }}>
-        <Select value={v.mes} onChange={(e) => fijar(idxMes(v.anio, e.target.value))} style={{ width: 115 }}>
-          {MESES.map((m) => <option key={m} value={m}>{m}</option>)}
-        </Select>
-        <Select value={v.anio} onChange={(e) => fijar(idxMes(Number(e.target.value), v.mes))} style={{ width: 90 }}>
-          {anios.map((a) => <option key={a} value={a}>{a}</option>)}
-        </Select>
-      </div>
-    </Field>
-  );
-
+  /* v3.25.0: el periodo se elige con el slider de meses (los dos selectores de
+     mes y año quedaron fuera); los atajos siguen para los rangos de siempre. */
   const controles = (
     <>
-      {selectorExtremo("Desde", d, fijarDesde)}
-      {selectorExtremo("Hasta", h, fijarHasta)}
+      <Field label="Periodo" style={{ flex: "1 1 520px", minWidth: 320 }}>
+        <RangoSlider min={minIdx} max={Math.max(maxIdx, idxHoy)} desde={desde} hasta={hasta}
+          etiqueta={etiquetaMesCorta}
+          ayuda="Arrastra las manijas para elegir desde qué mes y hasta qué mes. Filtra todo el tablero; el mes de un gasto es el de su partida."
+          onChange={(a, b) => { setDesde(a); setHasta(b); }} style={{ minHeight: 34 }} />
+      </Field>
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center", paddingBottom: 2 }}>
         {atajos.map((a) => {
           const activo = a.d === desde && a.h === hasta;
@@ -5540,39 +5587,12 @@ function DashboardSempra({ unidad, partidas, transacciones }) {
   const num = { ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" };
   const mesActual = `${MESES[hoy.getMonth()]} ${hoy.getFullYear()}`;
 
-  const pct = (k) => (limites && limites.max > limites.min ? ((k - limites.min) / (limites.max - limites.min)) * 100 : 0);
   const sliderPeriodo = limites && (
-    <Panel title="Periodo" subtitle="Arrastra las manijas para elegir desde qué mes y hasta qué mes. Filtra todo el tablero; el mes de un gasto es el de su partida.">
-      <style>{`
-        .sempra-rango input[type=range]{position:absolute;left:0;top:0;width:100%;height:30px;margin:0;background:none;pointer-events:none;-webkit-appearance:none;appearance:none}
-        .sempra-rango input[type=range]::-webkit-slider-runnable-track{background:none;border:none}
-        .sempra-rango input[type=range]::-moz-range-track{background:none;border:none}
-        .sempra-rango input[type=range]::-webkit-slider-thumb{pointer-events:auto;-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:${T.panel};border:2px solid ${T.accent};cursor:grab;margin-top:0}
-        .sempra-rango input[type=range]::-moz-range-thumb{pointer-events:auto;width:14px;height:14px;border-radius:50%;background:${T.panel};border:2px solid ${T.accent};cursor:grab}
-      `}</style>
-      <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 13, fontWeight: 600, color: T.text, minWidth: 190 }}>
-          {etiquetaClave(desde)} <span style={{ color: T.textFaint, fontWeight: 400 }}>—</span> {etiquetaClave(hasta)}
-          <span style={{ fontSize: 11, color: T.textFaint, fontWeight: 400, marginLeft: 8 }}>{hasta - desde + 1} {hasta === desde ? "mes" : "meses"}</span>
-        </div>
-        {!rangoCompleto && (
-          <Button type="button" variant="ghost" onClick={() => setRangoSel(null)} style={{ padding: "4px 10px", fontSize: 11.5 }}>Todo el periodo</Button>
-        )}
-      </div>
-      <div className="sempra-rango" style={{ position: "relative", height: 30, margin: "10px 9px 0" }}>
-        <div style={{ position: "absolute", left: 0, right: 0, top: 13, height: 4, borderRadius: 2, background: T.borderSoft }} />
-        <div style={{ position: "absolute", top: 13, height: 4, borderRadius: 2, background: T.accent, left: `${pct(desde)}%`, width: `${pct(hasta) - pct(desde)}%` }} />
-        <input type="range" min={limites.min} max={limites.max} step={1} value={desde} aria-label="Desde"
-          style={{ zIndex: desde >= limites.max - 0 ? 5 : 3 }}
-          onChange={(e) => setRangoSel([Math.min(Number(e.target.value), hasta), hasta])} />
-        <input type="range" min={limites.min} max={limites.max} step={1} value={hasta} aria-label="Hasta"
-          style={{ zIndex: 4 }}
-          onChange={(e) => setRangoSel([desde, Math.max(Number(e.target.value), desde)])} />
-      </div>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10.5, color: T.textFaint, fontFamily: T.fontMono, marginTop: 2 }}>
-        <span>{etiquetaClave(limites.min)}</span><span>{etiquetaClave(limites.max)}</span>
-      </div>
-    </Panel>
+    <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 14px" }}>
+      <RangoSlider min={limites.min} max={limites.max} desde={desde} hasta={hasta} etiqueta={etiquetaClave}
+        ayuda="Periodo: arrastra las manijas para elegir desde qué mes y hasta qué mes. Filtra todo el tablero; el mes de un gasto es el de su partida."
+        onChange={(a, b) => setRangoSel([a, b])} onTodo={() => setRangoSel(null)} />
+    </div>
   );
 
   return (

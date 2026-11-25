@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.22.0";
+const APP_VERSION = "3.23.0";
 const CHANGELOG = [
+  { v: "3.23.0", desc: "Reporte de Pagos: se resaltan las transacciones a las que les falta Factura, Folio Compra SAE, Banco o Cuenta (CLABE o numero de cuenta). La fila va en ambar con la marca Falta N (al pasar el raton dice que falta) y la celda vacia en rojo con el texto Falta; si la columna esta oculta, la marca de la fila lo sigue diciendo. Arriba de la tabla, cuantas tienen faltantes y un boton para ver solo esas (solo en pantalla: Enviar a Pagos y el Excel siguen tomando todas)" },
   { v: "3.22.0", desc: "Nueva unidad de negocio CT, completa como OSB, CTM e ISE: aparece en el selector de compania (partidas, transacciones, reportes, solicitudes, contratos y permisos por compania) y en Vehiculos. Plantillas de importacion de partidas y proveedores con su hoja CT. Requiere 70-unidad-ct.sql" },
   { v: "3.21.1", desc: "Corrige: al editar una transaccion Pagada, pasarla a No Pagado, hacer cambios y volver a marcarla Pagada antes de guardar, los cambios se descartaban sin aviso (el formulario se volvia a bloquear y Guardar solo cerraba). Ahora, una vez que se pasa a No Pagado en esa edicion, queda abierta hasta guardar o cerrar, y se guardan los cambios con el status que tenga. Aplica en Transacciones y en la edicion rapida desde Partidas" },
   { v: "3.21.0", desc: "Transacciones agrupadas: el encabezado de cada grupo (y subgrupo) muestra junto a su nombre el Total y lo Pagado del grupo, por moneda, con el % pagado. En una compra PPD cuenta lo pagado de sus parcialidades. Va junto al nombre para leerse de corrido, no alineado con la columna Importe" },
@@ -15875,8 +15876,20 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
       _vinculadoCuenta: !!cuenta,
       _borrador: pendienteDeRegistro(t),
       _sat: hallazgosSat(listasSat, proveedor?.rfc),
+      /* Lo que le falta para pagarse sin regresarla (v3.23.0). Cuenta = CLABE
+         o número de cuenta: con cualquiera de los dos se puede pagar. */
+      _faltan: [
+        !String(t.folio_factura || "").trim() && "folio_factura",
+        !String(t.folio_compra_sae || "").trim() && "folio_compra_sae",
+        !String(cuenta?.banco || "").trim() && "banco",
+        !String(cuenta?.clabe || "").trim() && !String(cuenta?.numero_cuenta || "").trim() && "cuenta",
+      ].filter(Boolean),
     };
   });
+  const NOMBRE_FALTANTE_RP = { folio_factura: "Factura", folio_compra_sae: "Folio Compra SAE", banco: "Banco", cuenta: "Cuenta" };
+  // Las celdas que se marcan para cada faltante (la cuenta vive en CLABE y No. de cuenta).
+  const CELDAS_FALTANTE_RP = { folio_factura: ["folio_factura"], folio_compra_sae: ["folio_compra_sae"], banco: ["banco"], cuenta: ["clabe", "numero_cuenta"] };
+  const [soloFaltantes, setSoloFaltantes] = useState(false);
 
   const [buscar, setBuscar] = useSessionState("ss-reporte-buscar", "");
   /* Un solo día (v3.7.0): los pagos se manejan por día, y Enviar a Pagos es
@@ -16352,7 +16365,10 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
 
   const hayAvisos = sinProveedorVinculado > 0 || sinCuentaVinculada > 0;
 
-  const pagRP = usePaginacion("reporte-pagos", filasOrdenadas, { reinicio: [unidad, buscar, fechaPago, sort] });
+  /* Solo para la pantalla: el envío y las exportaciones siguen tomando todas. */
+  const nConFaltantes = filasOrdenadas.filter((f) => f._faltan.length).length;
+  const filasPantallaRP = soloFaltantes ? filasOrdenadas.filter((f) => f._faltan.length) : filasOrdenadas;
+  const pagRP = usePaginacion("reporte-pagos", filasPantallaRP, { reinicio: [unidad, buscar, fechaPago, sort, soloFaltantes] });
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20, paddingBottom: hayAvisos ? 70 : 0 }}>
       {filasOrdenadas.some((f) => f._borrador) && (
@@ -16511,6 +16527,19 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
           </div>
         )}
 
+        {nConFaltantes > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", margin: "0 0 10px",
+                        padding: "8px 12px", borderRadius: 6, background: `${T.amber}14`, border: `1px solid ${T.amberDim}` }}>
+            <span style={{ fontSize: 12.5, color: T.amberDim, fontWeight: 600 }}>
+              {nConFaltantes} de {filasOrdenadas.length} transacción(es) con datos faltantes (Factura, Folio Compra SAE, Banco o Cuenta).
+            </span>
+            <span style={{ fontSize: 11.5, color: T.textDim }}>Están resaltadas; la celda vacía dice qué falta.</span>
+            <div style={{ flex: 1 }} />
+            <Button variant="ghost" onClick={() => setSoloFaltantes((v) => !v)}>
+              {soloFaltantes ? "Ver todas" : "Ver solo las que tienen faltantes"}
+            </Button>
+          </div>
+        )}
         <div style={{ overflowX: "auto" }}>
           <table style={{ ...tableStyle, tableLayout: "fixed" }}>
             <colgroup>
@@ -16529,12 +16558,22 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
               </tr>
             </thead>
             <tbody>
-              {pagRP.filas.map((f) => (
-                <tr key={f.id}>
-                  {columnas.map((c, ci) => (
+              {pagRP.filas.map((f) => {
+                const celdasFalta = new Set(f._faltan.flatMap((k) => CELDAS_FALTANTE_RP[k]));
+                const conFaltante = f._faltan.length > 0;
+                return (
+                <tr key={f.id} style={conFaltante ? { background: `${T.amber}12` } : undefined}>
+                  {columnas.map((c, ci) => {
+                    const falta = celdasFalta.has(c.key);
+                    const base = c.key === "importe" ? { ...tdStyle, fontFamily: T.fontMono } : tdStyle;
+                    return (
                     <td
                       key={c.key}
-                      style={c.key === "importe" ? { ...tdStyle, fontFamily: T.fontMono } : tdStyle}
+                      style={{
+                        ...base,
+                        ...(falta ? { background: `${T.red}14`, boxShadow: `inset 0 0 0 1px ${T.red}55` } : null),
+                        ...(ci === 0 && conFaltante ? { boxShadow: `inset 3px 0 0 ${T.amber}` } : null),
+                      }}
                       title={c.key === "forma_pago" ? f.forma_pago_label : c.key === "metodo_pago" ? f.metodo_pago_label : undefined}
                     >
                       {/* La marca va en la primera columna visible, sea cual sea:
@@ -16544,14 +16583,23 @@ function ReportePagosTab({ unidad, partidas, transacciones, transaccionesApi, pr
                           <Pill tone="amber">Borrador</Pill>
                         </span>
                       )}
-                      {c.key === "importe" ? money(f.importe, f.moneda) : (f[c.key] || "—")}
+                      {ci === 0 && conFaltante && (
+                        <span title={`Falta: ${f._faltan.map((k) => NOMBRE_FALTANTE_RP[k]).join(", ")}`} style={{ marginRight: 6 }}>
+                          <Pill tone="amber">Falta {f._faltan.length}</Pill>
+                        </span>
+                      )}
+                      {c.key === "importe" ? money(f.importe, f.moneda)
+                        : falta ? <span style={{ color: T.red, fontWeight: 600, fontSize: 11.5 }}>Falta</span>
+                        : (f[c.key] || "—")}
                       {c.key === "proveedor" && f._sat.length > 0 && (
                         <span style={{ marginLeft: 6 }}><PillsSat hallazgos={f._sat} /></span>
                       )}
                     </td>
-                  ))}
+                    );
+                  })}
                 </tr>
-              ))}
+                );
+              })}
               {!filasOrdenadas.length && (
                 <tr><td colSpan={columnas.length} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna transacción coincide con la búsqueda</td></tr>
               )}

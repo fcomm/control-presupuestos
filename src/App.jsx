@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.21.0";
+const APP_VERSION = "3.21.1";
 const CHANGELOG = [
+  { v: "3.21.1", desc: "Corrige: al editar una transaccion Pagada, pasarla a No Pagado, hacer cambios y volver a marcarla Pagada antes de guardar, los cambios se descartaban sin aviso (el formulario se volvia a bloquear y Guardar solo cerraba). Ahora, una vez que se pasa a No Pagado en esa edicion, queda abierta hasta guardar o cerrar, y se guardan los cambios con el status que tenga. Aplica en Transacciones y en la edicion rapida desde Partidas" },
   { v: "3.21.0", desc: "Transacciones agrupadas: el encabezado de cada grupo (y subgrupo) muestra junto a su nombre el Total y lo Pagado del grupo, por moneda, con el % pagado. En una compra PPD cuenta lo pagado de sus parcialidades. Va junto al nombre para leerse de corrido, no alineado con la columna Importe" },
   { v: "3.20.0", desc: "Transacciones > Importar / Exportar > Comprobantes de pago: se suben los PDF de BancaNet Banamex (uno o varios, de una o varias hojas) y se leen en el navegador. Reconoce los formatos Detalle de Pago (otras cuentas, mismo banco, pago de servicios y de tarjeta), Transferencia a otras cuentas, la lista Pagos registrados y el recibo del SAT; los de nomina, IMSS e inversiones se omiten. Cada pago se busca entre las transacciones de la compania por importe y moneda, y si ademas coincide la cuenta destino (CLABE, sucursal/cuenta o los ultimos digitos) o el nombre del beneficiario con el proveedor, y es la unica asi, se marca Pagada con la fecha del comprobante (en USD toma el tipo de cambio del DOF) y se le adjunta su hoja como Comprobante de pago (CP <folio> AUT<autorizacion>.pdf). Si ya estaba Pagada, solo se adjunta. Lo dudoso queda Por revisar para elegir la transaccion a mano; los rechazados, los de otra compania y los ya cargados se omiten. Cada resultado aplicado se puede Deshacer. Requiere 69-comprobantes-pago.sql (bitacora que evita cargar dos veces el mismo comprobante)" },
   { v: "3.19.0", desc: "Compras PPD desde transacciones existentes (solo administradores). En Transacciones, con transacciones seleccionadas: Agrupar en compra PPD crea el padre (total editable, partida y concepto) y deja las seleccionadas como parcialidades 1..n en orden de fecha; Asignar a compra PPD las liga a una compra que ya existe (mismo proveedor y moneda, con % libre). En una parcialidad, Quitar de la compra PPD la regresa a transaccion normal. Las parcialidades conservan folio, estatus y pagos y pasan a la partida de su compra. Previo con % y avisos antes de confirmar. Requiere 68-ppd-agrupar-asignar.sql" },
@@ -7855,8 +7856,23 @@ function ImportarExcelPanel({ partidas, partidasApi }) {
    claro que se está tocando un pago registrado (misma regla que para
    borrarla o cancelarla). Siguen abiertos el expediente (archivos), la nota
    privada y las marcas de proceso: registro, envío a Pagos, póliza. */
-const bloqueadaPorPago = (original, form) =>
-  !!original && original.status === "Pagado" && (form ? form.status === "Pagado" : true);
+/* `desbloqueada`: ya se pasó a No Pagado en ESTA edición. Desde ese momento la
+   edición queda abierta aunque se vuelva a marcar Pagada antes de guardar
+   (v3.21.1): antes, regresarla a Pagado volvía a bloquear el formulario y al
+   guardar se descartaban en silencio los cambios hechos mientras estuvo
+   abierta. Sin `form` (acciones masivas) solo cuenta el status guardado. */
+const bloqueadaPorPago = (original, form, desbloqueada = false) =>
+  !desbloqueada && !!original && original.status === "Pagado" && (form ? form.status === "Pagado" : true);
+/* Recuerda si en esta edición la transacción pagada ya se pasó a No Pagado.
+   `clave` identifica la edición (cambia al abrir otra o al cerrar). */
+function useDesbloqueoPago(original, form, clave) {
+  const [desbloqueada, setDesbloqueada] = useState(false);
+  useEffect(() => { setDesbloqueada(false); }, [clave]);
+  useEffect(() => {
+    if (original?.status === "Pagado" && form?.status && form.status !== "Pagado") setDesbloqueada(true);
+  }, [clave, form?.status, original?.status]);
+  return desbloqueada;
+}
 
 function AvisoBloqueoPago({ onDesbloquear }) {
   return (
@@ -8976,6 +8992,7 @@ function ReasignarYEliminarPartidaModal({ partida, vinculadas, partidasUnidad, t
 function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, proveedoresApi, cuentasApi, unidad, partidasUnidad = [], partidasApi, transacciones = [] }) {
   const [form, setForm] = useState({ ...transaccion });
   const [saving, setSaving] = useState(false);
+  const desbloqueoPago = useDesbloqueoPago(transaccion, form, transaccion?.id);
 
   /* Las mismas reglas que en Transacciones: un borrador se elimina; una
      registrada se cancela con motivo, porque su folio ya existe; una pagada
@@ -9017,7 +9034,7 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
 
   const submit = async (e) => {
     e.preventDefault();
-    if (bloqueadaPorPago(transaccion, form)) { onClose(); return; }
+    if (bloqueadaPorPago(transaccion, form, desbloqueoPago)) { onClose(); return; }
     if (form.status === "Pagado" && !form.fecha_pago) {
       alert("Para marcar esta transacción como Pagada, primero indica la Fecha de Pago.");
       return;
@@ -9053,10 +9070,10 @@ function TransaccionQuickEditModal({ transaccion, onClose, transaccionesApi, pro
       cerrarAlHacerClicFuera={false}
     >
       <form onSubmit={submit} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        {bloqueadaPorPago(transaccion, form) && (
+        {bloqueadaPorPago(transaccion, form, desbloqueoPago) && (
           <AvisoBloqueoPago onDesbloquear={() => setForm({ ...form, status: "No Pagado" })} />
         )}
-        <CamposBloqueables bloqueado={bloqueadaPorPago(transaccion, form)}>
+        <CamposBloqueables bloqueado={bloqueadaPorPago(transaccion, form, desbloqueoPago)}>
         {/* Cambiar de partida desde aquí: es donde se nota que una transacción
             está en la partida equivocada. Solo se ofrecen las de su moneda. */}
         <Field label="Partida" style={{ gridColumn: "span 4" }}>
@@ -12636,6 +12653,8 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [sppDe, setSppDe] = useState(null);
   const cuentasDelProveedorSeleccionado = form.proveedor_id ? cuentasApi.rows.filter((c) => c.proveedor_id === form.proveedor_id) : [];
   const transUnidad = transacciones.filter((t) => t.unidad_detectada === unidad);
+  const desbloqueoPago = useDesbloqueoPago(editId ? transUnidad.find((x) => x.id === editId) : null, form,
+    modalOpen ? editId || "nueva" : null);
   /* ID SAE del proveedor: vive en el catálogo de proveedores, no en la
      transacción. Solo existe si la transacción está ligada al catálogo
      (proveedor_id); con el proveedor solo como texto no hay de dónde sacarlo. */
@@ -13688,7 +13707,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   };
 
   // Para el formulario en secciones: bloqueo por pago y aviso de categoría.
-  const bloqueoForm = bloqueadaPorPago(editId ? transUnidad.find((x) => x.id === editId) : null, form);
+  const bloqueoForm = bloqueadaPorPago(editId ? transUnidad.find((x) => x.id === editId) : null, form, desbloqueoPago);
   const categoriaFueraDeRubro = (() => {
     const p = partidasUnidad.find((x) => x.id === form.partida_id);
     const perm = categoriasPermitidas(p);
@@ -13701,7 +13720,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     /* Pagada y sin pasarla a No Pagado: no se toca la transacción. Solo se
        guarda la nota privada, que es de quien edita, no del pago. */
     const origBloqueo = editId ? transUnidad.find((x) => x.id === editId) : null;
-    if (bloqueadaPorPago(origBloqueo, form)) {
+    if (bloqueadaPorPago(origBloqueo, form, desbloqueoPago)) {
       try { await guardarNotaPrivada(editId); } catch (err) { alert("No se pudo guardar tu nota: " + (err.message || err)); return; }
       setEditId(null); setNotaPrivada(""); setModalOpen(false);
       return;
@@ -13810,8 +13829,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
       rest.proveedor_id = padrePPD.proveedor_id || null;
       rest.proveedor = padrePPD.proveedor;
       rest.unidad_detectada = padrePPD.unidad_detectada || rest.unidad_detectada;
-      // Una parcialidad ya pagada conserva el importe que se pagó.
-      const yaPagada = original?.status === "Pagado";
+      // Una parcialidad ya pagada conserva el importe que se pagó, salvo que
+      // en esta edición se haya desbloqueado y se le cambió el % o el importe.
+      const yaPagada = original?.status === "Pagado"
+        && !(desbloqueoPago && (Number(form.pct_pago) !== Number(original.pct_pago) || form._importeManual));
       if (!yaPagada) {
         /* Si se capturó el IMPORTE (y no el %), se guarda tal cual: el % se
            derivó de él, y volver a calcularlo desde el % podía moverlo unos
@@ -14863,7 +14884,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
             }}>
             {(() => {
               const orig = editId ? transUnidad.find((x) => x.id === editId) : null;
-              return bloqueadaPorPago(orig, form)
+              return bloqueadaPorPago(orig, form, desbloqueoPago)
                 ? <AvisoBloqueoPago onDesbloquear={() => setForm({ ...form, status: "No Pagado" })} />
                 : null;
             })()}

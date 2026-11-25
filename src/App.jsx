@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.23.0";
+const APP_VERSION = "3.24.0";
 const CHANGELOG = [
+  { v: "3.24.0", desc: "Solicitudes de Pago (SPP) con revisiones: si la transaccion ya tiene una SPP, volver a generarla conserva su folio y sube la revision (CTM-15-2, CTM-15-3...) en vez de tomar otro consecutivo; solo la primera SPP de una transaccion avanza el consecutivo de la compania. La ventana dice antes de generar si sera folio nuevo o revision N del folio X. Si dos personas generan a la vez, se recalcula y reintenta. Las SPP anteriores que ya tienen folios repetidos para una misma transaccion se quedan como estan" },
   { v: "3.23.0", desc: "Reporte de Pagos: se resaltan las transacciones a las que les falta Factura, Folio Compra SAE, Banco o Cuenta (CLABE o numero de cuenta). La fila va en ambar con la marca Falta N (al pasar el raton dice que falta) y la celda vacia en rojo con el texto Falta; si la columna esta oculta, la marca de la fila lo sigue diciendo. Arriba de la tabla, cuantas tienen faltantes y un boton para ver solo esas (solo en pantalla: Enviar a Pagos y el Excel siguen tomando todas)" },
   { v: "3.22.0", desc: "Nueva unidad de negocio CT, completa como OSB, CTM e ISE: aparece en el selector de compania (partidas, transacciones, reportes, solicitudes, contratos y permisos por compania) y en Vehiculos. Plantillas de importacion de partidas y proveedores con su hoja CT. Requiere 70-unidad-ct.sql" },
   { v: "3.21.1", desc: "Corrige: al editar una transaccion Pagada, pasarla a No Pagado, hacer cambios y volver a marcarla Pagada antes de guardar, los cambios se descartaban sin aviso (el formulario se volvia a bloquear y Guardar solo cerraba). Ahora, una vez que se pasa a No Pagado en esa edicion, queda abierta hasta guardar o cerrar, y se guardan los cambios con el status que tenga. Aplica en Transacciones y en la edicion rapida desde Partidas" },
@@ -8238,8 +8239,49 @@ function generarPdfSPP(r) {
  * es exacto si el importe correspondía justo a ese esquema. Presentarlo como
  * un hecho invitaría a firmar un documento con cifras que nadie revisó.
  */
+/* Última SPP de una transacción (la de folio y revisión más altos), o null. */
+async function ultimaSppDeTransaccion(unidad, transaccionId) {
+  const { data, error } = await supabase.from("solicitudes_pago")
+    .select("folio,revision,created_at").eq("compania", unidad).eq("transaccion_id", transaccionId)
+    .order("folio", { ascending: false }).order("revision", { ascending: false }).limit(1);
+  if (error) throw error;
+  return data?.[0] || null;
+}
+
+/* Folio y revisión para generar la SPP de una transacción. Si ya tiene SPP:
+   el mismo folio y la revisión siguiente de ESE folio (que pudo subir también
+   al editarla desde la lista). Si no: el siguiente consecutivo de la compañía,
+   el MAYOR entre lo configurado y lo ya emitido, para no reutilizar folios. */
+async function folioRevisionSpp(unidad, transaccionId) {
+  const previa = await ultimaSppDeTransaccion(unidad, transaccionId);
+  if (previa) {
+    const { data, error } = await supabase.from("solicitudes_pago").select("revision")
+      .eq("compania", unidad).eq("folio", previa.folio).order("revision", { ascending: false }).limit(1);
+    if (error) throw error;
+    return { folio: previa.folio, revision: (Number(data?.[0]?.revision) || 1) + 1, nuevoFolio: false };
+  }
+  const { data: ultimos, error: errF } = await supabase
+    .from("solicitudes_pago").select("folio")
+    .eq("compania", unidad).order("folio", { ascending: false }).limit(1);
+  if (errF) throw errF;
+  const { data: cfg } = await supabase.from("config_companias")
+    .select("spp_ultimo").eq("compania", unidad).maybeSingle();
+  return { folio: Math.max(Number(cfg?.spp_ultimo) || 0, (ultimos && ultimos[0]?.folio) || 0) + 1, revision: 1, nuevoFolio: true };
+}
+
 function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = [], onClose, unidad, partidas, proyectosUnidad, proveedoresApi, cuentasApi, transaccionesApi, session }) {
   const t = transaccion;
+  /* v3.24.0: una transacción tiene UN folio de SPP. Volver a generarla no toma
+     otro consecutivo: es una revisión nueva del mismo folio. Aquí se busca la
+     última SPP de esta transacción para decirlo antes de generar. */
+  const [sppPrevia, setSppPrevia] = useState(undefined); // undefined = buscando · null = no tiene
+  useEffect(() => {
+    let vivo = true;
+    ultimaSppDeTransaccion(unidad, t.id)
+      .then((r) => { if (vivo) setSppPrevia(r); })
+      .catch(() => { if (vivo) setSppPrevia(null); });
+    return () => { vivo = false; };
+  }, [unidad, t.id]);
   /* Parcialidad de una compra PPD: la SPP se arma sobre el TOTAL de la compra
      y paga el % de la parcialidad, igual que un anticipo sobre el total. La
      base del desglose es entonces el padre; si una SPP anterior ya confirmó
@@ -8370,20 +8412,14 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
   const generar = async () => {
     setGuardando(true);
     try {
-      // Folio autonumérico por compañía, leído de la base y no del estado
-      // local: dos personas generando a la vez calcularían el mismo.
-      const { data: ultimos, error: errF } = await supabase
-        .from("solicitudes_pago").select("folio")
-        .eq("compania", unidad).order("folio", { ascending: false }).limit(1);
-      if (errF) throw errF;
-      const { data: cfg } = await supabase.from("config_companias")
-        .select("spp_ultimo").eq("compania", unidad).maybeSingle();
-      // El MAYOR entre lo configurado y lo ya emitido: bajar el consecutivo
-      // por error no debe reutilizar folios de solicitudes que ya salieron.
-      const folio = Math.max(Number(cfg?.spp_ultimo) || 0, (ultimos && ultimos[0]?.folio) || 0) + 1;
+      /* Folio y revisión, leídos de la base y no del estado local: dos
+         personas generando a la vez calcularían lo mismo. Si la transacción
+         ya tiene SPP, se conserva su folio y sube la revisión; si no, toma el
+         siguiente consecutivo de la compañía. */
+      const { folio, revision, nuevoFolio } = await folioRevisionSpp(unidad, t.id);
 
       const reg = {
-        id: uid(), compania: unidad, folio, revision: 1, transaccion_id: t.id,
+        id: uid(), compania: unidad, folio, revision, transaccion_id: t.id,
         created_by: session?.user?.id || null, updated_by: session?.user?.id || null,
         fecha_elaboracion: f.fecha_elaboracion, fecha_pago: f.fecha_pago || null,
         zona: f.zona, proyecto: proyNombre, centro_costo: ccTexto,
@@ -8406,17 +8442,27 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
         pct_pago: Number(pctPago) || 0, total_a_pagar: aPagar,
         observaciones: f.observaciones,
       };
-      const { error } = await supabase.from("solicitudes_pago").insert(reg);
+      let { error } = await supabase.from("solicitudes_pago").insert(reg);
+      /* Choque con otra persona que generó al mismo tiempo (índice único
+         compañía + folio + revisión): se recalcula una vez y se reintenta. */
+      if (error?.code === "23505") {
+        const otra = await folioRevisionSpp(unidad, t.id);
+        Object.assign(reg, { id: uid(), folio: otra.folio, revision: otra.revision });
+        ({ error } = await supabase.from("solicitudes_pago").insert(reg));
+      }
       if (error) throw error;
       /* El constructor de consultas de Supabase no es una promesa hasta que
          se le hace await, así que encadenarle .catch() lanza "catch is not a
          function". Estos dos pasos son secundarios —la solicitud ya quedó
          guardada— y no deben impedir que se descargue el documento, así que
          cada uno va en su propio try. */
-      try {
-        await supabase.from("config_companias")
-          .upsert({ compania: unidad, spp_ultimo: folio, updated_at: new Date().toISOString() });
-      } catch { /* el folio ya quedó en solicitudes_pago; el consecutivo se recalcula solo */ }
+      // Una revisión no mueve el consecutivo general: solo un folio nuevo.
+      if (nuevoFolio) {
+        try {
+          await supabase.from("config_companias")
+            .upsert({ compania: unidad, spp_ultimo: reg.folio, updated_at: new Date().toISOString() });
+        } catch { /* el folio ya quedó en solicitudes_pago; el consecutivo se recalcula solo */ }
+      }
 
       try {
         // El desglose confirmado se guarda también en la transacción: es el
@@ -8655,6 +8701,14 @@ function SolicitudPagoModal({ transaccion, padre = null, otrasParcialidades = []
         {proveedor?.id_sae ? ` · SAE ${proveedor.id_sae}` : ""}
       </div>
 
+      <div style={{ fontSize: 12, marginBottom: 10, padding: "8px 12px", borderRadius: 6,
+                    background: sppPrevia ? T.accentBg : T.panelAlt, border: `1px solid ${sppPrevia ? `${T.accent}55` : T.border}` }}>
+        {sppPrevia === undefined ? "Buscando si esta transacción ya tiene SPP…"
+          : sppPrevia
+            ? <>Esta transacción ya tiene la SPP <b>{unidad}-{sppPrevia.folio}</b> (revisión {sppPrevia.revision || 1}, del {fmtFecha(sppPrevia.created_at)}).
+                {" "}Se generará la <b>revisión {(sppPrevia.revision || 1) + 1}</b> del mismo folio; el consecutivo no avanza.</>
+            : <>Primera SPP de esta transacción: toma el siguiente consecutivo de {unidad}, revisión 1.</>}
+      </div>
       <div style={{ display: "flex", gap: 8 }}>
         <Button onClick={() => { setFormato("pdf"); generar(); }} disabled={guardando}>
           {guardando ? "Generando…" : "Generar PDF"}

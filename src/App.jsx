@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.20.0";
+const APP_VERSION = "3.21.0";
 const CHANGELOG = [
+  { v: "3.21.0", desc: "Transacciones agrupadas: el encabezado de cada grupo (y subgrupo) muestra junto a su nombre el Total y lo Pagado del grupo, por moneda, con el % pagado. En una compra PPD cuenta lo pagado de sus parcialidades. Va junto al nombre para leerse de corrido, no alineado con la columna Importe" },
   { v: "3.20.0", desc: "Transacciones > Importar / Exportar > Comprobantes de pago: se suben los PDF de BancaNet Banamex (uno o varios, de una o varias hojas) y se leen en el navegador. Reconoce los formatos Detalle de Pago (otras cuentas, mismo banco, pago de servicios y de tarjeta), Transferencia a otras cuentas, la lista Pagos registrados y el recibo del SAT; los de nomina, IMSS e inversiones se omiten. Cada pago se busca entre las transacciones de la compania por importe y moneda, y si ademas coincide la cuenta destino (CLABE, sucursal/cuenta o los ultimos digitos) o el nombre del beneficiario con el proveedor, y es la unica asi, se marca Pagada con la fecha del comprobante (en USD toma el tipo de cambio del DOF) y se le adjunta su hoja como Comprobante de pago (CP <folio> AUT<autorizacion>.pdf). Si ya estaba Pagada, solo se adjunta. Lo dudoso queda Por revisar para elegir la transaccion a mano; los rechazados, los de otra compania y los ya cargados se omiten. Cada resultado aplicado se puede Deshacer. Requiere 69-comprobantes-pago.sql (bitacora que evita cargar dos veces el mismo comprobante)" },
   { v: "3.19.0", desc: "Compras PPD desde transacciones existentes (solo administradores). En Transacciones, con transacciones seleccionadas: Agrupar en compra PPD crea el padre (total editable, partida y concepto) y deja las seleccionadas como parcialidades 1..n en orden de fecha; Asignar a compra PPD las liga a una compra que ya existe (mismo proveedor y moneda, con % libre). En una parcialidad, Quitar de la compra PPD la regresa a transaccion normal. Las parcialidades conservan folio, estatus y pagos y pasan a la partida de su compra. Previo con % y avisos antes de confirmar. Requiere 68-ppd-agrupar-asignar.sql" },
   { v: "3.18.0", desc: "Dashboard > Sempra: filtro de periodo Desde-Hasta con un slider de dos manijas, mes a mes. El extremo izquierdo es el mes del gasto mas viejo y el derecho el mes mas nuevo con transaccion o partida Sempra. Filtra Pagado, Por pagar y las tablas de rubros; boton Todo el periodo para regresar. El mes de un gasto es el de su partida (o su fecha si no tiene)" },
@@ -6976,6 +6977,41 @@ function posColumna(columnasVisibles, key) {
 
 /* Total de un grupo de transacciones: un renglón por moneda, con el formato
    de la columna Importe. */
+/* Datos de un grupo de transacciones para su encabezado: por moneda, el
+   total y lo pagado (con su %). `pagadoDe(t)` dice cuánto de cada fila está
+   pagado; en una compra PPD son sus parcialidades pagadas. */
+function infoGrupoTransacciones(filas, depth, pagadoDe) {
+  const porMoneda = {};
+  filas.forEach((t) => {
+    const m = monedaNorm(t.moneda);
+    const x = porMoneda[m] || (porMoneda[m] = { total: 0, pagado: 0 });
+    x.total += Number(t.importe) || 0;
+    x.pagado += pagadoDe(t);
+  });
+  const monedas = Object.keys(porMoneda).sort((a, b) => (a === b ? 0 : a === "MXP" ? -1 : 1));
+  if (!monedas.length) return null;
+  const grande = depth === 0;
+  const etiqueta = { fontSize: grande ? 10.5 : 10, color: T.textFaint, textTransform: "uppercase", letterSpacing: "0.04em", marginRight: 5 };
+  const cifra = { fontFamily: T.fontMono, fontSize: grande ? 13 : 12, fontWeight: 600 };
+  return (
+    <span style={{ display: "inline-flex", flexDirection: "column", gap: 3, padding: "4px 12px", borderRadius: 6,
+                   background: T.panel, border: `1px solid ${T.border}`, lineHeight: 1.3 }}>
+      {monedas.map((m) => {
+        const { total, pagado } = porMoneda[m];
+        const pct = total > 0 ? Math.round((pagado / total) * 100) : 0;
+        return (
+          <span key={m} style={{ display: "inline-flex", alignItems: "baseline", gap: 14, whiteSpace: "nowrap" }}>
+            <span><span style={etiqueta}>Total</span><span style={{ ...cifra, color: T.text }}>{money(total, m)}</span>
+              <span style={{ fontSize: 10, color: T.textFaint, marginLeft: 4 }}>{m}</span></span>
+            <span><span style={etiqueta}>Pagado</span><span style={{ ...cifra, color: pagado > 0 ? T.teal : T.textFaint }}>{money(pagado, m)}</span>
+              <span style={{ fontSize: 10.5, color: T.textDim, marginLeft: 5 }}>({pct} %)</span></span>
+          </span>
+        );
+      })}
+    </span>
+  );
+}
+
 function resumenImportePorMoneda(filas) {
   return (
     <span style={{ display: "inline-flex", flexDirection: "column", gap: 2 }}>
@@ -7124,7 +7160,7 @@ function marcarGuia(el, color) {
   return el;
 }
 
-function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}, counter = { n: 0 }, resumen = null, posResumen = null, seleccion = null, colorGuia = null) {
+function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, renderRowTr, fieldLabels = {}, counter = { n: 0 }, resumen = null, posResumen = null, seleccion = null, colorGuia = null, infoGrupo = null) {
   if (node.type === "rows") return node.rows.map((r) => (colorGuia ? marcarGuia(renderRowTr(r, depth, ++counter.n), colorGuia) : renderRowTr(r, depth, ++counter.n)));
   const campoSuma = node.sumField || null;
   let out = [];
@@ -7189,6 +7225,13 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
             <span style={{ fontSize: depth === 0 ? 12 : 11.5, color: T.textDim, flexShrink: 0 }}>
               {entry.count} {entry.count === 1 ? "registro" : "registros"}
             </span>
+            {/* Datos del grupo (v3.21.0): van junto al nombre para leerse de
+                corrido, no alineados con su columna. */}
+            {infoGrupo && (
+              <span onClick={(e) => e.stopPropagation()} style={{ cursor: "default" }}>
+                {infoGrupo(filasDeNodo(entry.child), depth)}
+              </span>
+            )}
             {!enColumna && (
               <span style={{ fontSize: depth === 0 ? 14 : 12, fontWeight: depth === 0 ? 700 : 600, fontFamily: T.fontMono, color: depth === 0 ? T.text : T.textDim, marginLeft: "auto", flexShrink: 0, textAlign: "right" }}>
                 {contenidoResumen}
@@ -7211,7 +7254,7 @@ function buildGroupedTrs(node, path, collapsed, toggleGroup, colSpan, depth, ren
       </tr>
     );
     if (!isCollapsed) out = out.concat(buildGroupedTrs(entry.child, groupPath, collapsed, toggleGroup, colSpan, depth + 1, renderRowTr, fieldLabels, counter, resumen, posResumen, seleccion,
-      depth === 0 && entry.child.type === "rows" ? T.accent : depth === 0 ? null : levelColor));
+      depth === 0 && entry.child.type === "rows" ? T.accent : depth === 0 ? null : levelColor, infoGrupo));
   });
   return out;
 }
@@ -12649,6 +12692,17 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     .sort((a, b) => (a.num_parcialidad || 0) - (b.num_parcialidad || 0));
   const transPorId = new Map(transUnidad.map((x) => [x.id, x]));
   const padreDe = (t) => (t?.transaccion_padre_id ? transPorId.get(t.transaccion_padre_id) || null : null);
+  /* Lo pagado de una fila de la tabla, para el encabezado de su grupo. Una
+     compra PPD aparece como el bloque de parcialidades que cae en ese grupo
+     (_ppdHijas): cuenta lo pagado de esas; el padre en sí nunca se paga. */
+  const pagadoDeFila = (t) => {
+    if (esPadrePPD(t)) {
+      const hs = t._ppdHijas ?? hijasDe(t._ppdOriginal || t);
+      return hs.filter(cuentaEnPagado).reduce((s, h) => s + (Number(h.importe) || 0), 0);
+    }
+    return cuentaEnPagado(t) ? Number(t.importe) || 0 : 0;
+  };
+  const infoGrupoTx = (filas, depth) => infoGrupoTransacciones(filas, depth, pagadoDeFila);
   const resumenPPD = (padre) => {
     const todas = hijasDe(padre);
     const hijas = todas.filter((h) => !estaCancelada(h));
@@ -14475,7 +14529,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
               {groupKeys.length
                 ? buildGroupedTrs(pagTrans.agrupado, "", collapsedGroups, toggleGroup, columnasVisibles.length + 3, 0, renderRowTr,
                     Object.fromEntries(GROUP_OPCIONES_TRANS.map((o) => [o.value, o.label])), { n: pagTrans.offset }, resumenImportePorMoneda,
-                    posColumna(columnasVisibles, "importe"), { ids: seleccionadas, alternar: alternarGrupoSeleccion })
+                    posColumna(columnasVisibles, "importe"), { ids: seleccionadas, alternar: alternarGrupoSeleccion }, null, infoGrupoTx)
                 : pagTrans.filas.map((t, i) => renderRowTr(t, 0, pagTrans.offset + i + 1))}
               {!transUnidad.length && (
                 <tr><td colSpan={columnasVisibles.length + 3} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Sin transacciones aún</td></tr>

@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.31.1";
+const APP_VERSION = "3.32.0";
 const CHANGELOG = [
+  { v: "3.32.0", desc: "Dashboard > Contratos, Gasto por rubro y categoria: nuevo nivel Proveedor entre la categoria y las transacciones (rubro > categoria > proveedor > transaccion), con su comprometido y pagado. Expandir todo abre tambien los proveedores" },
   { v: "3.31.1", desc: "Corrige: en Dashboard > Contratos, Gasto por rubro y categoria, las transacciones prorrateadas decian NaN % en lugar del % que le toca al contrato (p. ej. prorrateo Todos -> Sempra 45 %). Solo era el texto: los importes ya se calculaban con el % correcto" },
   { v: "3.31.0", desc: "Dashboard > Contratos, pestana de cada contrato: selector Incluir gastos prorrateados (Todos). Encendido (como hasta ahora) suma la parte que le toca al contrato de los gastos con proyecto Todos o <Grupo> Gral; apagado, solo los gastos asignados y los de sus proyectos. Afecta gasto comprometido y pagado, margenes, mes a mes y gasto por rubro; junto al selector se ve cuanto aportan los prorrateados. Se recuerda por contrato" },
   { v: "3.30.1", desc: "Dashboard > Contratos, pestana de cada contrato: Gasto por rubro y categoria pasa arriba de Mes a mes, a todo lo ancho, y se puede expandir hasta cada transaccion (rubro > categoria > transaccion, con fecha, por que cuenta para el contrato, status, comprometido y pagado; si es prorrateo, el % que le toca). Nace contraida; clic para abrir o cerrar cada nivel y boton Expandir todo / Contraer todo. Facturas queda abajo de Mes a mes" },
@@ -5799,6 +5800,16 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
     cc.txs.push({ t, fraccion, comp, pag, via });
   });
   const listaRubros = [...rubros.values()].sort((a, b) => b.comprometido - a.comprometido);
+  /* Tercer nivel (v3.32.0): los proveedores de una categoría, con sus transacciones. */
+  const provsDe = (cc) => {
+    const m = new Map();
+    cc.txs.forEach((x) => {
+      const nombre = String(x.t.proveedor || "").trim() || "Sin proveedor";
+      if (!m.has(nombre)) m.set(nombre, { nombre, comprometido: 0, pagado: 0, txs: [] });
+      const p = m.get(nombre); p.comprometido += x.comp; p.pagado += x.pag; p.txs.push(x);
+    });
+    return [...m.values()].sort((a, b) => b.comprometido - a.comprometido || b.pagado - a.pagado);
+  };
 
   const facturas = [...r.fs].sort((a, b) => String(b.m.fecha_emision).localeCompare(String(a.m.fecha_emision)));
   const modsC = mods.filter((m) => m.contrato_id === c.id).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
@@ -5849,14 +5860,15 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
         right={listaRubros.length > 0 && (
           <Button variant="ghost" style={{ padding: "4px 10px", fontSize: 11.5 }}
             onClick={() => setAbiertos(abiertos.size ? new Set()
-              : new Set(listaRubros.flatMap((rr) => [rr.rubro, ...[...rr.cats.keys()].map((k) => `${rr.rubro}¦${k}`)])))}>
+              : new Set(listaRubros.flatMap((rr) => [rr.rubro, ...[...rr.cats.values()].flatMap((cc) => [
+                  `${rr.rubro}¦${cc.cat}`, ...provsDe(cc).map((pv) => `${rr.rubro}¦${cc.cat}¦${pv.nombre}`)])])))}>
             {abiertos.size ? "Contraer todo" : "Expandir todo"}
           </Button>)}>
         {!listaRubros.length ? <div style={{ fontSize: 12.5, color: T.textFaint }}>Sin gasto en el periodo.</div> : (
           <div style={{ overflowX: "auto" }}>
             <table style={tableStyle}>
               <thead><tr>
-                <th style={thStyle}>Rubro / categoría / transacción</th><th style={thStyle}>Fecha</th><th style={thStyle}>Cuenta por</th>
+                <th style={thStyle}>Rubro / categoría / proveedor / transacción</th><th style={thStyle}>Fecha</th><th style={thStyle}>Cuenta por</th>
                 <th style={thStyle}>Status</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Comprometido</th><th style={{ ...thStyle, textAlign: "right" }}>Pagado</th>
               </tr></thead>
@@ -5879,16 +5891,28 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
                           <tr onClick={() => alternar(kc)} style={{ cursor: "pointer" }}>
                             <td style={{ ...tdStyle, paddingLeft: 26, color: T.text, fontWeight: 600 }} colSpan={4}>
                               <span style={{ color: T.textFaint, fontSize: 9.5, display: "inline-block", width: 14 }}>{abiertoC ? "▼" : "▶"}</span>{cc.cat}
-                              <span style={{ fontSize: 11, color: T.textFaint, fontWeight: 400, marginLeft: 8 }}>{cc.txs.length} transacción(es)</span>
+                              <span style={{ fontSize: 11, color: T.textFaint, fontWeight: 400, marginLeft: 8 }}>{provsDe(cc).length} proveedor(es) · {cc.txs.length} transacción(es)</span>
                             </td>
                             <td style={num}>{money(cc.comprometido, "USD")}</td><td style={num}>{money(cc.pagado, "USD")}</td>
                           </tr>
-                          {abiertoC && [...cc.txs].sort((a, b) => String(b.t.dia || "").localeCompare(String(a.t.dia || ""))).map(({ t, fraccion, comp, pag, via }) => (
+                          {abiertoC && provsDe(cc).map((pv) => {
+                            const kp = `${kc}¦${pv.nombre}`;
+                            const abiertoP = abiertos.has(kp);
+                            return (
+                            <React.Fragment key={kp}>
+                            <tr onClick={() => alternar(kp)} style={{ cursor: "pointer" }}>
+                              <td style={{ ...tdStyle, paddingLeft: 52, color: T.textDim }} colSpan={4}>
+                                <span style={{ color: T.textFaint, fontSize: 9, display: "inline-block", width: 14 }}>{abiertoP ? "▼" : "▶"}</span>{pv.nombre}
+                                <span style={{ fontSize: 11, color: T.textFaint, marginLeft: 8 }}>{pv.txs.length} transacción(es)</span>
+                              </td>
+                              <td style={num}>{money(pv.comprometido, "USD")}</td><td style={num}>{money(pv.pagado, "USD")}</td>
+                            </tr>
+                          {abiertoP && [...pv.txs].sort((a, b) => String(b.t.dia || "").localeCompare(String(a.t.dia || ""))).map(({ t, fraccion, comp, pag, via }) => (
                             <tr key={t.id} style={{ fontSize: 11.5 }}>
-                              <td style={{ ...tdStyle, paddingLeft: 52 }}>
+                              <td style={{ ...tdStyle, paddingLeft: 78 }}>
                                 <span style={{ fontFamily: T.fontMono }}>{t.folio_transaccion || "Borrador"}</span>
                                 {esParcialidad(t) && <span style={{ color: COLOR_PPD }}> · parcialidad</span>}
-                                <div style={{ color: T.textDim }}>{t.proveedor || "—"}{t.concepto_detallado ? ` · ${t.concepto_detallado}` : ""}</div>
+                                {t.concepto_detallado && <div style={{ color: T.textDim }}>{t.concepto_detallado}</div>}
                                 <div style={{ color: T.textFaint, fontSize: 10.5 }}>
                                   {money(t.importe, t.moneda)} {monedaNorm(t.moneda)}{fraccion < 1 ? ` × ${Math.round(fraccion * 1000) / 10} %` : ""}
                                 </div>
@@ -5899,6 +5923,9 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
                               <td style={num}>{comp ? money(comp, "USD") : "—"}</td><td style={num}>{pag ? money(pag, "USD") : "—"}</td>
                             </tr>
                           ))}
+                            </React.Fragment>
+                            );
+                          })}
                         </React.Fragment>
                       );
                     })}

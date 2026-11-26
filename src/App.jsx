@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.28.0";
+const APP_VERSION = "3.29.0";
 const CHANGELOG = [
+  { v: "3.29.0", desc: "Contratos por proyecto: un contrato tiene uno o mas proyectos (centros de costo) y los gastos y facturas de esos proyectos cuentan solos para el, sin asignarlos uno por uno; los gastos prorrateados (Todos, <Grupo> Gral) aportan su parte segun los % del Catalogo a cada proyecto. Asignar a mano (campo Contrato) queda para mandar un gasto o factura completo a otro contrato. Si un proyecto esta en varios contratos, va al vigente en la fecha del movimiento. En el contrato, cada gasto dice por que cuenta (asignado, proyecto o prorrateo con su %) y cuanto le toca. Aplica en la pestana Contratos y en Dashboard > Contratos. Requiere 73-contratos-proyectos.sql" },
   { v: "3.28.0", desc: "Dashboard > Contratos: ingreso contra gasto de los contratos con clientes, todo en USD (los pesos se convierten con el TC Para pagos de Banxico de la fecha de cada movimiento; un gasto pagado en pesos usa el TC que se registro al pagarlo). Barra de periodo arriba. Indicadores: monto de contratos vigentes, facturado, cobrado, por cobrar, gasto comprometido y pagado, margen de flujo (cobrado - pagado) y rentabilidad (facturado - comprometido), con su %. Tabla por contrato con barras de avance. Contratos por vencer (90 dias) y facturas emitidas sin cobrar con mas de 30 dias" },
   { v: "3.27.0", desc: "Pestana Contratos renovada: contratos con clientes. Se retira el generador de contratos con proveedores (Datos recurrentes, Diagnostico, Objeto y clausulas, Expediente); sus tablas se quedan en la base, sin uso. Cada contrato: numero (unico por compania), cliente, proyecto, objeto, monto original y moneda, inicio y termino, status (Vigente, Concluido, Cancelado) y notas. Adendas y extensiones con fecha de firma, cambio de monto (+ amplia, - reduce) y/o nuevo termino: el monto y la vigencia vigentes se calculan con ellas. La lista avisa los vigentes que vencen en 30 dias o ya vencieron, y muestra facturado (con % del monto), cobrado, gasto comprometido y pagado. A cada contrato se le asignan facturas emitidas (desde el contrato o desde la factura) y gastos (desde la transaccion, campo Contrato en Clasificacion, o desde el contrato buscando y marcando varias); una compra PPD lleva a sus parcialidades. Requiere 72-contratos-cliente.sql" },
   { v: "3.26.0", desc: "Nueva pestana Facturas: las facturas que cada compania emite a sus clientes. Datos: folio (serie y numero, unico por compania), cliente, proyecto, importe y moneda, status (Emitida, Pagada o Cancelada), fecha emitida y fecha de pago (obligatoria al marcarla Pagada), notas, y su PDF y XML adjuntos, que van a Drive en <COMPANIA>/<ANO>/Facturas/<FOLIO>. Arriba, por moneda: emitido, cobrado y por cobrar (sin canceladas). Busqueda y filtros por status y proyecto; clic en la fila para editar. Requiere 71-facturas-emitidas.sql y la nueva version de mover_adjuntos_a_drive.py" },
@@ -5471,7 +5472,7 @@ function Dashboard(props) {
       {sub === "sempra"
         ? <DashboardSempra unidad={unidad} partidas={partidas} transacciones={transacciones} />
         : sub === "contratos"
-        ? <DashboardContratos unidad={unidad} partidas={partidas} transacciones={transacciones} />
+        ? <DashboardContratos unidad={unidad} unidades={props.unidades} partidas={partidas} transacciones={transacciones} />
         : <DashboardGeneral {...props} />}
     </div>
   );
@@ -5530,7 +5531,7 @@ function BarraAvanceCT({ valor, total, color = T.accent }) {
   );
 }
 
-function DashboardContratos({ unidad, partidas, transacciones }) {
+function DashboardContratos({ unidad, unidades = {}, partidas, transacciones }) {
   const contratosApi = useCollection("contratos_cliente", "numero");
   const modsApi = useCollection("contratos_cliente_modificaciones", "fecha");
   const facturasApi = useCollection("facturas_emitidas", "fecha_emision");
@@ -5540,22 +5541,27 @@ function DashboardContratos({ unidad, partidas, transacciones }) {
   const contratos = contratosApi.rows.filter((c) => c.unidad === unidad);
   const idsContrato = new Set(contratos.map((c) => c.id));
   const partidaPorId = useMemo(() => new Map(partidas.map((p) => [p.id, p])), [partidas]);
-  const transU = transacciones.filter((t) => t.unidad_detectada === unidad);
-  const facturas = facturasApi.rows.filter((f) => f.unidad === unidad && f.status !== "Cancelada" && idsContrato.has(f.contrato_id));
+  const transU = transacciones.filter((t) => t.unidad_detectada === unidad && !estaCancelada(t));
+  const reparto = crearRepartoContratos({ contratos, mods: modsApi.rows, proyectosUnidad: unidades[unidad]?.proyectos || [],
+    partidaPorId, transPorId: new Map(transU.map((t) => [t.id, t])) });
+  void idsContrato;
+  const facturasU = facturasApi.rows.filter((f) => f.unidad === unidad && f.status !== "Cancelada");
+  const factPor = new Map(contratos.map((c) => [c.id, reparto.delContrato(c.id, facturasU, (f) => f.fecha_emision)]));
+  const facturas = [...new Set([...factPor.values()].flat().map((a) => a.m))];
   const mesGasto = (t) => {
     const p = partidaPorId.get(t.partida_id);
     if (p && p.anio && MESES.includes(p.mes)) return Number(p.anio) * 12 + MESES.indexOf(p.mes);
     return claveMesISO(t.dia);
   };
 
-  // Gastos por contrato (con parcialidades de compras PPD asignadas).
-  const gastosPor = new Map(contratos.map((c) => [c.id, gastosDeContrato(c.id, transU)]));
+  // Gastos por contrato: asignados, por proyecto y su parte del prorrateo.
+  const gastosPor = new Map(contratos.map((c) => [c.id, reparto.delContrato(c.id, transU)]));
 
   /* Límites del periodo: del movimiento más viejo al más nuevo. */
   const limites = useMemo(() => {
     const ks = [
       ...facturas.flatMap((f) => [claveMesISO(f.fecha_emision), claveMesISO(f.fecha_pago)]),
-      ...[...gastosPor.values()].flat().flatMap((t) => [mesGasto(t), claveMesISO(t.fecha_pago)]),
+      ...[...gastosPor.values()].flat().flatMap(({ m: t }) => [mesGasto(t), claveMesISO(t.fecha_pago)]),
     ].filter((k) => k !== null);
     return ks.length ? { min: Math.min(...ks), max: Math.max(...ks) } : null;
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -5575,19 +5581,18 @@ function DashboardContratos({ unidad, partidas, transacciones }) {
   const conv = (imp, mon, fecha) => { const r = aUSDCT(imp, mon, fecha, serie); if (r.aprox && Number(imp)) aprox++; return r.usd; };
   const filas = contratos.map((c) => {
     const e = estadoContrato(c, modsApi.rows);
-    const fs = facturas.filter((f) => f.contrato_id === c.id);
+    const fs = factPor.get(c.id) || [];
     const gs = gastosPor.get(c.id) || [];
     const r = {
       c, e,
       monto: conv(e.monto, c.moneda, c.fecha_inicio || hoyLocalISO()),
-      facturado: fs.filter((f) => enRango(claveMesISO(f.fecha_emision))).reduce((s, f) => s + conv(f.importe, f.moneda, f.fecha_emision), 0),
-      cobrado: fs.filter((f) => f.status === "Pagada" && enRango(claveMesISO(f.fecha_pago))).reduce((s, f) => s + conv(f.importe, f.moneda, f.fecha_pago), 0),
-      comprometido: gs.filter((t) => cuentaEnComprometido(t) && enRango(mesGasto(t))).reduce((s, t) => s + conv(t.importe, t.moneda, t.dia), 0),
-      pagado: gs.filter((t) => cuentaEnPagado(t) && enRango(claveMesISO(t.fecha_pago || t.dia)))
-        .reduce((s, t) => s + (monedaNorm(t.moneda) === "MXP" && Number(t.tipo_cambio) > 0
-          ? (Number(t.importe) || 0) / Number(t.tipo_cambio) : conv(t.importe, t.moneda, t.fecha_pago || t.dia)), 0),
+      facturado: fs.filter(({ m: f }) => enRango(claveMesISO(f.fecha_emision))).reduce((s, { m: f, fraccion }) => s + conv(f.importe, f.moneda, f.fecha_emision) * fraccion, 0),
+      cobrado: fs.filter(({ m: f }) => f.status === "Pagada" && enRango(claveMesISO(f.fecha_pago))).reduce((s, { m: f, fraccion }) => s + conv(f.importe, f.moneda, f.fecha_pago) * fraccion, 0),
+      comprometido: gs.filter(({ m: t }) => cuentaEnComprometido(t) && enRango(mesGasto(t))).reduce((s, { m: t, fraccion }) => s + conv(t.importe, t.moneda, t.dia) * fraccion, 0),
+      pagado: gs.filter(({ m: t }) => cuentaEnPagado(t) && enRango(claveMesISO(t.fecha_pago || t.dia)))
+        .reduce((s, { m: t, fraccion }) => s + fraccion * conv(t.importe, t.moneda, t.fecha_pago || t.dia), 0),
     };
-    r.porCobrar = fs.filter((f) => f.status === "Emitida" && enRango(claveMesISO(f.fecha_emision))).reduce((s, f) => s + conv(f.importe, f.moneda, f.fecha_emision), 0);
+    r.porCobrar = fs.filter(({ m: f }) => f.status === "Emitida" && enRango(claveMesISO(f.fecha_emision))).reduce((s, { m: f, fraccion }) => s + conv(f.importe, f.moneda, f.fecha_emision) * fraccion, 0);
     r.flujo = r.cobrado - r.pagado;
     r.rentab = r.facturado - r.comprometido;
     return r;
@@ -5605,7 +5610,10 @@ function DashboardContratos({ unidad, partidas, transacciones }) {
     .sort((a, b) => String(a.e.fin).localeCompare(String(b.e.fin)));
   const sinCobrar = facturasApi.rows.filter((f) => f.unidad === unidad && f.status === "Emitida")
     .map((f) => ({ f, dias: -diasHasta(f.fecha_emision) })).filter((x) => x.dias > 30).sort((a, b) => b.dias - a.dias);
-  const numContrato = (id) => contratos.find((c) => c.id === id)?.numero || "Sin contrato";
+  const numContrato = (f) => {
+    const a = reparto.deMovimiento(f, f.fecha_emision);
+    return a.length ? a.map((x) => contratos.find((c) => c.id === x.contratoId)?.numero).filter(Boolean).join(", ") : "Sin contrato";
+  };
   const colorMargen = (v) => (v < 0 ? T.red : T.teal);
   const num = { ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" };
 
@@ -5619,7 +5627,7 @@ function DashboardContratos({ unidad, partidas, transacciones }) {
         </BarraPeriodo>
       )}
       <Panel title={`Contratos con clientes — ${unidad}`}
-        subtitle={`Todo en USD: lo que está en pesos se convierte con el TC Para pagos de Banxico de la fecha de cada movimiento (o el TC registrado al pagar).${aprox ? ` ${aprox} movimiento(s) son anteriores al primer TC disponible y usan ese: son aproximados.` : ""}`}>
+        subtitle={`Todo en USD: lo que está en pesos se convierte con el TC Para pagos de Banxico de la fecha de cada movimiento. Los gastos de los proyectos del contrato cuentan solos, con su parte de los prorrateados.${aprox ? ` ${aprox} movimiento(s) son anteriores al primer TC disponible y usan ese: son aproximados.` : ""}`}>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
           <KpiCard label="Monto de contratos vigentes" value={usd(tot.montoVigentes)} />
           <KpiCard label="Facturado" value={usd(tot.facturado)} accent={T.accent} />
@@ -5653,7 +5661,7 @@ function DashboardContratos({ unidad, partidas, transacciones }) {
                 <tr key={r.c.id} style={{ opacity: r.c.status === "Vigente" ? 1 : 0.65 }}>
                   <td style={tdStyle}>
                     <div style={{ fontWeight: 700 }}>{r.c.numero} {r.c.status !== "Vigente" && <Pill tone={TONO_STATUS_CONTRATO[r.c.status]}>{r.c.status}</Pill>}</div>
-                    <div style={{ fontSize: 11, color: T.textFaint }}>{[r.c.cliente, r.c.proyecto].filter(Boolean).join(" · ") || "—"}</div>
+                    <div style={{ fontSize: 11, color: T.textFaint }}>{[r.c.cliente, proyectosDeContrato(r.c).join(", ")].filter(Boolean).join(" · ") || "—"}</div>
                   </td>
                   <td style={num}>{usd(r.monto)}{monedaNorm(r.c.moneda) === "MXP" && <div style={{ fontSize: 10, color: T.textFaint }}>{money(r.e.monto, "MXP")} MXP</div>}</td>
                   <td style={num}>{usd(r.facturado)}<BarraAvanceCT valor={r.facturado} total={r.monto} /></td>
@@ -5689,7 +5697,7 @@ function DashboardContratos({ unidad, partidas, transacciones }) {
             <Panel title="Facturas sin cobrar" subtitle="Emitidas hace más de 30 días y todavía no pagadas.">
               {sinCobrar.slice(0, 15).map(({ f, dias }) => (
                 <div key={f.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.borderSoft}`, fontSize: 12.5 }}>
-                  <span><b>{f.folio}</b> · {f.cliente || "—"} <span style={{ color: T.textFaint }}>({numContrato(f.contrato_id)})</span></span>
+                  <span><b>{f.folio}</b> · {f.cliente || "—"} <span style={{ color: T.textFaint }}>({numContrato(f)})</span></span>
                   <span style={{ whiteSpace: "nowrap", fontFamily: T.fontMono }}>{money(f.importe, f.moneda)} {monedaNorm(f.moneda)} <Pill tone={dias > 60 ? "red" : "amber"}>{dias} d</Pill></span>
                 </div>
               ))}
@@ -7926,9 +7934,9 @@ function FacturaModal({ factura, unidad, api, proyectos, clientes, contratos = [
             title={form.status !== "Pagada" ? "Se captura al marcarla Pagada" : undefined} />
         </Field>
         <div />
-        <Field label="Contrato" style={{ gridColumn: "span 2" }}>
+        <Field label="Contrato (solo si no es el de su proyecto)" style={{ gridColumn: "span 2" }}>
           <Select value={form.contrato_id || ""} onChange={(e) => set("contrato_id", e.target.value)} disabled={soloLectura}>
-            <option value="">— Sin contrato —</option>
+            <option value="">— El de su proyecto —</option>
             {contratos.filter((c) => c.status === "Vigente" || c.id === form.contrato_id).map((c) => (
               <option key={c.id} value={c.id}>{c.numero}{c.cliente ? ` · ${c.cliente}` : ""}{c.status !== "Vigente" ? ` (${c.status})` : ""}</option>
             ))}
@@ -15609,14 +15617,15 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                   {form.zona && !zonas.includes(form.zona) && <option key={form.zona}>{form.zona}</option>}
                 </Select>
               </Field>
-              <Field label="Contrato">
+              <Field label="Contrato (solo si no es el de su proyecto)">
                 {esParcialidad(form) ? (
                   <div style={{ padding: "8px 10px", border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 12.5, color: T.textDim }}>
                     {contratosDeUnidad.find((c) => c.id === padreDe(form)?.contrato_id)?.numero || "—"} <i style={{ color: T.textFaint }}>(el de la compra)</i>
                   </div>
                 ) : (
-                  <Select value={form.contrato_id || ""} onChange={(e) => setForm({ ...form, contrato_id: e.target.value || null })}>
-                    <option value="">— Sin contrato —</option>
+                  <Select value={form.contrato_id || ""} onChange={(e) => setForm({ ...form, contrato_id: e.target.value || null })}
+                    title="Vacío: la transacción cuenta para el contrato que tenga su proyecto (y si es un prorrateo, su parte va a cada contrato). Elige uno solo para mandarla completa a otro contrato.">
+                    <option value="">— El de su proyecto —</option>
                     {contratosDeUnidad.filter((c) => c.status === "Vigente" || c.id === form.contrato_id).map((c) => (
                       <option key={c.id} value={c.id}>{c.numero}{c.cliente ? ` · ${c.cliente}` : ""}{c.status !== "Vigente" ? ` (${c.status})` : ""}</option>
                     ))}
@@ -19285,7 +19294,7 @@ function descargarBlob(blob, nombre) {
 const STATUS_CONTRATO = ["Vigente", "Concluido", "Cancelado"];
 const TONO_STATUS_CONTRATO = { Vigente: "teal", Concluido: "dim", Cancelado: "red" };
 const contratoVacio = (unidad) => ({
-  unidad, numero: "", cliente: "", proyecto: "", objeto: "", moneda: "MXP", monto_original: "",
+  unidad, numero: "", cliente: "", proyectos: [], objeto: "", moneda: "MXP", monto_original: "",
   fecha_inicio: "", fecha_fin_original: "", status: "Vigente", notas: "",
 });
 
@@ -19301,17 +19310,67 @@ function estadoContrato(c, mods) {
            nExtensiones: propias.filter((m) => m.tipo === "Extensión").length };
 }
 
-/* Gastos de un contrato: las transacciones asignadas y, en una compra PPD
-   asignada, sus parcialidades (lo pagado vive en ellas). */
-function gastosDeContrato(contratoId, transacciones) {
-  const padres = new Set(transacciones.filter((t) => t.contrato_id === contratoId && esPadrePPD(t)).map((t) => t.id));
-  return transacciones.filter((t) => !estaCancelada(t)
-    && (t.contrato_id === contratoId || (t.transaccion_padre_id && padres.has(t.transaccion_padre_id))));
-}
+/* v3.29.0 — A qué contrato(s) va un gasto o una factura, y en qué fracción.
+   Un contrato tiene uno o más proyectos (centros de costo). Reglas, en orden:
+   1. Asignado a mano (contrato_id): todo a ese contrato.
+   2. Si no, por su proyecto: al contrato que tenga ese proyecto.
+   3. Un gasto con marcador de prorrateo (Todos, <Grupo> Gral) se reparte con
+      los % del Catálogo, y cada parte va al contrato de su proyecto.
+   Una parcialidad PPD sigue a su compra (proyecto, partida y contrato). Si un
+   proyecto está en varios contratos, va al que estaba vigente en la fecha del
+   movimiento (o al más reciente). Los contratos cancelados no reciben nada. */
+const normProy = (s) => String(s || "").trim().toLowerCase();
+const proyectosDeContrato = (c) => (Array.isArray(c.proyectos) && c.proyectos.length ? c.proyectos : c.proyecto ? [c.proyecto] : []);
 
+function crearRepartoContratos({ contratos, mods, proyectosUnidad = [], partidaPorId = new Map(), transPorId = new Map() }) {
+  const activos = contratos.filter((c) => c.status !== "Cancelado");
+  const vig = new Map(activos.map((c) => [c.id, estadoContrato(c, mods)]));
+  const porProyecto = new Map();
+  activos.forEach((c) => proyectosDeContrato(c).forEach((p) => {
+    const k = normProy(p);
+    if (!porProyecto.has(k)) porProyecto.set(k, []);
+    porProyecto.get(k).push(c);
+  }));
+  const contratoDe = (proyecto, fecha) => {
+    const cs = porProyecto.get(normProy(proyecto)) || [];
+    if (cs.length <= 1) return cs[0] || null;
+    const f = String(fecha || "");
+    const vigente = cs.find((c) => (!c.fecha_inicio || c.fecha_inicio <= f) && (!vig.get(c.id)?.fin || f <= vig.get(c.id).fin));
+    return vigente || [...cs].sort((a, b) => String(b.fecha_inicio || "").localeCompare(String(a.fecha_inicio || "")))[0];
+  };
+  const idsActivos = new Set(activos.map((c) => c.id));
+  /* [{ contratoId, fraccion, via, proyecto }] de una transacción o factura. */
+  const deMovimiento = (m, fecha) => {
+    const base = m.transaccion_padre_id ? transPorId.get(m.transaccion_padre_id) || m : m;
+    if (base.contrato_id) return idsActivos.has(base.contrato_id) ? [{ contratoId: base.contrato_id, fraccion: 1, via: "asignado" }] : [];
+    const proy = base.proyecto || partidaPorId.get(base.partida_id)?.proyecto || "";
+    if (!proy) return [];
+    const splits = resolverProrrateo(proy, proyectosUnidad);
+    const r = [];
+    splits.forEach(({ proyecto, fraccion }) => {
+      const c = contratoDe(proyecto, fecha);
+      if (c && fraccion > 0) r.push({ contratoId: c.id, fraccion, via: splits.length > 1 ? "prorrateo" : "proyecto", proyecto, marcador: proy });
+    });
+    return r;
+  };
+  /* Movimientos de un contrato: [{ m, fraccion, via, proyecto }]. */
+  const delContrato = (contratoId, movimientos, fechaDe = (m) => m.dia) => movimientos.flatMap((m) =>
+    deMovimiento(m, fechaDe(m)).filter((a) => a.contratoId === contratoId).map((a) => ({ m, ...a })));
+  return { deMovimiento, delContrato, contratoDe };
+}
+const viaTexto = (a) => (a.via === "asignado" ? "asignado"
+  : a.via === "prorrateo" ? `prorrateo ${a.marcador} → ${a.proyecto} (${Math.round(a.fraccion * 1000) / 10} %)`
+  : `proyecto ${a.proyecto}`);
+
+/* Suma por moneda de [{ m, fraccion }] (o de movimientos sueltos, fracción 1). */
 function sumaPorMonedaCT(filas, cuenta) {
   const r = {};
-  filas.forEach((x) => { if (!cuenta(x)) return; const m = monedaNorm(x.moneda); r[m] = (r[m] || 0) + (Number(x.importe) || 0); });
+  filas.forEach((x) => {
+    const m = x.m || x, fr = x.m ? x.fraccion : 1;
+    if (!cuenta(m)) return;
+    const mon = monedaNorm(m.moneda);
+    r[mon] = (r[mon] || 0) + (Number(m.importe) || 0) * fr;
+  });
   return r;
 }
 const textoMonedas = (obj) => {
@@ -19320,7 +19379,7 @@ const textoMonedas = (obj) => {
 };
 const diasHasta = (iso) => (iso ? Math.round((new Date(`${iso}T12:00:00`) - new Date(`${hoyLocalISO()}T12:00:00`)) / 864e5) : null);
 
-function ContratosClienteTab({ unidad, proyectos = [], transacciones = [], transaccionesApi, soloLectura = false }) {
+function ContratosClienteTab({ unidad, proyectos = [], proyectosUnidad = [], partidas = [], transacciones = [], transaccionesApi, soloLectura = false }) {
   const contratosApi = useCollection("contratos_cliente", "created_at", { withAudit: true });
   const modsApi = useCollection("contratos_cliente_modificaciones", "fecha", { withAudit: true });
   const facturasApi = useCollection("facturas_emitidas", "fecha_emision", { withAudit: true });
@@ -19329,16 +19388,18 @@ function ContratosClienteTab({ unidad, proyectos = [], transacciones = [], trans
   const [abierto, setAbierto] = useState(null); // contrato (o nuevo) en la ventana
 
   const deUnidad = contratosApi.rows.filter((c) => c.unidad === unidad);
-  const transU = transacciones.filter((t) => t.unidad_detectada === unidad);
+  const transU = transacciones.filter((t) => t.unidad_detectada === unidad && !estaCancelada(t));
   const factU = facturasApi.rows.filter((f) => f.unidad === unidad);
+  const reparto = crearRepartoContratos({ contratos: deUnidad, mods: modsApi.rows, proyectosUnidad,
+    partidaPorId: new Map(partidas.map((p) => [p.id, p])), transPorId: new Map(transU.map((t) => [t.id, t])) });
   const q = buscar.trim().toLowerCase();
   const filas = deUnidad
     .filter((c) => (!fStatus || c.status === fStatus)
-      && (!q || [c.numero, c.cliente, c.proyecto, c.objeto].some((v) => String(v || "").toLowerCase().includes(q))))
+      && (!q || [c.numero, c.cliente, ...proyectosDeContrato(c), c.objeto].some((v) => String(v || "").toLowerCase().includes(q))))
     .map((c) => {
       const e = estadoContrato(c, modsApi.rows);
-      const facts = factU.filter((f) => f.contrato_id === c.id && f.status !== "Cancelada");
-      const gastos = gastosDeContrato(c.id, transU);
+      const facts = reparto.delContrato(c.id, factU.filter((f) => f.status !== "Cancelada"), (f) => f.fecha_emision);
+      const gastos = reparto.delContrato(c.id, transU);
       const facturado = sumaPorMonedaCT(facts, () => true);
       return { c, e, facturado, cobrado: sumaPorMonedaCT(facts, (f) => f.status === "Pagada"),
                comprometido: sumaPorMonedaCT(gastos, cuentaEnComprometido), pagado: sumaPorMonedaCT(gastos, cuentaEnPagado),
@@ -19391,7 +19452,7 @@ function ContratosClienteTab({ unidad, proyectos = [], transacciones = [], trans
                       </td>
                       <td style={tdStyle}>
                         <div>{c.cliente || "—"}</div>
-                        <div style={{ fontSize: 11, color: T.textFaint }}>{c.proyecto || "Sin proyecto"}</div>
+                        <div style={{ fontSize: 11, color: T.textFaint }}>{proyectosDeContrato(c).join(", ") || "Sin proyecto"}</div>
                       </td>
                       <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" }}>
                         {money(e.monto, c.moneda)} {monedaNorm(c.moneda)}
@@ -19423,7 +19484,7 @@ function ContratosClienteTab({ unidad, proyectos = [], transacciones = [], trans
       {abierto && (
         <ContratoClienteModal contrato={abierto} unidad={unidad} proyectos={proyectos} soloLectura={soloLectura}
           contratosApi={contratosApi} modsApi={modsApi} facturasApi={facturasApi}
-          transacciones={transU} transaccionesApi={transaccionesApi}
+          transacciones={transU} transaccionesApi={transaccionesApi} reparto={reparto}
           clientes={[...new Set([...deUnidad.map((c) => c.cliente), ...factU.map((f) => f.cliente)].map((x) => (x || "").trim()).filter(Boolean))].sort()}
           onGuardado={(c) => setAbierto({ ...c })} onClose={() => setAbierto(null)} />
       )}
@@ -19432,9 +19493,9 @@ function ContratosClienteTab({ unidad, proyectos = [], transacciones = [], trans
 }
 
 function ContratoClienteModal({ contrato, unidad, proyectos, clientes, soloLectura, contratosApi, modsApi, facturasApi,
-                                transacciones, transaccionesApi, onGuardado, onClose }) {
+                                transacciones, transaccionesApi, reparto, onGuardado, onClose }) {
   const esNuevo = !contrato.id;
-  const [form, setForm] = useState({ ...contrato, monto_original: contrato.monto_original ?? "",
+  const [form, setForm] = useState({ ...contrato, proyectos: proyectosDeContrato(contrato), monto_original: contrato.monto_original ?? "",
     fecha_inicio: contrato.fecha_inicio || "", fecha_fin_original: contrato.fecha_fin_original || "" });
   const [guardando, setGuardando] = useState(false);
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -19450,7 +19511,8 @@ function ContratoClienteModal({ contrato, unidad, proyectos, clientes, soloLectu
       alert("La fecha de término no puede ser anterior a la de inicio."); return;
     }
     const reg = {
-      unidad, numero, cliente: String(form.cliente || "").trim() || null, proyecto: form.proyecto || null,
+      unidad, numero, cliente: String(form.cliente || "").trim() || null,
+      proyectos: form.proyectos || [], proyecto: (form.proyectos || [])[0] || null,
       objeto: String(form.objeto || "").trim() || null, moneda: monedaNorm(form.moneda),
       monto_original: form.monto_original === "" ? null : Math.round(Number(form.monto_original) * 100) / 100,
       fecha_inicio: form.fecha_inicio || null, fecha_fin_original: form.fecha_fin_original || null,
@@ -19493,25 +19555,28 @@ function ContratoClienteModal({ contrato, unidad, proyectos, clientes, soloLectu
   };
 
   /* ---- Facturas ---- */
-  const facturas = facturasApi.rows.filter((f) => f.unidad === unidad && f.contrato_id === contrato.id)
-    .sort((a, b) => String(b.fecha_emision).localeCompare(String(a.fecha_emision)));
-  const libres = facturasApi.rows.filter((f) => f.unidad === unidad && !f.contrato_id && f.status !== "Cancelada")
+  const factContrato = reparto.delContrato(contrato.id, facturasApi.rows.filter((f) => f.unidad === unidad), (f) => f.fecha_emision)
+    .sort((a, b) => String(b.m.fecha_emision).localeCompare(String(a.m.fecha_emision)));
+  const facturas = factContrato.map((a) => a.m);
+  const enEste = new Set(facturas.map((f) => f.id));
+  const libres = facturasApi.rows.filter((f) => f.unidad === unidad && !enEste.has(f.id) && !f.contrato_id && f.status !== "Cancelada")
     .sort((a, b) => String(b.fecha_emision).localeCompare(String(a.fecha_emision)));
   const [factSel, setFactSel] = useState("");
   const asignarFactura = async (id, contratoId) => {
     try { await facturasApi.update(id, { contrato_id: contratoId }); setFactSel(""); }
     catch (err) { alert("No se pudo: " + (err.message || err)); }
   };
-  const factVig = facturas.filter((f) => f.status !== "Cancelada");
+  const factVig = factContrato.filter((a) => a.m.status !== "Cancelada");
 
   /* ---- Gastos ---- */
-  const gastos = gastosDeContrato(contrato.id, transacciones)
-    .sort((a, b) => String(b.dia || "").localeCompare(String(a.dia || "")));
+  const gastos = reparto.delContrato(contrato.id, transacciones)
+    .sort((a, b) => String(b.m.dia || "").localeCompare(String(a.m.dia || "")));
+  const idsGasto = new Set(gastos.map((a) => a.m.id));
   const [busTx, setBusTx] = useState("");
   const [txSel, setTxSel] = useState(() => new Set());
   const qtx = busTx.trim().toLowerCase();
   const candidatas = qtx.length < 2 ? [] : transacciones
-    .filter((t) => !t.contrato_id && !estaCancelada(t) && !esParcialidad(t)
+    .filter((t) => !t.contrato_id && !idsGasto.has(t.id) && !estaCancelada(t) && !esParcialidad(t)
       && [t.folio_transaccion, t.proveedor, t.concepto_detallado, t.proyecto].some((v) => String(v || "").toLowerCase().includes(qtx)))
     .slice(0, 40);
   const asignarTx = async (ids, contratoId) => {
@@ -19549,11 +19614,23 @@ function ContratoClienteModal({ contrato, unidad, proyectos, clientes, soloLectu
         <Field label="Objeto" style={{ gridColumn: "span 4" }}>
           <TextInput value={form.objeto || ""} onChange={(ev) => set("objeto", ev.target.value)} disabled={ro} />
         </Field>
-        <Field label="Proyecto">
-          <Select value={form.proyecto || ""} onChange={(ev) => set("proyecto", ev.target.value)} disabled={ro}>
-            <option value="">— Sin proyecto —</option>
-            {[...new Set([...proyectos, form.proyecto].filter(Boolean))].map((p) => <option key={p}>{p}</option>)}
-          </Select>
+        <Field label="Proyectos (centros de costo)" style={{ gridColumn: "span 4" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {[...new Set([...proyectos, ...(form.proyectos || [])])].map((p) => {
+              const on = (form.proyectos || []).includes(p);
+              return (
+                <button key={p} type="button" disabled={ro}
+                  onClick={() => set("proyectos", on ? form.proyectos.filter((x) => x !== p) : [...(form.proyectos || []), p])}
+                  style={{ padding: "4px 11px", borderRadius: 999, cursor: ro ? "default" : "pointer", fontSize: 12, fontFamily: T.fontUI,
+                           border: `1px solid ${on ? T.accent : T.border}`, background: on ? T.accent : "transparent", color: on ? T.onAccent : T.textDim }}>
+                  {on ? "✓ " : ""}{p}
+                </button>
+              );
+            })}
+          </div>
+          <span style={{ fontSize: 11, color: T.textFaint, textTransform: "none", letterSpacing: 0 }}>
+            Los gastos y facturas de estos proyectos cuentan solos para el contrato, incluida su parte de los gastos prorrateados (Todos, &lt;Grupo&gt; Gral).
+          </span>
         </Field>
         <Field label="Monto original">
           <TextInput type="number" step="0.01" value={form.monto_original} onChange={(ev) => set("monto_original", ev.target.value)} disabled={ro} />
@@ -19636,20 +19713,22 @@ function ContratoClienteModal({ contrato, unidad, proyectos, clientes, soloLectu
             <table style={{ ...tableStyle, marginBottom: 10 }}>
               <thead><tr><th style={thStyle}>Folio</th><th style={thStyle}>Cliente</th><th style={thStyle}>Emitida</th>
                 <th style={{ ...thStyle, textAlign: "right" }}>Importe</th><th style={thStyle}>Status</th><th style={thStyle}></th></tr></thead>
-              <tbody>{facturas.map((f) => (
-                <tr key={f.id} style={{ opacity: f.status === "Cancelada" ? 0.6 : 1 }}>
+              <tbody>{factContrato.map(({ m: f, ...a }) => (
+                <tr key={f.id} style={{ opacity: f.status === "Cancelada" ? 0.6 : 1 }} title={viaTexto(a)}>
                   <td style={{ ...tdStyle, fontWeight: 600 }}>{f.folio}</td><td style={tdStyle}>{f.cliente || "—"}</td>
                   <td style={tdStyle}>{fmtFecha(f.fecha_emision)}</td>
                   <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(f.importe, f.moneda)} {monedaNorm(f.moneda)}</td>
                   <td style={tdStyle}><Pill tone={TONO_STATUS_FACTURA[f.status] || "dim"}>{f.status}</Pill></td>
-                  <td style={tdStyle}>{!ro && <Button variant="ghost" style={{ padding: "3px 9px" }} onClick={() => asignarFactura(f.id, null)}>Quitar</Button>}</td>
+                  <td style={tdStyle}>{a.via === "asignado"
+                    ? (!ro && <Button variant="ghost" style={{ padding: "3px 9px" }} onClick={() => asignarFactura(f.id, null)}>Quitar</Button>)
+                    : <span style={{ fontSize: 10.5, color: T.textFaint }}>por su {viaTexto(a)}</span>}</td>
                 </tr>))}
               </tbody>
             </table>
           )}
           {!ro && (
             <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
-              <Field label="Asignar factura (sin contrato)" style={{ flex: "1 1 420px" }}>
+              <Field label="Asignar a mano una factura de otro proyecto" style={{ flex: "1 1 420px" }}>
                 <Select value={factSel} onChange={(ev) => setFactSel(ev.target.value)}>
                   <option value="">{libres.length ? "— Elige una factura —" : "No hay facturas sin contrato"}</option>
                   {libres.map((f) => <option key={f.id} value={f.id}>{f.folio} · {f.cliente || "sin cliente"} · {fmtFecha(f.fecha_emision)} · {money(f.importe, f.moneda)} {monedaNorm(f.moneda)}</option>)}
@@ -19667,17 +19746,22 @@ function ContratoClienteModal({ contrato, unidad, proyectos, clientes, soloLectu
             <div style={{ maxHeight: 280, overflowY: "auto", marginBottom: 10, border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
               <table style={tableStyle}>
                 <thead><tr><th style={thStyle}>Folio</th><th style={thStyle}>Proveedor</th><th style={thStyle}>Concepto</th>
-                  <th style={{ ...thStyle, textAlign: "right" }}>Importe</th><th style={thStyle}>Status</th><th style={thStyle}></th></tr></thead>
-                <tbody>{gastos.map((t) => (
+                  <th style={{ ...thStyle, textAlign: "right" }}>Importe al contrato</th><th style={thStyle}>Status</th><th style={thStyle}>Cuenta por</th></tr></thead>
+                <tbody>{gastos.map(({ m: t, ...a }) => (
                   <tr key={t.id}>
                     <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{t.folio_transaccion || "Borrador"}{esPadrePPD(t) ? " · PPD" : ""}</td>
                     <td style={tdStyle}>{t.proveedor || "—"}</td>
                     <td style={{ ...tdStyle, fontSize: 11.5 }}>{t.concepto_detallado || "—"}</td>
-                    <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{money(t.importe, t.moneda)} {monedaNorm(t.moneda)}</td>
+                    <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" }}>
+                      {money((Number(t.importe) || 0) * a.fraccion, t.moneda)} {monedaNorm(t.moneda)}
+                      {a.fraccion < 1 && <div style={{ fontSize: 10, color: T.textFaint }}>de {money(t.importe, t.moneda)}</div>}
+                    </td>
                     <td style={tdStyle}><Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status || "—"}</Pill></td>
-                    <td style={tdStyle}>{!ro && t.contrato_id === contrato.id && (
-                      <Button variant="ghost" style={{ padding: "3px 9px" }} onClick={() => asignarTx([t.id], null)}>Quitar</Button>)}
-                      {t.contrato_id !== contrato.id && <span style={{ fontSize: 10.5, color: T.textFaint }}>por su compra PPD</span>}</td>
+                    <td style={{ ...tdStyle, fontSize: 10.5, color: T.textFaint }}>
+                      {a.via === "asignado" && t.contrato_id === contrato.id && !ro
+                        ? <Button variant="ghost" style={{ padding: "3px 9px" }} onClick={() => asignarTx([t.id], null)}>Quitar</Button>
+                        : a.via === "asignado" ? "su compra PPD" : viaTexto(a)}
+                    </td>
                   </tr>))}
                 </tbody>
               </table>
@@ -19685,7 +19769,7 @@ function ContratoClienteModal({ contrato, unidad, proyectos, clientes, soloLectu
           )}
           {!ro && (
             <>
-              <Field label="Asignar gastos: busca por folio, proveedor, concepto o proyecto" style={{ maxWidth: 520 }}>
+              <Field label="Asignar a mano gastos de otros proyectos: busca por folio, proveedor, concepto o proyecto" style={{ maxWidth: 560 }}>
                 <TextInput value={busTx} onChange={(ev) => setBusTx(ev.target.value)} placeholder="Al menos 2 letras…" />
               </Field>
               {qtx.length >= 2 && (
@@ -26068,7 +26152,8 @@ function AppPrincipal() {
           )}
           {tab === "solicitudes" && <SolicitudesTab onConvertir={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} unidad={unidad} session={session} unidades={unidades} proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} zonas={zonas.map((z) => (typeof z === "string" ? z : z.nombre))} />}
           {tab === "contratos" && <ContratosClienteTab unidad={unidad} soloLectura={soloLectura}
-            transacciones={transacciones} transaccionesApi={transaccionesApi}
+            transacciones={transacciones} transaccionesApi={transaccionesApi} partidas={partidas}
+            proyectosUnidad={unidades[unidad]?.proyectos || []}
             proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} />}
           {tab === "facturas" && <FacturasTab unidad={unidad} soloLectura={soloLectura}
             proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} />}

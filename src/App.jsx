@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.30.0";
+const APP_VERSION = "3.30.1";
 const CHANGELOG = [
+  { v: "3.30.1", desc: "Dashboard > Contratos, pestana de cada contrato: Gasto por rubro y categoria pasa arriba de Mes a mes, a todo lo ancho, y se puede expandir hasta cada transaccion (rubro > categoria > transaccion, con fecha, por que cuenta para el contrato, status, comprometido y pagado; si es prorrateo, el % que le toca). Nace contraida; clic para abrir o cerrar cada nivel y boton Expandir todo / Contraer todo. Facturas queda abajo de Mes a mes" },
   { v: "3.30.0", desc: "Dashboard > Contratos con una subpestana por contrato, ademas de Todos los contratos (el resumen de siempre; clic en un renglon abre la del contrato). La de cada contrato muestra sus datos (monto original y vigente, vigencia con extensiones y dias para vencer), indicadores en USD (facturado con % del monto, cobrado, por cobrar, por facturar, gasto comprometido y pagado, margen de flujo y rentabilidad), tabla mes a mes con flujo acumulado, gasto por rubro y categoria, sus facturas con dias sin cobrar y sus adendas y extensiones. Obedece la barra de periodo" },
   { v: "3.29.0", desc: "Contratos por proyecto: un contrato tiene uno o mas proyectos (centros de costo) y los gastos y facturas de esos proyectos cuentan solos para el, sin asignarlos uno por uno; los gastos prorrateados (Todos, <Grupo> Gral) aportan su parte segun los % del Catalogo a cada proyecto. Asignar a mano (campo Contrato) queda para mandar un gasto o factura completo a otro contrato. Si un proyecto esta en varios contratos, va al vigente en la fecha del movimiento. En el contrato, cada gasto dice por que cuenta (asignado, proyecto o prorrateo con su %) y cuanto le toca. Aplica en la pestana Contratos y en Dashboard > Contratos. Requiere 73-contratos-proyectos.sql" },
   { v: "3.28.0", desc: "Dashboard > Contratos: ingreso contra gasto de los contratos con clientes, todo en USD (los pesos se convierten con el TC Para pagos de Banxico de la fecha de cada movimiento; un gasto pagado en pesos usa el TC que se registro al pagarlo). Barra de periodo arriba. Indicadores: monto de contratos vigentes, facturado, cobrado, por cobrar, gasto comprometido y pagado, margen de flujo (cobrado - pagado) y rentabilidad (facturado - comprometido), con su %. Tabla por contrato con barras de avance. Contratos por vencer (90 dias) y facturas emitidas sin cobrar con mas de 30 dias" },
@@ -5649,7 +5650,7 @@ function DashboardContratos({ unidad, unidades = {}, partidas, transacciones }) 
             onChange={(a, b) => setRangoSel([a, b])} onTodo={() => setRangoSel(null)} />
         </BarraPeriodo>
       )}
-      {sel ? <VistaContratoDash r={sel} conv={conv} mesGasto={mesGasto} partidaPorId={partidaPorId} enRango={enRango} desde={desde} hasta={hasta} limites={limites} mods={modsApi.rows} />
+      {sel ? <VistaContratoDash key={sel.c.id} r={sel} conv={conv} mesGasto={mesGasto} partidaPorId={partidaPorId} enRango={enRango} desde={desde} hasta={hasta} limites={limites} mods={modsApi.rows} />
         : <>
       <Panel title={`Contratos con clientes — ${unidad}`}
         subtitle={`Todo en USD: lo que está en pesos se convierte con el TC Para pagos de Banxico de la fecha de cada movimiento. Los gastos de los proyectos del contrato cuentan solos, con su parte de los prorrateados.${aprox ? ` ${aprox} movimiento(s) son anteriores al primer TC disponible y usan ese: son aproximados.` : ""}`}>
@@ -5745,6 +5746,9 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
   const colorMargen = (v) => (v < 0 ? T.red : T.teal);
   const num = { ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" };
   const dias = diasHasta(e.fin);
+  // Gasto por rubro: cada rubro y categoría se expande; nace todo contraído.
+  const [abiertos, setAbiertos] = useState(() => new Set());
+  const alternar = (k) => setAbiertos((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
 
   // Por mes, dentro del periodo.
   const meses = new Map();
@@ -5766,18 +5770,18 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
 
   // Gasto por rubro (de la partida) y categoría (de la transacción).
   const rubros = new Map();
-  r.gs.forEach(({ m: t, fraccion }) => {
+  r.gs.forEach(({ m: t, fraccion, ...via }) => {
     const comp = cuentaEnComprometido(t) && enRango(mesGasto(t)) ? conv(t.importe, t.moneda, t.dia) * fraccion : 0;
     const pag = cuentaEnPagado(t) && enRango(claveMesISO(t.fecha_pago || t.dia)) ? conv(t.importe, t.moneda, t.fecha_pago || t.dia) * fraccion : 0;
     if (!comp && !pag) return;
-    const base = t.transaccion_padre_id ? null : t;
-    const rubro = (partidaPorId.get((base || t).partida_id)?.rubro || "").trim() || "Sin partida";
+    const rubro = (partidaPorId.get(t.partida_id)?.rubro || "").trim() || "Sin partida";
     const cat = (t.categoria || "").trim() || "Sin categoría";
     if (!rubros.has(rubro)) rubros.set(rubro, { rubro, comprometido: 0, pagado: 0, cats: new Map() });
     const rr = rubros.get(rubro);
     rr.comprometido += comp; rr.pagado += pag;
-    if (!rr.cats.has(cat)) rr.cats.set(cat, { cat, comprometido: 0, pagado: 0 });
+    if (!rr.cats.has(cat)) rr.cats.set(cat, { cat, comprometido: 0, pagado: 0, txs: [] });
     const cc = rr.cats.get(cat); cc.comprometido += comp; cc.pagado += pag;
+    cc.txs.push({ t, fraccion, comp, pag, via });
   });
   const listaRubros = [...rubros.values()].sort((a, b) => b.comprometido - a.comprometido);
 
@@ -5815,6 +5819,72 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
         </div>
       </Panel>
 
+      <Panel title="Gasto por rubro y categoría"
+        subtitle="USD, en el periodo. El rubro es el de la partida; la categoría, la de la transacción. Clic en un rubro o una categoría para abrirlo."
+        right={listaRubros.length > 0 && (
+          <Button variant="ghost" style={{ padding: "4px 10px", fontSize: 11.5 }}
+            onClick={() => setAbiertos(abiertos.size ? new Set()
+              : new Set(listaRubros.flatMap((rr) => [rr.rubro, ...[...rr.cats.keys()].map((k) => `${rr.rubro}¦${k}`)])))}>
+            {abiertos.size ? "Contraer todo" : "Expandir todo"}
+          </Button>)}>
+        {!listaRubros.length ? <div style={{ fontSize: 12.5, color: T.textFaint }}>Sin gasto en el periodo.</div> : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={tableStyle}>
+              <thead><tr>
+                <th style={thStyle}>Rubro / categoría / transacción</th><th style={thStyle}>Fecha</th><th style={thStyle}>Cuenta por</th>
+                <th style={thStyle}>Status</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Comprometido</th><th style={{ ...thStyle, textAlign: "right" }}>Pagado</th>
+              </tr></thead>
+              <tbody>{listaRubros.map((rr) => {
+                const abiertoR = abiertos.has(rr.rubro);
+                return (
+                  <React.Fragment key={rr.rubro}>
+                    <tr onClick={() => alternar(rr.rubro)} style={{ background: T.panelAlt, cursor: "pointer" }}>
+                      <td style={{ ...tdStyle, fontWeight: 700 }} colSpan={4}>
+                        <span style={{ color: T.accent, fontSize: 10, display: "inline-block", width: 14 }}>{abiertoR ? "▼" : "▶"}</span>{rr.rubro}
+                        <span style={{ fontSize: 11, color: T.textFaint, fontWeight: 400, marginLeft: 8 }}>{rr.cats.size} categoría(s)</span>
+                      </td>
+                      <td style={{ ...num, fontWeight: 700 }}>{money(rr.comprometido, "USD")}</td><td style={{ ...num, fontWeight: 700 }}>{money(rr.pagado, "USD")}</td>
+                    </tr>
+                    {abiertoR && [...rr.cats.values()].sort((a, b) => b.comprometido - a.comprometido).map((cc) => {
+                      const kc = `${rr.rubro}¦${cc.cat}`;
+                      const abiertoC = abiertos.has(kc);
+                      return (
+                        <React.Fragment key={kc}>
+                          <tr onClick={() => alternar(kc)} style={{ cursor: "pointer" }}>
+                            <td style={{ ...tdStyle, paddingLeft: 26, color: T.text, fontWeight: 600 }} colSpan={4}>
+                              <span style={{ color: T.textFaint, fontSize: 9.5, display: "inline-block", width: 14 }}>{abiertoC ? "▼" : "▶"}</span>{cc.cat}
+                              <span style={{ fontSize: 11, color: T.textFaint, fontWeight: 400, marginLeft: 8 }}>{cc.txs.length} transacción(es)</span>
+                            </td>
+                            <td style={num}>{money(cc.comprometido, "USD")}</td><td style={num}>{money(cc.pagado, "USD")}</td>
+                          </tr>
+                          {abiertoC && [...cc.txs].sort((a, b) => String(b.t.dia || "").localeCompare(String(a.t.dia || ""))).map(({ t, fraccion, comp, pag, via }) => (
+                            <tr key={t.id} style={{ fontSize: 11.5 }}>
+                              <td style={{ ...tdStyle, paddingLeft: 52 }}>
+                                <span style={{ fontFamily: T.fontMono }}>{t.folio_transaccion || "Borrador"}</span>
+                                {esParcialidad(t) && <span style={{ color: COLOR_PPD }}> · parcialidad</span>}
+                                <div style={{ color: T.textDim }}>{t.proveedor || "—"}{t.concepto_detallado ? ` · ${t.concepto_detallado}` : ""}</div>
+                                <div style={{ color: T.textFaint, fontSize: 10.5 }}>
+                                  {money(t.importe, t.moneda)} {monedaNorm(t.moneda)}{fraccion < 1 ? ` × ${Math.round(fraccion * 1000) / 10} %` : ""}
+                                </div>
+                              </td>
+                              <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{t.fecha_pago ? fmtFecha(t.fecha_pago) : fmtFecha(t.dia)}</td>
+                              <td style={{ ...tdStyle, color: T.textFaint, fontSize: 10.5 }}>{viaTexto(via)}</td>
+                              <td style={tdStyle}><Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status || "—"}</Pill></td>
+                              <td style={num}>{comp ? money(comp, "USD") : "—"}</td><td style={num}>{pag ? money(pag, "USD") : "—"}</td>
+                            </tr>
+                          ))}
+                        </React.Fragment>
+                      );
+                    })}
+                  </React.Fragment>
+                );
+              })}</tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
       <Panel title="Mes a mes" subtitle="USD. Facturado por mes de emisión, cobrado y pagado por mes de pago, comprometido por mes de su partida. El flujo acumulado suma cobrado − pagado.">
         {!porMes.length ? <div style={{ fontSize: 12.5, color: T.textFaint }}>Sin movimientos en el periodo.</div> : (
           <div style={{ overflowX: "auto" }}>
@@ -5837,29 +5907,8 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
         )}
       </Panel>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: 20 }}>
-        <Panel title="Gasto por rubro y categoría" subtitle="USD, en el periodo. El rubro es el de la partida; la categoría, la de la transacción.">
-          {!listaRubros.length ? <div style={{ fontSize: 12.5, color: T.textFaint }}>Sin gasto en el periodo.</div> : (
-            <table style={tableStyle}>
-              <thead><tr><th style={thStyle}>Rubro / categoría</th><th style={{ ...thStyle, textAlign: "right" }}>Comprometido</th><th style={{ ...thStyle, textAlign: "right" }}>Pagado</th></tr></thead>
-              <tbody>{listaRubros.map((rr) => (
-                <React.Fragment key={rr.rubro}>
-                  <tr style={{ background: T.panelAlt }}>
-                    <td style={{ ...tdStyle, fontWeight: 700 }}>{rr.rubro}</td>
-                    <td style={{ ...num, fontWeight: 700 }}>{money(rr.comprometido, "USD")}</td><td style={{ ...num, fontWeight: 700 }}>{money(rr.pagado, "USD")}</td>
-                  </tr>
-                  {[...rr.cats.values()].sort((a, b) => b.comprometido - a.comprometido).map((cc) => (
-                    <tr key={cc.cat}>
-                      <td style={{ ...tdStyle, paddingLeft: 24, color: T.textDim }}>{cc.cat}</td>
-                      <td style={num}>{money(cc.comprometido, "USD")}</td><td style={num}>{money(cc.pagado, "USD")}</td>
-                    </tr>
-                  ))}
-                </React.Fragment>))}
-              </tbody>
-            </table>
-          )}
-        </Panel>
-        <Panel title="Facturas" subtitle="Todas las del contrato, en su moneda.">
+
+      <Panel title="Facturas" subtitle="Todas las del contrato, en su moneda.">
           {!facturas.length ? <div style={{ fontSize: 12.5, color: T.textFaint }}>Sin facturas.</div> : (
             <table style={tableStyle}>
               <thead><tr><th style={thStyle}>Folio</th><th style={thStyle}>Emitida</th><th style={thStyle}>Cobro</th><th style={{ ...thStyle, textAlign: "right" }}>Importe</th><th style={thStyle}>Status</th></tr></thead>
@@ -5878,7 +5927,6 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
             </table>
           )}
         </Panel>
-      </div>
 
       {modsC.length > 0 && (
         <Panel title="Adendas y extensiones">

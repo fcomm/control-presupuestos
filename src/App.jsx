@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.30.1";
+const APP_VERSION = "3.31.0";
 const CHANGELOG = [
+  { v: "3.31.0", desc: "Dashboard > Contratos, pestana de cada contrato: selector Incluir gastos prorrateados (Todos). Encendido (como hasta ahora) suma la parte que le toca al contrato de los gastos con proyecto Todos o <Grupo> Gral; apagado, solo los gastos asignados y los de sus proyectos. Afecta gasto comprometido y pagado, margenes, mes a mes y gasto por rubro; junto al selector se ve cuanto aportan los prorrateados. Se recuerda por contrato" },
   { v: "3.30.1", desc: "Dashboard > Contratos, pestana de cada contrato: Gasto por rubro y categoria pasa arriba de Mes a mes, a todo lo ancho, y se puede expandir hasta cada transaccion (rubro > categoria > transaccion, con fecha, por que cuenta para el contrato, status, comprometido y pagado; si es prorrateo, el % que le toca). Nace contraida; clic para abrir o cerrar cada nivel y boton Expandir todo / Contraer todo. Facturas queda abajo de Mes a mes" },
   { v: "3.30.0", desc: "Dashboard > Contratos con una subpestana por contrato, ademas de Todos los contratos (el resumen de siempre; clic en un renglon abre la del contrato). La de cada contrato muestra sus datos (monto original y vigente, vigencia con extensiones y dias para vencer), indicadores en USD (facturado con % del monto, cobrado, por cobrar, por facturar, gasto comprometido y pagado, margen de flujo y rentabilidad), tabla mes a mes con flujo acumulado, gasto por rubro y categoria, sus facturas con dias sin cobrar y sus adendas y extensiones. Obedece la barra de periodo" },
   { v: "3.29.0", desc: "Contratos por proyecto: un contrato tiene uno o mas proyectos (centros de costo) y los gastos y facturas de esos proyectos cuentan solos para el, sin asignarlos uno por uno; los gastos prorrateados (Todos, <Grupo> Gral) aportan su parte segun los % del Catalogo a cada proyecto. Asignar a mano (campo Contrato) queda para mandar un gasto o factura completo a otro contrato. Si un proyecto esta en varios contratos, va al vigente en la fecha del movimiento. En el contrato, cada gasto dice por que cuenta (asignado, proyecto o prorrateo con su %) y cuanto le toca. Aplica en la pestana Contratos y en Dashboard > Contratos. Requiere 73-contratos-proyectos.sql" },
@@ -5746,6 +5747,19 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
   const colorMargen = (v) => (v < 0 ? T.red : T.teal);
   const num = { ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" };
   const dias = diasHasta(e.fin);
+  /* v3.31.0: usar o no la parte que le toca al contrato de los gastos
+     prorrateados (Todos, <Grupo> Gral). Se recuerda por contrato. */
+  const [conProrrateo, setConProrrateo] = useSessionState(`ss-ct-prorrateo-${c.id}`, true);
+  const gs = conProrrateo ? r.gs : r.gs.filter((a) => a.via !== "prorrateo");
+  const sumaGs = (lista) => lista.reduce((s, { m: t, fraccion }) => {
+    if (cuentaEnComprometido(t) && enRango(mesGasto(t))) s.comprometido += conv(t.importe, t.moneda, t.dia) * fraccion;
+    if (cuentaEnPagado(t) && enRango(claveMesISO(t.fecha_pago || t.dia))) s.pagado += conv(t.importe, t.moneda, t.fecha_pago || t.dia) * fraccion;
+    return s;
+  }, { comprometido: 0, pagado: 0 });
+  const g = sumaGs(gs);
+  const pr = sumaGs(r.gs.filter((a) => a.via === "prorrateo"));
+  const nProrrateo = r.gs.filter((a) => a.via === "prorrateo").length;
+  const k = { ...r, comprometido: g.comprometido, pagado: g.pagado, flujo: r.cobrado - g.pagado, rentab: r.facturado - g.comprometido };
   // Gasto por rubro: cada rubro y categoría se expande; nace todo contraído.
   const [abiertos, setAbiertos] = useState(() => new Set());
   const alternar = (k) => setAbiertos((s) => { const n = new Set(s); if (n.has(k)) n.delete(k); else n.add(k); return n; });
@@ -5759,7 +5773,7 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
     const kp = claveMesISO(f.fecha_pago);
     if (f.status === "Pagada" && kp !== null && enRango(kp)) mesDe(kp).cobrado += conv(f.importe, f.moneda, f.fecha_pago) * fraccion;
   });
-  r.gs.forEach(({ m: t, fraccion }) => {
+  gs.forEach(({ m: t, fraccion }) => {
     const kc = mesGasto(t);
     if (cuentaEnComprometido(t) && kc !== null && enRango(kc)) mesDe(kc).comprometido += conv(t.importe, t.moneda, t.dia) * fraccion;
     const kp = claveMesISO(t.fecha_pago || t.dia);
@@ -5770,7 +5784,7 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
 
   // Gasto por rubro (de la partida) y categoría (de la transacción).
   const rubros = new Map();
-  r.gs.forEach(({ m: t, fraccion, ...via }) => {
+  gs.forEach(({ m: t, fraccion, ...via }) => {
     const comp = cuentaEnComprometido(t) && enRango(mesGasto(t)) ? conv(t.importe, t.moneda, t.dia) * fraccion : 0;
     const pag = cuentaEnPagado(t) && enRango(claveMesISO(t.fecha_pago || t.dia)) ? conv(t.importe, t.moneda, t.fecha_pago || t.dia) * fraccion : 0;
     if (!comp && !pag) return;
@@ -5793,7 +5807,16 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
     <>
       <Panel title={`Contrato ${c.numero}`}
         subtitle={[c.cliente, proyectosDeContrato(c).join(", "), c.objeto].filter(Boolean).join(" · ")}
-        right={<Pill tone={TONO_STATUS_CONTRATO[c.status] || "dim"}>{c.status}</Pill>}>
+        right={<div style={{ display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+          <label title={`Gastos con proyecto Todos o <Grupo> Gral: al contrato le toca la parte de sus proyectos según los % del Catálogo. ${nProrrateo} gasto(s) del contrato son así: ${money(pr.comprometido, "USD")} comprometido y ${money(pr.pagado, "USD")} pagado en el periodo.`}
+            style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: T.textDim, cursor: "pointer",
+                     padding: "4px 10px", borderRadius: 999, border: `1px solid ${conProrrateo ? T.accent : T.border}` }}>
+            <input type="checkbox" checked={conProrrateo} onChange={(ev) => setConProrrateo(ev.target.checked)} />
+            Incluir gastos prorrateados (Todos)
+            <span style={{ fontSize: 10.5, color: T.textFaint, fontFamily: T.fontMono }}>{nProrrateo ? `${money(pr.comprometido, "USD")}` : "ninguno"}</span>
+          </label>
+          <Pill tone={TONO_STATUS_CONTRATO[c.status] || "dim"}>{c.status}</Pill>
+        </div>}>
         <div style={{ display: "flex", gap: 22, flexWrap: "wrap", fontSize: 12.5, marginBottom: 14 }}>
           <div><span style={{ color: T.textFaint }}>Monto: </span>
             {e.monto !== (Number(c.monto_original) || 0) && <span style={{ color: T.textFaint }}>{money(c.monto_original, mon)} → </span>}
@@ -5804,7 +5827,8 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
             {c.status === "Vigente" && dias !== null && <span style={{ marginLeft: 6 }}><Pill tone={dias < 0 ? "red" : dias <= 30 ? "amber" : "dim"}>{dias < 0 ? `venció hace ${-dias} d` : `faltan ${dias} d`}</Pill></span>}</div>
           <div><span style={{ color: T.textFaint }}>Adendas y extensiones: </span>{e.nAdendas + e.nExtensiones || "ninguna"}</div>
         </div>
-        <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 6 }}>USD · {periodoTxt}</div>
+        <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 6 }}>
+          USD · {periodoTxt} · {conProrrateo ? "con gastos prorrateados" : "sin gastos prorrateados"}</div>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
           <KpiCard label={`Facturado (${pctDe(r.facturado, r.monto)} del monto)`} value={money(r.facturado, "USD")} accent={T.accent} />
           <KpiCard label="Cobrado" value={money(r.cobrado, "USD")} accent={T.teal} />
@@ -5812,10 +5836,10 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
           <KpiCard label="Por facturar del monto" value={money(Math.max(0, r.monto - r.facturado), "USD")} />
         </div>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-          <KpiCard label="Gasto comprometido" value={money(r.comprometido, "USD")} />
-          <KpiCard label="Gasto pagado" value={money(r.pagado, "USD")} />
-          <KpiCard label="Margen de flujo (cobrado − pagado)" value={`${money(r.flujo, "USD")} · ${pctDe(r.flujo, r.cobrado)}`} accent={colorMargen(r.flujo)} />
-          <KpiCard label="Rentabilidad (facturado − comprometido)" value={`${money(r.rentab, "USD")} · ${pctDe(r.rentab, r.facturado)}`} accent={colorMargen(r.rentab)} />
+          <KpiCard label="Gasto comprometido" value={money(k.comprometido, "USD")} />
+          <KpiCard label="Gasto pagado" value={money(k.pagado, "USD")} />
+          <KpiCard label="Margen de flujo (cobrado − pagado)" value={`${money(k.flujo, "USD")} · ${pctDe(k.flujo, k.cobrado)}`} accent={colorMargen(k.flujo)} />
+          <KpiCard label="Rentabilidad (facturado − comprometido)" value={`${money(k.rentab, "USD")} · ${pctDe(k.rentab, k.facturado)}`} accent={colorMargen(k.rentab)} />
         </div>
       </Panel>
 

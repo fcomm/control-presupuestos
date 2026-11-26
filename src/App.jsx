@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.31.0";
+const APP_VERSION = "3.31.1";
 const CHANGELOG = [
+  { v: "3.31.1", desc: "Corrige: en Dashboard > Contratos, Gasto por rubro y categoria, las transacciones prorrateadas decian NaN % en lugar del % que le toca al contrato (p. ej. prorrateo Todos -> Sempra 45 %). Solo era el texto: los importes ya se calculaban con el % correcto" },
   { v: "3.31.0", desc: "Dashboard > Contratos, pestana de cada contrato: selector Incluir gastos prorrateados (Todos). Encendido (como hasta ahora) suma la parte que le toca al contrato de los gastos con proyecto Todos o <Grupo> Gral; apagado, solo los gastos asignados y los de sus proyectos. Afecta gasto comprometido y pagado, margenes, mes a mes y gasto por rubro; junto al selector se ve cuanto aportan los prorrateados. Se recuerda por contrato" },
   { v: "3.30.1", desc: "Dashboard > Contratos, pestana de cada contrato: Gasto por rubro y categoria pasa arriba de Mes a mes, a todo lo ancho, y se puede expandir hasta cada transaccion (rubro > categoria > transaccion, con fecha, por que cuenta para el contrato, status, comprometido y pagado; si es prorrateo, el % que le toca). Nace contraida; clic para abrir o cerrar cada nivel y boton Expandir todo / Contraer todo. Facturas queda abajo de Mes a mes" },
   { v: "3.30.0", desc: "Dashboard > Contratos con una subpestana por contrato, ademas de Todos los contratos (el resumen de siempre; clic en un renglon abre la del contrato). La de cada contrato muestra sus datos (monto original y vigente, vigencia con extensiones y dias para vencer), indicadores en USD (facturado con % del monto, cobrado, por cobrar, por facturar, gasto comprometido y pagado, margen de flujo y rentabilidad), tabla mes a mes con flujo acumulado, gasto por rubro y categoria, sus facturas con dias sin cobrar y sus adendas y extensiones. Obedece la barra de periodo" },
@@ -5893,7 +5894,7 @@ function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, ha
                                 </div>
                               </td>
                               <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{t.fecha_pago ? fmtFecha(t.fecha_pago) : fmtFecha(t.dia)}</td>
-                              <td style={{ ...tdStyle, color: T.textFaint, fontSize: 10.5 }}>{viaTexto(via)}</td>
+                              <td style={{ ...tdStyle, color: T.textFaint, fontSize: 10.5 }}>{viaTexto({ ...via, fraccion })}</td>
                               <td style={tdStyle}><Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status || "—"}</Pill></td>
                               <td style={num}>{comp ? money(comp, "USD") : "—"}</td><td style={num}>{pag ? money(pag, "USD") : "—"}</td>
                             </tr>

@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.29.0";
+const APP_VERSION = "3.30.0";
 const CHANGELOG = [
+  { v: "3.30.0", desc: "Dashboard > Contratos con una subpestana por contrato, ademas de Todos los contratos (el resumen de siempre; clic en un renglon abre la del contrato). La de cada contrato muestra sus datos (monto original y vigente, vigencia con extensiones y dias para vencer), indicadores en USD (facturado con % del monto, cobrado, por cobrar, por facturar, gasto comprometido y pagado, margen de flujo y rentabilidad), tabla mes a mes con flujo acumulado, gasto por rubro y categoria, sus facturas con dias sin cobrar y sus adendas y extensiones. Obedece la barra de periodo" },
   { v: "3.29.0", desc: "Contratos por proyecto: un contrato tiene uno o mas proyectos (centros de costo) y los gastos y facturas de esos proyectos cuentan solos para el, sin asignarlos uno por uno; los gastos prorrateados (Todos, <Grupo> Gral) aportan su parte segun los % del Catalogo a cada proyecto. Asignar a mano (campo Contrato) queda para mandar un gasto o factura completo a otro contrato. Si un proyecto esta en varios contratos, va al vigente en la fecha del movimiento. En el contrato, cada gasto dice por que cuenta (asignado, proyecto o prorrateo con su %) y cuanto le toca. Aplica en la pestana Contratos y en Dashboard > Contratos. Requiere 73-contratos-proyectos.sql" },
   { v: "3.28.0", desc: "Dashboard > Contratos: ingreso contra gasto de los contratos con clientes, todo en USD (los pesos se convierten con el TC Para pagos de Banxico de la fecha de cada movimiento; un gasto pagado en pesos usa el TC que se registro al pagarlo). Barra de periodo arriba. Indicadores: monto de contratos vigentes, facturado, cobrado, por cobrar, gasto comprometido y pagado, margen de flujo (cobrado - pagado) y rentabilidad (facturado - comprometido), con su %. Tabla por contrato con barras de avance. Contratos por vencer (90 dias) y facturas emitidas sin cobrar con mas de 30 dias" },
   { v: "3.27.0", desc: "Pestana Contratos renovada: contratos con clientes. Se retira el generador de contratos con proveedores (Datos recurrentes, Diagnostico, Objeto y clausulas, Expediente); sus tablas se quedan en la base, sin uso. Cada contrato: numero (unico por compania), cliente, proyecto, objeto, monto original y moneda, inicio y termino, status (Vigente, Concluido, Cancelado) y notas. Adendas y extensiones con fecha de firma, cambio de monto (+ amplia, - reduce) y/o nuevo termino: el monto y la vigencia vigentes se calculan con ellas. La lista avisa los vigentes que vencen en 30 dias o ya vencieron, y muestra facturado (con % del monto), cobrado, gasto comprometido y pagado. A cada contrato se le asignan facturas emitidas (desde el contrato o desde la factura) y gastos (desde la transaccion, campo Contrato en Clasificacion, o desde el contrato buscando y marcando varias); una compra PPD lleva a sus parcialidades. Requiere 72-contratos-cliente.sql" },
@@ -5537,6 +5538,8 @@ function DashboardContratos({ unidad, unidades = {}, partidas, transacciones }) 
   const facturasApi = useCollection("facturas_emitidas", "fecha_emision");
   const serie = useSerieTCCompleta();
   const [rangoSel, setRangoSel] = useState(null);
+  // v3.30.0: una subpestaña por contrato, además del resumen de todos.
+  const [selCt, setSelCt] = useSessionState(`ss-dash-contrato-${unidad}`, "resumen");
 
   const contratos = contratosApi.rows.filter((c) => c.unidad === unidad);
   const idsContrato = new Set(contratos.map((c) => c.id));
@@ -5584,7 +5587,7 @@ function DashboardContratos({ unidad, unidades = {}, partidas, transacciones }) 
     const fs = factPor.get(c.id) || [];
     const gs = gastosPor.get(c.id) || [];
     const r = {
-      c, e,
+      c, e, fs, gs,
       monto: conv(e.monto, c.moneda, c.fecha_inicio || hoyLocalISO()),
       facturado: fs.filter(({ m: f }) => enRango(claveMesISO(f.fecha_emision))).reduce((s, { m: f, fraccion }) => s + conv(f.importe, f.moneda, f.fecha_emision) * fraccion, 0),
       cobrado: fs.filter(({ m: f }) => f.status === "Pagada" && enRango(claveMesISO(f.fecha_pago))).reduce((s, { m: f, fraccion }) => s + conv(f.importe, f.moneda, f.fecha_pago) * fraccion, 0),
@@ -5617,8 +5620,28 @@ function DashboardContratos({ unidad, unidades = {}, partidas, transacciones }) 
   const colorMargen = (v) => (v < 0 ? T.red : T.teal);
   const num = { ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" };
 
+  const sel = filas.find((x) => x.c.id === selCt) || null;
+  const pestanas = [{ id: "resumen", label: "Todos los contratos" },
+    ...[...filas].sort((a, b) => (a.c.status === b.c.status ? String(a.c.numero).localeCompare(String(b.c.numero)) : a.c.status === "Vigente" ? -1 : 1))
+      .map((x) => ({ id: x.c.id, label: x.c.numero, apagado: x.c.status !== "Vigente" }))];
+  const barraPestanas = (
+    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start" }}>
+      {pestanas.map((p) => {
+        const activa = (sel ? sel.c.id : "resumen") === p.id;
+        return (
+          <button key={p.id} onClick={() => setSelCt(p.id)}
+            style={{ padding: "6px 14px", borderRadius: 6, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 600, fontFamily: T.fontUI,
+                     background: activa ? T.accent : "transparent", color: activa ? T.onAccent : p.apagado ? T.textFaint : T.textDim }}>
+            {p.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {barraPestanas}
       {limites && (
         <BarraPeriodo>
           <RangoSlider min={limites.min} max={limites.max} desde={desde} hasta={hasta} etiqueta={etiquetaMesCorta}
@@ -5626,6 +5649,8 @@ function DashboardContratos({ unidad, unidades = {}, partidas, transacciones }) 
             onChange={(a, b) => setRangoSel([a, b])} onTodo={() => setRangoSel(null)} />
         </BarraPeriodo>
       )}
+      {sel ? <VistaContratoDash r={sel} conv={conv} mesGasto={mesGasto} partidaPorId={partidaPorId} enRango={enRango} desde={desde} hasta={hasta} limites={limites} mods={modsApi.rows} />
+        : <>
       <Panel title={`Contratos con clientes — ${unidad}`}
         subtitle={`Todo en USD: lo que está en pesos se convierte con el TC Para pagos de Banxico de la fecha de cada movimiento. Los gastos de los proyectos del contrato cuentan solos, con su parte de los prorrateados.${aprox ? ` ${aprox} movimiento(s) son anteriores al primer TC disponible y usan ese: son aproximados.` : ""}`}>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
@@ -5658,7 +5683,7 @@ function DashboardContratos({ unidad, unidades = {}, partidas, transacciones }) 
             </tr></thead>
             <tbody>
               {filas.map((r) => (
-                <tr key={r.c.id} style={{ opacity: r.c.status === "Vigente" ? 1 : 0.65 }}>
+                <tr key={r.c.id} onClick={() => setSelCt(r.c.id)} title="Ver el tablero de este contrato" style={{ cursor: "pointer", opacity: r.c.status === "Vigente" ? 1 : 0.65 }}>
                   <td style={tdStyle}>
                     <div style={{ fontWeight: 700 }}>{r.c.numero} {r.c.status !== "Vigente" && <Pill tone={TONO_STATUS_CONTRATO[r.c.status]}>{r.c.status}</Pill>}</div>
                     <div style={{ fontSize: 11, color: T.textFaint }}>{[r.c.cliente, proyectosDeContrato(r.c).join(", ")].filter(Boolean).join(" · ") || "—"}</div>
@@ -5706,7 +5731,171 @@ function DashboardContratos({ unidad, unidades = {}, partidas, transacciones }) 
           )}
         </div>
       )}
+      </>}
     </div>
+  );
+}
+
+/* Tablero de UN contrato (v3.30.0), en su subpestaña de Dashboard > Contratos.
+   Mismas reglas que el resumen: todo en USD y el periodo de la barra. */
+function VistaContratoDash({ r, conv, mesGasto, partidaPorId, enRango, desde, hasta, limites, mods }) {
+  const { c, e } = r;
+  const mon = monedaNorm(c.moneda);
+  const pctDe = (a, b) => (b > 0 ? `${Math.round((a / b) * 100)} %` : "—");
+  const colorMargen = (v) => (v < 0 ? T.red : T.teal);
+  const num = { ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" };
+  const dias = diasHasta(e.fin);
+
+  // Por mes, dentro del periodo.
+  const meses = new Map();
+  const mesDe = (k) => { if (!meses.has(k)) meses.set(k, { k, facturado: 0, cobrado: 0, comprometido: 0, pagado: 0 }); return meses.get(k); };
+  r.fs.forEach(({ m: f, fraccion }) => {
+    const ke = claveMesISO(f.fecha_emision);
+    if (ke !== null && enRango(ke)) mesDe(ke).facturado += conv(f.importe, f.moneda, f.fecha_emision) * fraccion;
+    const kp = claveMesISO(f.fecha_pago);
+    if (f.status === "Pagada" && kp !== null && enRango(kp)) mesDe(kp).cobrado += conv(f.importe, f.moneda, f.fecha_pago) * fraccion;
+  });
+  r.gs.forEach(({ m: t, fraccion }) => {
+    const kc = mesGasto(t);
+    if (cuentaEnComprometido(t) && kc !== null && enRango(kc)) mesDe(kc).comprometido += conv(t.importe, t.moneda, t.dia) * fraccion;
+    const kp = claveMesISO(t.fecha_pago || t.dia);
+    if (cuentaEnPagado(t) && kp !== null && enRango(kp)) mesDe(kp).pagado += conv(t.importe, t.moneda, t.fecha_pago || t.dia) * fraccion;
+  });
+  let acumulado = 0;
+  const porMes = [...meses.values()].sort((a, b) => a.k - b.k).map((x) => { acumulado += x.cobrado - x.pagado; return { ...x, acumulado }; });
+
+  // Gasto por rubro (de la partida) y categoría (de la transacción).
+  const rubros = new Map();
+  r.gs.forEach(({ m: t, fraccion }) => {
+    const comp = cuentaEnComprometido(t) && enRango(mesGasto(t)) ? conv(t.importe, t.moneda, t.dia) * fraccion : 0;
+    const pag = cuentaEnPagado(t) && enRango(claveMesISO(t.fecha_pago || t.dia)) ? conv(t.importe, t.moneda, t.fecha_pago || t.dia) * fraccion : 0;
+    if (!comp && !pag) return;
+    const base = t.transaccion_padre_id ? null : t;
+    const rubro = (partidaPorId.get((base || t).partida_id)?.rubro || "").trim() || "Sin partida";
+    const cat = (t.categoria || "").trim() || "Sin categoría";
+    if (!rubros.has(rubro)) rubros.set(rubro, { rubro, comprometido: 0, pagado: 0, cats: new Map() });
+    const rr = rubros.get(rubro);
+    rr.comprometido += comp; rr.pagado += pag;
+    if (!rr.cats.has(cat)) rr.cats.set(cat, { cat, comprometido: 0, pagado: 0 });
+    const cc = rr.cats.get(cat); cc.comprometido += comp; cc.pagado += pag;
+  });
+  const listaRubros = [...rubros.values()].sort((a, b) => b.comprometido - a.comprometido);
+
+  const facturas = [...r.fs].sort((a, b) => String(b.m.fecha_emision).localeCompare(String(a.m.fecha_emision)));
+  const modsC = mods.filter((m) => m.contrato_id === c.id).sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
+  const periodoTxt = limites ? (desde === limites.min && hasta === limites.max ? "todo el periodo" : `${etiquetaMesCorta(desde)} a ${etiquetaMesCorta(hasta)}`) : "todo el periodo";
+
+  return (
+    <>
+      <Panel title={`Contrato ${c.numero}`}
+        subtitle={[c.cliente, proyectosDeContrato(c).join(", "), c.objeto].filter(Boolean).join(" · ")}
+        right={<Pill tone={TONO_STATUS_CONTRATO[c.status] || "dim"}>{c.status}</Pill>}>
+        <div style={{ display: "flex", gap: 22, flexWrap: "wrap", fontSize: 12.5, marginBottom: 14 }}>
+          <div><span style={{ color: T.textFaint }}>Monto: </span>
+            {e.monto !== (Number(c.monto_original) || 0) && <span style={{ color: T.textFaint }}>{money(c.monto_original, mon)} → </span>}
+            <b>{money(e.monto, mon)} {mon}</b>{mon === "MXP" && <span style={{ color: T.textFaint }}> ≈ {money(r.monto, "USD")} USD</span>}</div>
+          <div><span style={{ color: T.textFaint }}>Vigencia: </span>{c.fecha_inicio ? fmtFecha(c.fecha_inicio) : "—"} a{" "}
+            {e.fin !== c.fecha_fin_original && c.fecha_fin_original && <span style={{ color: T.textFaint }}>{fmtFecha(c.fecha_fin_original)} → </span>}
+            <b>{e.fin ? fmtFecha(e.fin) : "—"}</b>
+            {c.status === "Vigente" && dias !== null && <span style={{ marginLeft: 6 }}><Pill tone={dias < 0 ? "red" : dias <= 30 ? "amber" : "dim"}>{dias < 0 ? `venció hace ${-dias} d` : `faltan ${dias} d`}</Pill></span>}</div>
+          <div><span style={{ color: T.textFaint }}>Adendas y extensiones: </span>{e.nAdendas + e.nExtensiones || "ninguna"}</div>
+        </div>
+        <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 6 }}>USD · {periodoTxt}</div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+          <KpiCard label={`Facturado (${pctDe(r.facturado, r.monto)} del monto)`} value={money(r.facturado, "USD")} accent={T.accent} />
+          <KpiCard label="Cobrado" value={money(r.cobrado, "USD")} accent={T.teal} />
+          <KpiCard label="Por cobrar" value={money(r.porCobrar, "USD")} accent={T.amber} />
+          <KpiCard label="Por facturar del monto" value={money(Math.max(0, r.monto - r.facturado), "USD")} />
+        </div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <KpiCard label="Gasto comprometido" value={money(r.comprometido, "USD")} />
+          <KpiCard label="Gasto pagado" value={money(r.pagado, "USD")} />
+          <KpiCard label="Margen de flujo (cobrado − pagado)" value={`${money(r.flujo, "USD")} · ${pctDe(r.flujo, r.cobrado)}`} accent={colorMargen(r.flujo)} />
+          <KpiCard label="Rentabilidad (facturado − comprometido)" value={`${money(r.rentab, "USD")} · ${pctDe(r.rentab, r.facturado)}`} accent={colorMargen(r.rentab)} />
+        </div>
+      </Panel>
+
+      <Panel title="Mes a mes" subtitle="USD. Facturado por mes de emisión, cobrado y pagado por mes de pago, comprometido por mes de su partida. El flujo acumulado suma cobrado − pagado.">
+        {!porMes.length ? <div style={{ fontSize: 12.5, color: T.textFaint }}>Sin movimientos en el periodo.</div> : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={tableStyle}>
+              <thead><tr><th style={thStyle}>Mes</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Facturado</th><th style={{ ...thStyle, textAlign: "right" }}>Cobrado</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Gasto comprometido</th><th style={{ ...thStyle, textAlign: "right" }}>Gasto pagado</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Flujo del mes</th><th style={{ ...thStyle, textAlign: "right" }}>Flujo acumulado</th></tr></thead>
+              <tbody>{porMes.map((x) => (
+                <tr key={x.k}>
+                  <td style={tdStyle}>{etiquetaMesCorta(x.k)}</td>
+                  <td style={num}>{money(x.facturado, "USD")}</td><td style={num}>{money(x.cobrado, "USD")}</td>
+                  <td style={num}>{money(x.comprometido, "USD")}</td><td style={num}>{money(x.pagado, "USD")}</td>
+                  <td style={{ ...num, color: colorMargen(x.cobrado - x.pagado) }}>{money(x.cobrado - x.pagado, "USD")}</td>
+                  <td style={{ ...num, color: colorMargen(x.acumulado), fontWeight: 600 }}>{money(x.acumulado, "USD")}</td>
+                </tr>))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(420px, 1fr))", gap: 20 }}>
+        <Panel title="Gasto por rubro y categoría" subtitle="USD, en el periodo. El rubro es el de la partida; la categoría, la de la transacción.">
+          {!listaRubros.length ? <div style={{ fontSize: 12.5, color: T.textFaint }}>Sin gasto en el periodo.</div> : (
+            <table style={tableStyle}>
+              <thead><tr><th style={thStyle}>Rubro / categoría</th><th style={{ ...thStyle, textAlign: "right" }}>Comprometido</th><th style={{ ...thStyle, textAlign: "right" }}>Pagado</th></tr></thead>
+              <tbody>{listaRubros.map((rr) => (
+                <React.Fragment key={rr.rubro}>
+                  <tr style={{ background: T.panelAlt }}>
+                    <td style={{ ...tdStyle, fontWeight: 700 }}>{rr.rubro}</td>
+                    <td style={{ ...num, fontWeight: 700 }}>{money(rr.comprometido, "USD")}</td><td style={{ ...num, fontWeight: 700 }}>{money(rr.pagado, "USD")}</td>
+                  </tr>
+                  {[...rr.cats.values()].sort((a, b) => b.comprometido - a.comprometido).map((cc) => (
+                    <tr key={cc.cat}>
+                      <td style={{ ...tdStyle, paddingLeft: 24, color: T.textDim }}>{cc.cat}</td>
+                      <td style={num}>{money(cc.comprometido, "USD")}</td><td style={num}>{money(cc.pagado, "USD")}</td>
+                    </tr>
+                  ))}
+                </React.Fragment>))}
+              </tbody>
+            </table>
+          )}
+        </Panel>
+        <Panel title="Facturas" subtitle="Todas las del contrato, en su moneda.">
+          {!facturas.length ? <div style={{ fontSize: 12.5, color: T.textFaint }}>Sin facturas.</div> : (
+            <table style={tableStyle}>
+              <thead><tr><th style={thStyle}>Folio</th><th style={thStyle}>Emitida</th><th style={thStyle}>Cobro</th><th style={{ ...thStyle, textAlign: "right" }}>Importe</th><th style={thStyle}>Status</th></tr></thead>
+              <tbody>{facturas.map(({ m: f, fraccion }) => {
+                const d = f.status === "Emitida" ? -diasHasta(f.fecha_emision) : null;
+                return (
+                  <tr key={f.id}>
+                    <td style={{ ...tdStyle, fontWeight: 600 }}>{f.folio}</td>
+                    <td style={tdStyle}>{fmtFecha(f.fecha_emision)}</td>
+                    <td style={tdStyle}>{f.fecha_pago ? fmtFecha(f.fecha_pago) : d !== null ? <Pill tone={d > 60 ? "red" : d > 30 ? "amber" : "dim"}>{d} d sin cobrar</Pill> : "—"}</td>
+                    <td style={num}>{money((Number(f.importe) || 0) * fraccion, f.moneda)} {monedaNorm(f.moneda)}</td>
+                    <td style={tdStyle}><Pill tone={TONO_STATUS_FACTURA[f.status] || "dim"}>{f.status}</Pill></td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>
+          )}
+        </Panel>
+      </div>
+
+      {modsC.length > 0 && (
+        <Panel title="Adendas y extensiones">
+          <table style={tableStyle}>
+            <thead><tr><th style={thStyle}>Tipo</th><th style={thStyle}>Número</th><th style={thStyle}>Firma</th><th style={{ ...thStyle, textAlign: "right" }}>Cambio de monto</th><th style={thStyle}>Nuevo término</th></tr></thead>
+            <tbody>{modsC.map((m) => (
+              <tr key={m.id}>
+                <td style={tdStyle}><Pill tone={m.tipo === "Extensión" ? "accent" : "amber"}>{m.tipo}</Pill></td>
+                <td style={tdStyle}>{m.numero || "—"}</td><td style={tdStyle}>{fmtFecha(m.fecha)}</td>
+                <td style={num}>{m.monto_cambio !== null && m.monto_cambio !== undefined ? `${Number(m.monto_cambio) > 0 ? "+" : ""}${money(m.monto_cambio, mon)}` : "—"}</td>
+                <td style={tdStyle}>{m.nueva_fecha_fin ? fmtFecha(m.nueva_fecha_fin) : "—"}</td>
+              </tr>))}
+            </tbody>
+          </table>
+        </Panel>
+      )}
+    </>
   );
 }
 

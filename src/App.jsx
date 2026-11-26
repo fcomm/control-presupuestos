@@ -480,8 +480,10 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.25.1";
+const APP_VERSION = "3.27.0";
 const CHANGELOG = [
+  { v: "3.27.0", desc: "Pestana Contratos renovada: contratos con clientes. Se retira el generador de contratos con proveedores (Datos recurrentes, Diagnostico, Objeto y clausulas, Expediente); sus tablas se quedan en la base, sin uso. Cada contrato: numero (unico por compania), cliente, proyecto, objeto, monto original y moneda, inicio y termino, status (Vigente, Concluido, Cancelado) y notas. Adendas y extensiones con fecha de firma, cambio de monto (+ amplia, - reduce) y/o nuevo termino: el monto y la vigencia vigentes se calculan con ellas. La lista avisa los vigentes que vencen en 30 dias o ya vencieron, y muestra facturado (con % del monto), cobrado, gasto comprometido y pagado. A cada contrato se le asignan facturas emitidas (desde el contrato o desde la factura) y gastos (desde la transaccion, campo Contrato en Clasificacion, o desde el contrato buscando y marcando varias); una compra PPD lleva a sus parcialidades. Requiere 72-contratos-cliente.sql" },
+  { v: "3.26.0", desc: "Nueva pestana Facturas: las facturas que cada compania emite a sus clientes. Datos: folio (serie y numero, unico por compania), cliente, proyecto, importe y moneda, status (Emitida, Pagada o Cancelada), fecha emitida y fecha de pago (obligatoria al marcarla Pagada), notas, y su PDF y XML adjuntos, que van a Drive en <COMPANIA>/<ANO>/Facturas/<FOLIO>. Arriba, por moneda: emitido, cobrado y por cobrar (sin canceladas). Busqueda y filtros por status y proyecto; clic en la fila para editar. Requiere 71-facturas-emitidas.sql y la nueva version de mover_adjuntos_a_drive.py" },
   { v: "3.25.1", desc: "Dashboard general: el slider de periodo pasa a su propia barra a todo lo ancho arriba del tablero, igual que en Dashboard > Sempra (en la fila de filtros quedaba amontonado). Los atajos de periodo se quedan junto al filtro de Proyecto" },
   { v: "3.25.0", desc: "Slider de periodo mas delgado y reutilizable: un solo renglon con el rango elegido, cuantos meses, la barra con sus extremos y el boton Todo; la explicacion de uso pasa a la (i) como texto al pasar el raton. Se usa en Dashboard > Sempra y ahora tambien en el Dashboard general, donde reemplaza los selectores de mes y ano de Desde y Hasta (los atajos Mes actual, YTD, Ano anterior y Todo se quedan)" },
   { v: "3.24.0", desc: "Solicitudes de Pago (SPP) con revisiones: si la transaccion ya tiene una SPP, volver a generarla conserva su folio y sube la revision (CTM-15-2, CTM-15-3...) en vez de tomar otro consecutivo; solo la primera SPP de una transaccion avanza el consecutivo de la compania. La ventana dice antes de generar si sera folio nuevo o revision N del folio X. Si dos personas generan a la vez, se recalcula y reintenta. Las SPP anteriores que ya tienen folios repetidos para una misma transaccion se quedan como estan" },
@@ -7426,6 +7428,304 @@ function revLeerArchivo(arrayBuffer, compania) {
   return filas;
 }
 
+/* ----------------------------------------------------------------------
+   FACTURAS EMITIDAS (v3.26.0)
+   Las facturas que cada compañía emite a sus clientes: lo que se cobra. Por
+   ahora lo básico —folio, cliente, proyecto, importe, status y fechas— más
+   su PDF y XML, que van a Drive como los de las transacciones
+   (<COMPAÑÍA>/<AÑO>/Facturas/<FOLIO>). No se cruzan con partidas ni
+   transacciones: esas son gasto, esto es ingreso. Requiere 71-facturas-emitidas.sql.
+---------------------------------------------------------------------- */
+const STATUS_FACTURA = ["Emitida", "Pagada", "Cancelada"];
+const TONO_STATUS_FACTURA = { Emitida: "amber", Pagada: "teal", Cancelada: "dim" };
+const facturaVacia = (unidad) => ({
+  unidad, folio: "", cliente: "", proyecto: "", importe: "", moneda: "MXP",
+  status: "Emitida", fecha_emision: hoyLocalISO(), fecha_pago: "", notas: "",
+});
+
+function FacturasTab({ unidad, proyectos = [], soloLectura = false }) {
+  const api = useCollection("facturas_emitidas", "fecha_emision", { withAudit: true });
+  const contratosApiF = useCollection("contratos_cliente", "numero");
+  const contratosF = contratosApiF.rows.filter((c) => c.unidad === unidad).sort((a, b) => String(a.numero).localeCompare(String(b.numero)));
+  const numContrato = (id) => contratosF.find((c) => c.id === id)?.numero || "";
+  const [buscar, setBuscar] = useState("");
+  const [fStatus, setFStatus] = useState("");
+  const [fProyecto, setFProyecto] = useState("");
+  const [sort, setSort] = useState({ key: "fecha_emision", dir: "desc" });
+  const [editando, setEditando] = useState(null); // null · objeto (nueva o existente)
+  const [adjPor, setAdjPor] = useState({});       // { [facturaId]: Set(categorías) }
+  const [recargaAdj, setRecargaAdj] = useState(0);
+
+  const deUnidad = api.rows.filter((f) => f.unidad === unidad);
+  useEffect(() => {
+    const ids = deUnidad.map((f) => f.id);
+    if (!ids.length) { setAdjPor({}); return; }
+    let vivo = true;
+    (async () => {
+      const mapa = {};
+      for (let i = 0; i < ids.length; i += 200) {
+        const { data } = await supabase.from("adjuntos").select("entidad_id,categoria")
+          .eq("entidad", "factura").in("entidad_id", ids.slice(i, i + 200)).neq("estado", "por_borrar");
+        (data || []).forEach((a) => { if (!mapa[a.entidad_id]) mapa[a.entidad_id] = new Set(); mapa[a.entidad_id].add(a.categoria); });
+      }
+      if (vivo) setAdjPor(mapa);
+    })();
+    return () => { vivo = false; };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [unidad, deUnidad.length, recargaAdj]);
+
+  const proyectosDeFacturas = [...new Set([...proyectos, ...deUnidad.map((f) => f.proyecto).filter(Boolean)])].sort();
+  const clientes = [...new Set(deUnidad.map((f) => (f.cliente || "").trim()).filter(Boolean))].sort();
+  const q = buscar.trim().toLowerCase();
+  const filtradas = deUnidad.filter((f) => (!fStatus || f.status === fStatus) && (!fProyecto || f.proyecto === fProyecto)
+    && (!q || [f.folio, f.cliente, f.proyecto, f.notas, numContrato(f.contrato_id)].some((v) => String(v || "").toLowerCase().includes(q))));
+  const ordenadas = sortRows(filtradas, sort, { importe: (r) => Number(r.importe) || 0 });
+
+  /* KPIs por moneda: emitido (sin canceladas), cobrado y por cobrar. */
+  const kpis = {};
+  filtradas.forEach((f) => {
+    if (f.status === "Cancelada") return;
+    const m = monedaNorm(f.moneda);
+    const k = kpis[m] || (kpis[m] = { emitido: 0, cobrado: 0, porCobrar: 0, n: 0 });
+    const imp = Number(f.importe) || 0;
+    k.emitido += imp; k.n++;
+    if (f.status === "Pagada") k.cobrado += imp; else k.porCobrar += imp;
+  });
+
+  const columnas = [
+    { key: "folio", label: "Folio" },
+    { key: "cliente", label: "Cliente" },
+    { key: "proyecto", label: "Proyecto" },
+    { key: "_contrato", label: "Contrato" },
+    { key: "fecha_emision", label: "Emitida" },
+    { key: "fecha_pago", label: "Pago" },
+    { key: "importe", label: "Importe" },
+    { key: "status", label: "Status" },
+    { key: "_adj", label: "Archivos" },
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <Panel title={`Facturas emitidas — ${unidad}`}
+        subtitle="Las facturas que la compañía emite a sus clientes. Status: Emitida (por cobrar), Pagada (cobrada) o Cancelada."
+        right={!soloLectura && <Button onClick={() => setEditando(facturaVacia(unidad))}>+ Nueva factura</Button>}>
+        {Object.keys(kpis).length > 0 && (
+          <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16 }}>
+            {["MXP", "USD"].filter((m) => kpis[m]).map((m) => (
+              <div key={m}>
+                <div style={{ fontSize: 10.5, color: T.accent, letterSpacing: "0.08em", textTransform: "uppercase", fontFamily: T.fontMono, marginBottom: 4 }}>{m} · {kpis[m].n} factura(s)</div>
+                <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+                  <KpiCard label="Emitido" value={money(kpis[m].emitido, m)} />
+                  <KpiCard label="Cobrado" value={money(kpis[m].cobrado, m)} accent={T.teal} />
+                  <KpiCard label="Por cobrar" value={money(kpis[m].porCobrar, m)} accent={T.amber} />
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+          <Field label="Buscar" style={{ flex: "1 1 260px" }}>
+            <TextInput value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Folio, cliente, proyecto…" />
+          </Field>
+          <Field label="Status" style={{ flex: "0 0 150px" }}>
+            <Select value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+              <option value="">Todos</option>
+              {STATUS_FACTURA.map((s) => <option key={s}>{s}</option>)}
+            </Select>
+          </Field>
+          <Field label="Proyecto" style={{ flex: "0 0 200px" }}>
+            <Select value={fProyecto} onChange={(e) => setFProyecto(e.target.value)}>
+              <option value="">Todos</option>
+              {proyectosDeFacturas.map((p) => <option key={p}>{p}</option>)}
+            </Select>
+          </Field>
+          {(buscar || fStatus || fProyecto) && (
+            <Button variant="ghost" onClick={() => { setBuscar(""); setFStatus(""); setFProyecto(""); }}>Limpiar filtros</Button>
+          )}
+        </div>
+
+        {!api.ready ? (
+          <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
+        ) : api.error && !deUnidad.length ? (
+          <div style={{ fontSize: 12.5, color: T.red }}>No se pudieron cargar las facturas: {api.error.message}. Si dice que la tabla no existe, falta correr 71-facturas-emitidas.sql.</div>
+        ) : !deUnidad.length ? (
+          <EmptyState title="Sin facturas" body={`Todavía no hay facturas emitidas de ${unidad}. Agrega la primera con + Nueva factura.`} />
+        ) : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={tableStyle}>
+              <thead>
+                <tr>
+                  {columnas.map((c) => c.key.startsWith("_")
+                    ? <th key={c.key} style={thStyle}>{c.label}</th>
+                    : <SortableTh key={c.key} label={c.label} sortKey={c.key} sort={sort} setSort={setSort}
+                        sumLabel={c.key === "importe" ? sumaPorMoneda(filtradas.filter((f) => f.status !== "Cancelada"), "importe") : undefined} />)}
+                </tr>
+              </thead>
+              <tbody>
+                {ordenadas.map((f) => {
+                  const adj = adjPor[f.id] || new Set();
+                  const cancelada = f.status === "Cancelada";
+                  return (
+                    <tr key={f.id} onClick={() => setEditando({ ...f })} style={{ cursor: "pointer", opacity: cancelada ? 0.6 : 1 }}>
+                      <td style={{ ...tdStyle, fontWeight: 600, textDecoration: cancelada ? "line-through" : "none" }}>{f.folio}</td>
+                      <td style={tdStyle}>{f.cliente || "—"}</td>
+                      <td style={tdStyle}>{f.proyecto || "—"}</td>
+                      <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{numContrato(f.contrato_id) || "—"}</td>
+                      <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{fmtFecha(f.fecha_emision)}</td>
+                      <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{f.fecha_pago ? fmtFecha(f.fecha_pago) : "—"}</td>
+                      <td style={{ ...tdStyle, fontFamily: T.fontMono, whiteSpace: "nowrap", textAlign: "right" }}>
+                        {f.importe !== null && f.importe !== "" ? `${money(f.importe, f.moneda)} ${monedaNorm(f.moneda)}` : "—"}
+                      </td>
+                      <td style={tdStyle}><Pill tone={TONO_STATUS_FACTURA[f.status] || "dim"}>{f.status}</Pill></td>
+                      <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
+                        {[["factura", "PDF"], ["xml", "XML"]].map(([cat, corto]) => (
+                          <span key={cat} title={adj.has(cat) ? `${corto} adjunto` : `Falta el ${corto}`}
+                            style={{ fontSize: 10, fontFamily: T.fontMono, marginRight: 5, padding: "1px 5px", borderRadius: 4,
+                                     border: `1px solid ${adj.has(cat) ? `${T.teal}88` : T.borderSoft}`,
+                                     color: adj.has(cat) ? T.teal : T.textFaint }}>{corto}</span>
+                        ))}
+                      </td>
+                    </tr>
+                  );
+                })}
+                {!ordenadas.length && (
+                  <tr><td colSpan={columnas.length} style={{ ...tdStyle, textAlign: "center", color: T.textFaint }}>Ninguna factura coincide con los filtros</td></tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+
+      {editando && (
+        <FacturaModal factura={editando} unidad={unidad} api={api} proyectos={proyectosDeFacturas} clientes={clientes}
+          contratos={contratosF}
+          soloLectura={soloLectura}
+          onGuardada={(f) => setEditando({ ...f })}
+          onClose={() => { setEditando(null); setRecargaAdj((n) => n + 1); }} />
+      )}
+    </div>
+  );
+}
+
+function FacturaModal({ factura, unidad, api, proyectos, clientes, contratos = [], soloLectura, onGuardada, onClose }) {
+  const [form, setForm] = useState({ ...factura, importe: factura.importe ?? "", fecha_pago: factura.fecha_pago || "" });
+  const [guardando, setGuardando] = useState(false);
+  const esNueva = !factura.id;
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+
+  const cambiarStatus = (s) => setForm((f) => ({
+    ...f, status: s,
+    // Pagada pide fecha de pago (se propone hoy); al dejar de estar pagada se limpia.
+    fecha_pago: s === "Pagada" ? (f.fecha_pago || hoyLocalISO()) : "",
+  }));
+
+  const guardar = async (e) => {
+    e?.preventDefault();
+    const folio = String(form.folio || "").trim().toUpperCase();
+    if (!folio) { alert("Escribe el folio de la factura (serie y número, como aparece en ella)."); return; }
+    if (!form.fecha_emision) { alert("Indica la fecha en que se emitió la factura."); return; }
+    if (form.status === "Pagada" && !form.fecha_pago) { alert("Una factura Pagada necesita su fecha de pago."); return; }
+    if (form.fecha_pago && form.fecha_pago < form.fecha_emision) { alert("La fecha de pago no puede ser anterior a la de emisión."); return; }
+    const reg = {
+      unidad, folio, cliente: String(form.cliente || "").trim() || null, proyecto: form.proyecto || null,
+      importe: form.importe === "" ? null : Math.round(Number(form.importe) * 100) / 100,
+      moneda: monedaNorm(form.moneda), status: form.status,
+      fecha_emision: form.fecha_emision, fecha_pago: form.fecha_pago || null,
+      notas: String(form.notas || "").trim() || null,
+      contrato_id: form.contrato_id || null,
+    };
+    if (reg.importe !== null && !(reg.importe >= 0)) { alert("El importe no es un número válido."); return; }
+    setGuardando(true);
+    try {
+      const guardada = esNueva ? await api.insert(reg) : await api.update(factura.id, reg);
+      // Nueva: la ventana se queda abierta para adjuntar el PDF y el XML.
+      if (esNueva) onGuardada(guardada); else onClose();
+    } catch (err) {
+      const msg = err.code === "23505" ? `Ya existe una factura ${folio} en ${unidad}.` : (err.message || String(err));
+      alert("No se pudo guardar: " + msg);
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  const eliminar = async () => {
+    if (!confirm(`¿Eliminar la factura ${factura.folio}? Solo si se capturó por error: una factura que el SAT canceló se deja con status Cancelada.\n\nSus archivos en Drive no se borran.`)) return;
+    setGuardando(true);
+    try { await api.remove(factura.id); onClose(); }
+    catch (err) { alert("No se pudo eliminar: " + (err.message || err)); setGuardando(false); }
+  };
+
+  return (
+    <Modal title={esNueva ? `Nueva factura — ${unidad}` : `Factura ${factura.folio}`}
+      subtitle={esNueva ? "Al guardarla se abren los adjuntos para subir su PDF y XML." : "Edita los datos o adjunta su PDF y XML."}
+      onClose={onClose} width={760} cerrarAlHacerClicFuera={false}>
+      <form onSubmit={guardar} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        <Field label="Folio (serie y número)">
+          <TextInput value={form.folio} onChange={(e) => set("folio", e.target.value)} placeholder="A-1234" disabled={soloLectura} />
+        </Field>
+        <Field label="Cliente" style={{ gridColumn: "span 3" }}>
+          <TextInput value={form.cliente || ""} onChange={(e) => set("cliente", e.target.value)} list="clientes-facturas" disabled={soloLectura} />
+          <datalist id="clientes-facturas">{clientes.map((c) => <option key={c} value={c} />)}</datalist>
+        </Field>
+        <Field label="Proyecto" style={{ gridColumn: "span 2" }}>
+          <Select value={form.proyecto || ""} onChange={(e) => set("proyecto", e.target.value)} disabled={soloLectura}>
+            <option value="">— Sin proyecto —</option>
+            {proyectos.map((p) => <option key={p}>{p}</option>)}
+          </Select>
+        </Field>
+        <Field label="Importe total">
+          <TextInput type="number" step="0.01" value={form.importe} onChange={(e) => set("importe", e.target.value)} disabled={soloLectura} />
+        </Field>
+        <Field label="Moneda">
+          <Select value={monedaNorm(form.moneda)} onChange={(e) => set("moneda", e.target.value)} disabled={soloLectura}>
+            <option value="MXP">MXP</option><option value="USD">USD</option>
+          </Select>
+        </Field>
+        <Field label="Status">
+          <Select value={form.status} onChange={(e) => cambiarStatus(e.target.value)} disabled={soloLectura}>
+            {STATUS_FACTURA.map((s) => <option key={s}>{s}</option>)}
+          </Select>
+        </Field>
+        <Field label="Fecha emitida">
+          <TextInput type="date" value={form.fecha_emision || ""} onChange={(e) => set("fecha_emision", e.target.value)} disabled={soloLectura} />
+        </Field>
+        <Field label="Fecha de pago">
+          <TextInput type="date" value={form.fecha_pago || ""} onChange={(e) => set("fecha_pago", e.target.value)}
+            disabled={soloLectura || form.status !== "Pagada"}
+            title={form.status !== "Pagada" ? "Se captura al marcarla Pagada" : undefined} />
+        </Field>
+        <div />
+        <Field label="Contrato" style={{ gridColumn: "span 2" }}>
+          <Select value={form.contrato_id || ""} onChange={(e) => set("contrato_id", e.target.value)} disabled={soloLectura}>
+            <option value="">— Sin contrato —</option>
+            {contratos.filter((c) => c.status === "Vigente" || c.id === form.contrato_id).map((c) => (
+              <option key={c.id} value={c.id}>{c.numero}{c.cliente ? ` · ${c.cliente}` : ""}{c.status !== "Vigente" ? ` (${c.status})` : ""}</option>
+            ))}
+          </Select>
+        </Field>
+        <Field label="Notas" style={{ gridColumn: "span 2" }}>
+          <TextInput value={form.notas || ""} onChange={(e) => set("notas", e.target.value)} disabled={soloLectura} />
+        </Field>
+        {!soloLectura && (
+          <div style={{ gridColumn: "span 4", display: "flex", gap: 8 }}>
+            <Button type="submit" disabled={guardando}>{guardando ? "Guardando…" : esNueva ? "Guardar factura" : "Guardar cambios"}</Button>
+            <Button type="button" variant="ghost" onClick={onClose}>{esNueva ? "Cancelar" : "Cerrar"}</Button>
+            <div style={{ flex: 1 }} />
+            {!esNueva && <Button type="button" variant="danger" onClick={eliminar} disabled={guardando}>Eliminar</Button>}
+          </div>
+        )}
+      </form>
+      {!esNueva && (
+        <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${T.borderSoft}` }}>
+          <AdjuntosPanel entidad="factura" entidadId={factura.id} unidad={unidad} carpeta={factura.id} />
+        </div>
+      )}
+    </Modal>
+  );
+}
+
 function RevisionComprasTab({ unidad }) {
   const [filas, setFilas] = useState(null); // null = cargando
   const [error, setError] = useState("");
@@ -12740,6 +13040,10 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
   const [sppDe, setSppDe] = useState(null);
   const cuentasDelProveedorSeleccionado = form.proveedor_id ? cuentasApi.rows.filter((c) => c.proveedor_id === form.proveedor_id) : [];
   const transUnidad = transacciones.filter((t) => t.unidad_detectada === unidad);
+  // v3.27.0: contratos con clientes, para asignarle a la transacción el suyo.
+  const contratosClienteApi = useCollection("contratos_cliente", "numero");
+  const contratosDeUnidad = contratosClienteApi.rows.filter((c) => c.unidad === unidad)
+    .sort((a, b) => String(a.numero).localeCompare(String(b.numero)));
   const desbloqueoPago = useDesbloqueoPago(editId ? transUnidad.find((x) => x.id === editId) : null, form,
     modalOpen ? editId || "nueva" : null);
   /* ID SAE del proveedor: vive en el catálogo de proveedores, no en la
@@ -13887,6 +14191,7 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
     const rest = camposEditablesTransaccion(restRaw);
     rest.proveedor_id = rest.proveedor_id || null;
     rest.cuenta_id = rest.cuenta_id || null;
+    rest.contrato_id = rest.contrato_id || null;
     /* Tipo de cambio: solo en USD y solo pagada. Si se marcó Pagada sin que se
        llenara (por ejemplo, porque aún no había dato), se toma el del DOF de
        la fecha de pago. En pesos o sin pagar, queda vacío. */
@@ -15074,6 +15379,20 @@ function TransaccionesTab({ unidad, unidades, partidas, partidasApi, transaccion
                       catálogo, se agrega como opción para no perderla al editar. */}
                   {form.zona && !zonas.includes(form.zona) && <option key={form.zona}>{form.zona}</option>}
                 </Select>
+              </Field>
+              <Field label="Contrato">
+                {esParcialidad(form) ? (
+                  <div style={{ padding: "8px 10px", border: `1px solid ${T.border}`, borderRadius: 6, fontSize: 12.5, color: T.textDim }}>
+                    {contratosDeUnidad.find((c) => c.id === padreDe(form)?.contrato_id)?.numero || "—"} <i style={{ color: T.textFaint }}>(el de la compra)</i>
+                  </div>
+                ) : (
+                  <Select value={form.contrato_id || ""} onChange={(e) => setForm({ ...form, contrato_id: e.target.value || null })}>
+                    <option value="">— Sin contrato —</option>
+                    {contratosDeUnidad.filter((c) => c.status === "Vigente" || c.id === form.contrato_id).map((c) => (
+                      <option key={c.id} value={c.id}>{c.numero}{c.cliente ? ` · ${c.cliente}` : ""}{c.status !== "Vigente" ? ` (${c.status})` : ""}</option>
+                    ))}
+                  </Select>
+                )}
               </Field>
               <Field label="Categoría del gasto">
                 {/* Solo categorías del rubro de la partida (ver CATEGORÍA DENTRO
@@ -18712,1473 +19031,17 @@ function ReportesDireccionTab({ unidad, partidas, transacciones, transaccionesTo
   );
 }
 
-const SUBS_CONTRATOS = [
-  { id: "datos", label: "Datos recurrentes" },
-  { id: "generador", label: "Diagnóstico" },
-  { id: "clausulas", label: "Objeto y cláusulas" },
-  { id: "expediente", label: "Expediente" },
-];
-
-/* Los datos legales de la empresa contratante. Cada campo declara a qué
-   marcador de las plantillas alimenta: sin esa pista, quien captura no tiene
-   forma de saber por qué un campo aparentemente menor importa, y los campos
-   vacíos salen impresos en el Word como {{MARCADOR}}. */
-const CAMPOS_DATOS_UNIDAD = [
-  { key: "razon_social",          label: "Razón social",               req: true, marcador: "RAZON_SOCIAL_CONTRATANTE" },
-  { key: "rfc",                   label: "RFC",                        req: true, upper: true, marcador: "RFC_CONTRATANTE" },
-  { key: "domicilio",             label: "Domicilio fiscal",           req: true, ancho: 2, marcador: "DOMICILIO_CONTRATANTE" },
-  { key: "representante",         label: "Representante legal",        req: true, marcador: "REPRESENTANTE_CONTRATANTE" },
-  { key: "cargo_representante",   label: "Cargo del representante" },
-  { key: "escritura",             label: "Escritura pública",          marcador: "ESCRITURA_CONTRATANTE" },
-  { key: "notario",               label: "Notario",                    marcador: "NOTARIO_CONTRATANTE" },
-  { key: "correo_notificaciones", label: "Correo de notificaciones",   marcador: "CORREO_CONTRATANTE" },
-  { key: "correo_facturacion",    label: "Correo de facturación",      marcador: "CORREO_FACTURACION" },
-  { key: "jurisdiccion",          label: "Jurisdicción",               req: true, marcador: "JURISDICCION" },
-  { key: "lugar_suscripcion",     label: "Lugar de suscripción",       marcador: "LUGAR_SUSCRIPCION" },
-];
-
-const PERSONALIDADES = [
-  { value: "Persona moral",                              moral: true  },
-  { value: "Persona física con actividad empresarial",   moral: false },
-  { value: "Persona física",                             moral: false },
-];
-const esMoral = (personalidad) =>
-  (PERSONALIDADES.find((p) => p.value === personalidad) || PERSONALIDADES[0]).moral;
-/* El RFC lo dice sin ambigüedad: 12 caracteres para moral, 13 para física. */
-const moralPorRfc = (rfc) => normRfc(rfc).length === 12;
-
-/* Los campos no son los mismos para una y otra. Una moral se constituye ante
-   notario y comparece por representante; una física comparece por su propio
-   derecho y lo que la identifica es la CURP. Pedir escritura y representante
-   a una física no solo sobra: invita a inventarlos. */
-const CAMPOS_PROVEEDOR_LEGAL = [
-  { key: "rfc",           label: "RFC",                 req: true, upper: true, marcador: "RFC_PROVEEDOR" },
-  { key: "razon_social",  label: "Razón social",        labelFisica: "Nombre completo",
-    req: true, marcador: "RAZON_SOCIAL_PROVEEDOR" },
-  { key: "personalidad",  label: "Personalidad",        marcador: "PERSONALIDAD_PROVEEDOR",
-    opciones: PERSONALIDADES.map((p) => p.value) },
-  { key: "curp",          label: "CURP",                upper: true, soloFisica: true },
-  { key: "domicilio",     label: "Domicilio fiscal",    ancho: 2, marcador: "DOMICILIO_PROVEEDOR" },
-  { key: "representante", label: "Representante legal", soloMoral: true, marcador: "REPRESENTANTE_PROVEEDOR" },
-  { key: "escritura",     label: "Escritura constitutiva", soloMoral: true, marcador: "ESCRITURA_PROVEEDOR" },
-  { key: "contacto",      label: "Contacto",            marcador: "CONTACTO_PROVEEDOR" },
-  { key: "correo",        label: "Correo",              marcador: "CORREO_PROVEEDOR" },
-];
-
-/* Los parámetros, agrupados por para qué sirven. Los umbrales van aparte
-   porque no son cláusula de ningún contrato: son las cifras que el generador
-   muestra al preguntar, y el instrumento guarda con cuáles se decidió. */
-const GRUPOS_PARAMETROS = [
-  { grupo: "Umbrales de decisión", nota: "Cifras de referencia que el generador muestra al preguntar. No alimentan ninguna plantilla.", campos: [
-    { key: "umbral_operacion", label: "Umbral por operación", tipo: "money", def: 50000 },
-    { key: "umbral_acumulado", label: "Umbral acumulado",     tipo: "money", def: 200000 },
-  ]},
-  { grupo: "Penas y garantías", campos: [
-    { key: "pena_diaria_pct",       label: "Pena convencional diaria",   tipo: "pct",   def: 1,  marcador: "PENA_PORCENTAJE" },
-    { key: "pena_tope_pct",         label: "Tope de la pena",            tipo: "pct",   def: 10, marcador: "PENA_TOPE" },
-    { key: "garantia_pct",          label: "Garantía de cumplimiento",   tipo: "pct",   def: 10, marcador: "GARANTIA_PORCENTAJE" },
-    { key: "garantia_plazo_dias",   label: "Plazo para entregarla",      tipo: "dias",  def: 10, marcador: "PLAZO_GARANTIA_DIAS" },
-    { key: "garantia_vicios_meses", label: "Garantía por vicios ocultos",tipo: "meses", def: 12, marcador: "GARANTIA_VICIOS_MESES" },
-  ]},
-  { grupo: "Plazos", campos: [
-    { key: "plazo_pago_dias",        label: "Plazo de pago",            tipo: "dias", def: 30, marcador: "PLAZO_PAGO_DIAS" },
-    { key: "plazo_aceptacion_dias",  label: "Plazo de aceptación",      tipo: "dias", def: 3,  marcador: "PLAZO_ACEPTACION_DIAS" },
-    { key: "dias_rechazo",           label: "Días para rechazar",       tipo: "dias", def: 5,  marcador: "DIAS_RECHAZO" },
-    { key: "aviso_terminacion_dias", label: "Aviso de terminación",     tipo: "dias", def: 15, marcador: "AVISO_TERMINACION_DIAS" },
-    { key: "aviso_ajuste_dias",      label: "Aviso de ajuste de precios",tipo: "dias", def: 30, marcador: "AVISO_AJUSTE_DIAS" },
-  ]},
-  { grupo: "Vigencias de obligaciones", campos: [
-    { key: "confidencialidad_anos", label: "Confidencialidad", tipo: "anos", def: 5, marcador: "CONFIDENCIALIDAD_ANOS" },
-    { key: "auditoria_anos",        label: "Auditoría",        tipo: "anos", def: 5, marcador: "AUDITORIA_ANOS" },
-  ]},
-];
-const CAMPOS_PARAMETROS = GRUPOS_PARAMETROS.flatMap((g) => g.campos);
-
-const SENTIDOS_32D = [
-  { value: "", label: "— sin registrar —" },
-  { value: "positiva", label: "Positiva" },
-  { value: "negativa", label: "Negativa" },
-  { value: "sin_obligaciones", label: "Sin obligaciones" },
-  { value: "suspendido", label: "Suspendido" },
-];
-const NIVELES_DD = [
-  { value: "simplificada", label: "Simplificada" },
-  { value: "estandar", label: "Estándar" },
-  { value: "reforzada", label: "Reforzada" },
-];
-
+/* ----------------------------------------------------------------------
+   CONTRATOS CON CLIENTES (v3.27.0)
+   Reemplaza al generador de contratos con proveedores, que se retiró. Cada
+   contrato lleva su monto y vigencia originales y sus modificaciones
+   (adendas y extensiones), que cambian el monto (+ amplía, − reduce) y/o la
+   fecha de término. A un contrato se le asignan gastos (transacciones, desde
+   la transacción o desde aquí) y facturas emitidas, y se ve lo facturado,
+   cobrado, comprometido y pagado contra él. Requiere 72-contratos-cliente.sql.
+---------------------------------------------------------------------- */
+/* Utilidades que vivían en el generador de contratos y se siguen usando. */
 const hoyISO = () => new Date().toISOString().slice(0, 10);
-const normRfc = (v) => String(v || "").trim().toUpperCase();
-
-function sufijoParametro(tipo) {
-  return tipo === "pct" ? "%" : tipo === "dias" ? "días" : tipo === "meses" ? "meses" : tipo === "anos" ? "años" : "";
-}
-function formatParametro(valor, tipo) {
-  const n = Number(valor);
-  if (!Number.isFinite(n)) return "—";
-  if (tipo === "money") return `$${numMx(n)}`;
-  const suf = sufijoParametro(tipo);
-  return suf ? `${n} ${suf}` : String(n);
-}
-
-/* Etiqueta del marcador que alimenta un campo. Se muestra bajo el input en
-   monoespaciado para que se lea como lo que es: el texto literal que va a
-   quedar en el Word si el campo se deja vacío. */
-function MarcadorHint({ marcador }) {
-  if (!marcador) return null;
-  return (
-    <span style={{ fontSize: 10, color: T.textFaint, fontFamily: T.fontMono, marginTop: 3 }}>
-      {"{{" + marcador + "}}"}
-    </span>
-  );
-}
-
-/**
- * Datos legales de la empresa contratante — una fila por unidad.
- *
- * No usa useCollection: esa tabla tiene a `unidad` como llave primaria y no
- * tiene columna `id`, que es de lo que dependen update() y remove(). Y de
- * todos modos no es una colección, es un formulario de un solo registro.
- */
-function DatosUnidadPanel({ unidad, session }) {
-  const vacio = Object.fromEntries(CAMPOS_DATOS_UNIDAD.map((c) => [c.key, ""]));
-  const [form, setForm] = useState({ ...vacio, jurisdiccion: "Zapopan, Jalisco" });
-  const [cargando, setCargando] = useState(true);
-  const [guardando, setGuardando] = useState(false);
-  const [existia, setExistia] = useState(false);
-  const [guardadoEn, setGuardadoEn] = useState(null);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    let vivo = true;
-    (async () => {
-      setCargando(true);
-      setError("");
-      try {
-        const { data, error: e } = await supabase
-          .from("contratos_datos_unidad").select("*").eq("unidad", unidad).maybeSingle();
-        if (e) throw e;
-        if (!vivo) return;
-        if (data) {
-          setForm({ ...vacio, ...Object.fromEntries(CAMPOS_DATOS_UNIDAD.map((c) => [c.key, data[c.key] || ""])) });
-          setExistia(true);
-          setGuardadoEn(data.actualizado_en || null);
-        } else {
-          setForm({ ...vacio, jurisdiccion: "Zapopan, Jalisco" });
-          setExistia(false);
-          setGuardadoEn(null);
-        }
-      } catch (err) {
-        if (vivo) setError(err.message || String(err));
-      } finally {
-        if (vivo) setCargando(false);
-      }
-    })();
-    return () => { vivo = false; };
-  }, [unidad]);
-
-  const faltantes = CAMPOS_DATOS_UNIDAD.filter((c) => c.req && !String(form[c.key] || "").trim());
-
-  const guardar = async () => {
-    if (faltantes.length) {
-      alert("Faltan campos obligatorios: " + faltantes.map((c) => c.label).join(", "));
-      return;
-    }
-    setGuardando(true);
-    setError("");
-    try {
-      const fila = { unidad, actualizado_en: new Date().toISOString() };
-      CAMPOS_DATOS_UNIDAD.forEach((c) => {
-        const v = String(form[c.key] || "").trim();
-        fila[c.key] = c.upper ? v.toUpperCase() : v;
-      });
-      if (session?.user?.id) fila.actualizado_por = session.user.id;
-      const { error: e } = await supabase
-        .from("contratos_datos_unidad").upsert(fila, { onConflict: "unidad" });
-      if (e) throw e;
-      setExistia(true);
-      setGuardadoEn(fila.actualizado_en);
-    } catch (err) {
-      setError(err.message || String(err));
-    } finally {
-      setGuardando(false);
-    }
-  };
-
-  return (
-    <Panel
-      title={`Datos legales — ${unidad}`}
-      subtitle="Quién contrata. Alimenta la mitad de los marcadores de las cinco plantillas."
-      right={
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          {guardadoEn && <span style={{ fontSize: 11, color: T.textFaint }}>Guardado {formatFechaHora(guardadoEn)}</span>}
-          <Button onClick={guardar} disabled={guardando || cargando}>
-            {guardando ? "Guardando…" : existia ? "Guardar cambios" : "Crear registro"}
-          </Button>
-        </div>
-      }
-    >
-      {cargando ? (
-        <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
-      ) : (
-        <>
-          {!existia && (
-            <div style={{ fontSize: 12, color: T.textDim, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "10px 12px", marginBottom: 14 }}>
-              {unidad} todavía no tiene datos legales capturados. Sin esta fila no se pueden crear parámetros,
-              porque las dos tablas dependen de ella.
-            </div>
-          )}
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14 }}>
-            {CAMPOS_DATOS_UNIDAD.map((c) => (
-              <Field
-                key={c.key}
-                label={c.req ? `${c.label} *` : c.label}
-                style={c.ancho === 2 ? { gridColumn: "span 2" } : undefined}
-              >
-                <TextInput
-                  value={form[c.key] || ""}
-                  onChange={(e) => setForm({ ...form, [c.key]: c.upper ? e.target.value.toUpperCase() : e.target.value })}
-                />
-                <MarcadorHint marcador={c.marcador} />
-              </Field>
-            ))}
-          </div>
-          {error && <div style={{ marginTop: 12, fontSize: 12, color: T.red }}>No se pudo guardar: {error}</div>}
-        </>
-      )}
-    </Panel>
-  );
-}
-
-/**
- * Parámetros versionados.
- *
- * Guardar NUNCA sobrescribe: inserta una fila con una fecha de vigencia
- * nueva. Los instrumentos ya emitidos guardan el id de la versión con la que
- * se generaron, así que cambiar un umbral hoy no reescribe lo que se firmó
- * el año pasado. La UI tenía que dejar eso evidente, no darlo por entendido.
- */
-function ParametrosPanel({ unidad, parametrosApi, session, hayDatosUnidad }) {
-  const versiones = parametrosApi.rows
-    .filter((p) => p.unidad === unidad)
-    .sort((a, b) => String(b.vigente_desde).localeCompare(String(a.vigente_desde)));
-  const hoy = hoyISO();
-  const vigente = versiones.find((v) => String(v.vigente_desde) <= hoy) || null;
-  const futuras = versiones.filter((v) => String(v.vigente_desde) > hoy);
-
-  const [abierto, setAbierto] = useState(false);
-  const [guardando, setGuardando] = useState(false);
-  const [desde, setDesde] = useState(hoy);
-  const [form, setForm] = useState(() =>
-    Object.fromEntries(CAMPOS_PARAMETROS.map((c) => [c.key, c.def])));
-
-  const abrirEditor = () => {
-    const base = vigente
-      ? Object.fromEntries(CAMPOS_PARAMETROS.map((c) => [c.key, vigente[c.key] ?? c.def]))
-      : Object.fromEntries(CAMPOS_PARAMETROS.map((c) => [c.key, c.def]));
-    setForm(base);
-    setDesde(hoy);
-    setAbierto(true);
-  };
-
-  const cambiados = vigente
-    ? CAMPOS_PARAMETROS.filter((c) => Number(form[c.key]) !== Number(vigente[c.key] ?? c.def))
-    : [];
-
-  const guardar = async () => {
-    if (!desde) { alert("Indica desde cuándo rige esta versión."); return; }
-    if (versiones.some((v) => String(v.vigente_desde) === desde)) {
-      alert(`Ya existe una versión que rige desde el ${fmtFecha(desde)}. Elige otra fecha.`);
-      return;
-    }
-    if (vigente && !cambiados.length) {
-      alert("No hay ningún valor distinto al de la versión vigente. No tiene caso crear una versión igual.");
-      return;
-    }
-    const resumen = vigente
-      ? `Se va a crear una versión nueva vigente desde ${fmtFecha(desde)}, con ${cambiados.length} valor(es) distinto(s):\n\n` +
-        cambiados.map((c) => `  ${c.label}: ${formatParametro(vigente[c.key] ?? c.def, c.tipo)} → ${formatParametro(form[c.key], c.tipo)}`).join("\n") +
-        `\n\nLa versión anterior NO se borra: los instrumentos ya emitidos la conservan.\n\n¿Continuar?`
-      : `Se va a crear la primera versión de parámetros de ${unidad}, vigente desde ${fmtFecha(desde)}.\n\n¿Continuar?`;
-    if (!confirm(resumen)) return;
-
-    setGuardando(true);
-    try {
-      const fila = { id: uid(), unidad, vigente_desde: desde };
-      CAMPOS_PARAMETROS.forEach((c) => { fila[c.key] = Number(form[c.key]) || 0; });
-      if (session?.user?.id) fila.creado_por = session.user.id;
-      await parametrosApi.insert(fila);
-      setAbierto(false);
-    } catch (err) {
-      alert("No se pudo guardar: " + (err.message || err));
-    } finally {
-      setGuardando(false);
-    }
-  };
-
-  return (
-    <Panel
-      title="Parámetros"
-      subtitle="Umbrales, penas y plazos. Versionados por fecha: guardar crea una versión, no sobrescribe la anterior."
-      right={
-        <Button onClick={abierto ? () => setAbierto(false) : abrirEditor} variant={abierto ? "ghost" : "primary"} disabled={!hayDatosUnidad}>
-          {abierto ? "Cancelar" : vigente ? "Nueva versión" : "Crear primera versión"}
-        </Button>
-      }
-    >
-      {!hayDatosUnidad && (
-        <div style={{ fontSize: 12, color: T.textDim, marginBottom: 12 }}>
-          Captura primero los datos legales de {unidad}: los parámetros dependen de esa fila.
-        </div>
-      )}
-
-      {hayDatosUnidad && !vigente && !abierto && (
-        <EmptyState
-          title={`${unidad} no tiene parámetros`}
-          body="Sin una versión vigente, el generador no sabe qué umbrales mostrar ni con qué llenar las cláusulas de penas y plazos."
-        />
-      )}
-
-      {vigente && !abierto && (
-        <>
-          <div style={{ fontSize: 11.5, color: T.textFaint, marginBottom: 12 }}>
-            Rige desde {fmtFecha(vigente.vigente_desde)}
-            {versiones.length > 1 ? ` · ${versiones.length} versiones en total` : ""}
-          </div>
-          {GRUPOS_PARAMETROS.map((g) => (
-            <div key={g.grupo} style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 8 }}>{g.grupo}</div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
-                {g.campos.map((c) => (
-                  <div key={c.key} style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "9px 11px" }}>
-                    <div style={{ fontSize: 11, color: T.textDim }}>{c.label}</div>
-                    <div style={{ fontSize: 14, fontWeight: 700, color: T.text, marginTop: 3 }}>
-                      {formatParametro(vigente[c.key], c.tipo)}
-                    </div>
-                    <MarcadorHint marcador={c.marcador} />
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
-          {futuras.length > 0 && (
-            <div style={{ fontSize: 12, color: T.textDim, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "9px 11px" }}>
-              Hay {futuras.length} versión(es) programada(s) a futuro: {futuras.map((v) => v.vigente_desde).join(", ")}.
-            </div>
-          )}
-        </>
-      )}
-
-      {abierto && (
-        <>
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 14, marginBottom: 16, flexWrap: "wrap" }}>
-            <Field label="Rige desde *" style={{ maxWidth: 190 }}>
-              <TextInput type="date" value={desde} onChange={(e) => setDesde(e.target.value)} />
-            </Field>
-            <div style={{ fontSize: 12, color: T.textDim, paddingBottom: 9 }}>
-              {vigente
-                ? `La versión del ${fmtFecha(vigente.vigente_desde)} se conserva intacta.`
-                : "Primera versión de esta unidad."}
-            </div>
-          </div>
-          {GRUPOS_PARAMETROS.map((g) => (
-            <div key={g.grupo} style={{ marginBottom: 18 }}>
-              <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim }}>{g.grupo}</div>
-              {g.nota && <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2, marginBottom: 8 }}>{g.nota}</div>}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 12, marginTop: g.nota ? 0 : 8 }}>
-                {g.campos.map((c) => {
-                  const distinto = vigente && Number(form[c.key]) !== Number(vigente[c.key] ?? c.def);
-                  return (
-                    <Field key={c.key} label={`${c.label}${sufijoParametro(c.tipo) ? ` (${sufijoParametro(c.tipo)})` : ""}`}>
-                      <TextInput
-                        type="number" step={c.tipo === "money" || c.tipo === "pct" ? "0.01" : "1"}
-                        value={form[c.key] ?? ""}
-                        onChange={(e) => setForm({ ...form, [c.key]: e.target.value })}
-                        style={distinto ? { borderColor: T.accent } : undefined}
-                      />
-                      {distinto
-                        ? <span style={{ fontSize: 10.5, color: T.accent, marginTop: 3 }}>antes {formatParametro(vigente[c.key] ?? c.def, c.tipo)}</span>
-                        : <MarcadorHint marcador={c.marcador} />}
-                    </Field>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
-          <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-            <Button onClick={guardar} disabled={guardando}>
-              {guardando ? "Guardando…" : "Crear versión"}
-            </Button>
-            <Button variant="ghost" onClick={() => setAbierto(false)}>Cancelar</Button>
-            {vigente && (
-              <span style={{ fontSize: 12, color: cambiados.length ? T.accent : T.textFaint }}>
-                {cambiados.length ? `${cambiados.length} valor(es) distinto(s)` : "Sin cambios respecto a la versión vigente"}
-              </span>
-            )}
-          </div>
-        </>
-      )}
-
-      {versiones.length > 1 && !abierto && (
-        <div style={{ marginTop: 16, borderTop: `1px solid ${T.border}`, paddingTop: 12 }}>
-          <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 8 }}>Historial</div>
-          {versiones.map((v) => (
-            <div key={v.id} style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 12, color: T.textDim, padding: "5px 0" }}>
-              <span style={{ fontFamily: T.fontMono }}>{fmtFecha(v.vigente_desde)}</span>
-              {v.id === vigente?.id && <Pill>vigente</Pill>}
-              {String(v.vigente_desde) > hoy && <Pill>programada</Pill>}
-              <span style={{ color: T.textFaint }}>
-                operación {formatParametro(v.umbral_operacion, "money")} · acumulado {formatParametro(v.umbral_acumulado, "money")}
-              </span>
-            </div>
-          ))}
-        </div>
-      )}
-    </Panel>
-  );
-}
-
-/**
- * Datos legales del proveedor.
- *
- * La identidad del proveedor —razón social, domicilio, representante— es
- * suya, no nuestra: no cambia según a cuál de las tres compañías le facture,
- * y por eso vive una sola vez, indexada por RFC. Lo que sí es criterio
- * nuestro (nivel de debida diligencia) va por unidad, en otra tabla.
- */
-/* ----------------------------------------------------------------------
-   CONSTANCIA DE SITUACIÓN FISCAL
----------------------------------------------------------------------- */
-
-const CSF_ETIQUETAS = [
-  "RFC:", "CURP:", "Denominación/Razón Social:", "Régimen Capital:", "Nombre Comercial:",
-  "Nombre (s):", "Primer Apellido:", "Segundo Apellido:",
-  "Fecha inicio de operaciones:", "Estatus en el padrón:", "Fecha de último cambio de estado:",
-  "Código Postal:", "Tipo de Vialidad:", "Nombre de Vialidad:", "Número Exterior:",
-  "Número Interior:", "Nombre de la Colonia:", "Nombre de la Localidad:",
-  "Nombre del Municipio o Demarcación Territorial:", "Nombre de la Entidad Federativa:",
-  "Entre Calle:", "Y Calle:",
-];
-
-/* Encabezados de sección. No son campos, pero marcan dónde termina el valor
-   del campo anterior: sin ellos, el último campo de cada bloque se traga todo
-   hasta la siguiente etiqueta — "Y Calle" se llevaba las tres páginas, con
-   obligaciones fiscales y sello digital incluidos. */
-const CSF_CORTES = [
-  "Datos de Identificación del Contribuyente:", "Datos del domicilio registrado",
-  "Actividades Económicas:", "Regímenes:", "Obligaciones:", "Página",
-  "Sus datos personales", "Cadena Original Sello:",
-];
-
-const sinAcentosMay = (s) =>
-  String(s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toUpperCase();
-
-/**
- * El texto que devuelve el extractor de PDF no respeta el acomodo visual: el
- * CSF mete dos pares etiqueta:valor por renglón, y los espacios se pierden de
- * forma impredecible — "Estatusen elpadrón", "Nombre de laColonia",
- * "Nombre delMunicipioo Demarcación Territorial". Buscar las etiquetas como
- * texto literal falla en la mitad de los casos.
- *
- * Por eso la búsqueda corre sobre una copia sin espacios ni acentos, con un
- * mapa de vuelta a la posición original de cada carácter. El valor se recorta
- * del texto ORIGINAL, con sus espacios intactos, entre el fin de una etiqueta
- * y el inicio de la siguiente.
- */
-function parsearCSF(texto) {
-  const mapa = [];
-  let compacto = "";
-  for (let i = 0; i < texto.length; i++) {
-    if (/\s/.test(texto[i])) continue;
-    compacto += sinAcentosMay(texto[i]);
-    mapa.push(i);
-  }
-
-  const hallazgos = [];
-  const buscarTodas = (aguja, etiqueta) => {
-    const a = sinAcentosMay(aguja).replace(/\s/g, "");
-    let desde = 0, p;
-    while ((p = compacto.indexOf(a, desde)) !== -1) {
-      hallazgos.push({ etiqueta, ini: p, fin: p + a.length });
-      desde = p + a.length;
-    }
-  };
-  CSF_CORTES.forEach((c) => buscarTodas(c, null));
-  CSF_ETIQUETAS.forEach((e) => buscarTodas(e, e));
-  hallazgos.sort((a, b) => a.ini - b.ini);
-
-  const campos = {};
-  hallazgos.forEach((h, i) => {
-    if (h.etiqueta === null) return;
-    if (campos[h.etiqueta] !== undefined) return;   // se queda la primera aparición
-    const sig = hallazgos[i + 1];
-    const desde = mapa[h.fin];
-    if (desde === undefined) return;
-    const hasta = sig ? mapa[sig.ini] : texto.length;
-    campos[h.etiqueta] = texto.slice(desde, hasta).replace(/\s+/g, " ").trim().slice(0, 200);
-  });
-  return campos;
-}
-
-/* El CSF escribe el régimen completo; un contrato lleva la abreviatura. */
-const CSF_REGIMENES = [
-  [/SOCIEDAD ANONIMA PROMOTORA DE INVERSION DE CAPITAL VARIABLE/, "S.A.P.I. DE C.V."],
-  [/SOCIEDAD ANONIMA BURSATIL DE CAPITAL VARIABLE/, "S.A.B. DE C.V."],
-  [/SOCIEDAD DE RESPONSABILIDAD LIMITADA DE CAPITAL VARIABLE/, "S. DE R.L. DE C.V."],
-  [/SOCIEDAD ANONIMA DE CAPITAL VARIABLE/, "S.A. DE C.V."],
-  [/SOCIEDAD DE RESPONSABILIDAD LIMITADA/, "S. DE R.L."],
-  [/SOCIEDAD EN NOMBRE COLECTIVO/, "S. EN N.C."],
-  [/SOCIEDAD ANONIMA/, "S.A."],
-  [/SOCIEDAD CIVIL/, "S.C."],
-  [/ASOCIACION CIVIL/, "A.C."],
-];
-function abreviarRegimen(r) {
-  const t = sinAcentosMay(r);
-  for (const [rx, ab] of CSF_REGIMENES) if (rx.test(t)) return ab;
-  return "";
-}
-
-function datosDesdeCSF(texto) {
-  const c = parsearCSF(texto);
-  const rfc = String(c["RFC:"] || "").toUpperCase().replace(/[^A-Z0-9&Ñ]/g, "");
-  if (!/^[A-ZÑ&]{3,4}\d{6}[A-Z0-9]{3}$/.test(rfc)) {
-    throw new Error("No se encontró un RFC con forma válida. ¿El PDF es una Constancia de Situación Fiscal?");
-  }
-  const moral = rfc.length === 12;
-
-  const nombreFisica = [c["Nombre (s):"], c["Primer Apellido:"], c["Segundo Apellido:"]]
-    .filter(Boolean).join(" ").trim();
-  const base = c["Denominación/Razón Social:"] || nombreFisica || "";
-  const abrev = moral ? abreviarRegimen(c["Régimen Capital:"]) : "";
-
-  const domicilio = [
-    [c["Tipo de Vialidad:"], c["Nombre de Vialidad:"]].filter(Boolean).join(" "),
-    c["Número Exterior:"] ? `NO. ${c["Número Exterior:"]}` : "",
-    c["Número Interior:"] ? `INT. ${c["Número Interior:"]}` : "",
-    c["Nombre de la Colonia:"] ? `COL. ${c["Nombre de la Colonia:"]}` : "",
-    c["Nombre de la Localidad:"],
-    c["Nombre del Municipio o Demarcación Territorial:"],
-    c["Nombre de la Entidad Federativa:"],
-    c["Código Postal:"] ? `C.P. ${c["Código Postal:"]}` : "",
-  ].filter(Boolean).join(", ");
-
-  /* El régimen aparece en la tabla de la página 2. Distingue a quien factura
-     como actividad empresarial de quien no, que es lo que decide si el
-     contrato puede pactar suministro o solo servicios. */
-  const empresarial = /ACTIVIDADES?\s*EMPRESARIALES/.test(sinAcentosMay(texto));
-
-  return {
-    rfc,
-    razon_social: abrev ? `${base}, ${abrev}` : base,
-    personalidad: moral ? "Persona moral"
-      : empresarial ? "Persona física con actividad empresarial" : "Persona física",
-    curp: moral ? "" : String(c["CURP:"] || "").toUpperCase().replace(/[^A-Z0-9]/g, ""),
-    domicilio,
-    _estatus: c["Estatus en el padrón:"] || "",
-  };
-}
-
-async function leerTextoPDF(archivo) {
-  await esperarLibrerias();
-  const buffer = await archivo.arrayBuffer();
-  const doc = await pdfjsLib.getDocument({ data: buffer }).promise;
-  let texto = "";
-  for (let p = 1; p <= doc.numPages; p++) {
-    const pagina = await doc.getPage(p);
-    const contenido = await pagina.getTextContent();
-    texto += contenido.items.map((i) => i.str).join(" ") + "\n";
-  }
-  return texto;
-}
-
-const CAMPOS_CSF = [
-  { key: "rfc", label: "RFC" },
-  { key: "razon_social", label: "Razón social / nombre" },
-  { key: "personalidad", label: "Personalidad" },
-  { key: "curp", label: "CURP" },
-  { key: "domicilio", label: "Domicilio fiscal" },
-];
-
-/**
- * Nunca escribe solo. Muestra campo por campo lo que trae el CSF junto a lo
- * que hay capturado, y el usuario decide qué aplica: un domicilio mal leído
- * que se escribe en silencio termina impreso en un contrato firmado, y a esas
- * alturas ya nadie lo revisa.
- */
-function RevisionCSF({ datos, archivo, actual, onAplicar, onCerrar }) {
-  const cambios = CAMPOS_CSF.map((c) => ({
-    ...c,
-    nuevo: datos[c.key] || "",
-    viejo: String(actual[c.key] || ""),
-  })).filter((c) => c.nuevo);
-
-  const [marcados, setMarcados] = useState(
-    () => new Set(cambios.filter((c) => c.nuevo !== c.viejo).map((c) => c.key)));
-
-  const alternar = (k) => {
-    const s = new Set(marcados);
-    if (s.has(k)) s.delete(k); else s.add(k);
-    setMarcados(s);
-  };
-
-  const inactivo = datos._estatus && !/ACTIVO/i.test(datos._estatus);
-
-  return (
-    <div style={{ background: T.panel, border: `1px solid ${T.accent}`, borderRadius: 8, padding: 15, marginBottom: 14 }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 4 }}>
-        <span style={{ fontSize: 12.5, fontWeight: 700, color: T.text }}>Datos leídos del CSF</span>
-        <span style={{ fontSize: 11, color: T.textFaint }}>{archivo}</span>
-      </div>
-      <div style={{ fontSize: 11.5, color: T.textDim, marginBottom: 12 }}>
-        Revisa antes de aplicar. Lo que no marques se queda como está.
-      </div>
-
-      {inactivo && (
-        <div style={{ fontSize: 12, color: T.amberDim, background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 6, padding: "8px 11px", marginBottom: 12 }}>
-          El estatus en el padrón dice «{datos._estatus}», no ACTIVO. Vale la pena confirmarlo antes de contratar.
-        </div>
-      )}
-
-      {cambios.map((c) => {
-        const igual = c.nuevo === c.viejo;
-        return (
-          <div key={c.key} style={{
-            display: "grid", gridTemplateColumns: "auto 1fr", gap: 11,
-            padding: "8px 0", borderTop: `1px solid ${T.borderSoft}`, alignItems: "flex-start",
-          }}>
-            <input type="checkbox" checked={marcados.has(c.key)} disabled={igual}
-              onChange={() => alternar(c.key)} style={{ marginTop: 3 }} />
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontSize: 11, color: T.textDim }}>{c.label}</div>
-              <div style={{ fontSize: 12.5, color: T.text, marginTop: 2, wordBreak: "break-word" }}>{c.nuevo}</div>
-              {igual ? (
-                <div style={{ fontSize: 11, color: T.textFaint, marginTop: 2 }}>Ya coincide con lo capturado</div>
-              ) : c.viejo ? (
-                <div style={{ fontSize: 11, color: T.amberDim, marginTop: 2, wordBreak: "break-word" }}>
-                  Reemplaza: {c.viejo}
-                </div>
-              ) : null}
-            </div>
-          </div>
-        );
-      })}
-
-      <div style={{ display: "flex", gap: 10, marginTop: 14 }}>
-        <Button
-          onClick={() => onAplicar(Object.fromEntries(
-            cambios.filter((c) => marcados.has(c.key)).map((c) => [c.key, c.nuevo])))}
-          disabled={!marcados.size}
-        >
-          Aplicar {marcados.size} campo(s)
-        </Button>
-        <Button variant="ghost" onClick={onCerrar}>Descartar</Button>
-      </div>
-    </div>
-  );
-}
-
-function ProveedorLegalPanel({ unidad, provLegalApi, provUnidadApi, session, hayDatosUnidad }) {
-  const [buscar, setBuscar] = useSessionState("ss-contratos-prov-buscar", "");
-  const [editando, setEditando] = useState(null);
-  const [guardando, setGuardando] = useState(false);
-  const [csf, setCsf] = useState(null);
-  const [leyendoCsf, setLeyendoCsf] = useState(false);
-  const archivoCsfRef = useRef(null);
-
-  const filas = provLegalApi.rows
-    .slice()
-    .sort((a, b) => String(a.razon_social || "").localeCompare(String(b.razon_social || "")));
-  const q = buscar.trim().toLowerCase();
-  const visibles = q
-    ? filas.filter((p) => [p.razon_social, p.rfc, p.grupo_economico].some((v) => String(v || "").toLowerCase().includes(q)))
-    : filas;
-
-  const porUnidad = (rfc) =>
-    provUnidadApi.rows.find((r) => r.unidad === unidad && normRfc(r.rfc) === normRfc(rfc)) || null;
-
-  const vacio = {
-    ...Object.fromEntries(CAMPOS_PROVEEDOR_LEGAL.map((c) => [c.key, ""])),
-    personalidad: "Persona moral",
-    repse_registro: "", repse_vigencia: "", opinion_32d_fecha: "", opinion_32d_sentido: "",
-    grupo_economico: "", notas: "", nivel_dd: "estandar", beneficiario_ctrl: false,
-  };
-
-  const abrirNuevo = () => { setCsf(null); setEditando({ ...vacio, _id: null }); };
-  const abrirEditar = (p) => {
-    setCsf(null);
-    const pu = porUnidad(p.rfc);
-    setEditando({
-      ...vacio,
-      ...Object.fromEntries(Object.keys(vacio).map((k) => [k, p[k] ?? vacio[k]])),
-      nivel_dd: pu?.nivel_dd || "estandar",
-      beneficiario_ctrl: !!pu?.beneficiario_ctrl,
-      _id: p.id,
-      _puId: pu?.id || null,
-    });
-  };
-
-  const cargarCsf = async (e) => {
-    const archivo = e.target.files?.[0];
-    e.target.value = "";               // permite volver a elegir el mismo archivo
-    if (!archivo) return;
-    setLeyendoCsf(true);
-    try {
-      const texto = await leerTextoPDF(archivo);
-      setCsf({ datos: datosDesdeCSF(texto), archivo: archivo.name });
-    } catch (err) {
-      alert("No se pudo leer el CSF: " + (err.message || err));
-    } finally {
-      setLeyendoCsf(false);
-    }
-  };
-
-  const guardar = async () => {
-    const rfc = normRfc(editando.rfc);
-    if (!rfc || !String(editando.razon_social || "").trim()) {
-      alert("RFC y razón social son obligatorios.");
-      return;
-    }
-    const choque = provLegalApi.rows.find((p) => normRfc(p.rfc) === rfc && p.id !== editando._id);
-    if (choque) {
-      alert(`El RFC ${rfc} ya está capturado como "${choque.razon_social}". Los datos legales se guardan una sola vez por RFC, no una por compañía.`);
-      return;
-    }
-    setGuardando(true);
-    try {
-      const fila = { rfc, actualizado_en: new Date().toISOString() };
-      const moral = esMoral(editando.personalidad);
-      CAMPOS_PROVEEDOR_LEGAL.forEach((c) => {
-        if (c.key === "rfc") return;
-        /* Si cambia la personalidad, lo que dejó de aplicar se limpia: un
-           representante legal heredado de cuando estaba marcada como moral
-           acabaría impreso en el contrato de una persona física. */
-        const aplica = !(c.soloMoral && !moral) && !(c.soloFisica && moral);
-        fila[c.key] = aplica ? String(editando[c.key] || "").trim() : "";
-      });
-      fila.repse_registro = String(editando.repse_registro || "").trim();
-      fila.repse_vigencia = editando.repse_vigencia || null;
-      fila.opinion_32d_fecha = editando.opinion_32d_fecha || null;
-      fila.opinion_32d_sentido = editando.opinion_32d_sentido || null;
-      fila.grupo_economico = String(editando.grupo_economico || "").trim();
-      fila.notas = String(editando.notas || "").trim();
-      if (session?.user?.id) fila.actualizado_por = session.user.id;
-
-      if (editando._id) await provLegalApi.update(editando._id, fila);
-      else await provLegalApi.insert({ id: uid(), ...fila });
-
-      const patchUnidad = {
-        unidad, rfc,
-        nivel_dd: editando.nivel_dd || "estandar",
-        beneficiario_ctrl: !!editando.beneficiario_ctrl,
-        actualizado_en: new Date().toISOString(),
-        ...(session?.user?.id ? { actualizado_por: session.user.id } : {}),
-      };
-      if (editando._puId) await provUnidadApi.update(editando._puId, patchUnidad);
-      else await provUnidadApi.insert({ id: uid(), ...patchUnidad });
-
-      setEditando(null);
-    } catch (err) {
-      alert("No se pudo guardar: " + (err.message || err));
-    } finally {
-      setGuardando(false);
-    }
-  };
-
-  const eliminar = async (p) => {
-    if (!confirm(`¿Eliminar los datos legales de "${p.razon_social}"? Esto no se puede deshacer.`)) return;
-    try {
-      const pu = porUnidad(p.rfc);
-      if (pu) await provUnidadApi.remove(pu.id);
-      await provLegalApi.remove(p.id);
-    } catch (err) {
-      alert("No se pudo eliminar: " + (err.message || err));
-    }
-  };
-
-  return (
-    <Panel
-      title="Proveedores — datos legales"
-      subtitle="Lo que ASPEL no trae: representante, escritura, REPSE, opinión 32-D. Se capturan una vez por RFC, no una por compañía."
-      right={<Button onClick={abrirNuevo} disabled={!hayDatosUnidad}>+ Nuevo</Button>}
-    >
-      {!hayDatosUnidad && (
-        <div style={{ fontSize: 12, color: T.textDim, marginBottom: 12 }}>
-          Captura primero los datos legales de {unidad}: el nivel de debida diligencia se guarda por compañía y depende de esa fila.
-        </div>
-      )}
-
-      {editando && (
-        <div style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 16, marginBottom: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
-            <span style={{ fontSize: 12.5, fontWeight: 700, color: T.text }}>
-              {editando._id ? "Editar proveedor" : "Nuevo proveedor"}
-            </span>
-            <Button variant="ghost" onClick={() => archivoCsfRef.current?.click()} disabled={leyendoCsf}
-              style={{ padding: "5px 12px" }}>
-              {leyendoCsf ? "Leyendo…" : "Cargar desde CSF"}
-            </Button>
-            <input ref={archivoCsfRef} type="file" accept="application/pdf,.pdf"
-              onChange={cargarCsf} style={{ display: "none" }} />
-            <span style={{ fontSize: 11, color: T.textFaint }}>
-              RFC, razón social, personalidad y domicilio. El PDF no sale de tu equipo.
-            </span>
-          </div>
-
-          {csf && (
-            <RevisionCSF
-              datos={csf.datos}
-              archivo={csf.archivo}
-              actual={editando}
-              onCerrar={() => setCsf(null)}
-              onAplicar={(campos) => { setEditando({ ...editando, ...campos }); setCsf(null); }}
-            />
-          )}
-          {(() => {
-            const moral = esMoral(editando.personalidad);
-            const rfcLargo = normRfc(editando.rfc).length;
-            const discrepa = (rfcLargo === 12 || rfcLargo === 13) && moralPorRfc(editando.rfc) !== moral;
-            return discrepa ? (
-              <div style={{ fontSize: 12, color: T.amberDim, background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 6, padding: "8px 11px", marginBottom: 12 }}>
-                El RFC tiene {rfcLargo} caracteres, que corresponde a una persona{" "}
-                {rfcLargo === 12 ? "moral" : "física"}, pero la personalidad dice {moral ? "moral" : "física"}.
-                Revisa cuál de los dos está mal antes de guardar.
-              </div>
-            ) : null;
-          })()}
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 13 }}>
-            {CAMPOS_PROVEEDOR_LEGAL
-              .filter((c) => {
-                const moral = esMoral(editando.personalidad);
-                return !(c.soloMoral && !moral) && !(c.soloFisica && moral);
-              })
-              .map((c) => (
-              <Field
-                key={c.key}
-                label={(() => {
-                  const l = !esMoral(editando.personalidad) && c.labelFisica ? c.labelFisica : c.label;
-                  return c.req ? `${l} *` : l;
-                })()}
-                style={c.ancho === 2 ? { gridColumn: "span 2" } : undefined}
-              >
-                {c.opciones ? (
-                  <Select value={editando[c.key] || ""} onChange={(e) => setEditando({ ...editando, [c.key]: e.target.value })}>
-                    <option value="">— elegir —</option>
-                    {c.opciones.map((o) => <option key={o} value={o}>{o}</option>)}
-                  </Select>
-                ) : (
-                  <TextInput
-                    value={editando[c.key] || ""}
-                    onChange={(e) => setEditando({ ...editando, [c.key]: c.upper ? e.target.value.toUpperCase() : e.target.value })}
-                  />
-                )}
-                <MarcadorHint marcador={c.marcador} />
-              </Field>
-            ))}
-            <Field label="Registro REPSE">
-              <TextInput value={editando.repse_registro || ""} onChange={(e) => setEditando({ ...editando, repse_registro: e.target.value })} />
-            </Field>
-            <Field label="Vigencia REPSE">
-              <TextInput type="date" value={editando.repse_vigencia || ""} onChange={(e) => setEditando({ ...editando, repse_vigencia: e.target.value })} />
-            </Field>
-            <Field label="Fecha opinión 32-D">
-              <TextInput type="date" value={editando.opinion_32d_fecha || ""} onChange={(e) => setEditando({ ...editando, opinion_32d_fecha: e.target.value })} />
-            </Field>
-            <Field label="Sentido 32-D">
-              <Select value={editando.opinion_32d_sentido || ""} onChange={(e) => setEditando({ ...editando, opinion_32d_sentido: e.target.value })}>
-                {SENTIDOS_32D.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-              </Select>
-            </Field>
-            <Field label="Grupo económico">
-              <TextInput value={editando.grupo_economico || ""} onChange={(e) => setEditando({ ...editando, grupo_economico: e.target.value })} />
-            </Field>
-            <Field label="Notas" style={{ gridColumn: "span 2" }}>
-              <TextInput value={editando.notas || ""} onChange={(e) => setEditando({ ...editando, notas: e.target.value })} />
-            </Field>
-          </div>
-
-          <div style={{ marginTop: 16, paddingTop: 13, borderTop: `1px solid ${T.border}` }}>
-            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 3 }}>
-              Solo para {unidad}
-            </div>
-            <div style={{ fontSize: 11, color: T.textFaint, marginBottom: 10 }}>
-              Lo de arriba es del proveedor y lo comparten las tres compañías. Esto es criterio nuestro y se guarda por separado.
-            </div>
-            <div style={{ display: "flex", gap: 16, alignItems: "flex-end", flexWrap: "wrap" }}>
-              <Field label="Nivel de debida diligencia" style={{ maxWidth: 230 }}>
-                <Select value={editando.nivel_dd} onChange={(e) => setEditando({ ...editando, nivel_dd: e.target.value })}>
-                  {NIVELES_DD.map((n) => <option key={n.value} value={n.value}>{n.label}</option>)}
-                </Select>
-              </Field>
-              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, color: T.textDim, paddingBottom: 9, cursor: "pointer" }}>
-                <input
-                  type="checkbox"
-                  checked={!!editando.beneficiario_ctrl}
-                  onChange={(e) => setEditando({ ...editando, beneficiario_ctrl: e.target.checked })}
-                />
-                Beneficiario controlador identificado
-              </label>
-            </div>
-          </div>
-
-          <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-            <Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Button>
-            <Button variant="ghost" onClick={() => setEditando(null)}>Cancelar</Button>
-          </div>
-        </div>
-      )}
-
-      <div style={{ marginBottom: 12 }}>
-        <TextInput
-          placeholder="Buscar por razón social, RFC o grupo económico…"
-          value={buscar}
-          onChange={(e) => setBuscar(e.target.value)}
-          style={{ maxWidth: 380 }}
-        />
-      </div>
-
-      {!visibles.length ? (
-        <EmptyState
-          title={filas.length ? "Ningún proveedor coincide" : "Sin proveedores capturados"}
-          body={filas.length
-            ? "Prueba con otro término de búsqueda."
-            : "Los datos legales que las plantillas necesitan no están en ASPEL: representante, escritura, personalidad jurídica."}
-        />
-      ) : (
-        <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
-          {visibles.map((p) => {
-            const pu = porUnidad(p.rfc);
-            const repseVencido = p.repse_vigencia && String(p.repse_vigencia) < hoyISO();
-            return (
-              <div key={p.id} data-clic-fila="" onClick={clicFila(() => abrirEditar(p))} style={{ display: "flex", alignItems: "center", gap: 12, background: T.panel, padding: "10px 12px" }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ fontSize: 12.5, color: T.text, fontWeight: 600 }}>{p.razon_social}</div>
-                  <div style={{ fontSize: 11, color: T.textFaint, fontFamily: T.fontMono, marginTop: 2 }}>
-                    {p.rfc}{p.grupo_economico ? ` · ${p.grupo_economico}` : ""}
-                  </div>
-                </div>
-                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-                  <Pill>{esMoral(p.personalidad) ? "Moral" : "Física"}</Pill>
-                  {p.repse_registro && <Pill>{repseVencido ? "REPSE vencido" : "REPSE"}</Pill>}
-                  {p.opinion_32d_sentido && <Pill>32-D {p.opinion_32d_sentido}</Pill>}
-                  <Pill>{(NIVELES_DD.find((n) => n.value === (pu?.nivel_dd || "estandar")) || {}).label}</Pill>
-                </div>
-                <Button variant="ghost" onClick={() => abrirEditar(p)} style={{ padding: "5px 11px" }}>Editar</Button>
-                <Button variant="danger" onClick={() => eliminar(p)} style={{ padding: "5px 11px" }}>Eliminar</Button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-    </Panel>
-  );
-}
-
-/* ----------------------------------------------------------------------
-   GENERADOR DE INSTRUMENTOS CONTRACTUALES
----------------------------------------------------------------------- */
-
-/* Compuerta 1. Cualquier sí manda a contrato específico. El gatillo 2 además
-   arrastra los anexos flow-down, porque son obligaciones que venimos
-   obligados a trasladar por el contrato con el cliente final. */
-const GATILLOS = [
-  { id: "g1", texto: "El proveedor pone personal a disposición o presta servicios especializados (REPSE)." },
-  { id: "g2", texto: "El proveedor ejecuta parte del alcance de un contrato con cliente final, o ingresa a sus instalaciones." },
-  { id: "g3", texto: "El servicio es intangible: asesoría, consultoría, supervisión, servicios administrativos, publicidad." },
-  { id: "g4", texto: "El proveedor tratará datos personales por cuenta nuestra." },
-  { id: "g5", texto: "El entregable genera propiedad intelectual: software, ingeniería, diseño, documentación técnica." },
-  { id: "g6", texto: "Es parte relacionada." },
-  { id: "g7", texto: "Hay anticipo, garantía, comodato, consignación, exclusividad o arrendamiento." },
-];
-
-const RIESGOS = [
-  { id: "r1", texto: "Está en ruta crítica de un contrato con cliente." },
-  { id: "r2", texto: "Hay contacto con servidores públicos o gestoría ante autoridades." },
-  { id: "r3", texto: "Es operación transfronteriza." },
-  { id: "r4", texto: "El proveedor es de reciente creación o sin infraestructura demostrable." },
-];
-
-/* Las respuestas del árbol son "si" | "no" | sin responder. El tercer estado
-   es el que faltaba: con casillas, "sin marcar" y "no" se veían igual, y el
-   panel anunciaba un instrumento aunque nadie hubiera contestado nada. */
-const esSi = (v) => v === "si";
-const RESPUESTAS_ARBOL = [...GATILLOS.map((g) => g.id), "superaOperacion", "superaAcumulado",
-  ...RIESGOS.map((r) => r.id)];
-
-/* El ancho está acotado a 760px a propósito: sin tope, en pantalla ancha el
-   par Sí/No termina contra el borde derecho y el ojo tiene que recorrer media
-   pantalla para relacionarlo con la pregunta que contesta. */
-const ANCHO_PREGUNTAS = 760;
-
-function PreguntaSiNo({ numero, texto, valor, onChange, apagado, preestablecida }) {
-  const sinResponder = valor !== "si" && valor !== "no";
-  const barra = sinResponder ? "transparent" : valor === "si" ? T.accent : T.border;
-  return (
-    <div style={{
-      display: "grid", gridTemplateColumns: "1fr auto", alignItems: "center", gap: 18,
-      padding: "9px 12px 9px 11px", borderLeft: `3px solid ${barra}`,
-      background: valor === "si" && !apagado ? T.accentBg : "transparent",
-      borderRadius: 4, marginBottom: 2, transition: "background 120ms",
-    }}>
-      <div style={{ fontSize: 12.5, lineHeight: 1.5, color: sinResponder ? T.textDim : T.text }}>
-        {numero ? <span style={{ color: T.textFaint, fontVariantNumeric: "tabular-nums" }}>{numero}. </span> : null}{texto}
-        {preestablecida && (
-          <span style={{ fontSize: 10.5, color: T.textFaint, marginLeft: 7, whiteSpace: "nowrap" }}>
-            — la da por sentada la naturaleza
-          </span>
-        )}
-      </div>
-      <div style={{
-        display: "flex", gap: 2, flexShrink: 0, padding: 2, borderRadius: 7,
-        background: T.panel, border: `1px solid ${T.border}`,
-      }}>
-        {[["si", "Sí", T.accent], ["no", "No", T.textDim]].map(([v, etiqueta, fondo]) => (
-          <button
-            key={v} type="button" onClick={() => onChange(v)}
-            style={{
-              padding: "5px 17px", borderRadius: 5, border: "none", cursor: "pointer",
-              background: valor === v ? fondo : "transparent",
-              color: valor === v ? T.onAccent : T.textFaint,
-              fontWeight: 600, fontSize: 12, fontFamily: T.fontUI, lineHeight: 1.3,
-            }}
-          >{etiqueta}</button>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/**
- * Un bloque por compuerta. El estado no es decorativo: "decide" marca la que
- * determinó el instrumento, y "ya no se evalúa" atenúa las posteriores,
- * porque en una cascada literalmente dejan de correr. Siguen contestables
- * -- sirve dejar constancia -- pero no cambian el resultado.
- */
-function BloqueCompuerta({ n, titulo, salida, estado, children }) {
-  const decide = estado === "decide";
-  const muerta = estado === "inerte";
-  return (
-    <div style={{
-      border: `1px solid ${decide ? T.accent : T.border}`, borderRadius: 8,
-      background: decide ? T.panel : muerta ? "transparent" : T.panel,
-      padding: "13px 14px 9px", marginBottom: 12, maxWidth: ANCHO_PREGUNTAS,
-      opacity: muerta ? 0.5 : 1,
-    }}>
-      <div style={{ display: "flex", alignItems: "baseline", gap: 9, marginBottom: 9 }}>
-        <span style={{
-          fontSize: 11, fontWeight: 700, color: decide ? T.onAccent : T.textDim,
-          background: decide ? T.accent : T.panelAlt, borderRadius: 4,
-          padding: "2px 7px", flexShrink: 0,
-        }}>{n}</span>
-        <span style={{ fontSize: 13, fontWeight: 600, color: T.text }}>{titulo}</span>
-        <span style={{ fontSize: 11.5, color: T.textFaint, marginLeft: "auto", textAlign: "right" }}>
-          {decide ? `Determina: ${salida}` : muerta ? "Ya no se evalúa" : `Si hay un sí: ${salida}`}
-        </span>
-      </div>
-      {children}
-    </div>
-  );
-}
-
-/* ----------------------------------------------------------------------
-   NATURALEZA DE LA CONTRATACIÓN
----------------------------------------------------------------------- */
-
-/**
- * El paso previo al árbol. No es una clasificación paralela: tres de las
- * cuatro naturalezas ya determinan respuestas del cuestionario, porque los
- * gatillos las nombran. Preguntarlas otra vez sería pedirle al usuario que
- * deduzca lo que la categoría ya dijo.
- *
- * `fija` son las respuestas que la naturaleza da por sentadas. Se marcan
- * como preestablecidas y se pueden cambiar: son el caso normal, no una regla
- * sin excepción. Un mantenimiento que el proveedor ejecute sin personal en
- * sitio no cae en el REPSE, y quien captura debe poder decirlo.
- */
-const NATURALEZAS = [
-  {
-    id: "arrendamiento",
-    label: "Arrendamiento de oficinas o bodegas",
-    tipoContrato: "ARRENDAMIENTO",
-    /* El árbol lo resuelve como contrato específico, pero el proemio y las
-       declaraciones de un arrendamiento no caben en la plantilla de
-       servicios: lleva la suya. */
-    plantilla: "contrato_arrendamiento",
-    fija: { g7: "si" },
-    porque: "El gatillo 7 nombra el arrendamiento entre sus supuestos.",
-  },
-  {
-    id: "servicios_fisica",
-    label: "Servicios profesionales con persona física",
-    tipoContrato: "PRESTACIÓN DE SERVICIOS PROFESIONALES",
-    fija: { g3: "si" },
-    porque: "Un servicio profesional es intangible por definición: gatillo 3.",
-    alerta: "Con persona física, cuida que el contrato no describa horario, subordinación ni herramientas nuestras: es lo que convierte una prestación de servicios en una relación laboral.",
-  },
-  {
-    id: "servicios_moral",
-    label: "Servicios con persona moral",
-    tipoContrato: "PRESTACIÓN DE SERVICIOS",
-    fija: {},
-    porque: "No predetermina ninguna compuerta: depende de si el servicio es intangible, si entra a instalaciones del cliente y del monto.",
-  },
-  {
-    id: "obra",
-    label: "Obra civil o mantenimiento industrial",
-    tipoContrato: "EJECUCIÓN DE OBRA Y MANTENIMIENTO",
-    fija: { g1: "si" },
-    porque: "Obra y mantenimiento industrial son obras y servicios especializados, que es el supuesto del REPSE: gatillo 1.",
-  },
-];
-
-const naturalezaDe = (id) => NATURALEZAS.find((n) => n.id === id) || null;
-
-/* Las señales que pueden sugerir una cláusula: las once casillas del árbol
-   más la naturaleza elegida. Se expresan igual —"si" o nada— para que la
-   biblioteca no tenga que distinguirlas. */
-const senalesDe = (resp, naturaleza) =>
-  naturaleza ? { ...resp, ["nat_" + naturaleza]: "si" } : resp;
-
-function NaturalezaPanel({ naturaleza, onElegir }) {
-  const n = naturalezaDe(naturaleza);
-  return (
-    <Panel
-      title="Naturaleza de la contratación"
-      subtitle="Qué se va a contratar. Responde de entrada parte del árbol, porque los gatillos nombran varias de estas figuras."
-    >
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10, maxWidth: ANCHO_PREGUNTAS }}>
-        {NATURALEZAS.map((o) => {
-          const activa = o.id === naturaleza;
-          return (
-            <button
-              key={o.id}
-              type="button"
-              onClick={() => onElegir(o.id)}
-              style={{
-                textAlign: "left", cursor: "pointer", borderRadius: 8, padding: "12px 13px",
-                background: activa ? T.accentBg : T.panel,
-                border: `1px solid ${activa ? T.accent : T.border}`,
-                fontFamily: T.fontUI,
-              }}
-            >
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: T.text, lineHeight: 1.4 }}>{o.label}</div>
-              <div style={{ fontSize: 11, color: T.textFaint, marginTop: 5 }}>
-                {Object.keys(o.fija).length
-                  ? `Deja resuelto: ${Object.keys(o.fija).map((k) => k.toUpperCase()).join(", ")}`
-                  : "No resuelve ninguna compuerta"}
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      {n && (
-        <div style={{ marginTop: 14, maxWidth: ANCHO_PREGUNTAS, fontSize: 12, color: T.textDim, lineHeight: 1.55 }}>
-          {n.porque}
-          {Object.keys(n.fija).length > 0 && (
-            <> Esas respuestas quedan marcadas abajo y se pueden cambiar si el caso concreto no encaja.</>
-          )}
-          {n.alerta && (
-            <div style={{ marginTop: 10, color: T.amberDim, background: T.panelAlt, border: `1px solid ${T.amber}`, borderRadius: 6, padding: "9px 11px" }}>
-              {n.alerta}
-            </div>
-          )}
-        </div>
-      )}
-
-      {!n && (
-        <div style={{ marginTop: 12, fontSize: 12, color: T.textFaint }}>
-          Puedes saltarte este paso y responder el árbol completo a mano.
-        </div>
-      )}
-    </Panel>
-  );
-}
-
-/**
- * Los instrumentos, en un solo lugar.
- *
- * Había dos listas paralelas: una para el árbol, con plantilla y folio, y
- * otra para las cláusulas, con el estilo de numeración. Compartían las
- * etiquetas, así que renombrar un instrumento obligaba a acordarse de tocar
- * las dos, y la segunda tenía un tipo que a la primera le faltaba.
- *
- * `estructura` es el esqueleto que aporta la plantilla; de todo eso, lo único
- * que se arma desde la biblioteca es el clausulado.
- */
-const INSTRUMENTOS = {
-  contrato_especifico: {
-    label: "Contrato específico", plantilla: "contrato_especifico",
-    prefijo: "CE", marcadorFolio: "NUM_CONTRATO", numeracion: "ordinal",
-    estructura: ["Proemio y comparecencia", "Declaraciones de las partes", "Clausulado", "Lugar, fecha y firmas"],
-  },
-  contrato_marco: {
-    label: "Contrato marco", plantilla: "contrato_marco",
-    prefijo: "CM", marcadorFolio: "NUM_CONTRATO_MARCO", numeracion: "ordinal",
-    estructura: ["Proemio y comparecencia", "Declaraciones de las partes", "Clausulado", "Lugar, fecha y firmas", "Anexos A–D del marco"],
-  },
-  /* La orden de compra la emite Contabilidad desde el SAE. Sigue siendo una
-     salida del árbol —hay que decirle a quien pregunta qué corresponde— pero
-     la app no la genera. Por eso no tiene plantilla ni prefijo de folio. */
-  orden_compra: {
-    label: "Orden de compra", externo: "Se emite desde el SAE, en Contabilidad.",
-  },
-  /* No sale del árbol: acompaña al contrato específico cuando aplica el
-     gatillo 2. Por eso no tiene prefijo de folio propio. */
-  anexo_flowdown: {
-    label: "Anexos flow-down", plantilla: "anexo_flowdown", numeracion: "letra",
-    estructura: ["Encabezado con referencia al contrato principal", "Anexos aplicables", "Lugar, fecha y firmas"],
-  },
-};
-/* Solo los que la app genera: la orden de compra no aparece como opción. */
-const ORDEN_INSTRUMENTOS = ["contrato_especifico", "contrato_marco", "anexo_flowdown"];
-
-/* Qué le toca capturar al usuario según el instrumento que resultó. Sale de
-   leer los marcadores reales de cada plantilla: pedir de más es ruido, y
-   pedir de menos deja {{MARCADOR}} impreso en el Word. */
-const CAMPOS_FORM = [
-  { key: "OBJETO",                 label: "Objeto del contrato",       tipo: "texto",  ancho: 2, en: ["contrato_especifico", "contrato_marco"] },
-  { key: "TIPO_CONTRATO",          label: "Tipo",                      tipo: "texto",  en: ["contrato_especifico", "contrato_marco"], ayuda: "Va en el título: «Contrato marco de ___»" },
-  { key: "MONTO_NUMERO",           label: "Monto sin IVA",             tipo: "monto",  en: ["contrato_especifico"] },
-  { key: "MONTO_MAXIMO",           label: "Monto máximo sin IVA",      tipo: "monto",  en: ["contrato_marco"] },
-  { key: "MONEDA",                 label: "Moneda",                    tipo: "moneda", en: ["contrato_especifico"] },
-  { key: "LUGAR_ENTREGA",          label: "Lugar de entrega o ejecución", tipo: "texto", en: ["contrato_especifico"] },
-  { key: "VIGENCIA_INICIO",        label: "Vigencia — inicio",         tipo: "fecha",  en: ["contrato_especifico", "contrato_marco"] },
-  { key: "VIGENCIA_FIN",           label: "Vigencia — fin",            tipo: "fecha",  en: ["contrato_especifico", "contrato_marco"] },
-  { key: "VIGENCIA_PRECIOS",       label: "Vigencia de precios",       tipo: "texto",  en: ["contrato_marco"], ayuda: "Ej. «los primeros 12 meses»" },
-  { key: "TIPO_GARANTIA",          label: "Tipo de garantía",          tipo: "texto",  en: ["contrato_especifico"], ayuda: "Fianza, cheque, retención…" },
-  { key: "ADMINISTRADOR_CONTRATO", label: "Administrador del contrato", tipo: "texto", en: ["contrato_especifico"] },
-  { key: "DOMICILIO_INMUEBLE", label: "Domicilio del inmueble", tipo: "texto", ancho: 2, nat: "arrendamiento", en: ["contrato_especifico"] },
-  { key: "CLAVE_CATASTRAL",    label: "Clave catastral o cuenta predial", tipo: "texto", nat: "arrendamiento", en: ["contrato_especifico"] },
-  { key: "USO_CONVENIDO",      label: "Uso convenido", tipo: "texto", nat: "arrendamiento", en: ["contrato_especifico"],
-    ayuda: "Oficinas administrativas, bodega, etc." },
-  { key: "RENTA_MENSUAL",      label: "Renta mensual", tipo: "monto", nat: "arrendamiento", en: ["contrato_especifico"] },
-  { key: "DIA_PAGO_RENTA",     label: "Se paga dentro de los primeros (días hábiles)", tipo: "texto", nat: "arrendamiento", en: ["contrato_especifico"] },
-  { key: "DEPOSITO_GARANTIA",  label: "Depósito en garantía", tipo: "monto", nat: "arrendamiento", en: ["contrato_especifico"] },
-  { key: "TOPE_SERVICIOS",     label: "Tope de servicios a cargo de la arrendadora", tipo: "monto", nat: "arrendamiento", en: ["contrato_especifico"],
-    ayuda: "Solo si marcaste esa cláusula" },
-  { key: "CLIENTE_FINAL",          label: "Cliente final",             tipo: "texto",  soloFlowdown: true, en: ["contrato_especifico"] },
-  { key: "NUM_CONTRATO_PRINCIPAL", label: "No. del contrato principal", tipo: "texto", soloFlowdown: true, en: ["contrato_especifico"] },
-];
-
-/* ---------- Número a letra, en español ---------- */
-const NL_UNI = ["", "UNO", "DOS", "TRES", "CUATRO", "CINCO", "SEIS", "SIETE", "OCHO", "NUEVE", "DIEZ",
-  "ONCE", "DOCE", "TRECE", "CATORCE", "QUINCE", "DIECISÉIS", "DIECISIETE", "DIECIOCHO", "DIECINUEVE",
-  "VEINTE", "VEINTIUNO", "VEINTIDÓS", "VEINTITRÉS", "VEINTICUATRO", "VEINTICINCO", "VEINTISÉIS",
-  "VEINTISIETE", "VEINTIOCHO", "VEINTINUEVE"];
-const NL_DEC = ["", "", "", "TREINTA", "CUARENTA", "CINCUENTA", "SESENTA", "SETENTA", "OCHENTA", "NOVENTA"];
-const NL_CEN = ["", "CIENTO", "DOSCIENTOS", "TRESCIENTOS", "CUATROCIENTOS", "QUINIENTOS", "SEISCIENTOS",
-  "SETECIENTOS", "OCHOCIENTOS", "NOVECIENTOS"];
-
-function letrasHasta999(n) {
-  if (n === 0) return "";
-  if (n === 100) return "CIEN";
-  const c = Math.floor(n / 100), r = n % 100;
-  let s = c ? NL_CEN[c] : "";
-  if (r) {
-    if (s) s += " ";
-    if (r < 30) s += NL_UNI[r];
-    else {
-      const d = Math.floor(r / 10), u = r % 10;
-      s += NL_DEC[d] + (u ? " Y " + NL_UNI[u] : "");
-    }
-  }
-  return s;
-}
-
-/* "UNO" apocopa cuando le sigue un sustantivo: VEINTIÚN MIL PESOS, no
-   VEINTIUNO MIL PESOS. La tilde SOLO va en "veintiún", que es aguda; el resto
-   es "un" sin acento — un peso, ciento un pesos, mil un pesos. */
-const apocopar = (s) => /VEINTIUNO$/.test(s) ? s.replace(/VEINTIUNO$/, "VEINTIÚN") : s.replace(/UNO$/, "UN");
-
-function numeroALetras(n) {
-  n = Math.floor(Math.abs(Number(n) || 0));
-  if (n === 0) return "CERO";
-  if (n >= 1e12) return String(n);
-  const millones = Math.floor(n / 1e6);
-  const resto = n % 1e6;
-  const miles = Math.floor(resto / 1000);
-  const unidades = resto % 1000;
-  let s = "";
-  if (millones) s += millones === 1 ? "UN MILLÓN" : numeroALetras(millones) + " MILLONES";
-  if (miles) s += (s ? " " : "") + (miles === 1 ? "MIL" : apocopar(letrasHasta999(miles)) + " MIL");
-  if (unidades) s += (s ? " " : "") + letrasHasta999(unidades);
-  return s;
-}
-
-function importeALetra(monto, moneda) {
-  const n = Math.abs(Number(monto) || 0);
-  const entero = Math.floor(n);
-  const centavos = Math.round((n - entero) * 100);
-  const letras = apocopar(numeroALetras(entero));
-  const usd = moneda === "USD";
-  const unidad = usd ? (entero === 1 ? "DÓLAR AMERICANO" : "DÓLARES AMERICANOS")
-                     : (entero === 1 ? "PESO" : "PESOS");
-  /* Cifra exacta en millones: "un millón DE pesos". Con algo después no lleva
-     preposición — "dos millones quinientos mil pesos". */
-  const de = entero >= 1e6 && entero % 1e6 === 0 ? "DE " : "";
-  return `${letras} ${de}${unidad} ${String(centavos).padStart(2, "0")}/100 ${usd ? "USD" : "M.N."}`;
-}
-
-/* ---------- Formato para el documento ---------- */
-const MESES_LARGO = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio",
-  "agosto", "septiembre", "octubre", "noviembre", "diciembre"];
-
-function fechaLarga(iso) {
-  if (!iso) return "";
-  const [a, m, d] = String(iso).slice(0, 10).split("-").map(Number);
-  if (!a || !m || !d) return String(iso);
-  return `${d} de ${MESES_LARGO[m - 1]} de ${a}`;
-}
-const dinero = (n) => `$${numMx(Number(n) || 0)}`;
-/* MXP es el código interno de la app; en un contrato lo correcto es MXN. */
-const monedaContrato = (m) => (m === "USD" ? "USD" : "MXN");
-const escaparXml = (v) => String(v ?? "")
-  .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-/* ---------- El árbol ---------- */
-/**
- * Cuatro compuertas en cascada. La primera afirmativa decide, y las
- * siguientes ni se evalúan: por eso la ruta que se guarda nombra UNA
- * compuerta, no todas las que hubieran aplicado.
- */
-function decidirInstrumento(resp) {
-  const gatillos = GATILLOS.filter((g) => esSi(resp[g.id]));
-  if (gatillos.length) {
-    const flowdown = esSi(resp.g2);
-    const n = GATILLOS.findIndex((g) => g.id === gatillos[0].id) + 1;
-    return {
-      tipo: "contrato_especifico",
-      flowdown,
-      compuerta: 1,
-      ruta: `Contrato específico. Compuerta 1, gatillo obligatorio ${n}: ${gatillos[0].texto}` +
-        (gatillos.length > 1 ? ` (aplican ${gatillos.length} gatillos en total).` : "") +
-        (flowdown ? " Se adjuntan los anexos flow-down por el gatillo 2." : ""),
-    };
-  }
-  if (esSi(resp.superaOperacion)) {
-    return {
-      tipo: "contrato_especifico", flowdown: false, compuerta: 2,
-      ruta: "Contrato específico. Compuerta 2: el monto de la operación supera el umbral individual.",
-    };
-  }
-  if (esSi(resp.superaAcumulado)) {
-    return {
-      tipo: "contrato_marco", flowdown: false, compuerta: 3,
-      ruta: "Contrato marco más órdenes al amparo. Compuerta 3: el acumulado con el proveedor supera el umbral anual.",
-    };
-  }
-  const riesgos = RIESGOS.filter((r) => esSi(resp[r.id]));
-  if (riesgos.length) {
-    const n = RIESGOS.findIndex((r) => r.id === riesgos[0].id) + 1;
-    return {
-      tipo: "contrato_especifico", flowdown: false, compuerta: 4,
-      ruta: `Contrato específico. Compuerta 4, riesgo agravante ${n}: ${riesgos[0].texto}`,
-    };
-  }
-  return {
-    tipo: "orden_compra", flowdown: false, compuerta: 0,
-    ruta: "Orden de compra con condiciones generales. Ninguna compuerta resultó afirmativa. "
-      + "La emite Contabilidad desde el SAE; esta herramienta no la genera.",
-  };
-}
-
-/* ---------- Folio ---------- */
-/**
- * El siguiente folio se confirma contra la base, no contra el estado local:
- * dos pestañas abiertas calcularían el mismo número. Si aun así chocan, el
- * índice único (unidad, folio) rebota el insert y se reintenta.
- */
-async function maxFolioInstrumentoReal(prefijo) {
-  const { data, error } = await supabase
-    .from("contratos_instrumentos")
-    .select("folio")
-    .like("folio", `${prefijo}%`)
-    .order("folio", { ascending: false })
-    .limit(1);
-  if (error || !data?.length) return 0;
-  const n = parseInt(String(data[0].folio).slice(prefijo.length), 10);
-  return isNaN(n) ? 0 : n;
-}
-
-async function insertarInstrumentoConReintento(instrumentosApi, fila, unidad, tipo) {
-  const anio = new Date().getFullYear();
-  const prefijo = `${unidad}-${INSTRUMENTOS[tipo].prefijo}-${anio}-`;
-  const siguiente = (await maxFolioInstrumentoReal(prefijo)) + 1;
-  const maxIntentos = 8;
-  for (let intento = 0; intento < maxIntentos; intento++) {
-    const folio = `${prefijo}${String(siguiente + intento).padStart(3, "0")}`;
-    try {
-      return await instrumentosApi.insert({ ...fila, id: uid(), folio });
-    } catch (err) {
-      const chocoPorFolio = /folio|contratos_instrumentos_folio_idx/i.test(err?.message || "");
-      if (!chocoPorFolio || intento === maxIntentos - 1) throw err;
-    }
-  }
-}
-
-/* ---------- Llenado del .docx ---------- */
-/**
- * Las plantillas se generaron con runs contiguos: cada {{MARCADOR}} existe
- * como cadena completa dentro del XML, así que basta un reemplazo de texto.
- * Verificado sobre los cinco archivos — cero marcadores partidos.
- *
- * Un marcador sin valor NO se vacía: se deja tal cual, para que el hueco se
- * vea en el Word en lugar de pasar inadvertido. La función devuelve cuáles
- * quedaron sin resolver para poder avisarlo antes de la descarga.
- */
-/* Los contratos se emiten íntegramente en mayúscula. Se aplica sobre los
-   nodos de texto del XML ya armado, de modo que cubra por igual los valores
-   sustituidos, el clausulado de la biblioteca y el texto fijo de la
-   plantilla: hacerlo solo en la parte generada dejaría el documento mitad y
-   mitad. Las entidades XML se saltan — &amp; no puede volverse &AMP;. */
-const CONTRATOS_EN_MAYUSCULAS = true;
-
-function mayusculasXml(xml) {
-  return xml.replace(/(<w:t\b[^>]*>)([\s\S]*?)(<\/w:t>)/g, (todo, ini, txt, fin) =>
-    ini + txt.split(/(&[a-zA-Z]+;|&#\d+;)/)
-             .map((p, i) => (i % 2 ? p : p.toLocaleUpperCase("es-MX")))
-             .join("") + fin);
-}
-
-async function llenarPlantilla(storagePath, valores, clausuladoXML) {
-  await esperarLibrerias();
-  const { data, error } = await supabase.storage.from("contratos-plantillas").download(storagePath);
-  if (error) throw new Error(`No se pudo descargar la plantilla (${storagePath}): ${error.message}`);
-
-  const zip = await JSZip.loadAsync(data);
-  const partes = Object.keys(zip.files).filter((n) =>
-    /^word\/(document|header\d*|footer\d*|footnotes|endnotes)\.xml$/.test(n));
-  const sinResolver = new Set();
-  let huboClausulado = false;
-
-  for (const parte of partes) {
-    let xml = await zip.file(parte).async("string");
-
-    /* El clausulado se inyecta ANTES de resolver marcadores, para que los
-       {{MARCADORES}} que traen las cláusulas se sustituyan en la misma
-       pasada que los de la plantilla. */
-    if (clausuladoXML !== undefined) {
-      const r = inyectarClausulado(xml, clausuladoXML);
-      xml = r.xml;
-      if (r.encontrado) huboClausulado = true;
-    }
-
-    const nuevo = xml.replace(/\{\{([A-Z_0-9]+)\}\}/g, (todo, clave) => {
-      const v = valores[clave];
-      if (v === undefined || v === null || v === "") { sinResolver.add(clave); return todo; }
-      return escaparXml(v);
-    });
-    zip.file(parte, CONTRATOS_EN_MAYUSCULAS ? mayusculasXml(nuevo) : nuevo);
-  }
-
-  const blob = await zip.generateAsync({
-    type: "blob",
-    mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-  });
-  return { blob, sinResolver: [...sinResolver].sort(), huboClausulado };
-}
-
 function descargarBlob(blob, nombre) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -20190,963 +19053,438 @@ function descargarBlob(blob, nombre) {
   setTimeout(() => URL.revokeObjectURL(url), 1500);
 }
 
-function GeneradorPanel({ unidad, parametrosApi, provLegalApi, instrumentosApi, resp, setResp, naturaleza, setNaturaleza, objeto, setObjeto, itemsClausulado, itemsAnexo, session }) {
-  const [datosUnidad, setDatosUnidad] = useState(null);
-  const [cargando, setCargando] = useState(true);
-  const [rfc, setRfc] = useState("");
-  const [form, setForm] = useState({ MONEDA: "MXP" });
-  const [trabajando, setTrabajando] = useState(false);
-  const [resultado, setResultado] = useState(null);
+const STATUS_CONTRATO = ["Vigente", "Concluido", "Cancelado"];
+const TONO_STATUS_CONTRATO = { Vigente: "teal", Concluido: "dim", Cancelado: "red" };
+const contratoVacio = (unidad) => ({
+  unidad, numero: "", cliente: "", proyecto: "", objeto: "", moneda: "MXP", monto_original: "",
+  fecha_inicio: "", fecha_fin_original: "", status: "Vigente", notas: "",
+});
 
-  useEffect(() => {
-    let vivo = true;
-    (async () => {
-      setCargando(true);
-      try {
-        const { data } = await supabase
-          .from("contratos_datos_unidad").select("*").eq("unidad", unidad).maybeSingle();
-        if (vivo) setDatosUnidad(data || null);
-      } finally {
-        if (vivo) setCargando(false);
-      }
-    })();
-    return () => { vivo = false; };
-  }, [unidad]);
+/* Monto y término vigentes: lo original más sus modificaciones. El término es
+   el de la última modificación que lo cambió (por fecha de firma). */
+function estadoContrato(c, mods) {
+  const propias = mods.filter((m) => m.contrato_id === c.id)
+    .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)) || String(a.created_at).localeCompare(String(b.created_at)));
+  const monto = (Number(c.monto_original) || 0) + propias.reduce((s, m) => s + (Number(m.monto_cambio) || 0), 0);
+  const conFin = propias.filter((m) => m.nueva_fecha_fin);
+  const fin = conFin.length ? conFin[conFin.length - 1].nueva_fecha_fin : c.fecha_fin_original;
+  return { mods: propias, monto: Math.round(monto * 100) / 100, fin, nAdendas: propias.filter((m) => m.tipo === "Adenda").length,
+           nExtensiones: propias.filter((m) => m.tipo === "Extensión").length };
+}
 
-  useEffect(() => { setRfc(""); setResultado(null); }, [unidad]);
+/* Gastos de un contrato: las transacciones asignadas y, en una compra PPD
+   asignada, sus parcialidades (lo pagado vive en ellas). */
+function gastosDeContrato(contratoId, transacciones) {
+  const padres = new Set(transacciones.filter((t) => t.contrato_id === contratoId && esPadrePPD(t)).map((t) => t.id));
+  return transacciones.filter((t) => !estaCancelada(t)
+    && (t.contrato_id === contratoId || (t.transaccion_padre_id && padres.has(t.transaccion_padre_id))));
+}
 
-  const hoy = hoyISO();
-  const parametros = parametrosApi.rows
-    .filter((p) => p.unidad === unidad && String(p.vigente_desde) <= hoy)
-    .sort((a, b) => String(b.vigente_desde).localeCompare(String(a.vigente_desde)))[0] || null;
+function sumaPorMonedaCT(filas, cuenta) {
+  const r = {};
+  filas.forEach((x) => { if (!cuenta(x)) return; const m = monedaNorm(x.moneda); r[m] = (r[m] || 0) + (Number(x.importe) || 0); });
+  return r;
+}
+const textoMonedas = (obj) => {
+  const ks = ["MXP", "USD"].filter((m) => obj[m]);
+  return ks.length ? ks.map((m) => `${money(obj[m], m)} ${m}`).join(" · ") : "—";
+};
+const diasHasta = (iso) => (iso ? Math.round((new Date(`${iso}T12:00:00`) - new Date(`${hoyLocalISO()}T12:00:00`)) / 864e5) : null);
 
-  const proveedor = provLegalApi.rows.find((p) => normRfc(p.rfc) === normRfc(rfc)) || null;
-  const decision = decidirInstrumento(resp);
-  const sinResponder = RESPUESTAS_ARBOL.filter((k) => resp[k] !== "si" && resp[k] !== "no");
-  const fijasPorNaturaleza = naturalezaDe(naturaleza)?.fija || {};
-  const estadoCompuerta = (n) =>
-    decision.compuerta === n ? "decide"
-    : decision.compuerta !== 0 && n > decision.compuerta ? "inerte"
-    : "abierta";
-  const meta = INSTRUMENTOS[decision.tipo];
+function ContratosClienteTab({ unidad, proyectos = [], transacciones = [], transaccionesApi, soloLectura = false }) {
+  const contratosApi = useCollection("contratos_cliente", "created_at", { withAudit: true });
+  const modsApi = useCollection("contratos_cliente_modificaciones", "fecha", { withAudit: true });
+  const facturasApi = useCollection("facturas_emitidas", "fecha_emision", { withAudit: true });
+  const [buscar, setBuscar] = useState("");
+  const [fStatus, setFStatus] = useState("Vigente");
+  const [abierto, setAbierto] = useState(null); // contrato (o nuevo) en la ventana
 
-  const campos = CAMPOS_FORM.filter(
-    (c) => c.en.includes(decision.tipo)
-      && (!c.soloFlowdown || decision.flowdown)
-      /* Un campo marcado con `nat` solo existe para esa naturaleza: pedir el
-         domicilio del inmueble en una prestación de servicios sería ruido. */
-      && (!c.nat || c.nat === naturaleza)
-      && !(naturaleza === "arrendamiento" && ["MONTO_NUMERO", "LUGAR_ENTREGA", "TIPO_GARANTIA"].includes(c.key)));
+  const deUnidad = contratosApi.rows.filter((c) => c.unidad === unidad);
+  const transU = transacciones.filter((t) => t.unidad_detectada === unidad);
+  const factU = facturasApi.rows.filter((f) => f.unidad === unidad);
+  const q = buscar.trim().toLowerCase();
+  const filas = deUnidad
+    .filter((c) => (!fStatus || c.status === fStatus)
+      && (!q || [c.numero, c.cliente, c.proyecto, c.objeto].some((v) => String(v || "").toLowerCase().includes(q))))
+    .map((c) => {
+      const e = estadoContrato(c, modsApi.rows);
+      const facts = factU.filter((f) => f.contrato_id === c.id && f.status !== "Cancelada");
+      const gastos = gastosDeContrato(c.id, transU);
+      const facturado = sumaPorMonedaCT(facts, () => true);
+      return { c, e, facturado, cobrado: sumaPorMonedaCT(facts, (f) => f.status === "Pagada"),
+               comprometido: sumaPorMonedaCT(gastos, cuentaEnComprometido), pagado: sumaPorMonedaCT(gastos, cuentaEnPagado),
+               pctFacturado: e.monto > 0 ? Math.round(((facturado[monedaNorm(c.moneda)] || 0) / e.monto) * 100) : null };
+    })
+    .sort((a, b) => String(a.e.fin || "9999").localeCompare(String(b.e.fin || "9999")));
 
-  const montoBase = Number(
-    form[decision.tipo === "contrato_marco" ? "MONTO_MAXIMO" : "MONTO_NUMERO"]) || 0;
-
-  const listo = !!datosUnidad && !!parametros && !!proveedor;
-
-  const construirValores = (folio) => {
-    const v = {
-      CONTRATANTE: unidad,
-      RAZON_SOCIAL_CONTRATANTE: datosUnidad.razon_social,
-      RFC_CONTRATANTE: datosUnidad.rfc,
-      DOMICILIO_CONTRATANTE: datosUnidad.domicilio,
-      REPRESENTANTE_CONTRATANTE: datosUnidad.representante,
-      ESCRITURA_CONTRATANTE: datosUnidad.escritura,
-      NOTARIO_CONTRATANTE: datosUnidad.notario,
-      CORREO_CONTRATANTE: datosUnidad.correo_notificaciones,
-      CORREO_FACTURACION: datosUnidad.correo_facturacion,
-      JURISDICCION: datosUnidad.jurisdiccion,
-      LUGAR_SUSCRIPCION: datosUnidad.lugar_suscripcion || datosUnidad.jurisdiccion,
-
-      RAZON_SOCIAL_PROVEEDOR: proveedor.razon_social,
-      RFC_PROVEEDOR: proveedor.rfc,
-      DOMICILIO_PROVEEDOR: proveedor.domicilio,
-      /* Una persona física comparece por su propio derecho: el marcador se
-         llena con su nombre, no queda hueco esperando un apoderado. */
-      REPRESENTANTE_PROVEEDOR: esMoral(proveedor.personalidad)
-        ? proveedor.representante
-        : (proveedor.representante || proveedor.razon_social),
-      ESCRITURA_PROVEEDOR: proveedor.escritura,
-      /* La plantilla dice "Que es una persona {{PERSONALIDAD_PROVEEDOR}}", así
-         que el valor va sin el prefijo: con "Persona moral" salía impreso
-         "QUE ES UNA PERSONA PERSONA MORAL". */
-      PERSONALIDAD_PROVEEDOR: String(proveedor.personalidad || "").replace(/^Persona\s+/i, ""),
-      CORREO_PROVEEDOR: proveedor.correo,
-      CONTACTO_PROVEEDOR: proveedor.contacto,
-
-      /* Los porcentajes llevan el signo aquí: la plantilla dice "una pena de
-         {{PENA_PORCENTAJE}} por cada día", sin % después del marcador. Los
-         plazos NO lo llevan, porque la plantilla ya escribe "días naturales". */
-      PENA_PORCENTAJE: `${parametros.pena_diaria_pct}%`,
-      PENA_TOPE: `${parametros.pena_tope_pct}%`,
-      GARANTIA_PORCENTAJE: `${parametros.garantia_pct}%`,
-      PLAZO_PAGO_DIAS: parametros.plazo_pago_dias,
-      PLAZO_ACEPTACION_DIAS: parametros.plazo_aceptacion_dias,
-      DIAS_RECHAZO: parametros.dias_rechazo,
-      PLAZO_GARANTIA_DIAS: parametros.garantia_plazo_dias,
-      GARANTIA_VICIOS_MESES: parametros.garantia_vicios_meses,
-      CONFIDENCIALIDAD_ANOS: parametros.confidencialidad_anos,
-      AUDITORIA_ANOS: parametros.auditoria_anos,
-      AVISO_TERMINACION_DIAS: parametros.aviso_terminacion_dias,
-      AVISO_AJUSTE_DIAS: parametros.aviso_ajuste_dias,
-
-      FECHA_SUSCRIPCION: fechaLarga(hoy),
-      FECHA_ORDEN: fechaLarga(hoy),
-      [meta.marcadorFolio]: folio,
-    };
-
-    campos.forEach((c) => {
-      const crudo = c.key === "OBJETO" ? objeto : form[c.key];
-      if (crudo === undefined || crudo === "") return;
-      v[c.key] = c.tipo === "fecha" ? fechaLarga(crudo)
-        : c.tipo === "monto" ? dinero(crudo)
-        : c.tipo === "moneda" ? monedaContrato(crudo)
-        : crudo;
-    });
-
-    /* Una persona física comparece por su propio derecho; una moral, por
-       representante. Sin este marcador el proemio decía "GERARDO CELAYA,
-       representada por GERARDO CELAYA". */
-    v.COMPARECENCIA_ARRENDADORA = esMoral(proveedor.personalidad)
-      ? `representada por ${proveedor.representante || "su representante legal"}`
-      : "quien comparece por su propio derecho";
-
-    if (naturaleza === "arrendamiento") {
-      const renta = Number(form.RENTA_MENSUAL) || 0;
-      const dep = Number(form.DEPOSITO_GARANTIA) || 0;
-      if (renta) v.RENTA_LETRA = importeALetra(renta, form.MONEDA);
-      if (dep) v.DEPOSITO_LETRA = importeALetra(dep, form.MONEDA);
-    }
-
-    if (decision.tipo === "contrato_especifico" && montoBase) {
-      v.MONTO_LETRA = importeALetra(montoBase, form.MONEDA);
-    }
-    if (decision.tipo === "contrato_marco" && montoBase) {
-      v.MONTO_MAXIMO_LETRA = importeALetra(montoBase, "MXP");
-    }
-    return v;
-  };
-
-  const generar = async () => {
-    const faltan = campos.filter((c) => !String((c.key === "OBJETO" ? objeto : form[c.key]) ?? "").trim());
-    if (faltan.length) {
-      const seguir = confirm(
-        `Faltan ${faltan.length} campo(s): ${faltan.map((c) => c.label).join(", ")}.\n\n` +
-        `Sus marcadores van a quedar impresos en el Word como {{MARCADOR}}, para que el hueco se vea.\n\n¿Generar de todas formas?`);
-      if (!seguir) return;
-    }
-
-    setTrabajando(true);
-    setResultado(null);
-    try {
-      const { data: plantillas, error: ePlant } = await supabase
-        .from("contratos_plantillas").select("*").eq("activa", true);
-      if (ePlant) throw ePlant;
-
-      const plantillaNat = naturalezaDe(naturaleza)?.plantilla;
-      const tipoPlantilla = plantillaNat && decision.tipo === "contrato_especifico"
-        ? plantillaNat : meta.plantilla;
-      const principal = plantillas.find((p) => p.tipo === tipoPlantilla);
-      if (!principal) throw new Error(`No hay plantilla activa de tipo "${tipoPlantilla}". Súbela y regístrala en contratos_plantillas.`);
-      const anexo = decision.flowdown ? plantillas.find((p) => p.tipo === "anexo_flowdown") : null;
-      if (decision.flowdown && !anexo) throw new Error('El gatillo 2 exige los anexos flow-down y no hay plantilla activa de tipo "anexo_flowdown".');
-
-      const fila = {
-        unidad,
-        rfc_proveedor: normRfc(rfc),
-        tipo: decision.tipo,
-        flowdown: decision.flowdown,
-        objeto: String(objeto || "").slice(0, 500) || "(sin objeto)",
-        monto: montoBase || null,
-        moneda: form.MONEDA === "USD" ? "USD" : "MXP",
-        vigencia_inicio: form.VIGENCIA_INICIO || null,
-        vigencia_fin: form.VIGENCIA_FIN || null,
-        monto_maximo: decision.tipo === "contrato_marco" ? (montoBase || null) : null,
-        respuestas: { ...resp, _compuerta: decision.compuerta, _naturaleza: naturaleza || null },
-        ruta_decision: decision.ruta,
-        parametros_id: parametros.id,
-        estado: "generado",
-        administrador: form.ADMINISTRADOR_CONTRATO || null,
-        centro_costo: form.CENTRO_COSTO || null,
-        archivo_path: principal.storage_path,
-        ...(session?.user?.id ? { creado_por: session.user.id } : {}),
-      };
-
-      /* Se registra primero para que el folio quede reservado por el índice
-         único. Si la descarga falla después, el instrumento existe y se puede
-         volver a generar; al revés se emitirían dos papeles con el mismo
-         número, que es el error caro. */
-      const guardado = await insertarInstrumentoConReintento(instrumentosApi, fila, unidad, decision.tipo);
-      const valores = construirValores(guardado.folio);
-
-      const docs = [];
-      const r1 = await llenarPlantilla(
-        principal.storage_path, valores,
-        construirClausuladoXML(itemsClausulado, meta.numeracion));
-      descargarBlob(r1.blob, `${guardado.folio}.docx`);
-      docs.push({
-        nombre: `${guardado.folio}.docx`, sinResolver: r1.sinResolver,
-        clausulas: itemsClausulado.length, conClausulado: r1.huboClausulado,
-      });
-
-      if (anexo) {
-        const vAnexo = { ...valores, NUM_CONTRATO: guardado.folio };
-        const r2 = await llenarPlantilla(
-          anexo.storage_path, vAnexo,
-          construirClausuladoXML(itemsAnexo, INSTRUMENTOS.anexo_flowdown.numeracion));
-        descargarBlob(r2.blob, `${guardado.folio}-anexos-flow-down.docx`);
-        docs.push({
-          nombre: `${guardado.folio}-anexos-flow-down.docx`, sinResolver: r2.sinResolver,
-          clausulas: itemsAnexo.length, conClausulado: r2.huboClausulado,
-        });
-      }
-
-      setResultado({ folio: guardado.folio, docs });
-    } catch (err) {
-      alert("No se pudo generar: " + (err.message || err));
-    } finally {
-      setTrabajando(false);
-    }
-  };
-
-  if (cargando) {
-    return <Panel title="Generador"><div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div></Panel>;
-  }
-
-  const faltantesPrevios = [];
-  if (!datosUnidad) faltantesPrevios.push(`los datos legales de ${unidad}`);
-  if (!parametros) faltantesPrevios.push(`una versión de parámetros vigente para ${unidad}`);
-
+  const errorTabla = contratosApi.error && !contratosApi.rows.length;
   return (
-    <>
-      {faltantesPrevios.length > 0 && (
-        <Panel title="Generador">
-          <EmptyState
-            title="Falta capturar datos recurrentes"
-            body={`Sin ${faltantesPrevios.join(" y ")}, la mitad de los marcadores de cualquier plantilla se quedarían sin valor. Captúralos en Datos recurrentes.`}
-          />
-        </Panel>
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      <Panel title={`Contratos con clientes — ${unidad}`}
+        subtitle="Monto y vigencia con sus adendas y extensiones; los gastos y facturas que se le asignan. Clic en un contrato para verlo completo."
+        right={!soloLectura && <Button onClick={() => setAbierto(contratoVacio(unidad))}>+ Nuevo contrato</Button>}>
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 14 }}>
+          <Field label="Buscar" style={{ flex: "1 1 260px" }}>
+            <TextInput value={buscar} onChange={(e) => setBuscar(e.target.value)} placeholder="Número, cliente, proyecto, objeto…" />
+          </Field>
+          <Field label="Status" style={{ flex: "0 0 160px" }}>
+            <Select value={fStatus} onChange={(e) => setFStatus(e.target.value)}>
+              <option value="">Todos</option>
+              {STATUS_CONTRATO.map((s) => <option key={s}>{s}</option>)}
+            </Select>
+          </Field>
+        </div>
+        {!contratosApi.ready ? <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
+        : errorTabla ? <div style={{ fontSize: 12.5, color: T.red }}>No se pudieron cargar los contratos: {contratosApi.error.message}. Si dice que la tabla no existe, falta correr 72-contratos-cliente.sql.</div>
+        : !filas.length ? <EmptyState title="Sin contratos" body={deUnidad.length ? "Ningún contrato coincide con los filtros." : `Todavía no hay contratos de ${unidad}. Agrega el primero con + Nuevo contrato.`} />
+        : (
+          <div style={{ overflowX: "auto" }}>
+            <table style={tableStyle}>
+              <thead><tr>
+                <th style={thStyle}>Contrato</th><th style={thStyle}>Cliente / proyecto</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Monto vigente</th><th style={thStyle}>Vigencia</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Facturado / cobrado</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Gasto comprometido / pagado</th><th style={thStyle}>Status</th>
+              </tr></thead>
+              <tbody>
+                {filas.map(({ c, e, facturado, cobrado, comprometido, pagado, pctFacturado }) => {
+                  const dias = diasHasta(e.fin);
+                  const aviso = c.status === "Vigente" && dias !== null && dias <= 30;
+                  return (
+                    <tr key={c.id} onClick={() => setAbierto({ ...c })} style={{ cursor: "pointer" }}>
+                      <td style={tdStyle}>
+                        <div style={{ fontWeight: 700 }}>{c.numero}</div>
+                        {(e.nAdendas + e.nExtensiones) > 0 && (
+                          <div style={{ fontSize: 10.5, color: T.textFaint }}>
+                            {[e.nAdendas && `${e.nAdendas} adenda(s)`, e.nExtensiones && `${e.nExtensiones} extensión(es)`].filter(Boolean).join(" · ")}
+                          </div>
+                        )}
+                      </td>
+                      <td style={tdStyle}>
+                        <div>{c.cliente || "—"}</div>
+                        <div style={{ fontSize: 11, color: T.textFaint }}>{c.proyecto || "Sin proyecto"}</div>
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" }}>
+                        {money(e.monto, c.moneda)} {monedaNorm(c.moneda)}
+                        {e.monto !== (Number(c.monto_original) || 0) && (
+                          <div style={{ fontSize: 10.5, color: T.textFaint }}>original {money(c.monto_original, c.moneda)}</div>
+                        )}
+                      </td>
+                      <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>
+                        {c.fecha_inicio ? fmtFecha(c.fecha_inicio) : "—"} – {e.fin ? fmtFecha(e.fin) : "—"}
+                        {aviso && <div><Pill tone={dias < 0 ? "red" : "amber"}>{dias < 0 ? `Venció hace ${-dias} día(s)` : `Vence en ${dias} día(s)`}</Pill></div>}
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, fontSize: 11.5 }}>
+                        <div>{textoMonedas(facturado)}{pctFacturado !== null && <span style={{ color: T.textFaint }}> ({pctFacturado} %)</span>}</div>
+                        <div style={{ color: T.teal }}>{textoMonedas(cobrado)}</div>
+                      </td>
+                      <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, fontSize: 11.5 }}>
+                        <div>{textoMonedas(comprometido)}</div>
+                        <div style={{ color: T.teal }}>{textoMonedas(pagado)}</div>
+                      </td>
+                      <td style={tdStyle}><Pill tone={TONO_STATUS_CONTRATO[c.status] || "dim"}>{c.status}</Pill></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Panel>
+      {abierto && (
+        <ContratoClienteModal contrato={abierto} unidad={unidad} proyectos={proyectos} soloLectura={soloLectura}
+          contratosApi={contratosApi} modsApi={modsApi} facturasApi={facturasApi}
+          transacciones={transU} transaccionesApi={transaccionesApi}
+          clientes={[...new Set([...deUnidad.map((c) => c.cliente), ...factU.map((f) => f.cliente)].map((x) => (x || "").trim()).filter(Boolean))].sort()}
+          onGuardado={(c) => setAbierto({ ...c })} onClose={() => setAbierto(null)} />
       )}
-
-      {!faltantesPrevios.length && (
-        <>
-          <Panel title="Proveedor" subtitle="Solo aparecen los que ya tienen datos legales capturados: son los que pueden llenar una plantilla.">
-            <Field label="Proveedor *" style={{ maxWidth: 480 }}>
-              <Select value={rfc} onChange={(e) => setRfc(e.target.value)}>
-                <option value="">— elegir —</option>
-                {provLegalApi.rows
-                  .slice()
-                  .sort((a, b) => String(a.razon_social || "").localeCompare(String(b.razon_social || "")))
-                  .map((p) => <option key={p.id} value={p.rfc}>{p.razon_social} — {p.rfc}</option>)}
-              </Select>
-            </Field>
-            {proveedor && (
-              <div style={{ marginTop: 10, fontSize: 11.5, color: T.textFaint }}>
-                {[proveedor.personalidad, proveedor.representante, proveedor.domicilio].filter(Boolean).join(" · ") || "Sin datos adicionales capturados."}
-              </div>
-            )}
-            {!provLegalApi.rows.length && (
-              <div style={{ marginTop: 10, fontSize: 12, color: T.textDim }}>
-                No hay proveedores con datos legales. Captúralos en Datos recurrentes.
-              </div>
-            )}
-          </Panel>
-
-          <NaturalezaPanel
-            naturaleza={naturaleza}
-            onElegir={(id) => {
-              setNaturaleza(id);
-              const n = naturalezaDe(id);
-              setResp({ ...resp, ...(n ? n.fija : {}) });
-              const tc = n?.tipoContrato;
-              if (tc) setForm((f) => ({ ...f, TIPO_CONTRATO: tc }));
-            }}
-          />
-
-          <Panel
-            title="Árbol de decisión"
-            subtitle="Se evalúan en orden. La primera compuerta con un sí determina el instrumento y las siguientes ya no corren."
-            right={
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <div style={{ width: 90, height: 5, background: T.panelAlt, borderRadius: 3, overflow: "hidden" }}>
-                  <div style={{
-                    width: `${((RESPUESTAS_ARBOL.length - sinResponder.length) / RESPUESTAS_ARBOL.length) * 100}%`,
-                    height: "100%", background: sinResponder.length ? T.amber : T.teal,
-                  }} />
-                </div>
-                <span style={{ fontSize: 11.5, color: T.textFaint, fontVariantNumeric: "tabular-nums" }}>
-                  {RESPUESTAS_ARBOL.length - sinResponder.length} de {RESPUESTAS_ARBOL.length}
-                </span>
-              </div>
-            }
-          >
-            <BloqueCompuerta n={1} titulo="Gatillos obligatorios" salida="contrato específico"
-              estado={estadoCompuerta(1)}>
-              {GATILLOS.map((g, i) => (
-                <PreguntaSiNo key={g.id} numero={i + 1} texto={g.texto} apagado={estadoCompuerta(1) === "inerte"}
-                  preestablecida={fijasPorNaturaleza[g.id] !== undefined && resp[g.id] === fijasPorNaturaleza[g.id]}
-                  valor={resp[g.id]} onChange={(v) => setResp({ ...resp, [g.id]: v })} />
-              ))}
-            </BloqueCompuerta>
-
-            <BloqueCompuerta n={2} titulo="Umbral por operación" salida="contrato específico"
-              estado={estadoCompuerta(2)}>
-              <PreguntaSiNo apagado={estadoCompuerta(2) === "inerte"}
-                texto={<>¿Alguna operación con este proveedor supera <b>{dinero(parametros.umbral_operacion)}</b> sin IVA?</>}
-                valor={resp.superaOperacion} onChange={(v) => setResp({ ...resp, superaOperacion: v })} />
-            </BloqueCompuerta>
-
-            <BloqueCompuerta n={3} titulo="Umbral acumulado" salida="contrato marco y órdenes"
-              estado={estadoCompuerta(3)}>
-              <PreguntaSiNo apagado={estadoCompuerta(3) === "inerte"}
-                texto={<>¿El acumulado anual con este proveedor supera <b>{dinero(parametros.umbral_acumulado)}</b> sin IVA?</>}
-                valor={resp.superaAcumulado} onChange={(v) => setResp({ ...resp, superaAcumulado: v })} />
-            </BloqueCompuerta>
-
-            <BloqueCompuerta n={4} titulo="Riesgos agravantes" salida="contrato específico"
-              estado={estadoCompuerta(4)}>
-              {RIESGOS.map((r, i) => (
-                <PreguntaSiNo key={r.id} numero={i + 1} texto={r.texto} apagado={estadoCompuerta(4) === "inerte"}
-                  valor={resp[r.id]} onChange={(v) => setResp({ ...resp, [r.id]: v })} />
-              ))}
-            </BloqueCompuerta>
-
-            <div style={{
-              maxWidth: ANCHO_PREGUNTAS, marginTop: 6, borderRadius: 8, padding: "16px 18px",
-              background: sinResponder.length ? T.panelAlt : T.accentBg,
-              border: `1px solid ${sinResponder.length ? T.amber : T.accent}`,
-            }}>
-              <div style={{ fontSize: 11.5, color: T.textDim }}>
-                {sinResponder.length ? "Resultado preliminar" : "Corresponde emitir"}
-              </div>
-              <div style={{ fontSize: 21, fontWeight: 700, color: sinResponder.length ? T.textDim : T.text, marginTop: 3, letterSpacing: "-0.01em" }}>
-                {meta.label}{decision.flowdown ? " + anexos flow-down" : ""}
-              </div>
-              {sinResponder.length > 0 && (
-                <div style={{ fontSize: 12, color: T.amberDim, marginTop: 7, lineHeight: 1.5 }}>
-                  Faltan {sinResponder.length} de {RESPUESTAS_ARBOL.length} preguntas. Una sin responder
-                  cuenta como «no», así que esto todavía puede cambiar.
-                </div>
-              )}
-              <div style={{ fontSize: 12.5, color: T.textDim, marginTop: 8, lineHeight: 1.55 }}>{decision.ruta}</div>
-              <div style={{ fontSize: 11, color: T.textFaint, marginTop: 10 }}>
-                Umbrales vigentes desde {fmtFecha(parametros.vigente_desde)}. Se guardan con el instrumento.
-              </div>
-            </div>
-          </Panel>
-
-          {meta.externo ? (
-            <Panel title="Emisión">
-              <EmptyState
-                title={`${meta.label}: no se emite aquí`}
-                body={`${meta.externo} Esta herramienta solo genera contratos específicos, marcos y sus anexos.`}
-              />
-            </Panel>
-          ) : (
-          <Panel
-            title="Datos del instrumento"
-            subtitle={`Solo lo que ${meta.label.toLowerCase()} necesita. Los campos cambian si cambia el resultado del árbol.`}
-          >
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))", gap: 14 }}>
-              {campos.map((c) => (
-                <Field key={c.key} label={c.label} style={c.ancho === 2 ? { gridColumn: "span 2" } : undefined}>
-                  {c.key === "OBJETO" ? (
-                    /* Mismo dato que el de la pestaña de cláusulas, no una
-                       copia: tenerlo dos veces garantizaba que tarde o
-                       temprano dijeran cosas distintas. */
-                    <TextInput value={objeto} onChange={(e) => setObjeto(e.target.value)} />
-                  ) : c.tipo === "moneda" ? (
-                    <Select value={form.MONEDA || "MXP"} onChange={(e) => setForm({ ...form, MONEDA: e.target.value })}>
-                      <option value="MXP">MXN — peso mexicano</option>
-                      <option value="USD">USD — dólar americano</option>
-                    </Select>
-                  ) : (
-                    <TextInput
-                      type={c.tipo === "fecha" ? "date" : c.tipo === "monto" ? "number" : "text"}
-                      step={c.tipo === "monto" ? "0.01" : undefined}
-                      value={form[c.key] ?? ""}
-                      onChange={(e) => setForm({ ...form, [c.key]: e.target.value })}
-                    />
-                  )}
-                  {c.ayuda
-                    ? <span style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>{c.ayuda}</span>
-                    : <MarcadorHint marcador={c.key} />}
-                </Field>
-              ))}
-            </div>
-
-            {montoBase > 0 && (
-              <div style={{ marginTop: 14, fontSize: 11.5, color: T.textFaint, fontFamily: T.fontMono }}>
-                En letra: {importeALetra(montoBase, decision.tipo === "contrato_marco" ? "MXP" : form.MONEDA)}
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 18 }}>
-              <Button onClick={generar} disabled={!listo || trabajando || !itemsClausulado.length}>
-                {trabajando ? "Generando…" : "Generar y registrar"}
-              </Button>
-              {!proveedor && <span style={{ fontSize: 12, color: T.textDim }}>Elige un proveedor primero.</span>}
-              {proveedor && !itemsClausulado.length && (
-                <span style={{ fontSize: 12, color: T.textDim }}>
-                  No hay cláusulas marcadas. Elígelas en «Objeto y cláusulas».
-                </span>
-              )}
-              {proveedor && itemsClausulado.length > 0 && (
-                <span style={{ fontSize: 12, color: T.textFaint }}>
-                  {itemsClausulado.length} cláusula(s){itemsAnexo.length && decision.flowdown ? ` y ${itemsAnexo.length} anexo(s)` : ""}
-                </span>
-              )}
-            </div>
-
-            {resultado && (
-              <div style={{ marginTop: 16, borderTop: `1px solid ${T.border}`, paddingTop: 13 }}>
-                <div style={{ fontSize: 12.5, color: T.text, fontWeight: 600 }}>
-                  Registrado como {resultado.folio}
-                </div>
-                {resultado.docs.map((d) => (
-                  <div key={d.nombre} style={{ fontSize: 12, color: T.textDim, marginTop: 6 }}>
-                    {d.nombre} — {d.clausulas} cláusula(s)
-                    {!d.conClausulado && (
-                      <div style={{ fontSize: 11, color: T.red, marginTop: 3 }}>
-                        Esta plantilla no tiene {"{{CLAUSULADO}}"}: salió con el texto que trae escrito,
-                        sin tu selección. Vuelve a subir la versión adelgazada.
-                      </div>
-                    )}
-                    {d.sinResolver.length > 0 && (
-                      <div style={{ fontSize: 11, color: T.red, marginTop: 3, fontFamily: T.fontMono }}>
-                        {d.sinResolver.length} marcador(es) sin resolver, impresos en el documento:{" "}
-                        {d.sinResolver.join(", ")}
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            )}
-          </Panel>
-          )}
-        </>
-      )}
-    </>
+    </div>
   );
 }
 
-/* ----------------------------------------------------------------------
-   BIBLIOTECA DE CLÁUSULAS
----------------------------------------------------------------------- */
-
-const ORD_UNIDAD = ["PRIMERA", "SEGUNDA", "TERCERA", "CUARTA", "QUINTA", "SEXTA", "SÉPTIMA", "OCTAVA", "NOVENA"];
-const ORD_DECENA = ["", "DÉCIMA", "VIGÉSIMA", "TRIGÉSIMA", "CUADRAGÉSIMA", "QUINCUAGÉSIMA"];
-
-/* DÉCIMA PRIMERA, no UNDÉCIMA: es la forma que usa el clausulado mexicano y
-   la que ya traían las plantillas. */
-function ordinalEnLetra(n) {
-  if (n < 1) return "";
-  if (n <= 9) return ORD_UNIDAD[n - 1];
-  const d = Math.floor(n / 10), u = n % 10;
-  if (d >= ORD_DECENA.length) return `${n}ª`;
-  return ORD_DECENA[d] + (u ? " " + ORD_UNIDAD[u - 1] : "");
-}
-
-function etiquetaNumero(i, modo) {
-  if (modo === "numero") return `${i}.`;
-  if (modo === "letra") return `ANEXO ${String.fromCharCode(64 + i)}.`;
-  return `${ordinalEnLetra(i)}.`;
-}
-
-/* Una cláusula se puede amarrar a un gatillo, a un riesgo o directamente a
-   la naturaleza de la contratación: un arrendamiento necesita cláusulas que
-   una prestación de servicios no, y eso no depende de ningún gatillo. */
-const TODAS_CASILLAS = [
-  ...GATILLOS.map((g, i) => ({ id: g.id, etiqueta: `Gatillo ${i + 1}`, texto: g.texto })),
-  ...RIESGOS.map((r, i) => ({ id: r.id, etiqueta: `Riesgo ${i + 1}`, texto: r.texto })),
-  ...NATURALEZAS.map((n) => ({ id: "nat_" + n.id, etiqueta: "Naturaleza", texto: n.label })),
-];
-
-const slugClave = (t) =>
-  String(t || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-    .replace(/\{\{[A-Z_0-9]+\}\}/g, "")
-    .toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/_+/g, "_")
-    .replace(/^_|_$/g, "").slice(0, 40);
-
-const parrafosDe = (cuerpo) =>
-  String(cuerpo || "").split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
-
-/* ----------------------------------------------------------------------
-   ARMADO DEL CLAUSULADO EN XML DE WORD
----------------------------------------------------------------------- */
-
-/* Formato copiado de los párrafos que ya traían las plantillas: Arial 10,
-   justificado. El encabezado lleva negrita y más aire arriba; el cuerpo, la
-   interlínea de 276. Si se generara con otro formato, el documento se vería
-   cosido de dos fuentes distintas. */
-const RPR_BASE = '<w:rFonts w:ascii="Arial" w:cs="Arial" w:eastAsia="Arial" w:hAnsi="Arial"/><w:sz w:val="20"/><w:szCs w:val="20"/>';
-
-function parrafoWord(texto, negrita) {
-  const pPr = negrita
-    ? '<w:spacing w:after="100" w:before="220"/><w:jc w:val="both"/>'
-    : '<w:spacing w:after="120" w:line="276"/><w:jc w:val="both"/>';
-  const rPr = negrita ? `<w:b/><w:bCs/>${RPR_BASE}` : RPR_BASE;
-  return `<w:p><w:pPr>${pPr}</w:pPr><w:r><w:rPr>${rPr}</w:rPr>`
-    + `<w:t xml:space="preserve">${escaparXml(texto)}</w:t></w:r></w:p>`;
-}
-
-/**
- * Convierte las cláusulas elegidas en párrafos de Word, numeradas en el
- * estilo que corresponda al instrumento. Los {{MARCADORES}} del cuerpo se
- * dejan crudos a propósito: la sustitución general corre después sobre todo
- * el documento, así que se resuelven junto con los de la plantilla.
- */
-function construirClausuladoXML(items, modo) {
-  let n = 0;
-  return items.map((c) => {
-    n += 1;
-    const encabezado = `${etiquetaNumero(n, modo)} ${c.titulo}${/[.:]$/.test(c.titulo) ? "" : "."}`;
-    return parrafoWord(encabezado, true)
-      + parrafosDe(c.cuerpo).map((p) => parrafoWord(p, false)).join("");
-  }).join("");
-}
-
-/* Sustituye el PÁRRAFO COMPLETO que contiene {{CLAUSULADO}}, no solo el
-   texto: si únicamente se cambiara la cadena, las veinte cláusulas caerían
-   dentro de un mismo párrafo, sin encabezados ni separación. */
-function inyectarClausulado(xml, clausuladoXML) {
-  const i = xml.indexOf("{{CLAUSULADO}}");
-  if (i === -1) return { xml, encontrado: false };
-  /* No sirve lastIndexOf("<w:p"): las propiedades del párrafo son <w:pPr>,
-     que también empieza con esa cadena, así que el corte caería a media
-     etiqueta y dejaría el <w:p> sin cerrar. Hay que exigir que lo que sigue
-     sea un espacio o el cierre de la etiqueta. */
-  const rx = /<w:p[ >]/g;
-  let ini = -1, m;
-  while ((m = rx.exec(xml)) !== null) {
-    if (m.index >= i) break;
-    ini = m.index;
-  }
-  const fin = xml.indexOf("</w:p>", i);
-  if (ini === -1 || fin === -1) return { xml, encontrado: false };
-  return { xml: xml.slice(0, ini) + clausuladoXML + xml.slice(fin + 6), encontrado: true };
-}
-
-function ClausulasPanel({ clausulasApi, resp, naturalezaSel, tipoSugerido, instrumento, setInstrumento, objeto, setObjeto, incluidas, setIncluidas, session }) {
-  const [editando, setEditando] = useState(null);
+function ContratoClienteModal({ contrato, unidad, proyectos, clientes, soloLectura, contratosApi, modsApi, facturasApi,
+                                transacciones, transaccionesApi, onGuardado, onClose }) {
+  const esNuevo = !contrato.id;
+  const [form, setForm] = useState({ ...contrato, monto_original: contrato.monto_original ?? "",
+    fecha_inicio: contrato.fecha_inicio || "", fecha_fin_original: contrato.fecha_fin_original || "" });
   const [guardando, setGuardando] = useState(false);
-  const [verCuerpo, setVerCuerpo] = useState(null);
+  const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
+  const vivo = contratosApi.rows.find((c) => c.id === contrato.id) || contrato;
+  const e = estadoContrato(vivo, modsApi.rows);
+  const mon = monedaNorm(vivo.moneda);
 
-  const modo = (INSTRUMENTOS[instrumento] || {}).numeracion || "ordinal";
-
-  /* Una cláusula sin naturalezas sirve para todas; con naturalezas, solo
-     para las que lista. Sin esto, un contrato de servicios arrastraría las
-     cláusulas de arrendamiento y al revés. */
-  const aplicaNaturaleza = (c) =>
-    !c.naturalezas || !c.naturalezas.length || !naturalezaSel
-      || c.naturalezas.includes(naturalezaSel);
-  const items = clausulasApi.rows
-    .filter((c) => c.instrumento === instrumento && c.activa !== false && aplicaNaturaleza(c))
-    .sort((a, b) => (a.orden - b.orden) || String(a.titulo).localeCompare(String(b.titulo)));
-
-  const sugerenciasDe = (c) => (c.sugerida_si || []).filter((k) => esSi(resp[k]));
-  const estadoDe = (c) => c.obligatoria ? "obligatoria" : (sugerenciasDe(c).length ? "sugerida" : "opcional");
-
-  /* La selección se recalcula cuando cambia el instrumento o las respuestas
-     del árbol, pero respeta lo que el usuario ya marcó a mano: lo que se
-     siembra es el default, no una imposición. */
-  const claveAuto = `${instrumento}|${items.map((c) => c.id).join(",")}|${TODAS_CASILLAS.filter((k) => esSi(resp[k.id])).map((k) => k.id).join(",")}`;
-  const autoRef = useRef(null);
-  useEffect(() => {
-    if (autoRef.current === claveAuto) return;
-    autoRef.current = claveAuto;
-    const base = new Set(items.filter((c) => estadoDe(c) !== "opcional").map((c) => c.id));
-    setIncluidas(base);
-  }, [claveAuto]);
-
-  const marcadas = items.filter((c) => c.obligatoria || incluidas.has(c.id));
-  let n = 0;
-  const numeradas = items.map((c) => {
-    const dentro = c.obligatoria || incluidas.has(c.id);
-    if (dentro) n += 1;
-    return { c, dentro, etiqueta: dentro ? etiquetaNumero(n, modo) : null };
-  });
-
-  const alternar = (c) => {
-    if (c.obligatoria) return;
-    const s = new Set(incluidas);
-    if (s.has(c.id)) s.delete(c.id); else s.add(c.id);
-    setIncluidas(s);
-  };
-
-  const nuevo = () => setEditando({
-    _nuevo: true, instrumento, tipo_item: instrumento === "anexo_flowdown" ? "anexo" : "clausula",
-    titulo: "", cuerpo: "", obligatoria: false, sugerida_si: [],
-    orden: (items.length ? Math.max(...items.map((c) => c.orden)) : 0) + 10,
-  });
-
-  const guardar = async () => {
-    const titulo = String(editando.titulo || "").trim();
-    const cuerpo = String(editando.cuerpo || "").trim();
-    if (!titulo || !cuerpo) { alert("El título y el cuerpo son obligatorios."); return; }
+  const guardar = async (ev) => {
+    ev?.preventDefault();
+    const numero = String(form.numero || "").trim().toUpperCase();
+    if (!numero) { alert("Escribe el número del contrato, como aparece en él."); return; }
+    if (form.fecha_inicio && form.fecha_fin_original && form.fecha_fin_original < form.fecha_inicio) {
+      alert("La fecha de término no puede ser anterior a la de inicio."); return;
+    }
+    const reg = {
+      unidad, numero, cliente: String(form.cliente || "").trim() || null, proyecto: form.proyecto || null,
+      objeto: String(form.objeto || "").trim() || null, moneda: monedaNorm(form.moneda),
+      monto_original: form.monto_original === "" ? null : Math.round(Number(form.monto_original) * 100) / 100,
+      fecha_inicio: form.fecha_inicio || null, fecha_fin_original: form.fecha_fin_original || null,
+      status: form.status, notas: String(form.notas || "").trim() || null,
+    };
+    if (reg.monto_original !== null && !(reg.monto_original >= 0)) { alert("El monto no es un número válido."); return; }
     setGuardando(true);
     try {
-      const fila = {
-        clave: editando.clave || `${editando.instrumento.slice(0, 3)}_${slugClave(titulo)}`,
-        tipo_item: editando.tipo_item,
-        instrumento: editando.instrumento,
-        titulo, cuerpo,
-        obligatoria: !!editando.obligatoria,
-        sugerida_si: editando.sugerida_si || [],
-        orden: Number(editando.orden) || 100,
-        actualizado_en: new Date().toISOString(),
-        ...(session?.user?.id ? { actualizado_por: session.user.id } : {}),
-      };
-      if (editando._nuevo) await clausulasApi.insert({ id: uid(), ...fila });
-      else await clausulasApi.update(editando.id, fila);
-      setEditando(null);
+      const g = esNuevo ? await contratosApi.insert(reg) : await contratosApi.update(contrato.id, reg);
+      onGuardado(g);
+      if (!esNuevo) alert("Contrato guardado.");
     } catch (err) {
-      alert("No se pudo guardar: " + (err.message || err));
-    } finally {
-      setGuardando(false);
-    }
+      alert("No se pudo guardar: " + (err.code === "23505" ? `ya existe el contrato ${numero} en ${unidad}.` : (err.message || err)));
+    } finally { setGuardando(false); }
   };
 
-  const desactivar = async (c) => {
-    if (!confirm(`¿Sacar "${c.titulo}" de la biblioteca?\n\nNo se borra: queda inactiva y deja de ofrecerse al armar contratos. Los que ya se generaron no cambian.`)) return;
-    try { await clausulasApi.update(c.id, { activa: false, actualizado_en: new Date().toISOString() }); }
+  const eliminar = async () => {
+    if (!confirm(`¿Eliminar el contrato ${vivo.numero}? Se borran sus adendas y extensiones; sus gastos y facturas se quedan, solo sin contrato. Si el contrato terminó o se canceló, mejor cámbiale el status.`)) return;
+    try { await contratosApi.remove(contrato.id); onClose(); }
+    catch (err) { alert("No se pudo eliminar: " + (err.message || err)); }
+  };
+
+  /* ---- Adendas y extensiones ---- */
+  const [mod, setMod] = useState({ tipo: "Adenda", numero: "", fecha: hoyLocalISO(), monto_cambio: "", nueva_fecha_fin: "" });
+  const agregarMod = async () => {
+    const monto = mod.monto_cambio === "" ? null : Math.round(Number(mod.monto_cambio) * 100) / 100;
+    if (monto === null && !mod.nueva_fecha_fin) { alert("Una adenda o extensión cambia el monto, la fecha de término, o ambos: captura al menos uno."); return; }
+    if (monto !== null && !Number.isFinite(monto)) { alert("El cambio de monto no es un número válido."); return; }
+    if (!mod.fecha) { alert("Indica la fecha de firma."); return; }
+    if (monto !== null && e.monto + monto < 0) { alert(`Con esa reducción el contrato quedaría en ${money(e.monto + monto, mon)}.`); return; }
+    try {
+      await modsApi.insert({ contrato_id: contrato.id, unidad, tipo: mod.tipo, numero: String(mod.numero || "").trim() || null,
+        fecha: mod.fecha, monto_cambio: monto, nueva_fecha_fin: mod.nueva_fecha_fin || null });
+      setMod({ tipo: mod.tipo, numero: "", fecha: hoyLocalISO(), monto_cambio: "", nueva_fecha_fin: "" });
+    } catch (err) { alert("No se pudo agregar: " + (err.message || err)); }
+  };
+  const quitarMod = async (m) => {
+    if (!confirm(`¿Quitar ${m.tipo.toLowerCase()} ${m.numero || ""} del ${fmtFecha(m.fecha)}?`)) return;
+    try { await modsApi.remove(m.id); } catch (err) { alert("No se pudo quitar: " + (err.message || err)); }
+  };
+
+  /* ---- Facturas ---- */
+  const facturas = facturasApi.rows.filter((f) => f.unidad === unidad && f.contrato_id === contrato.id)
+    .sort((a, b) => String(b.fecha_emision).localeCompare(String(a.fecha_emision)));
+  const libres = facturasApi.rows.filter((f) => f.unidad === unidad && !f.contrato_id && f.status !== "Cancelada")
+    .sort((a, b) => String(b.fecha_emision).localeCompare(String(a.fecha_emision)));
+  const [factSel, setFactSel] = useState("");
+  const asignarFactura = async (id, contratoId) => {
+    try { await facturasApi.update(id, { contrato_id: contratoId }); setFactSel(""); }
+    catch (err) { alert("No se pudo: " + (err.message || err)); }
+  };
+  const factVig = facturas.filter((f) => f.status !== "Cancelada");
+
+  /* ---- Gastos ---- */
+  const gastos = gastosDeContrato(contrato.id, transacciones)
+    .sort((a, b) => String(b.dia || "").localeCompare(String(a.dia || "")));
+  const [busTx, setBusTx] = useState("");
+  const [txSel, setTxSel] = useState(() => new Set());
+  const qtx = busTx.trim().toLowerCase();
+  const candidatas = qtx.length < 2 ? [] : transacciones
+    .filter((t) => !t.contrato_id && !estaCancelada(t) && !esParcialidad(t)
+      && [t.folio_transaccion, t.proveedor, t.concepto_detallado, t.proyecto].some((v) => String(v || "").toLowerCase().includes(qtx)))
+    .slice(0, 40);
+  const asignarTx = async (ids, contratoId) => {
+    try { for (const id of ids) await transaccionesApi.update(id, { contrato_id: contratoId }); setTxSel(new Set()); }
     catch (err) { alert("No se pudo: " + (err.message || err)); }
   };
 
-  const casillasActivas = TODAS_CASILLAS.filter((k) => esSi(resp[k.id]));
+  const seccion = (titulo, extra, hijos) => (
+    <div style={{ marginTop: 20, paddingTop: 14, borderTop: `1px solid ${T.borderSoft}` }}>
+      <div style={{ display: "flex", alignItems: "baseline", gap: 10, marginBottom: 10, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, fontWeight: 700 }}>{titulo}</div>
+        <div style={{ fontSize: 11.5, color: T.textDim }}>{extra}</div>
+      </div>
+      {hijos}
+    </div>
+  );
+  const ro = soloLectura;
 
   return (
-    <>
-      <Panel title="Instrumento y objeto" subtitle="Elige el instrumento que te indicó el árbol. La estructura y las cláusulas se acomodan a esa elección.">
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 14 }}>
-          <Field label="Tipo de instrumento">
-            <Select value={instrumento} onChange={(e) => setInstrumento(e.target.value)}>
-              {ORDEN_INSTRUMENTOS.map((id) => <option key={id} value={id}>{INSTRUMENTOS[id].label}</option>)}
-            </Select>
-            {instrumento !== tipoSugerido && (
-              <span style={{ fontSize: 10.5, color: T.amberDim, marginTop: 3 }}>
-                El árbol indicó {INSTRUMENTOS[tipoSugerido].label.toLowerCase()}.
-              </span>
-            )}
-          </Field>
-          <Field label="Objeto del contrato" style={{ gridColumn: "span 2" }}>
-            <TextInput value={objeto} onChange={(e) => setObjeto(e.target.value)} placeholder="Suministro de…, prestación del servicio de…" />
-            <MarcadorHint marcador="OBJETO" />
-          </Field>
-        </div>
-
-        <div style={{ marginTop: 16, display: "flex", gap: 24, flexWrap: "wrap" }}>
-          <div>
-            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 6 }}>
-              Estructura del documento
-            </div>
-            {((INSTRUMENTOS[instrumento] || {}).estructura || []).map((s, i) => (
-              <div key={s} style={{ fontSize: 12, color: s === "Clausulado" ? T.text : T.textFaint, fontWeight: s === "Clausulado" ? 600 : 400, padding: "2px 0" }}>
-                {i + 1}. {s}{s === "Clausulado" ? `  ← ${marcadas.length} ítem(s) seleccionado(s)` : ""}
-              </div>
-            ))}
-            <div style={{ fontSize: 11, color: T.textFaint, marginTop: 6, maxWidth: 340, lineHeight: 1.5 }}>
-              Lo demás lo aporta la plantilla y no se elige aquí.
-            </div>
+    <Modal title={esNuevo ? `Nuevo contrato — ${unidad}` : `Contrato ${vivo.numero}`}
+      subtitle={esNuevo ? "Al guardarlo se abren sus adendas, facturas y gastos."
+        : `Monto vigente ${money(e.monto, mon)} ${mon} · vigencia ${vivo.fecha_inicio ? fmtFecha(vivo.fecha_inicio) : "—"} a ${e.fin ? fmtFecha(e.fin) : "—"}`}
+      onClose={onClose} width={1000} cerrarAlHacerClicFuera={false}>
+      <form onSubmit={guardar} style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
+        <Field label="Número de contrato"><TextInput value={form.numero} onChange={(ev) => set("numero", ev.target.value)} disabled={ro} /></Field>
+        <Field label="Cliente" style={{ gridColumn: "span 2" }}>
+          <TextInput value={form.cliente || ""} onChange={(ev) => set("cliente", ev.target.value)} list="clientes-contratos" disabled={ro} />
+          <datalist id="clientes-contratos">{clientes.map((c) => <option key={c} value={c} />)}</datalist>
+        </Field>
+        <Field label="Status">
+          <Select value={form.status} onChange={(ev) => set("status", ev.target.value)} disabled={ro}>
+            {STATUS_CONTRATO.map((s) => <option key={s}>{s}</option>)}
+          </Select>
+        </Field>
+        <Field label="Objeto" style={{ gridColumn: "span 4" }}>
+          <TextInput value={form.objeto || ""} onChange={(ev) => set("objeto", ev.target.value)} disabled={ro} />
+        </Field>
+        <Field label="Proyecto">
+          <Select value={form.proyecto || ""} onChange={(ev) => set("proyecto", ev.target.value)} disabled={ro}>
+            <option value="">— Sin proyecto —</option>
+            {[...new Set([...proyectos, form.proyecto].filter(Boolean))].map((p) => <option key={p}>{p}</option>)}
+          </Select>
+        </Field>
+        <Field label="Monto original">
+          <TextInput type="number" step="0.01" value={form.monto_original} onChange={(ev) => set("monto_original", ev.target.value)} disabled={ro} />
+        </Field>
+        <Field label="Moneda">
+          <Select value={monedaNorm(form.moneda)} onChange={(ev) => set("moneda", ev.target.value)} disabled={ro}>
+            <option value="MXP">MXP</option><option value="USD">USD</option>
+          </Select>
+        </Field>
+        <div />
+        <Field label="Inicio"><TextInput type="date" value={form.fecha_inicio} onChange={(ev) => set("fecha_inicio", ev.target.value)} disabled={ro} /></Field>
+        <Field label="Término original"><TextInput type="date" value={form.fecha_fin_original} onChange={(ev) => set("fecha_fin_original", ev.target.value)} disabled={ro} /></Field>
+        <Field label="Notas" style={{ gridColumn: "span 2" }}><TextInput value={form.notas || ""} onChange={(ev) => set("notas", ev.target.value)} disabled={ro} /></Field>
+        {!ro && (
+          <div style={{ gridColumn: "span 4", display: "flex", gap: 8 }}>
+            <Button type="submit" disabled={guardando}>{guardando ? "Guardando…" : esNuevo ? "Guardar contrato" : "Guardar cambios"}</Button>
+            <Button type="button" variant="ghost" onClick={onClose}>{esNuevo ? "Cancelar" : "Cerrar"}</Button>
+            <div style={{ flex: 1 }} />
+            {!esNuevo && <Button type="button" variant="danger" onClick={eliminar}>Eliminar</Button>}
           </div>
+        )}
+      </form>
 
-          <div style={{ flex: 1, minWidth: 260 }}>
-            <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 6 }}>
-              Respuestas del árbol que están sugiriendo
-            </div>
-            {casillasActivas.length ? casillasActivas.map((k) => (
-              <div key={k.id} style={{ fontSize: 11.5, color: T.textDim, padding: "2px 0" }}>
-                <b>{k.etiqueta}:</b> {k.texto}
-              </div>
-            )) : (
-              <div style={{ fontSize: 11.5, color: T.textFaint, lineHeight: 1.5 }}>
-                Ninguna casilla marcada. Respóndelas en Diagnóstico y las cláusulas que dependen de ellas
-                se marcan solas; mientras tanto solo se preseleccionan las obligatorias.
-              </div>
-            )}
-          </div>
-        </div>
-      </Panel>
-
-      <Panel
-        title={instrumento === "anexo_flowdown" ? "Anexos disponibles" : "Cláusulas"}
-        subtitle="Las obligatorias van siempre. Las sugeridas se marcan solas por las respuestas del árbol; puedes desmarcarlas."
-        right={<Button onClick={nuevo}>+ Nueva</Button>}
-      >
-        {editando && (
-          <div style={{ background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 8, padding: 16, marginBottom: 16 }}>
-            <div style={{ fontSize: 12.5, fontWeight: 700, color: T.text, marginBottom: 12 }}>
-              {editando._nuevo ? "Nueva cláusula" : `Editar — ${editando.titulo}`}
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 13 }}>
-              <Field label="Título *" style={{ gridColumn: "span 2" }}>
-                <TextInput value={editando.titulo} onChange={(e) => setEditando({ ...editando, titulo: e.target.value })} />
-                <span style={{ fontSize: 10.5, color: T.textFaint, marginTop: 3 }}>
-                  Sin el ordinal: se calcula al generar.
-                </span>
-              </Field>
-              <Field label="Instrumento">
-                <Select value={editando.instrumento} onChange={(e) => setEditando({ ...editando, instrumento: e.target.value })}>
-                  {ORDEN_INSTRUMENTOS.map((id) => <option key={id} value={id}>{INSTRUMENTOS[id].label}</option>)}
+      {!esNuevo && seccion("Adendas y extensiones",
+        `Original ${money(vivo.monto_original, mon)} → vigente ${money(e.monto, mon)} ${mon} · término ${vivo.fecha_fin_original ? fmtFecha(vivo.fecha_fin_original) : "—"} → ${e.fin ? fmtFecha(e.fin) : "—"}`,
+        <>
+          {e.mods.length > 0 && (
+            <table style={{ ...tableStyle, marginBottom: 10 }}>
+              <thead><tr>
+                <th style={thStyle}>Tipo</th><th style={thStyle}>Número</th><th style={thStyle}>Firma</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Cambio de monto</th><th style={{ ...thStyle, textAlign: "right" }}>Monto resultante</th>
+                <th style={thStyle}>Nuevo término</th><th style={thStyle}></th>
+              </tr></thead>
+              <tbody>
+                {e.mods.reduce((acc, m) => {
+                  const previo = acc.length ? acc[acc.length - 1].tot : Number(vivo.monto_original) || 0;
+                  acc.push({ m, tot: previo + (Number(m.monto_cambio) || 0) });
+                  return acc;
+                }, []).map(({ m, tot }) => (
+                  <tr key={m.id}>
+                    <td style={tdStyle}><Pill tone={m.tipo === "Extensión" ? "accent" : "amber"}>{m.tipo}</Pill></td>
+                    <td style={tdStyle}>{m.numero || "—"}</td>
+                    <td style={tdStyle}>{fmtFecha(m.fecha)}</td>
+                    <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, color: Number(m.monto_cambio) < 0 ? T.red : T.text }}>
+                      {m.monto_cambio !== null && m.monto_cambio !== undefined ? `${Number(m.monto_cambio) > 0 ? "+" : ""}${money(m.monto_cambio, mon)}` : "—"}
+                    </td>
+                    <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(tot, mon)}</td>
+                    <td style={tdStyle}>{m.nueva_fecha_fin ? fmtFecha(m.nueva_fecha_fin) : "—"}</td>
+                    <td style={tdStyle}>{!ro && <Button variant="ghost" style={{ padding: "3px 9px" }} onClick={() => quitarMod(m)}>Quitar</Button>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+          {!ro && (
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end", flexWrap: "wrap", background: T.panelAlt, padding: "10px 12px", borderRadius: 8 }}>
+              <Field label="Tipo" style={{ flex: "0 0 130px" }}>
+                <Select value={mod.tipo} onChange={(ev) => setMod({ ...mod, tipo: ev.target.value })}>
+                  <option>Adenda</option><option>Extensión</option>
                 </Select>
               </Field>
-              <Field label="Orden">
-                <TextInput type="number" step="10" value={editando.orden}
-                  onChange={(e) => setEditando({ ...editando, orden: e.target.value })} />
+              <Field label="Número" style={{ flex: "0 0 110px" }}><TextInput value={mod.numero} onChange={(ev) => setMod({ ...mod, numero: ev.target.value })} placeholder="1" /></Field>
+              <Field label="Fecha de firma" style={{ flex: "0 0 150px" }}><TextInput type="date" value={mod.fecha} onChange={(ev) => setMod({ ...mod, fecha: ev.target.value })} /></Field>
+              <Field label={`Cambio de monto (${mon}; + amplía, − reduce)`} style={{ flex: "0 0 230px" }}>
+                <TextInput type="number" step="0.01" value={mod.monto_cambio} onChange={(ev) => setMod({ ...mod, monto_cambio: ev.target.value })} />
               </Field>
+              <Field label="Nuevo término" style={{ flex: "0 0 150px" }}><TextInput type="date" value={mod.nueva_fecha_fin} onChange={(ev) => setMod({ ...mod, nueva_fecha_fin: ev.target.value })} /></Field>
+              <Button onClick={agregarMod}>Agregar</Button>
+              {mod.monto_cambio !== "" && Number.isFinite(Number(mod.monto_cambio)) && (
+                <span style={{ fontSize: 11.5, color: T.textDim, paddingBottom: 9 }}>El contrato quedaría en {money(e.monto + Number(mod.monto_cambio), mon)}</span>
+              )}
             </div>
+          )}
+        </>)}
 
-            <Field label="Cuerpo *" style={{ marginTop: 13 }}>
-              <textarea
-                value={editando.cuerpo}
-                onChange={(e) => setEditando({ ...editando, cuerpo: e.target.value })}
-                rows={10}
-                style={{
-                  width: "100%", padding: "9px 11px", border: `1px solid ${T.border}`, borderRadius: 6,
-                  background: T.panel, color: T.text, fontSize: 12.5, fontFamily: T.fontUI,
-                  lineHeight: 1.55, resize: "vertical", boxSizing: "border-box",
-                }}
-              />
-              <span style={{ fontSize: 10.5, color: T.textFaint, marginTop: 4 }}>
-                Un renglón en blanco separa párrafos. Admite los mismos marcadores, por ejemplo {"{{PLAZO_PAGO_DIAS}}"}.
-              </span>
-            </Field>
-
-            <div style={{ marginTop: 13 }}>
-              <label style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 12.5, color: T.textDim, cursor: "pointer" }}>
-                <input type="checkbox" checked={!!editando.obligatoria}
-                  onChange={(e) => setEditando({ ...editando, obligatoria: e.target.checked })} />
-                Obligatoria — va en todos los contratos de este tipo y no se puede desmarcar
-              </label>
-            </div>
-
-            {!editando.obligatoria && (
-              <div style={{ marginTop: 13 }}>
-                <div style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em", color: T.textDim, marginBottom: 3 }}>
-                  Se sugiere cuando se marca
-                </div>
-                <div style={{ fontSize: 11, color: T.textFaint, marginBottom: 8 }}>
-                  Si no eliges ninguna, la cláusula queda como opcional y solo se incluye marcándola a mano.
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(270px, 1fr))", gap: 4 }}>
-                  {TODAS_CASILLAS.map((k) => (
-                    <label key={k.id} style={{ display: "flex", gap: 7, alignItems: "flex-start", fontSize: 11.5, color: T.textDim, cursor: "pointer", padding: "2px 0" }}>
-                      <input
-                        type="checkbox"
-                        checked={(editando.sugerida_si || []).includes(k.id)}
-                        onChange={(e) => {
-                          const s = new Set(editando.sugerida_si || []);
-                          if (e.target.checked) s.add(k.id); else s.delete(k.id);
-                          setEditando({ ...editando, sugerida_si: [...s] });
-                        }}
-                        style={{ marginTop: 2 }}
-                      />
-                      <span><b>{k.etiqueta}.</b> {k.texto.slice(0, 64)}{k.texto.length > 64 ? "…" : ""}</span>
-                    </label>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            <div style={{ display: "flex", gap: 10, marginTop: 16 }}>
-              <Button onClick={guardar} disabled={guardando}>{guardando ? "Guardando…" : "Guardar"}</Button>
-              <Button variant="ghost" onClick={() => setEditando(null)}>Cancelar</Button>
-            </div>
-          </div>
-        )}
-
-        {!items.length ? (
-          <EmptyState
-            title="Sin ítems para este instrumento"
-            body="Si acabas de correr la migración 31, revisa que haya sembrado. Si no, crea el primero."
-          />
-        ) : (
-          <div style={{ display: "flex", flexDirection: "column", gap: 1, background: T.border, border: `1px solid ${T.border}`, borderRadius: 6, overflow: "hidden" }}>
-            {numeradas.map(({ c, dentro, etiqueta }) => {
-              const estado = estadoDe(c);
-              const sug = sugerenciasDe(c);
-              const marcadores = [...new Set(String(c.cuerpo || "").match(/\{\{[A-Z_0-9]+\}\}/g) || [])];
-              return (
-                <div key={c.id} style={{ background: T.panel, padding: "10px 12px", opacity: dentro ? 1 : 0.55 }}>
-                  <div style={{ display: "flex", alignItems: "flex-start", gap: 11 }}>
-                    <input
-                      type="checkbox"
-                      checked={dentro}
-                      disabled={c.obligatoria}
-                      onChange={() => alternar(c)}
-                      style={{ marginTop: 3, cursor: c.obligatoria ? "not-allowed" : "pointer" }}
-                    />
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12.5, color: T.text, fontWeight: 600 }}>
-                        {etiqueta && <span style={{ fontFamily: T.fontMono, color: T.accent, marginRight: 7 }}>{etiqueta}</span>}
-                        {c.titulo}
-                      </div>
-                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 5 }}>
-                        {estado === "obligatoria" && <Pill>obligatoria</Pill>}
-                        {estado === "sugerida" && <Pill>sugerida por {sug.map((k) => (TODAS_CASILLAS.find((x) => x.id === k) || {}).etiqueta).join(", ")}</Pill>}
-                        {estado === "opcional" && <Pill>opcional</Pill>}
-                        <span style={{ fontSize: 10.5, color: T.textFaint }}>
-                          {parrafosDe(c.cuerpo).length} párrafo(s)
-                          {marcadores.length ? ` · ${marcadores.length} marcador(es)` : ""}
-                        </span>
-                      </div>
-                      {verCuerpo === c.id && (
-                        <div style={{ marginTop: 9, fontSize: 11.5, color: T.textDim, lineHeight: 1.6, background: T.panelAlt, border: `1px solid ${T.border}`, borderRadius: 6, padding: "9px 11px" }}>
-                          {parrafosDe(c.cuerpo).map((p, i) => <div key={i} style={{ marginBottom: 7 }}>{p}</div>)}
-                        </div>
-                      )}
-                    </div>
-                    <Button variant="ghost" onClick={() => setVerCuerpo(verCuerpo === c.id ? null : c.id)} style={{ padding: "4px 10px" }}>
-                      {verCuerpo === c.id ? "Ocultar" : "Ver"}
-                    </Button>
-                    <Button variant="ghost" onClick={() => setEditando({ ...c })} style={{ padding: "4px 10px" }}>Editar</Button>
-                    <Button variant="danger" onClick={() => desactivar(c)} style={{ padding: "4px 10px" }}>Quitar</Button>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        <div style={{ marginTop: 13, fontSize: 12, color: T.textDim }}>
-          {marcadas.length} de {items.length} seleccionados.
-          {modo === "ordinal" && marcadas.length > 0 && ` Numerarán de PRIMERA a ${ordinalEnLetra(marcadas.length)}.`}
-          {modo === "numero" && marcadas.length > 0 && ` Numerarán del 1 al ${marcadas.length}.`}
-          {modo === "letra" && marcadas.length > 0 && ` Irán del ANEXO A al ANEXO ${String.fromCharCode(64 + marcadas.length)}.`}
-        </div>
-      </Panel>
-    </>
-  );
-}
-
-function ContratosTab({ unidad, parametrosApi, provLegalApi, provUnidadApi, instrumentosApi, clausulasApi, session }) {
-  const [sub, setSub] = useSessionState("ss-contratos-sub", "datos");
-  const [hayDatosUnidad, setHayDatosUnidad] = useState(false);
-  /* Las respuestas del árbol se comparten: se capturan en Diagnóstico y de
-     ellas dependen las cláusulas sugeridas. Si vivieran dentro de un solo
-     panel, cambiar de pestaña las perdería. */
-  const [resp, setResp] = useState({});
-  const [naturaleza, setNaturaleza] = useState("");
-  const [instrumento, setInstrumento] = useState("contrato_especifico");
-  const [objeto, setObjeto] = useState("");
-  const [incluidas, setIncluidas] = useState(() => new Set());
-
-  /* El árbol es quien decide el instrumento; el selector de la pestaña de
-     cláusulas solo lo refleja. Se puede cambiar a mano, pero si el árbol
-     cambia de opinión, vuelve a mandar él. */
-  /* La naturaleza viaja junto a las respuestas: para la biblioteca de
-     cláusulas es una señal más, indistinguible de un gatillo. */
-  const senales = senalesDe(resp, naturaleza);
-  const tipoSugerido = decidirInstrumento(resp).tipo;
-  useEffect(() => { setInstrumento(tipoSugerido); }, [tipoSugerido]);
-
-  /* Las cláusulas que van en el documento, calculadas aquí para que la
-     pestaña que las marca y la que genera lean exactamente lo mismo.
-     OJO con el orden: esto lee `incluidas`, así que va DESPUÉS de su
-     useState — si no, la zona muerta temporal revienta en cada render. */
-  const ordenadas = (instr) => clausulasApi.rows
-    .filter((c) => c.instrumento === instr && c.activa !== false
-      && (!c.naturalezas || !c.naturalezas.length || !naturaleza || c.naturalezas.includes(naturaleza)))
-    .sort((a, b) => (a.orden - b.orden) || String(a.titulo).localeCompare(String(b.titulo)));
-  const itemsClausulado = ordenadas(instrumento)
-    .filter((c) => c.obligatoria || incluidas.has(c.id));
-  /* Los anexos flow-down no tienen pantalla de marcado propia: se toman las
-     obligatorias más las que sugieran las respuestas del árbol. */
-  const itemsAnexo = ordenadas("anexo_flowdown")
-    .filter((c) => c.obligatoria || (c.sugerida_si || []).some((k) => esSi(resp[k])));
-
-  /* El resto del panel depende de que exista la fila de la unidad: parámetros
-     y nivel de debida diligencia la referencian por llave foránea. Se
-     consulta aquí, una vez, en lugar de que cada panel lo averigüe. */
-  useEffect(() => {
-    let vivo = true;
-    (async () => {
-      try {
-        const { data } = await supabase
-          .from("contratos_datos_unidad").select("unidad").eq("unidad", unidad).maybeSingle();
-        if (vivo) setHayDatosUnidad(!!data);
-      } catch {
-        if (vivo) setHayDatosUnidad(false);
-      }
-    })();
-    return () => { vivo = false; };
-  }, [unidad, sub]);
-
-  return (
-    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start", flexWrap: "wrap" }}>
-        {SUBS_CONTRATOS.map((sc) => (
-          <button
-            key={sc.id}
-            onClick={() => setSub(sc.id)}
-            style={{
-              padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
-              background: sub === sc.id ? T.accent : "transparent",
-              color: sub === sc.id ? T.onAccent : T.textDim,
-              fontWeight: 600, fontSize: 12.5, fontFamily: T.fontUI,
-            }}
-          >
-            {sc.label}
-          </button>
-        ))}
-      </div>
-
-      {sub === "datos" && (
+      {!esNuevo && seccion("Facturas",
+        `${factVig.length} factura(s) · facturado ${textoMonedas(sumaPorMonedaCT(factVig, () => true))} · cobrado ${textoMonedas(sumaPorMonedaCT(factVig, (f) => f.status === "Pagada"))}`,
         <>
-          <DatosUnidadPanel unidad={unidad} session={session} />
-          <ParametrosPanel unidad={unidad} parametrosApi={parametrosApi} session={session} hayDatosUnidad={hayDatosUnidad} />
-          <ProveedorLegalPanel
-            unidad={unidad}
-            provLegalApi={provLegalApi}
-            provUnidadApi={provUnidadApi}
-            session={session}
-            hayDatosUnidad={hayDatosUnidad}
-          />
-        </>
-      )}
+          {facturas.length > 0 && (
+            <table style={{ ...tableStyle, marginBottom: 10 }}>
+              <thead><tr><th style={thStyle}>Folio</th><th style={thStyle}>Cliente</th><th style={thStyle}>Emitida</th>
+                <th style={{ ...thStyle, textAlign: "right" }}>Importe</th><th style={thStyle}>Status</th><th style={thStyle}></th></tr></thead>
+              <tbody>{facturas.map((f) => (
+                <tr key={f.id} style={{ opacity: f.status === "Cancelada" ? 0.6 : 1 }}>
+                  <td style={{ ...tdStyle, fontWeight: 600 }}>{f.folio}</td><td style={tdStyle}>{f.cliente || "—"}</td>
+                  <td style={tdStyle}>{fmtFecha(f.fecha_emision)}</td>
+                  <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono }}>{money(f.importe, f.moneda)} {monedaNorm(f.moneda)}</td>
+                  <td style={tdStyle}><Pill tone={TONO_STATUS_FACTURA[f.status] || "dim"}>{f.status}</Pill></td>
+                  <td style={tdStyle}>{!ro && <Button variant="ghost" style={{ padding: "3px 9px" }} onClick={() => asignarFactura(f.id, null)}>Quitar</Button>}</td>
+                </tr>))}
+              </tbody>
+            </table>
+          )}
+          {!ro && (
+            <div style={{ display: "flex", gap: 10, alignItems: "flex-end" }}>
+              <Field label="Asignar factura (sin contrato)" style={{ flex: "1 1 420px" }}>
+                <Select value={factSel} onChange={(ev) => setFactSel(ev.target.value)}>
+                  <option value="">{libres.length ? "— Elige una factura —" : "No hay facturas sin contrato"}</option>
+                  {libres.map((f) => <option key={f.id} value={f.id}>{f.folio} · {f.cliente || "sin cliente"} · {fmtFecha(f.fecha_emision)} · {money(f.importe, f.moneda)} {monedaNorm(f.moneda)}</option>)}
+                </Select>
+              </Field>
+              <Button disabled={!factSel} onClick={() => asignarFactura(factSel, contrato.id)}>Asignar</Button>
+            </div>
+          )}
+        </>)}
 
-      {sub === "generador" && (
-        <GeneradorPanel
-          unidad={unidad}
-          parametrosApi={parametrosApi}
-          provLegalApi={provLegalApi}
-          instrumentosApi={instrumentosApi}
-          resp={resp}
-          setResp={setResp}
-          naturaleza={naturaleza}
-          setNaturaleza={setNaturaleza}
-          objeto={objeto}
-          setObjeto={setObjeto}
-          itemsClausulado={itemsClausulado}
-          itemsAnexo={itemsAnexo}
-          session={session}
-        />
-      )}
-
-      {sub === "clausulas" && (
-        <ClausulasPanel
-          clausulasApi={clausulasApi}
-          resp={senales}
-          naturalezaSel={naturaleza}
-          tipoSugerido={tipoSugerido}
-          instrumento={instrumento}
-          setInstrumento={setInstrumento}
-          objeto={objeto}
-          setObjeto={setObjeto}
-          incluidas={incluidas}
-          setIncluidas={setIncluidas}
-          session={session}
-        />
-      )}
-
-      {sub === "expediente" && (
-        <Panel title="Expediente" subtitle="Pendiente.">
-          <EmptyState
-            title="Sin instrumentos todavía"
-            body="El listado se construye sobre lo que emita el generador."
-          />
-        </Panel>
-      )}
-    </div>
+      {!esNuevo && seccion("Gastos",
+        `${gastos.length} transacción(es) · comprometido ${textoMonedas(sumaPorMonedaCT(gastos, cuentaEnComprometido))} · pagado ${textoMonedas(sumaPorMonedaCT(gastos, cuentaEnPagado))}`,
+        <>
+          {gastos.length > 0 && (
+            <div style={{ maxHeight: 280, overflowY: "auto", marginBottom: 10, border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
+              <table style={tableStyle}>
+                <thead><tr><th style={thStyle}>Folio</th><th style={thStyle}>Proveedor</th><th style={thStyle}>Concepto</th>
+                  <th style={{ ...thStyle, textAlign: "right" }}>Importe</th><th style={thStyle}>Status</th><th style={thStyle}></th></tr></thead>
+                <tbody>{gastos.map((t) => (
+                  <tr key={t.id}>
+                    <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{t.folio_transaccion || "Borrador"}{esPadrePPD(t) ? " · PPD" : ""}</td>
+                    <td style={tdStyle}>{t.proveedor || "—"}</td>
+                    <td style={{ ...tdStyle, fontSize: 11.5 }}>{t.concepto_detallado || "—"}</td>
+                    <td style={{ ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" }}>{money(t.importe, t.moneda)} {monedaNorm(t.moneda)}</td>
+                    <td style={tdStyle}><Pill tone={t.status === "Pagado" ? "teal" : "amber"}>{t.status || "—"}</Pill></td>
+                    <td style={tdStyle}>{!ro && t.contrato_id === contrato.id && (
+                      <Button variant="ghost" style={{ padding: "3px 9px" }} onClick={() => asignarTx([t.id], null)}>Quitar</Button>)}
+                      {t.contrato_id !== contrato.id && <span style={{ fontSize: 10.5, color: T.textFaint }}>por su compra PPD</span>}</td>
+                  </tr>))}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {!ro && (
+            <>
+              <Field label="Asignar gastos: busca por folio, proveedor, concepto o proyecto" style={{ maxWidth: 520 }}>
+                <TextInput value={busTx} onChange={(ev) => setBusTx(ev.target.value)} placeholder="Al menos 2 letras…" />
+              </Field>
+              {qtx.length >= 2 && (
+                <div style={{ marginTop: 8 }}>
+                  {!candidatas.length ? <div style={{ fontSize: 12, color: T.textFaint }}>Ninguna transacción sin contrato coincide.</div> : (
+                    <>
+                      <div style={{ maxHeight: 220, overflowY: "auto", border: `1px solid ${T.borderSoft}`, borderRadius: 6 }}>
+                        {candidatas.map((t) => (
+                          <label key={t.id} style={{ display: "flex", gap: 8, alignItems: "center", padding: "6px 10px", borderBottom: `1px solid ${T.borderSoft}`, fontSize: 12, cursor: "pointer" }}>
+                            <input type="checkbox" checked={txSel.has(t.id)} onChange={() => setTxSel((s) => { const n = new Set(s); if (n.has(t.id)) n.delete(t.id); else n.add(t.id); return n; })} />
+                            <span style={{ fontFamily: T.fontMono, minWidth: 120 }}>{t.folio_transaccion || "Borrador"}</span>
+                            <span style={{ flex: 1 }}>{t.proveedor} · <span style={{ color: T.textDim }}>{t.concepto_detallado || t.proyecto || ""}</span></span>
+                            <span style={{ fontFamily: T.fontMono }}>{money(t.importe, t.moneda)} {monedaNorm(t.moneda)}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                        <Button disabled={!txSel.size} onClick={() => asignarTx([...txSel], contrato.id)}>Asignar {txSel.size || ""} al contrato</Button>
+                        {candidatas.length === 40 && <span style={{ fontSize: 11, color: T.textFaint, alignSelf: "center" }}>Se muestran las primeras 40: afina la búsqueda.</span>}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </>
+          )}
+        </>)}
+    </Modal>
   );
 }
 
@@ -21972,6 +20310,12 @@ const CATEGORIAS_ADJUNTO = [
    factura con cotización y no tenían comprobante de pago, que es lo que más
    importa saber de una transacción pagada. El REG no se ofrece al subir: lo
    genera la app. */
+/* Facturas emitidas (v3.26.0): su PDF y su XML, y un soporte por si acaso. */
+const CATEGORIAS_ADJUNTO_FACTURA = [
+  { value: "factura", label: "Factura PDF", boton: "Adjuntar Factura PDF" },
+  { value: "xml",     label: "Factura XML", boton: "Adjuntar Factura XML" },
+  { value: "soporte", label: "Soporte",     boton: "Adjuntar Soporte" },
+];
 const CATEGORIAS_ADJUNTO_TRANSACCION = [
   { value: "factura",     label: "Factura PDF",         boton: "Adjuntar Factura PDF" },
   { value: "xml",         label: "Factura XML",         boton: "Adjuntar Factura XML" },
@@ -22004,7 +20348,8 @@ const marcasAdjuntoDe = (t) => {
 
 const etiquetaCategoria = (v, entidad) => {
   if (v === "reg") return "REG";
-  const lista = entidad === "transaccion" ? CATEGORIAS_ADJUNTO_TRANSACCION : CATEGORIAS_ADJUNTO;
+  const lista = entidad === "transaccion" ? CATEGORIAS_ADJUNTO_TRANSACCION
+    : entidad === "factura" ? CATEGORIAS_ADJUNTO_FACTURA : CATEGORIAS_ADJUNTO;
   return (lista.find((c) => c.value === v) || CATEGORIAS_ADJUNTO.find((c) => c.value === v)
           || { label: v || "Sin categoría" }).label;
 };
@@ -22187,8 +20532,10 @@ function SpecsConcepto({ concepto, unidad, carpeta, adjunto, onCambio }) {
  * para que nadie suponga que ya está archivado donde debe.
  */
 function AdjuntosPanel({ entidad, entidadId, unidad, carpeta, onCambio }) {
-  const esTransaccion = entidad === "transaccion";
-  const categorias = esTransaccion ? CATEGORIAS_ADJUNTO_TRANSACCION : CATEGORIAS_ADJUNTO;
+  // Las facturas emitidas se adjuntan igual que las transacciones: un botón por tipo.
+  const esTransaccion = entidad === "transaccion" || entidad === "factura";
+  const categorias = entidad === "factura" ? CATEGORIAS_ADJUNTO_FACTURA
+    : esTransaccion ? CATEGORIAS_ADJUNTO_TRANSACCION : CATEGORIAS_ADJUNTO;
   const [filas, setFilas] = useState(null);
   const [categoria, setCategoria] = useState(esTransaccion ? "factura" : "cotizacion");
   const [subiendo, setSubiendo] = useState(false);
@@ -22316,7 +20663,9 @@ function AdjuntosPanel({ entidad, entidadId, unidad, carpeta, onCambio }) {
       {filas === null ? (
         <div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div>
       ) : !filas.length ? (
-        <EmptyState title="Sin adjuntos" body={esTransaccion
+        <EmptyState title="Sin adjuntos" body={entidad === "factura"
+          ? "Sube el PDF y el XML de la factura."
+          : esTransaccion
           ? "Factura, comprobante de pago o cualquier archivo que acompañe a la transacción."
           : "Cotizaciones, soporte o cualquier archivo que acompañe a la solicitud."} />
       ) : (
@@ -27179,8 +25528,6 @@ function AppPrincipal() {
   const vehiculosApi = useCollection("vehiculos", "no_economico", { withAudit: true });
   const vehMantenimientosApi = useCollection("vehiculo_mantenimientos", "folio", { withAudit: true });
   const vehUbicacionesApi = useCollection("vehiculo_ubicaciones", "nombre", { llave: "codigo" });
-  const contratosParametrosApi = useCollection("contratos_parametros", "vigente_desde");
-  const contratosProvLegalApi = useCollection("contratos_proveedor_legal", "razon_social");
   /* Hallazgos en listas del SAT de los RFC de los catálogos. Se consulta
      solo por esos RFC y no la tabla entera, que tiene más de medio millón de
      filas: la app necesita saber de sus proveedores, no del país. Por
@@ -27199,7 +25546,7 @@ function AppPrincipal() {
     return () => { vivo = false; };
   }, [!!session]);
   const rfcsCatalogos = [...new Set(
-    [...proveedoresApi.rows, ...contratosProvLegalApi.rows].map((p) => rfcSat(p.rfc)).filter((r) => r.length >= 12)
+    proveedoresApi.rows.map((p) => rfcSat(p.rfc)).filter((r) => r.length >= 12)
   )].sort().join(",");
   useEffect(() => {
     if (!session || !rfcsCatalogos) return;
@@ -27223,9 +25570,6 @@ function AppPrincipal() {
     })();
     return () => { vivo = false; };
   }, [rfcsCatalogos, !!session]);
-  const contratosProvUnidadApi = useCollection("contratos_proveedor_unidad", "rfc");
-  const contratosInstrumentosApi = useCollection("contratos_instrumentos", "folio");
-  const contratosClausulasApi = useCollection("contratos_clausulas", "orden");
   const [unidad, setUnidad] = useState("CTM");
   const [tab, setTab] = useState("dashboard");
   // Puente entre pestañas: al crear una transacción a partir de una
@@ -27342,6 +25686,7 @@ function AppPrincipal() {
     { id: "vehiculos", label: "Vehículos" },
     { id: "solicitudes", label: "Solicitudes" },
     { id: "contratos", label: "Contratos" },
+    { id: "facturas", label: "Facturas" },
     { id: "herramientas", label: "Herramientas" },
     { id: "catalogo", label: "Catálogo" },
     // Temporal (v3.11.0): revisión de compras de Aspel, solo administradores.
@@ -27493,7 +25838,11 @@ function AppPrincipal() {
             />
           )}
           {tab === "solicitudes" && <SolicitudesTab onConvertir={(seed) => { setSeedTransaccion(seed); setTab("transacciones"); }} unidad={unidad} session={session} unidades={unidades} proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} zonas={zonas.map((z) => (typeof z === "string" ? z : z.nombre))} />}
-          {tab === "contratos" && <ContratosTab unidad={unidad} parametrosApi={contratosParametrosApi} provLegalApi={contratosProvLegalApi} provUnidadApi={contratosProvUnidadApi} instrumentosApi={contratosInstrumentosApi} clausulasApi={contratosClausulasApi} session={session} />}
+          {tab === "contratos" && <ContratosClienteTab unidad={unidad} soloLectura={soloLectura}
+            transacciones={transacciones} transaccionesApi={transaccionesApi}
+            proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} />}
+          {tab === "facturas" && <FacturasTab unidad={unidad} soloLectura={soloLectura}
+            proyectos={proyectosApi.rows.filter((p) => p.unidad === unidad || !p.unidad).map((p) => p.nombre).sort()} />}
           {tab === "herramientas" && <HerramientasTab />}
           {tab === "revision" && miPerfil?.es_admin && <RevisionComprasTab unidad={unidad} />}
           {tab === "catalogo" && <CatalogoTab key={catalogoVersion} listasSat={listasSat} unidad={unidad} unidades={unidades} proyectosApi={proyectosApi} zonasApi={zonasApi} rubrosApi={rubrosApi} categoriasApi={categoriasApi} partidas={partidas} transacciones={transacciones} proveedoresApi={proveedoresApi} cuentasApi={cuentasApi} perfilesApi={perfilesApi} esAdmin={!!miPerfil?.es_admin} session={session} />}

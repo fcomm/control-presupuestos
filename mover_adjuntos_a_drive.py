@@ -174,6 +174,7 @@ def expediente_de(adj):
          * solicitud            — cotizaciones, soporte, el PDF de la SMI
          * solicitud_concepto   — las especificaciones de una línea
          * transaccion          — el REG, facturas, comprobantes, soporte
+         * factura              — PDF y XML de una factura emitida a un cliente
 
        La regla del expediente es una: se llama como el folio de lo que lo
        originó. Una transacción tiene SIEMPRE su propio expediente con su
@@ -217,6 +218,19 @@ def expediente_de(adj):
         return {"tabla": "transacciones", "tipo": CARPETA_TRANSACCIONES, "id": t["id"], "folio": t["folio_transaccion"],
                 "unidad": t.get("unidad_detectada"), "anio": anio,
                 "carpeta": t.get("drive_folder_id")}
+
+    if ent == "factura":
+        f = rest("GET", "facturas_emitidas",
+                 params={"select": "id,folio,unidad,fecha_emision,drive_folder_id", "id": f"eq.{eid}"})
+        if not f:
+            return None
+        fa = f[0]
+        anio = int(str(fa["fecha_emision"])[:4]) if fa.get("fecha_emision") else datetime.now().year
+        # El folio puede traer "/" u otros caracteres que Drive acepta pero
+        # que confunden; se deja como lo escribieron, sin espacios de sobra.
+        return {"tabla": "facturas_emitidas", "tipo": CARPETA_FACTURAS, "id": fa["id"],
+                "folio": str(fa["folio"]).strip(), "unidad": fa.get("unidad"), "anio": anio,
+                "carpeta": fa.get("drive_folder_id")}
 
     return None
 
@@ -308,6 +322,7 @@ def subcarpeta(drive, padre, nombre):
 # revueltas en la misma carpeta del año.
 CARPETA_SOLICITUDES = "Solicitudes"
 CARPETA_TRANSACCIONES = "Transacciones"
+CARPETA_FACTURAS = "Facturas"   # facturas emitidas a clientes (v3.26.0)
 
 
 def carpeta_de_solicitud(drive, raiz, anio, folio, tipo):

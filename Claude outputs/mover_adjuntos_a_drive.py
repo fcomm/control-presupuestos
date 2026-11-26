@@ -1,0 +1,712 @@
+#!/usr/bin/env python3
+"""
+Mueve los adjuntos de solicitudes y transacciones del búfer de Supabase a
+Google Drive, y manda a la papelera de Drive los que se quitaron en la app.
+
+Es la pieza que reemplaza lo que Zoho hacía por detrás: el navegador entrega
+el archivo a Supabase, que sí acepta carga anónima, y este proceso lo lleva a
+Drive con credenciales que nunca tocan el navegador.
+
+Qué hace, por cada adjunto en tránsito:
+  1. Busca o crea Compras/<COMPAÑÍA>/<AÑO>/<TIPO>/<FOLIO> en Drive, donde
+     TIPO es Solicitudes (SMI) o Transacciones. La raíz que se configura en
+     los parámetros es la de la compañía; los niveles del año y del tipo los
+     crea este proceso, para no tener que cambiar el parámetro cada enero.
+  2. Descarga el archivo del búfer.
+  3. Lo sube a Drive.
+  4. Marca el adjunto como en_drive con su fileId y su enlace.
+  5. Recién entonces borra el objeto del búfer.
+
+Y por cada adjunto marcado por_borrar (se quitó en la app cuando ya estaba en
+Drive, o es un REG o PDF de SMI que se regeneró):
+  1. Lo manda a la PAPELERA de Drive, no lo borra: se recupera 30 días.
+  2. Borra el renglón de adjuntos.
+La app no puede tocar Drive; por eso lo marca y este proceso lo ejecuta.
+
+El orden de los pasos 4 y 5 no es casual. Si se borrara el búfer antes de
+grabar el fileId y algo fallara en medio, el archivo se perdería sin rastro.
+Al revés, lo peor que pasa es que quede un objeto huérfano en el búfer, que se
+recoge después sin haber perdido nada.
+
+Configuración, en %USERPROFILE%\\.smi\\config.env o en el entorno:
+  SUPABASE_URL          https://tu-proyecto.supabase.co
+  SUPABASE_SERVICE_KEY  la llave service_role
+  GOOGLE_CREDENCIALES   ruta al client_secret.json (por omisión, junto al config)
+  GOOGLE_TOKEN          dónde guardar el token   (por omisión, junto al config)
+  ALERTA_CORREO         a quién avisar cuando un archivo se rinde (opcional)
+  REMITENTE             desde qué cuenta salen los correos (opcional)
+
+La llave service_role omite las políticas de seguridad a propósito: este
+proceso no actúa como ningún usuario. NUNCA debe llegar al navegador ni
+quedar en el repositorio.
+"""
+
+import os
+import sys
+import io as _io
+import mimetypes
+import re
+import base64
+from email.message import EmailMessage
+from datetime import datetime, timezone
+
+import requests
+from google.oauth2.credentials import Credentials
+from google_auth_oauthlib.flow import InstalledAppFlow
+from google.auth.transport.requests import Request
+from googleapiclient.discovery import build
+from googleapiclient.http import MediaIoBaseUpload
+from googleapiclient.errors import HttpError
+
+# --------------------------------------------------------------------------
+# Configuración
+#
+# Se lee de un archivo fuera del repositorio, y las variables de entorno lo
+# sobreescriben si están puestas. Así una tarea programada no necesita que
+# alguien exporte nada antes de correr, y los secretos no viven donde Git
+# pueda verlos.
+#
+# Por omisión: %USERPROFILE%\.smi\config.env  (o ~/.smi/config.env)
+# --------------------------------------------------------------------------
+CARPETA_CONF = os.environ.get("SMI_CONF_DIR") or os.path.join(os.path.expanduser("~"), ".smi")
+ARCHIVO_CONF = os.path.join(CARPETA_CONF, "config.env")
+
+
+def _cargar_conf():
+    """Lee CLAVE=valor del archivo de configuración. Ignora comentarios y
+       líneas vacías, y no pisa lo que ya venga del entorno."""
+    if not os.path.exists(ARCHIVO_CONF):
+        return
+    with open(ARCHIVO_CONF, encoding="utf8") as fh:
+        for linea in fh:
+            linea = linea.strip()
+            if not linea or linea.startswith("#") or "=" not in linea:
+                continue
+            clave, _, valor = linea.partition("=")
+            clave, valor = clave.strip(), valor.strip().strip('"').strip("'")
+            if clave and clave not in os.environ:
+                os.environ[clave] = valor
+
+
+_cargar_conf()
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+SERVICE_KEY  = os.environ.get("SUPABASE_SERVICE_KEY", "")
+CREDENCIALES = os.environ.get("GOOGLE_CREDENCIALES") or os.path.join(CARPETA_CONF, "credenciales.json")
+TOKEN        = os.environ.get("GOOGLE_TOKEN") or os.path.join(CARPETA_CONF, "token.json")
+BUCKET       = "solicitudes-adjuntos"
+
+# A quién se le avisa cuando un archivo se rinde. Vacío = no se avisa.
+ALERTA_CORREO = os.environ.get("ALERTA_CORREO", "")
+# Desde qué cuenta salen los correos. Vacío = la que autorizó el token.
+REMITENTE     = os.environ.get("REMITENTE", "me")
+
+# Dos scopes, y la combinación importa:
+#
+#   drive.file             crear y escribir SOLO lo que esta aplicación crea.
+#   drive.metadata.readonly ver nombres y jerarquía del resto del Drive, sin
+#                          poder leer el contenido de ningún archivo.
+#
+# Con drive.file a secas, una carpeta creada por otro —Zoho, o tú a mano— es
+# invisible para el script: la busca, no la encuentra y crea una duplicada.
+# Fue exactamente lo que pasó con la carpeta 2026 que ya existía.
+#
+# metadata.readonly resuelve la búsqueda sin abrir el contenido de nada, y la
+# escritura sigue limitada a lo que este script produce.
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.metadata.readonly",
+    # Solo enviar. No permite leer ni borrar correo.
+    "https://www.googleapis.com/auth/gmail.send",
+]
+
+if not SUPABASE_URL or not SERVICE_KEY:
+    sys.exit(f"Faltan SUPABASE_URL o SUPABASE_SERVICE_KEY.\n"
+             f"Ponlos en {ARCHIVO_CONF} o en el entorno.")
+
+CAB = {
+    "apikey": SERVICE_KEY,
+    "Authorization": f"Bearer {SERVICE_KEY}",
+    "Content-Type": "application/json",
+}
+
+
+# --------------------------------------------------------------------------
+# Supabase
+# --------------------------------------------------------------------------
+def rest(metodo, ruta, **kw):
+    r = requests.request(metodo, f"{SUPABASE_URL}/rest/v1/{ruta}", headers=CAB, timeout=60, **kw)
+    if not r.ok:
+        # El mensaje de Postgres dice QUÉ falló —"column ... does not exist"—;
+        # el código HTTP solo, no. Sin esto la bitácora decía "400 Bad
+        # Request" y había que adivinar.
+        raise requests.HTTPError(f"{r.status_code} en {ruta}: {r.text[:300]}", response=r)
+    return r.json() if r.content and r.headers.get("content-type", "").startswith("application/json") else None
+
+
+MAX_INTENTOS = 5
+
+
+def pendientes():
+    """Adjuntos que ya están en el búfer y todavía no en Drive.
+
+       Incluye los que fallaron antes. Guardar el error y no volver a
+       intentarlos dejaría el archivo atrapado en el búfer para siempre, que
+       es justo lo contrario de lo que el manejo de errores pretende.
+
+       El tope de intentos evita el otro extremo: un adjunto roto reintentado
+       en cada corrida, para siempre, llenando el registro de errores."""
+    return rest("GET", "adjuntos",
+                params={"select": "*",
+                        "estado": "in.(en_transito,error)",
+                        "intentos": f"lt.{MAX_INTENTOS}",
+                        "storage_path": "not.is.null",
+                        "order": "subido_en.asc"})
+
+
+def expediente_de(adj):
+    """A qué expediente pertenece el adjunto.
+
+       Devuelve un diccionario con la tabla, el id, el folio que nombra la
+       carpeta, la compañía, el año y la carpeta ya resuelta si la tiene.
+
+       Tres orígenes:
+         * solicitud            — cotizaciones, soporte, el PDF de la SMI
+         * solicitud_concepto   — las especificaciones de una línea
+         * transaccion          — el REG, facturas, comprobantes, soporte
+         * factura              — PDF y XML de una factura emitida a un cliente
+
+       La regla del expediente es una: se llama como el folio de lo que lo
+       originó. Una transacción tiene SIEMPRE su propio expediente con su
+       folio, aunque venga de una SMI: si una SMI se paga en varias
+       transacciones, sus facturas y comprobantes no deben quedar revueltos
+       en una sola carpeta. La SMI es un dato informativo."""
+    ent, eid = adj["entidad"], adj["entidad_id"]
+
+    if ent == "solicitud_concepto":
+        conc = rest("GET", "solicitud_conceptos",
+                    params={"select": "solicitud_id", "id": f"eq.{eid}"})
+        if not conc:
+            return None
+        ent, eid = "solicitud", conc[0]["solicitud_id"]
+
+    if ent == "solicitud":
+        f = rest("GET", "solicitudes",
+                 params={"select": "id,folio,unidad,anio,drive_folder_id", "id": f"eq.{eid}"})
+        if not f:
+            return None
+        s = f[0]
+        return {"tabla": "solicitudes", "tipo": CARPETA_SOLICITUDES, "id": s["id"], "folio": s["folio"],
+                "unidad": s["unidad"], "anio": s.get("anio"),
+                "carpeta": s.get("drive_folder_id")}
+
+    if ent == "transaccion":
+        f = rest("GET", "transacciones",
+                 params={"select": "id,folio_transaccion,unidad_detectada,dia,"
+                                   "registrada_en,drive_folder_id",
+                         "id": f"eq.{eid}"})
+        if not f:
+            return None
+        t = f[0]
+
+        # Sin registrar no hay folio, y sin folio no hay nombre de carpeta.
+        # Se deja en el búfer: no es un error, es que todavía no toca.
+        if not t.get("registrada_en") or not t.get("folio_transaccion"):
+            return "pendiente"
+
+        anio = int(str(t["dia"])[:4]) if t.get("dia") else datetime.now().year
+        return {"tabla": "transacciones", "tipo": CARPETA_TRANSACCIONES, "id": t["id"], "folio": t["folio_transaccion"],
+                "unidad": t.get("unidad_detectada"), "anio": anio,
+                "carpeta": t.get("drive_folder_id")}
+
+    if ent == "factura":
+        f = rest("GET", "facturas_emitidas",
+                 params={"select": "id,folio,unidad,fecha_emision,drive_folder_id", "id": f"eq.{eid}"})
+        if not f:
+            return None
+        fa = f[0]
+        anio = int(str(fa["fecha_emision"])[:4]) if fa.get("fecha_emision") else datetime.now().year
+        # El folio puede traer "/" u otros caracteres que Drive acepta pero
+        # que confunden; se deja como lo escribieron, sin espacios de sobra.
+        return {"tabla": "facturas_emitidas", "tipo": CARPETA_FACTURAS, "id": fa["id"],
+                "folio": str(fa["folio"]).strip(), "unidad": fa.get("unidad"), "anio": anio,
+                "carpeta": fa.get("drive_folder_id")}
+
+    return None
+
+
+def carpeta_raiz(unidad):
+    filas = rest("GET", "solicitudes_parametros",
+                 params={"select": "drive_carpeta_raiz", "unidad": f"eq.{unidad}"})
+    return (filas[0]["drive_carpeta_raiz"] if filas else None) or None
+
+
+def descargar_del_bufer(ruta):
+    url = f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{ruta}"
+    r = requests.get(url, headers={"apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}"}, timeout=120)
+    r.raise_for_status()
+    return r.content
+
+
+def borrar_del_bufer(ruta):
+    url = f"{SUPABASE_URL}/storage/v1/object/{BUCKET}/{ruta}"
+    r = requests.delete(url, headers={"apikey": SERVICE_KEY, "Authorization": f"Bearer {SERVICE_KEY}"}, timeout=60)
+    r.raise_for_status()
+
+
+def marcar(adj_id, campos):
+    requests.patch(f"{SUPABASE_URL}/rest/v1/adjuntos",
+                   headers={**CAB, "Prefer": "return=minimal"},
+                   params={"id": f"eq.{adj_id}"}, json=campos, timeout=60).raise_for_status()
+
+
+def fallo(adj, mensaje):
+    """Se guarda el error y se cuenta el intento. El archivo NO se borra del
+       búfer: si el problema fue de Drive, se vuelve a intentar en la
+       siguiente corrida sin haber perdido nada."""
+    marcar(adj["id"], {"estado": "error",
+                       "ultimo_error": str(mensaje)[:500],
+                       "intentos": (adj.get("intentos") or 0) + 1})
+    print(f"    ERROR: {mensaje}")
+
+
+# --------------------------------------------------------------------------
+# Drive
+# --------------------------------------------------------------------------
+def credenciales_google():
+    """Un solo juego de credenciales para Drive y Gmail: dos tokens separados
+       significarían dos autorizaciones que caducan por su cuenta."""
+    cred = None
+    if os.path.exists(TOKEN):
+        cred = Credentials.from_authorized_user_file(TOKEN, SCOPES)
+        # Un token emitido con menos scopes de los que ahora se piden no
+        # sirve: Google no los amplía solos. Se descarta y se vuelve a
+        # autorizar, que es lo que hay que hacer al agregar metadata.readonly.
+        if cred and set(SCOPES) - set(cred.scopes or []):
+            print("  El token no cubre los permisos actuales. Hay que autorizar otra vez.")
+            cred = None
+    if not cred or not cred.valid:
+        if cred and cred.expired and cred.refresh_token:
+            cred.refresh(Request())
+        else:
+            if not os.path.exists(CREDENCIALES):
+                sys.exit(f"No encuentro {CREDENCIALES}. Descarga el client_secret de una app de escritorio.")
+            cred = InstalledAppFlow.from_client_secrets_file(CREDENCIALES, SCOPES).run_local_server(port=0)
+        with open(TOKEN, "w", encoding="utf8") as fh:
+            fh.write(cred.to_json())
+    return cred
+
+
+def subcarpeta(drive, padre, nombre):
+    """Busca una carpeta por nombre bajo `padre`; si no está, la crea.
+
+       Se busca antes de crear porque el proceso puede correr varias veces
+       sobre la misma solicitud —un adjunto nuevo, un reintento— y Drive
+       permite dos carpetas con el mismo nombre sin protestar: acabarías con
+       dos 'OSB-264-26' y los archivos repartidos entre ambas."""
+    seguro = str(nombre).replace("\\", "\\\\").replace("'", "\\'")
+    q = (f"name = '{seguro}' and mimeType = 'application/vnd.google-apps.folder' "
+         f"and '{padre}' in parents and trashed = false")
+    res = drive.files().list(q=q, fields="files(id)", pageSize=1,
+                             supportsAllDrives=True, includeItemsFromAllDrives=True).execute()
+    if res.get("files"):
+        return res["files"][0]["id"]
+    creada = drive.files().create(
+        body={"name": str(nombre), "mimeType": "application/vnd.google-apps.folder", "parents": [padre]},
+        fields="id", supportsAllDrives=True).execute()
+    return creada["id"]
+
+
+# Dentro de cada año, un nivel por tipo de expediente. Antes las carpetas de
+# las SMI (OSB-308-26) y las de las transacciones (OSB-NOV26-060) quedaban
+# revueltas en la misma carpeta del año.
+CARPETA_SOLICITUDES = "Solicitudes"
+CARPETA_TRANSACCIONES = "Transacciones"
+CARPETA_FACTURAS = "Facturas"   # facturas emitidas a clientes (v3.26.0)
+
+
+def carpeta_de_solicitud(drive, raiz, anio, folio, tipo):
+    """Compras/<COMPAÑÍA>/<AÑO>/<TIPO>/<FOLIO>.
+
+       La raíz configurada en los parámetros es la de la compañía; el nivel
+       del año lo crea el proceso. Si el año estuviera en la raíz habría que
+       cambiar el parámetro a mano cada enero, y el primero que capturara en
+       enero dejaría su solicitud en la carpeta del año anterior.
+
+       Solo aplica a expedientes nuevos: el que ya tiene drive_folder_id
+       sigue recibiendo sus archivos en la carpeta donde se creó."""
+    return subcarpeta(drive, subcarpeta(drive, subcarpeta(drive, raiz, anio), tipo), folio)
+
+
+def subir_a_drive(drive, carpeta, nombre, contenido, mime):
+    medio = MediaIoBaseUpload(_io.BytesIO(contenido),
+                              mimetype=mime or mimetypes.guess_type(nombre)[0] or "application/octet-stream",
+                              resumable=len(contenido) > 5 * 1024 * 1024)
+    f = drive.files().create(body={"name": nombre, "parents": [carpeta]},
+                             media_body=medio, fields="id,webViewLink",
+                             supportsAllDrives=True).execute()
+    return f["id"], f.get("webViewLink")
+
+
+def pendientes_de_borrar():
+    """Adjuntos que la app quitó cuando ya estaban en Drive."""
+    return rest("GET", "adjuntos",
+                params={"select": "*", "estado": "eq.por_borrar",
+                        "intentos": f"lt.{MAX_INTENTOS}", "order": "subido_en.asc"})
+
+
+def borrar_en_drive(drive, adj):
+    """A la papelera, no borrado definitivo: si alguien quitó el archivo
+       equivocado, se recupera desde Drive durante 30 días.
+
+       Un 404 es que ya no está —alguien lo borró a mano—, y eso es el
+       resultado buscado. Un 403 es que el archivo no lo creó este proceso
+       (el permiso drive.file solo alcanza a lo propio): no se puede, y se
+       reporta en vez de fingir que se hizo."""
+    if adj.get("drive_file_id"):
+        try:
+            drive.files().update(fileId=adj["drive_file_id"], body={"trashed": True},
+                                 supportsAllDrives=True).execute()
+        except HttpError as e:
+            if e.resp.status != 404:
+                if e.resp.status == 403:
+                    raise RuntimeError("Drive no permite borrarlo: no lo subió este proceso. "
+                                       "Bórralo a mano en Drive y elimina el renglón.") from e
+                raise
+    if adj.get("storage_path"):
+        borrar_del_bufer(adj["storage_path"])
+    # El renglón se va al final: si algo falla antes, queda por_borrar y se
+    # reintenta, en vez de olvidar un archivo que sigue en Drive.
+    rest("DELETE", "adjuntos", params={"id": f"eq.{adj['id']}"})
+
+
+# --------------------------------------------------------------------------
+# Correo
+# --------------------------------------------------------------------------
+def enviar_correo(gmail, para, asunto, cuerpo, adjuntos=(), responder_a=None):
+    """Texto plano a propósito: un acuse no necesita formato, y el texto llega
+       igual de bien a un cliente de correo viejo que a un teléfono.
+
+       `adjuntos` es una lista de (nombre, bytes, mime)."""
+    msg = EmailMessage()
+    msg["To"] = para
+    msg["Subject"] = asunto
+    if REMITENTE and REMITENTE != "me":
+        msg["From"] = REMITENTE
+    if responder_a:
+        msg["Reply-To"] = responder_a
+    msg.set_content(cuerpo)
+    for nombre, contenido, mime in adjuntos:
+        principal, _, sub = (mime or "application/octet-stream").partition("/")
+        msg.add_attachment(contenido, maintype=principal, subtype=sub or "octet-stream",
+                           filename=nombre)
+    gmail.users().messages().send(
+        userId="me",
+        body={"raw": base64.urlsafe_b64encode(msg.as_bytes()).decode()}).execute()
+
+
+# Cuánto se espera el PDF oficial antes de avisar que no llegó. El formulario
+# lo sube después de los demás archivos, así que unos minutos de diferencia
+# son normales; dos horas ya no.
+ESPERA_PDF_HORAS = 2
+
+
+def adjuntos_de_solicitud(sid):
+    """Los de la solicitud y las specs de sus conceptos, sin los que se
+       quitaron. Las specs cuentan: también son archivos que el solicitante
+       mandó, y el acuse no debe salir mientras alguno siga en el búfer."""
+    propios = rest("GET", "adjuntos",
+                   params={"select": "id,nombre,categoria,estado,drive_file_id,mime",
+                           "entidad": "eq.solicitud", "entidad_id": f"eq.{sid}",
+                           "estado": "neq.por_borrar", "order": "subido_en.asc"}) or []
+    conceptos = rest("GET", "solicitud_conceptos",
+                     params={"select": "id", "solicitud_id": f"eq.{sid}"}) or []
+    specs = []
+    if conceptos:
+        ids = ",".join(c["id"] for c in conceptos)
+        specs = rest("GET", "adjuntos",
+                     params={"select": "id,nombre,categoria,estado,drive_file_id,mime",
+                             "entidad": "eq.solicitud_concepto", "entidad_id": f"in.({ids})",
+                             "estado": "neq.por_borrar", "order": "subido_en.asc"}) or []
+    return propios + specs
+
+
+def horas_desde(iso):
+    """PostgREST recorta los ceros finales de los microsegundos (".04676"), y
+       Python anterior a 3.11 solo acepta 3 o 6 dígitos. Se rellenan a 6."""
+    txt = str(iso).replace("Z", "+00:00")
+    txt = re.sub(r"\.(\d{1,6})", lambda m: "." + m.group(1).ljust(6, "0"), txt, count=1)
+    t = datetime.fromisoformat(txt)
+    return (datetime.now(timezone.utc) - t).total_seconds() / 3600
+
+
+def acuses(gmail, drive):
+    """Confirma la recepción a quien levantó una solicitud, con el PDF oficial
+       adjunto y la lista de lo que mandó.
+
+       Sale cuando todos sus archivos ya están en Drive Y el PDF oficial
+       también. El PDF es obligatorio: es el comprobante formal de lo que
+       pidió. Si no llega, el acuse espera, y pasado ESPERA_PDF_HORAS se avisa
+       una vez a ALERTA_CORREO para que alguien use "PDF al expediente".
+
+       Los archivos van por nombre, sin link: el expediente es solo de
+       Compras, y el solicitante ya los tiene porque él los subió."""
+    pend = rest("GET", "solicitudes",
+                params={"select": "id,folio,unidad,correo_solicitante,nombre_solicitante,"
+                                  "descripcion_general,total,divisa,creado_en,acuse_alertado_en",
+                        "acuse_enviado_en": "is.null",
+                        "estado": "neq.cancelada",
+                        "order": "creado_en.asc", "limit": "50"}) or []
+    enviados = 0
+    for s in pend:
+        try:
+            adjs = adjuntos_de_solicitud(s["id"])
+            if any(a["estado"] in ("en_transito", "error") for a in adjs):
+                continue
+
+            pdf = next((a for a in adjs if a["categoria"] == "smi"
+                        and a["estado"] == "en_drive" and a.get("drive_file_id")), None)
+            if not pdf:
+                if (ALERTA_CORREO and not s.get("acuse_alertado_en")
+                        and horas_desde(s["creado_en"]) >= ESPERA_PDF_HORAS):
+                    enviar_correo(
+                        gmail, ALERTA_CORREO, f"{s['folio']}: falta el PDF oficial",
+                        f"La solicitud {s['folio']} lleva más de {ESPERA_PDF_HORAS} horas sin su PDF "
+                        f"oficial, y sin él no sale el acuse al solicitante.\n\n"
+                        f"Ábrela en la app y usa \"PDF al expediente\". El acuse sale solo en la "
+                        f"siguiente corrida después de que el PDF llegue a Drive.\n")
+                    requests.patch(f"{SUPABASE_URL}/rest/v1/solicitudes",
+                                   headers={**CAB, "Prefer": "return=minimal"},
+                                   params={"id": f"eq.{s['id']}"},
+                                   json={"acuse_alertado_en": datetime.now(timezone.utc).isoformat()},
+                                   timeout=60).raise_for_status()
+                    print(f"  {s['folio']}: sin PDF oficial, alerta -> {ALERTA_CORREO}")
+                continue
+
+            contenido = drive.files().get_media(fileId=pdf["drive_file_id"],
+                                                supportsAllDrives=True).execute()
+
+            suyos = [a["nombre"] for a in adjs if a["categoria"] != "smi"]
+            lista = ("Archivos que recibimos:\n" + "\n".join(f"  - {n}" for n in suyos) + "\n\n"
+                     if suyos else "")
+            cuerpo = (
+                f"Hola {s.get('nombre_solicitante') or ''},\n\n"
+                f"Recibimos tu solicitud y quedó registrada con el folio {s['folio']}.\n\n"
+                f"  Qué pediste: {s.get('descripcion_general') or ''}\n"
+                f"  Importe estimado: ${float(s.get('total') or 0):,.2f} "
+                f"{'USD' if s.get('divisa') == 'USD' else 'MXN'}\n\n"
+                f"{lista}"
+                f"Te adjuntamos el formato oficial de tu solicitud.\n\n"
+                f"Administración la va a revisar. Si hace falta algo más, te buscamos.\n\n"
+                f"Cita el folio {s['folio']} para cualquier seguimiento.\n")
+
+            enviar_correo(gmail, s["correo_solicitante"], f"Solicitud {s['folio']} recibida", cuerpo,
+                          adjuntos=[(pdf["nombre"], contenido, "application/pdf")])
+            requests.patch(f"{SUPABASE_URL}/rest/v1/solicitudes",
+                           headers={**CAB, "Prefer": "return=minimal"},
+                           params={"id": f"eq.{s['id']}"},
+                           json={"acuse_enviado_en": datetime.now(timezone.utc).isoformat()},
+                           timeout=60).raise_for_status()
+            enviados += 1
+            print(f"  acuse -> {s['correo_solicitante']} ({s['folio']}, con PDF)")
+        except Exception as e:
+            print(f"  No se pudo avisar de {s['folio']}: {e}")
+    return enviados
+
+
+def avisos_compras(gmail):
+    """Avisa a Compras de cada SMI nueva, con el link a su expediente.
+
+       Sale después del acuse al solicitante y no antes: el acuse ya espera a
+       que todos los archivos y el PDF estén en Drive, así que cuando Compras
+       abre el link, el expediente está completo.
+
+       Los destinatarios son los dos correos de la compañía en Solicitudes >
+       Parámetros. Si una compañía no tiene ninguno, sus SMI se quedan sin
+       marcar y salen en cuanto se capture un correo.
+
+       Reply-To es el solicitante: si Compras contesta, le contesta a él."""
+    pend = rest("GET", "solicitudes",
+                params={"select": "id,folio,unidad,correo_solicitante,nombre_solicitante,"
+                                  "descripcion_general,proyecto,total,divisa,drive_folder_id",
+                        "aviso_compras_enviado_en": "is.null",
+                        "acuse_enviado_en": "not.is.null",
+                        "drive_folder_id": "not.is.null",
+                        "estado": "neq.cancelada",
+                        "order": "creado_en.asc", "limit": "50"}) or []
+    if not pend:
+        return 0
+
+    params = rest("GET", "solicitudes_parametros",
+                  params={"select": "unidad,correo_compras_1,correo_compras_2"}) or []
+    correos = {p["unidad"]: [c for c in (p.get("correo_compras_1"), p.get("correo_compras_2")) if c]
+               for p in params}
+
+    enviados = 0
+    for s in pend:
+        para = correos.get(s["unidad"]) or []
+        if not para:
+            continue
+        try:
+            enlace = f"https://drive.google.com/drive/folders/{s['drive_folder_id']}"
+            quien = s.get("nombre_solicitante") or s.get("correo_solicitante") or ""
+            cuerpo = (
+                f"Entró la solicitud {s['folio']}.\n\n"
+                f"  Quién la pide: {quien} <{s.get('correo_solicitante') or ''}>\n"
+                f"  Qué pide: {s.get('descripcion_general') or ''}\n"
+                + (f"  Proyecto: {s['proyecto']}\n" if s.get("proyecto") else "")
+                + f"  Importe estimado: ${float(s.get('total') or 0):,.2f} "
+                  f"{'USD' if s.get('divisa') == 'USD' else 'MXN'}\n\n"
+                f"Expediente (PDF oficial y archivos):\n{enlace}\n\n"
+                f"Si respondes este correo, le llega a quien la levantó.\n")
+            enviar_correo(gmail, ", ".join(para), f"Nueva solicitud {s['folio']}", cuerpo,
+                          responder_a=s.get("correo_solicitante") or None)
+            requests.patch(f"{SUPABASE_URL}/rest/v1/solicitudes",
+                           headers={**CAB, "Prefer": "return=minimal"},
+                           params={"id": f"eq.{s['id']}"},
+                           json={"aviso_compras_enviado_en": datetime.now(timezone.utc).isoformat()},
+                           timeout=60).raise_for_status()
+            enviados += 1
+            print(f"  aviso a Compras -> {', '.join(para)} ({s['folio']})")
+        except Exception as e:
+            print(f"  No se pudo avisar a Compras de {s['folio']}: {e}")
+    return enviados
+
+
+def alertar_atorados(gmail):
+    """Avisa de los archivos que se rindieron. Corriendo desatendido, sin esto
+       un adjunto atorado pasa inadvertido hasta que alguien lo reclama."""
+    if not ALERTA_CORREO:
+        return 0
+    rotos = rest("GET", "adjuntos",
+                 params={"select": "id,nombre,entidad,entidad_id,ultimo_error,estado",
+                         "estado": "in.(error,por_borrar)",
+                         "intentos": f"gte.{MAX_INTENTOS}",
+                         "alertado_en": "is.null"}) or []
+    if not rotos:
+        return 0
+    lineas = [f"  {'[borrar] ' if a.get('estado') == 'por_borrar' else '[mover] '}"
+              f"{a['nombre']}: {a.get('ultimo_error') or 'sin detalle'}" for a in rotos]
+    cuerpo = (f"{len(rotos)} archivo(s) no se pudieron procesar tras "
+              f"{MAX_INTENTOS} intentos:\n\n" + "\n".join(lineas) +
+              "\n\n[mover]: siguen en el búfer de Supabase. [borrar]: siguen en Drive.\n"
+              "Para reintentarlos, pon intentos = 0 en esas filas de la tabla adjuntos.\n")
+    try:
+        enviar_correo(gmail, ALERTA_CORREO, f"{len(rotos)} adjunto(s) atorados", cuerpo)
+        for a in rotos:
+            marcar(a["id"], {"alertado_en": datetime.now(timezone.utc).isoformat()})
+        print(f"  alerta -> {ALERTA_CORREO} ({len(rotos)} atorados)")
+        return len(rotos)
+    except Exception as e:
+        print(f"  No se pudo alertar: {e}")
+        return 0
+
+
+# --------------------------------------------------------------------------
+def main():
+    print(f"--- {datetime.now():%Y-%m-%d %H:%M:%S} ---")
+    lista = pendientes() or []
+
+    # El servicio se construye siempre, aunque no haya nada que mover: los
+    # acuses y las alertas también salen por aquí, y en la mayoría de las
+    # corridas eso es lo único que hay que hacer.
+    cred = credenciales_google()
+    drive = build("drive", "v3", credentials=cred, cache_discovery=False)
+    gmail = build("gmail", "v1", credentials=cred, cache_discovery=False)
+
+    # Primero lo que hay que borrar: si un REG se regeneró, el viejo sale
+    # de la carpeta antes de que llegue el nuevo con el mismo nombre.
+    borrados = 0
+    for adj in pendientes_de_borrar() or []:
+        print(f"  borrar {adj['nombre']}")
+        try:
+            borrar_en_drive(drive, adj)
+            print("    -> papelera")
+            borrados += 1
+        except Exception as e:
+            # Se queda por_borrar: no se usa fallo(), que lo pasaría a
+            # 'error' y lo mandaría a la cola de mover.
+            marcar(adj["id"], {"ultimo_error": str(e)[:500],
+                               "intentos": (adj.get("intentos") or 0) + 1})
+            print(f"    ERROR: {e}")
+
+    movidos = fallidos = pospuestos = 0
+    if lista:
+        print(f"{len(lista)} adjunto(s) por mover.")
+    else:
+        print("Sin archivos por mover.")
+
+    for adj in lista:
+        print(f"  {adj['nombre']}")
+        try:
+            exp = expediente_de(adj)
+
+            if exp == "pendiente":
+                # Una transacción sin registrar todavía no tiene folio. Se
+                # queda en el búfer sin contarse como error: no falló nada,
+                # simplemente aún no le toca.
+                print("    en espera: la transacción no está registrada")
+                pospuestos += 1
+                continue
+
+            if not exp:
+                fallo(adj, f"El adjunto no pertenece a ninguna {adj['entidad']} existente.")
+                fallidos += 1
+                continue
+
+            # La carpeta se resuelve una sola vez por expediente y se guarda:
+            # a partir de ahí, los adjuntos siguientes no vuelven a buscarla.
+            carpeta = exp.get("carpeta")
+            if not carpeta:
+                if not exp.get("unidad"):
+                    fallo(adj, "El expediente no tiene compañía: no se sabe bajo qué carpeta raíz va.")
+                    fallidos += 1
+                    continue
+                raiz = carpeta_raiz(exp["unidad"])
+                if not raiz:
+                    fallo(adj, f"{exp['unidad']} no tiene carpeta raíz de Drive en sus parámetros.")
+                    fallidos += 1
+                    continue
+                anio = exp.get("anio") or datetime.now().year
+                carpeta = carpeta_de_solicitud(drive, raiz, anio, exp["folio"], exp["tipo"])
+                requests.patch(f"{SUPABASE_URL}/rest/v1/{exp['tabla']}",
+                               headers={**CAB, "Prefer": "return=minimal"},
+                               params={"id": f"eq.{exp['id']}"},
+                               json={"drive_folder_id": carpeta}, timeout=60).raise_for_status()
+
+            contenido = descargar_del_bufer(adj["storage_path"])
+            file_id, enlace = subir_a_drive(drive, carpeta, adj["nombre"], contenido, adj.get("mime"))
+
+            # Primero se graba el destino; el búfer se vacía después.
+            # La fecha se calcula aquí: PostgREST manda el JSON tal cual y
+            # Postgres no puede convertir la cadena "now()" a timestamp.
+            marcar(adj["id"], {"drive_file_id": file_id, "drive_link": enlace,
+                               "estado": "en_drive", "ultimo_error": None,
+                               "verificado_en": datetime.now(timezone.utc).isoformat()})
+            try:
+                borrar_del_bufer(adj["storage_path"])
+                marcar(adj["id"], {"storage_path": None})
+            except Exception as e:
+                # El archivo ya está a salvo en Drive. El objeto huérfano se
+                # recoge en otra corrida.
+                print(f"    Aviso: quedó en el búfer ({e})")
+
+            print(f"    -> {file_id}")
+            movidos += 1
+        except Exception as e:
+            fallo(adj, e)
+            fallidos += 1
+
+    enviados = acuses(gmail, drive)
+    # Después de los acuses: así una SMI cuyo acuse sale en esta corrida
+    # también avisa a Compras en la misma, sin esperar quince minutos más.
+    avisados = avisos_compras(gmail)
+    alertados = alertar_atorados(gmail)
+
+    print(f"Movidos {movidos}, en espera {pospuestos}, con error {fallidos}, "
+          f"a la papelera {borrados}, acuses {enviados}, avisos a Compras {avisados}, "
+          f"alertas {alertados}.")
+
+
+if __name__ == "__main__":
+    main()

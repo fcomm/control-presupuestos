@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.27.0";
+const APP_VERSION = "3.28.0";
 const CHANGELOG = [
+  { v: "3.28.0", desc: "Dashboard > Contratos: ingreso contra gasto de los contratos con clientes, todo en USD (los pesos se convierten con el TC Para pagos de Banxico de la fecha de cada movimiento; un gasto pagado en pesos usa el TC que se registro al pagarlo). Barra de periodo arriba. Indicadores: monto de contratos vigentes, facturado, cobrado, por cobrar, gasto comprometido y pagado, margen de flujo (cobrado - pagado) y rentabilidad (facturado - comprometido), con su %. Tabla por contrato con barras de avance. Contratos por vencer (90 dias) y facturas emitidas sin cobrar con mas de 30 dias" },
   { v: "3.27.0", desc: "Pestana Contratos renovada: contratos con clientes. Se retira el generador de contratos con proveedores (Datos recurrentes, Diagnostico, Objeto y clausulas, Expediente); sus tablas se quedan en la base, sin uso. Cada contrato: numero (unico por compania), cliente, proyecto, objeto, monto original y moneda, inicio y termino, status (Vigente, Concluido, Cancelado) y notas. Adendas y extensiones con fecha de firma, cambio de monto (+ amplia, - reduce) y/o nuevo termino: el monto y la vigencia vigentes se calculan con ellas. La lista avisa los vigentes que vencen en 30 dias o ya vencieron, y muestra facturado (con % del monto), cobrado, gasto comprometido y pagado. A cada contrato se le asignan facturas emitidas (desde el contrato o desde la factura) y gastos (desde la transaccion, campo Contrato en Clasificacion, o desde el contrato buscando y marcando varias); una compra PPD lleva a sus parcialidades. Requiere 72-contratos-cliente.sql" },
   { v: "3.26.0", desc: "Nueva pestana Facturas: las facturas que cada compania emite a sus clientes. Datos: folio (serie y numero, unico por compania), cliente, proyecto, importe y moneda, status (Emitida, Pagada o Cancelada), fecha emitida y fecha de pago (obligatoria al marcarla Pagada), notas, y su PDF y XML adjuntos, que van a Drive en <COMPANIA>/<ANO>/Facturas/<FOLIO>. Arriba, por moneda: emitido, cobrado y por cobrar (sin canceladas). Busqueda y filtros por status y proyecto; clic en la fila para editar. Requiere 71-facturas-emitidas.sql y la nueva version de mover_adjuntos_a_drive.py" },
   { v: "3.25.1", desc: "Dashboard general: el slider de periodo pasa a su propia barra a todo lo ancho arriba del tablero, igual que en Dashboard > Sempra (en la fila de filtros quedaba amontonado). Los atajos de periodo se quedan junto al filtro de Proyecto" },
@@ -5437,6 +5438,7 @@ const esSempra = (v) => String(v || "").trim().toLowerCase() === PROYECTO_SEMPRA
 
 const SUBS_DASHBOARD = [
   { id: "general", label: "General" },
+  { id: "contratos", label: "Contratos" },
   { id: "sempra",  label: PROYECTO_SEMPRA },
 ];
 
@@ -5449,13 +5451,13 @@ function Dashboard(props) {
     [unidad, partidas, transacciones]
   );
   const [subGuardado, setSub] = useSessionState("ss-dashboard-sub", "general");
-  const sub = haySempra && subGuardado === "sempra" ? "sempra" : "general";
+  const sub = subGuardado === "contratos" ? "contratos" : haySempra && subGuardado === "sempra" ? "sempra" : "general";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
-      {haySempra && (
+      {(
         <div style={{ display: "flex", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: 3, alignSelf: "flex-start" }}>
-          {SUBS_DASHBOARD.map((s) => (
+          {SUBS_DASHBOARD.filter((s) => s.id !== "sempra" || haySempra).map((s) => (
             <button key={s.id} onClick={() => setSub(s.id)}
               style={{ padding: "7px 16px", borderRadius: 6, border: "none", cursor: "pointer",
                        background: sub === s.id ? T.accent : "transparent",
@@ -5468,7 +5470,234 @@ function Dashboard(props) {
       )}
       {sub === "sempra"
         ? <DashboardSempra unidad={unidad} partidas={partidas} transacciones={transacciones} />
+        : sub === "contratos"
+        ? <DashboardContratos unidad={unidad} partidas={partidas} transacciones={transacciones} />
         : <DashboardGeneral {...props} />}
+    </div>
+  );
+}
+
+/* -----------------------------------------------------------------
+   DASHBOARD > CONTRATOS (v3.28.0)
+   Ingreso contra gasto de los contratos con clientes, TODO en USD: lo que
+   está en pesos se convierte con el TC "Para pagos" (Banxico SF60653) de la
+   fecha de cada movimiento — emisión o cobro de la factura, día o pago de la
+   transacción, inicio del contrato para su monto. Si una fecha es anterior
+   al primer TC que hay en la base, se usa el primero y se avisa.
+   Dos márgenes: flujo (cobrado − gasto pagado) y rentabilidad (facturado −
+   gasto comprometido).
+   ----------------------------------------------------------------- */
+function useSerieTCCompleta() {
+  const [serie, setSerie] = useState(null);
+  useEffect(() => {
+    let vivo = true;
+    (async () => {
+      let todo = [], desde = 0;
+      while (true) {
+        const { data, error } = await supabase.from("tipos_cambio").select("fecha,valor").eq("serie", "SF60653")
+          .order("fecha").range(desde, desde + 999);
+        if (error || !data) break;
+        todo = todo.concat(data);
+        if (data.length < 1000) break;
+        desde += 1000;
+      }
+      if (vivo) setSerie(todo);
+    })();
+    return () => { vivo = false; };
+  }, []);
+  return serie;
+}
+
+/* Convierte a USD. Devuelve { usd, aprox } — aprox: no había TC para esa fecha. */
+function aUSDCT(importe, moneda, fecha, serie) {
+  const n = Number(importe) || 0;
+  if (monedaNorm(moneda) === "USD" || !n) return { usd: n, aprox: false };
+  if (!serie?.length) return { usd: 0, aprox: true };
+  const tc = tcDOF(serie, fecha);
+  const valor = tc ? tc.valor : Number(serie[0].valor);
+  return { usd: n / valor, aprox: !tc || !fecha };
+}
+
+const claveMesISO = (iso) => (/^\d{4}-\d{2}/.test(String(iso || "")) ? Number(String(iso).slice(0, 4)) * 12 + Number(String(iso).slice(5, 7)) - 1 : null);
+const usd = (n) => money(n, "USD");
+
+function BarraAvanceCT({ valor, total, color = T.accent }) {
+  const pct = total > 0 ? Math.max(0, Math.min(100, (valor / total) * 100)) : 0;
+  return (
+    <div title={total > 0 ? `${Math.round((valor / total) * 100)} %` : ""} style={{ height: 5, borderRadius: 3, background: T.borderSoft, marginTop: 3, minWidth: 70 }}>
+      <div style={{ width: `${pct}%`, height: "100%", borderRadius: 3, background: color }} />
+    </div>
+  );
+}
+
+function DashboardContratos({ unidad, partidas, transacciones }) {
+  const contratosApi = useCollection("contratos_cliente", "numero");
+  const modsApi = useCollection("contratos_cliente_modificaciones", "fecha");
+  const facturasApi = useCollection("facturas_emitidas", "fecha_emision");
+  const serie = useSerieTCCompleta();
+  const [rangoSel, setRangoSel] = useState(null);
+
+  const contratos = contratosApi.rows.filter((c) => c.unidad === unidad);
+  const idsContrato = new Set(contratos.map((c) => c.id));
+  const partidaPorId = useMemo(() => new Map(partidas.map((p) => [p.id, p])), [partidas]);
+  const transU = transacciones.filter((t) => t.unidad_detectada === unidad);
+  const facturas = facturasApi.rows.filter((f) => f.unidad === unidad && f.status !== "Cancelada" && idsContrato.has(f.contrato_id));
+  const mesGasto = (t) => {
+    const p = partidaPorId.get(t.partida_id);
+    if (p && p.anio && MESES.includes(p.mes)) return Number(p.anio) * 12 + MESES.indexOf(p.mes);
+    return claveMesISO(t.dia);
+  };
+
+  // Gastos por contrato (con parcialidades de compras PPD asignadas).
+  const gastosPor = new Map(contratos.map((c) => [c.id, gastosDeContrato(c.id, transU)]));
+
+  /* Límites del periodo: del movimiento más viejo al más nuevo. */
+  const limites = useMemo(() => {
+    const ks = [
+      ...facturas.flatMap((f) => [claveMesISO(f.fecha_emision), claveMesISO(f.fecha_pago)]),
+      ...[...gastosPor.values()].flat().flatMap((t) => [mesGasto(t), claveMesISO(t.fecha_pago)]),
+    ].filter((k) => k !== null);
+    return ks.length ? { min: Math.min(...ks), max: Math.max(...ks) } : null;
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [facturas.length, transU.length, contratos.length, partidas.length]);
+  const desde = limites ? Math.min(limites.max, Math.max(limites.min, rangoSel ? rangoSel[0] : limites.min)) : 0;
+  const hasta = limites ? Math.max(desde, Math.min(limites.max, rangoSel ? rangoSel[1] : limites.max)) : 0;
+  const enRango = (k) => !limites || (k !== null && k >= desde && k <= hasta);
+
+  if (!contratosApi.ready || serie === null) {
+    return <Panel title="Contratos"><div style={{ fontSize: 12.5, color: T.textFaint }}>Cargando…</div></Panel>;
+  }
+  if (!contratos.length) {
+    return <EmptyState title="Sin contratos" body={`${unidad} todavía no tiene contratos con clientes. Se dan de alta en la pestaña Contratos.`} />;
+  }
+
+  let aprox = 0;
+  const conv = (imp, mon, fecha) => { const r = aUSDCT(imp, mon, fecha, serie); if (r.aprox && Number(imp)) aprox++; return r.usd; };
+  const filas = contratos.map((c) => {
+    const e = estadoContrato(c, modsApi.rows);
+    const fs = facturas.filter((f) => f.contrato_id === c.id);
+    const gs = gastosPor.get(c.id) || [];
+    const r = {
+      c, e,
+      monto: conv(e.monto, c.moneda, c.fecha_inicio || hoyLocalISO()),
+      facturado: fs.filter((f) => enRango(claveMesISO(f.fecha_emision))).reduce((s, f) => s + conv(f.importe, f.moneda, f.fecha_emision), 0),
+      cobrado: fs.filter((f) => f.status === "Pagada" && enRango(claveMesISO(f.fecha_pago))).reduce((s, f) => s + conv(f.importe, f.moneda, f.fecha_pago), 0),
+      comprometido: gs.filter((t) => cuentaEnComprometido(t) && enRango(mesGasto(t))).reduce((s, t) => s + conv(t.importe, t.moneda, t.dia), 0),
+      pagado: gs.filter((t) => cuentaEnPagado(t) && enRango(claveMesISO(t.fecha_pago || t.dia)))
+        .reduce((s, t) => s + (monedaNorm(t.moneda) === "MXP" && Number(t.tipo_cambio) > 0
+          ? (Number(t.importe) || 0) / Number(t.tipo_cambio) : conv(t.importe, t.moneda, t.fecha_pago || t.dia)), 0),
+    };
+    r.porCobrar = fs.filter((f) => f.status === "Emitida" && enRango(claveMesISO(f.fecha_emision))).reduce((s, f) => s + conv(f.importe, f.moneda, f.fecha_emision), 0);
+    r.flujo = r.cobrado - r.pagado;
+    r.rentab = r.facturado - r.comprometido;
+    return r;
+  }).sort((a, b) => (a.c.status === b.c.status ? b.monto - a.monto : a.c.status === "Vigente" ? -1 : 1));
+
+  const tot = filas.reduce((s, r) => {
+    ["facturado", "cobrado", "porCobrar", "comprometido", "pagado", "flujo", "rentab"].forEach((k) => { s[k] += r[k]; });
+    if (r.c.status === "Vigente") s.montoVigentes += r.monto;
+    return s;
+  }, { montoVigentes: 0, facturado: 0, cobrado: 0, porCobrar: 0, comprometido: 0, pagado: 0, flujo: 0, rentab: 0 });
+  const pctDe = (a, b) => (b > 0 ? `${Math.round((a / b) * 100)} %` : "—");
+
+  // Alertas: contratos vigentes por vencer y facturas emitidas sin cobrar.
+  const porVencer = filas.filter((r) => r.c.status === "Vigente" && r.e.fin && diasHasta(r.e.fin) <= 90)
+    .sort((a, b) => String(a.e.fin).localeCompare(String(b.e.fin)));
+  const sinCobrar = facturasApi.rows.filter((f) => f.unidad === unidad && f.status === "Emitida")
+    .map((f) => ({ f, dias: -diasHasta(f.fecha_emision) })).filter((x) => x.dias > 30).sort((a, b) => b.dias - a.dias);
+  const numContrato = (id) => contratos.find((c) => c.id === id)?.numero || "Sin contrato";
+  const colorMargen = (v) => (v < 0 ? T.red : T.teal);
+  const num = { ...tdStyle, textAlign: "right", fontFamily: T.fontMono, whiteSpace: "nowrap" };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+      {limites && (
+        <BarraPeriodo>
+          <RangoSlider min={limites.min} max={limites.max} desde={desde} hasta={hasta} etiqueta={etiquetaMesCorta}
+            ayuda="Periodo: arrastra las manijas. Lo facturado cuenta en el mes de emisión, lo cobrado en el de pago, el gasto comprometido en el mes de su partida y el pagado en el de su pago. El monto de los contratos no depende del periodo."
+            onChange={(a, b) => setRangoSel([a, b])} onTodo={() => setRangoSel(null)} />
+        </BarraPeriodo>
+      )}
+      <Panel title={`Contratos con clientes — ${unidad}`}
+        subtitle={`Todo en USD: lo que está en pesos se convierte con el TC Para pagos de Banxico de la fecha de cada movimiento (o el TC registrado al pagar).${aprox ? ` ${aprox} movimiento(s) son anteriores al primer TC disponible y usan ese: son aproximados.` : ""}`}>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12 }}>
+          <KpiCard label="Monto de contratos vigentes" value={usd(tot.montoVigentes)} />
+          <KpiCard label="Facturado" value={usd(tot.facturado)} accent={T.accent} />
+          <KpiCard label="Cobrado" value={usd(tot.cobrado)} accent={T.teal} />
+          <KpiCard label="Por cobrar" value={usd(tot.porCobrar)} accent={T.amber} />
+        </div>
+        <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+          <KpiCard label="Gasto comprometido" value={usd(tot.comprometido)} />
+          <KpiCard label="Gasto pagado" value={usd(tot.pagado)} />
+          <KpiCard label="Margen de flujo (cobrado − pagado)" value={`${usd(tot.flujo)} · ${pctDe(tot.flujo, tot.cobrado)}`} accent={colorMargen(tot.flujo)} />
+          <KpiCard label="Rentabilidad (facturado − comprometido)" value={`${usd(tot.rentab)} · ${pctDe(tot.rentab, tot.facturado)}`} accent={colorMargen(tot.rentab)} />
+        </div>
+      </Panel>
+
+      <Panel title="Por contrato" subtitle="Montos en USD. Las barras: facturado contra el monto del contrato, cobrado contra lo facturado y gasto pagado contra lo cobrado.">
+        <div style={{ overflowX: "auto" }}>
+          <table style={tableStyle}>
+            <thead><tr>
+              <th style={thStyle}>Contrato</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Monto vigente</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Facturado</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Cobrado</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Gasto comprometido</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Gasto pagado</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Margen de flujo</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Rentabilidad</th>
+              <th style={thStyle}>Término</th>
+            </tr></thead>
+            <tbody>
+              {filas.map((r) => (
+                <tr key={r.c.id} style={{ opacity: r.c.status === "Vigente" ? 1 : 0.65 }}>
+                  <td style={tdStyle}>
+                    <div style={{ fontWeight: 700 }}>{r.c.numero} {r.c.status !== "Vigente" && <Pill tone={TONO_STATUS_CONTRATO[r.c.status]}>{r.c.status}</Pill>}</div>
+                    <div style={{ fontSize: 11, color: T.textFaint }}>{[r.c.cliente, r.c.proyecto].filter(Boolean).join(" · ") || "—"}</div>
+                  </td>
+                  <td style={num}>{usd(r.monto)}{monedaNorm(r.c.moneda) === "MXP" && <div style={{ fontSize: 10, color: T.textFaint }}>{money(r.e.monto, "MXP")} MXP</div>}</td>
+                  <td style={num}>{usd(r.facturado)}<BarraAvanceCT valor={r.facturado} total={r.monto} /></td>
+                  <td style={num}>{usd(r.cobrado)}<BarraAvanceCT valor={r.cobrado} total={r.facturado} color={T.teal} /></td>
+                  <td style={num}>{usd(r.comprometido)}</td>
+                  <td style={num}>{usd(r.pagado)}<BarraAvanceCT valor={r.pagado} total={r.cobrado} color={T.amber} /></td>
+                  <td style={{ ...num, color: colorMargen(r.flujo) }}>{usd(r.flujo)}<div style={{ fontSize: 10, color: T.textFaint }}>{pctDe(r.flujo, r.cobrado)}</div></td>
+                  <td style={{ ...num, color: colorMargen(r.rentab) }}>{usd(r.rentab)}<div style={{ fontSize: 10, color: T.textFaint }}>{pctDe(r.rentab, r.facturado)}</div></td>
+                  <td style={{ ...tdStyle, whiteSpace: "nowrap" }}>{r.e.fin ? fmtFecha(r.e.fin) : "—"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
+
+      {(porVencer.length > 0 || sinCobrar.length > 0) && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(380px, 1fr))", gap: 20 }}>
+          {porVencer.length > 0 && (
+            <Panel title="Contratos por vencer" subtitle="Vigentes que terminan en 90 días o menos, o que ya vencieron.">
+              {porVencer.map((r) => {
+                const d = diasHasta(r.e.fin);
+                return (
+                  <div key={r.c.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.borderSoft}`, fontSize: 12.5 }}>
+                    <span><b>{r.c.numero}</b> · {r.c.cliente || "—"}</span>
+                    <span style={{ whiteSpace: "nowrap" }}>{fmtFecha(r.e.fin)} <Pill tone={d < 0 ? "red" : d <= 30 ? "amber" : "dim"}>{d < 0 ? `venció hace ${-d} d` : `${d} d`}</Pill></span>
+                  </div>
+                );
+              })}
+            </Panel>
+          )}
+          {sinCobrar.length > 0 && (
+            <Panel title="Facturas sin cobrar" subtitle="Emitidas hace más de 30 días y todavía no pagadas.">
+              {sinCobrar.slice(0, 15).map(({ f, dias }) => (
+                <div key={f.id} style={{ display: "flex", justifyContent: "space-between", gap: 10, padding: "7px 0", borderBottom: `1px solid ${T.borderSoft}`, fontSize: 12.5 }}>
+                  <span><b>{f.folio}</b> · {f.cliente || "—"} <span style={{ color: T.textFaint }}>({numContrato(f.contrato_id)})</span></span>
+                  <span style={{ whiteSpace: "nowrap", fontFamily: T.fontMono }}>{money(f.importe, f.moneda)} {monedaNorm(f.moneda)} <Pill tone={dias > 60 ? "red" : "amber"}>{dias} d</Pill></span>
+                </div>
+              ))}
+              {sinCobrar.length > 15 && <div style={{ fontSize: 11, color: T.textFaint, marginTop: 6 }}>y {sinCobrar.length - 15} más…</div>}
+            </Panel>
+          )}
+        </div>
+      )}
     </div>
   );
 }

@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.34.0";
+const APP_VERSION = "3.35.0";
 const CHANGELOG = [
+  { v: "3.35.0", desc: "Nombre estandar de partidas: las nuevas se nombran solas como ZONA-Rubro (y USD si es en dolares), sin mes ni ano; el nombre se actualiza al cambiar rubro, zona o moneda mientras no se haya escrito uno a mano. Acompana la estandarizacion de las partidas existentes (947 a 486, fusionando duplicadas del mismo mes, rubro, zona y moneda)." },
   { v: "3.34.0", desc: "Partidas: el filtro de periodo pasa a la barra con slider de meses (como en el Dashboard), arriba de los filtros, en lugar de los selectores de Mes y Ano. Va del mes de la partida mas vieja al de la mas nueva; boton Todo para quitarlo. Aplica igual a la tabla y a lo que se exporta con los filtros" },
   { v: "3.33.0", desc: "Comprobantes de pago: la busqueda de la transaccion que corresponde a cada comprobante se limita a las de dia de pago desde un mes antes de hoy hasta hoy (sin las programadas a futuro ni las de hace meses). Aplica al reconocimiento automatico y a la lista para elegir a mano; la pantalla dice la ventana" },
   { v: "3.32.0", desc: "Dashboard > Contratos, Gasto por rubro y categoria: nuevo nivel Proveedor entre la categoria y las transacciones (rubro > categoria > proveedor > transaccion), con su comprometido y pagado. Expandir todo abre tambien los proveedores" },
@@ -1664,10 +1665,26 @@ function resolverProrrateo(marcador, proyectosUnidad) {
 
 /* Partidas sin proyecto (v3.16.0): el presupuesto se lleva por rubro y el
    proyecto lo trae cada transacción. Una partida nueva nace como general
-   ("Todos") y con concepto "<Rubro> <Mes> <Año>"; mientras el concepto sea
-   el sugerido, se actualiza solo al cambiar rubro, mes o año. */
+   ("Todos") y con el concepto sugerido; mientras el concepto sea el
+   sugerido, se actualiza solo al cambiar rubro, zona o moneda. */
 const PROYECTO_GENERAL = "Todos";
-const conceptoSugeridoPartida = (p) => [p.rubro, p.mes, p.anio].filter(Boolean).join(" ");
+/* v3.35.0: nombre estándar "<ZONA>-<Rubro>[ USD]", sin mes ni año (ya son
+   columnas de la partida). La zona sale del campo Zona; si está vacío, de la
+   zona de la transacción de origen; OSB siempre es QRO y, sin dato, QRO. */
+const PREFIJO_ZONA = {
+  QUERETARO: "QRO", QRO: "QRO", CDMX: "CDMX",
+  "POZA RICA": "PR", COTAXTLA: "PR", ALTAMIRA: "PR", "CERRO AZUL": "PR", TAMAULIPAS: "PR",
+  PARAISO: "PAR", "VILLA HERMOSA": "PAR",
+};
+const prefijoZonaPartida = (p) => {
+  if (p.unidad === "OSB") return "QRO";
+  const z = String(p.zona || p.zonaOrigen || "").trim().toUpperCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  if (!z) return "QRO";
+  return PREFIJO_ZONA[z] || z;
+};
+const conceptoSugeridoPartida = (p) => (p.rubro
+  ? `${prefijoZonaPartida(p)}-${p.rubro}${String(p.moneda || "").toUpperCase() === "USD" ? " USD" : ""}`
+  : "");
 function cambiarConSugerencia(prev, campo, valor) {
   const sig = { ...prev, [campo]: valor };
   const actual = String(prev.concepto || "").trim();
@@ -1798,7 +1815,10 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
     // el día de pago de la transacción, o Enero si no tenía.
     mes: MESES[new Date().getMonth()],
     anio: new Date().getFullYear(),
-    concepto: conceptoSugeridoPartida({ rubro: RUBROS[0]?.rubro || "", mes: MESES[new Date().getMonth()], anio: new Date().getFullYear() }),
+    concepto: conceptoSugeridoPartida({ rubro: RUBROS[0]?.rubro || "", unidad, zonaOrigen: origenTransaccion?.zona || "", moneda: origenTransaccion?.moneda || moneda || "MXP" }),
+    unidad,
+    // Solo para armar el nombre: no se guarda en la partida.
+    zonaOrigen: origenTransaccion?.zona || "",
     rubro: RUBROS[0]?.rubro || "",
     proyecto: PROYECTO_GENERAL,
     monto_estimado: origenTransaccion?.importe ? String(origenTransaccion.importe) : "",
@@ -2002,7 +2022,7 @@ function PartidaPickerButton({ partidas, transacciones = [], value, onChange, pl
                   <TextInput type="number" step="0.01" value={nuevaPartida.monto_estimado} onChange={(e) => setNuevaPartida({ ...nuevaPartida, monto_estimado: e.target.value })} placeholder="0.00" />
                 </Field>
                 <Field label="Moneda">
-                  <Select value={nuevaPartida.moneda} disabled={monedaFija} onChange={(e) => setNuevaPartida({ ...nuevaPartida, moneda: e.target.value })}
+                  <Select value={nuevaPartida.moneda} disabled={monedaFija} onChange={(e) => setNuevaPartida((prev) => (editando ? { ...prev, moneda: e.target.value } : cambiarConSugerencia(prev, "moneda", e.target.value)))}
                     title={monedaFija ? "No se puede cambiar: la partida ya tiene transacciones vinculadas" : undefined}>
                     {MONEDAS.map((m) => <option key={m}>{m}</option>)}
                     {nuevaPartida.moneda && !MONEDAS.includes(nuevaPartida.moneda) && <option key={nuevaPartida.moneda}>{nuevaPartida.moneda}</option>}
@@ -11410,7 +11430,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
             <Field label="Zona">
               {/* Opcional a propósito: vacío significa que el presupuesto no
                   está atado a una zona, como Nómina o los servicios legales. */}
-              <Select value={form.zona || ""} onChange={(e) => setForm({ ...form, zona: e.target.value })}>
+              <Select value={form.zona || ""} onChange={(e) => setForm((prev) => (editId ? { ...prev, zona: e.target.value } : cambiarConSugerencia(prev, "zona", e.target.value)))}>
                 <option value="">— Cualquier zona —</option>
                 {zonas.map((z) => <option key={z}>{z}</option>)}
                 {/* Si la partida trae una zona que salió del catálogo, se
@@ -11429,7 +11449,7 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
               <TextInput type="number" step="0.01" value={form.monto_estimado} onChange={(e) => setForm({ ...form, monto_estimado: e.target.value })} placeholder="0.00" />
             </Field>
             <Field label="Moneda">
-              <Select value={form.moneda} onChange={(e) => setForm({ ...form, moneda: e.target.value })}>
+              <Select value={form.moneda} onChange={(e) => setForm((prev) => (editId ? { ...prev, moneda: e.target.value } : cambiarConSugerencia(prev, "moneda", e.target.value)))}>
                 {MONEDAS.map((m) => <option key={m}>{m}</option>)}
               </Select>
             </Field>

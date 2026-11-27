@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.32.0";
+const APP_VERSION = "3.33.0";
 const CHANGELOG = [
+  { v: "3.33.0", desc: "Comprobantes de pago: la busqueda de la transaccion que corresponde a cada comprobante se limita a las de dia de pago desde un mes antes de hoy hasta hoy (sin las programadas a futuro ni las de hace meses). Aplica al reconocimiento automatico y a la lista para elegir a mano; la pantalla dice la ventana" },
   { v: "3.32.0", desc: "Dashboard > Contratos, Gasto por rubro y categoria: nuevo nivel Proveedor entre la categoria y las transacciones (rubro > categoria > proveedor > transaccion), con su comprometido y pagado. Expandir todo abre tambien los proveedores" },
   { v: "3.31.1", desc: "Corrige: en Dashboard > Contratos, Gasto por rubro y categoria, las transacciones prorrateadas decian NaN % en lugar del % que le toca al contrato (p. ej. prorrateo Todos -> Sempra 45 %). Solo era el texto: los importes ya se calculaban con el % correcto" },
   { v: "3.31.0", desc: "Dashboard > Contratos, pestana de cada contrato: selector Incluir gastos prorrateados (Todos). Encendido (como hasta ahora) suma la parte que le toca al contrato de los gastos con proyecto Todos o <Grupo> Gral; apagado, solo los gastos asignados y los de sus proyectos. Afecta gasto comprometido y pagado, margenes, mes a mes y gasto por rubro; junto al selector se ve cuanto aportan los prorrateados. Se recuerda por contrato" },
@@ -11694,7 +11695,19 @@ const claveCP = (p) => `${p.autorizacion || ""}|${r2(p.importe)}|${p.fecha || ""
    Automático solo cuando no hay duda: mismo importe y moneda, y además coincide
    la cuenta destino o el nombre del beneficiario con el proveedor, y es la
    única así (o la de fecha claramente más cercana). Lo demás va a revisión. */
-function reconocerPagosCP(pagos, { unidad, transacciones, cuentas, proveedores, yaCargados }) {
+/* Ventana de búsqueda (v3.33.0): solo transacciones cuyo día de pago cae de un
+   mes antes de hoy a hoy. Una programada a futuro no puede estar ya pagada, y
+   una de hace meses ya no es candidata razonable para un comprobante nuevo. */
+function ventanaComprobantesCP() {
+  const hasta = hoyLocalISO();
+  const d = new Date(`${hasta}T12:00:00`);
+  d.setMonth(d.getMonth() - 1);
+  const desde = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  return { desde, hasta };
+}
+const enVentanaCP = (t, v) => { const f = String(t.dia || t.fecha_pago || "").slice(0, 10); return !!f && f >= v.desde && f <= v.hasta; };
+
+function reconocerPagosCP(pagos, { unidad, transacciones, cuentas, proveedores, yaCargados, ventana = ventanaComprobantesCP() }) {
   const provPorId = new Map(proveedores.map((p) => [p.id, p]));
   const ctasDe = (t) => {
     const xs = cuentas.filter((c) => c.id === t.cuenta_id || (t.proveedor_id && c.proveedor_id === t.proveedor_id))
@@ -11702,7 +11715,7 @@ function reconocerPagosCP(pagos, { unidad, transacciones, cuentas, proveedores, 
     if (t.clabe_importada) xs.push(t.clabe_importada);
     return xs.filter(Boolean);
   };
-  const vigentes = transacciones.filter((t) => !estaCancelada(t) && !pendienteDeRegistro(t) && !esPadrePPD(t));
+  const vigentes = transacciones.filter((t) => !estaCancelada(t) && !pendienteDeRegistro(t) && !esPadrePPD(t) && enVentanaCP(t, ventana));
   const usados = new Set();
   const evaluar = (p) => vigentes
     .filter((t) => !usados.has(t.id) && mismaMoneda(t.moneda, p.moneda) && Math.abs(r2(t.importe) - p.importe) < 0.005)
@@ -11768,7 +11781,7 @@ function reconocerPagosCP(pagos, { unidad, transacciones, cuentas, proveedores, 
     r.estado = pag.length ? "revisar" : "sin_transaccion";
     r.motivo = pag.length
       ? "Solo hay transacciones ya pagadas por este importe, y no es claro que sean de este pago. Si es una de ellas, elígela para adjuntarle el comprobante."
-      : "No hay ninguna transacción de esta compañía por este importe y moneda. Si es un gasto de la app, regístralo y vuelve a cargar el comprobante.";
+      : `No hay ninguna transacción de esta compañía por este importe y moneda con día de pago del ${fmtFecha(ventana.desde)} al ${fmtFecha(ventana.hasta)}. Si es un gasto de la app, revisa su día de pago o regístralo y vuelve a cargar el comprobante.`;
   }
   return res;
 }
@@ -11994,8 +12007,9 @@ function ComprobantesPagoPanel({ unidad, transacciones = [], transaccionesApi, c
      cualquier pendiente de la misma moneda (por si el importe no cuadra). */
   const opcionesDe = (fila) => {
     const ids = new Set(fila.candidatos.map((c) => c.t.id));
+    const v = ventanaComprobantesCP();
     const resto = transacciones.filter((t) => !ids.has(t.id) && !estaCancelada(t) && !pendienteDeRegistro(t) && !esPadrePPD(t)
-      && t.status !== "Pagado" && mismaMoneda(t.moneda, fila.pago.moneda))
+      && t.status !== "Pagado" && mismaMoneda(t.moneda, fila.pago.moneda) && enVentanaCP(t, v))
       .sort((a, b) => Math.abs(Number(a.importe) - fila.pago.importe) - Math.abs(Number(b.importe) - fila.pago.importe));
     return { cands: fila.candidatos.map((c) => c.t), resto };
   };
@@ -12012,6 +12026,7 @@ function ComprobantesPagoPanel({ unidad, transacciones = [], transaccionesApi, c
           <div style={{ ...inputStyle, display: "flex", alignItems: "center", fontWeight: 700, minWidth: 70 }}>{unidad}</div>
         </Field>
         <div style={{ fontSize: 11.5, color: T.textFaint, maxWidth: 520 }}>
+          Solo se buscan transacciones con día de pago del {fmtFecha(ventanaComprobantesCP().desde)} a hoy.{" "}
           Se reconoce automáticamente solo cuando coinciden el importe y la moneda <b>y</b> además la cuenta destino o el nombre
           del beneficiario con el proveedor de la transacción. Un comprobante de otra compañía se omite.
         </div>

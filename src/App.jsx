@@ -480,8 +480,9 @@ const uid = () => {
 // MINOR = feature nueva, PATCH = fix/ajuste menor. Se muestra en el header de
 // la app y debe ir en el nombre del archivo que se comparte (App-v1.5.0.jsx).
 // ----------------------------------------------------------------------
-const APP_VERSION = "3.33.0";
+const APP_VERSION = "3.34.0";
 const CHANGELOG = [
+  { v: "3.34.0", desc: "Partidas: el filtro de periodo pasa a la barra con slider de meses (como en el Dashboard), arriba de los filtros, en lugar de los selectores de Mes y Ano. Va del mes de la partida mas vieja al de la mas nueva; boton Todo para quitarlo. Aplica igual a la tabla y a lo que se exporta con los filtros" },
   { v: "3.33.0", desc: "Comprobantes de pago: la busqueda de la transaccion que corresponde a cada comprobante se limita a las de dia de pago desde un mes antes de hoy hasta hoy (sin las programadas a futuro ni las de hace meses). Aplica al reconocimiento automatico y a la lista para elegir a mano; la pantalla dice la ventana" },
   { v: "3.32.0", desc: "Dashboard > Contratos, Gasto por rubro y categoria: nuevo nivel Proveedor entre la categoria y las transacciones (rubro > categoria > proveedor > transaccion), con su comprometido y pagado. Expandir todo abre tambien los proveedores" },
   { v: "3.31.1", desc: "Corrige: en Dashboard > Contratos, Gasto por rubro y categoria, las transacciones prorrateadas decian NaN % en lugar del % que le toca al contrato (p. ej. prorrateo Todos -> Sempra 45 %). Solo era el texto: los importes ya se calculaban con el % correcto" },
@@ -10133,13 +10134,21 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
   const categoriasDisponibles = RUBROS.find((r) => r.rubro === form.rubro)?.categorias || [];
   const partidasUnidad = partidas.filter((p) => p.unidad === unidad);
 
-  const [filtros, setFiltros] = useSessionState("ss-partidas-filtros", { texto: "", mes: [], anio: [], rubro: "Todos", proyecto: "Todos" });
-  const filtrosMes = Array.isArray(filtros.mes) ? filtros.mes : [];
-  const filtrosAnio = Array.isArray(filtros.anio) ? filtros.anio : [];
+  const [filtros, setFiltros] = useSessionState("ss-partidas-filtros", { texto: "", rango: null, rubro: "Todos", proyecto: "Todos" });
+  /* v3.34.0: el periodo se elige con el slider de meses (BarraPeriodo), en
+     lugar de los selectores de Mes y Año. `rango` = [desde, hasta] como índice
+     año*12+mes; null = todo. */
+  const idxPartida = (p) => (p.anio && MESES.includes(p.mes) ? idxMes(p.anio, p.mes) : null);
+  const limitesPartidas = (() => {
+    const ks = partidasUnidad.map(idxPartida).filter((k) => k !== null);
+    return ks.length ? { min: Math.min(...ks), max: Math.max(...ks) } : null;
+  })();
+  const rangoP = limitesPartidas && Array.isArray(filtros.rango)
+    ? [Math.max(limitesPartidas.min, Math.min(limitesPartidas.max, filtros.rango[0])), Math.min(limitesPartidas.max, Math.max(limitesPartidas.min, filtros.rango[1]))]
+    : null;
+  const rangoActivo = !!rangoP && (rangoP[0] !== limitesPartidas.min || rangoP[1] !== limitesPartidas.max);
   const rubrosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.rubro).filter(Boolean))].sort();
   const proyectosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.proyecto).filter(Boolean))].sort();
-  const mesesDisponiblesFiltro = MESES.filter((m) => partidasUnidad.some((p) => p.mes === m));
-  const aniosDisponiblesFiltro = [...new Set(partidasUnidad.map((p) => p.anio).filter(Boolean))].sort((a, b) => a - b);
 
   // Los filtros de la tabla, extraídos como función para poder aplicarlos
   // también a otras compañías al exportar las tres de un jalón.
@@ -10151,8 +10160,10 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
       const enTexto = [p.concepto, p.folio, p.smi, p.categoria, p.zona].some((v) => (v || "").toLowerCase().includes(q));
       if (!enTexto) return false;
     }
-    if (filtrosMes.length && !filtrosMes.includes(p.mes)) return false;
-    if (filtrosAnio.length && !filtrosAnio.includes(p.anio)) return false;
+    if (rangoActivo) {
+      const k = idxPartida(p);
+      if (k === null || k < rangoP[0] || k > rangoP[1]) return false;
+    }
     if (estricto) {
       if (filtros.rubro !== "Todos" && p.rubro !== filtros.rubro) return false;
       if (filtros.proyecto !== "Todos" && p.proyecto !== filtros.proyecto) return false;
@@ -10160,8 +10171,8 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
     return true;
   });
   const partidasFiltradas = aplicarFiltrosPartidas(partidasUnidad);
-  const filtrosActivos = filtros.texto.trim() || filtrosMes.length > 0 || filtrosAnio.length > 0 || filtros.rubro !== "Todos" || filtros.proyecto !== "Todos";
-  const limpiarFiltros = () => setFiltros({ texto: "", mes: [], anio: [], rubro: "Todos", proyecto: "Todos" });
+  const filtrosActivos = filtros.texto.trim() || rangoActivo || filtros.rubro !== "Todos" || filtros.proyecto !== "Todos";
+  const limpiarFiltros = () => setFiltros({ texto: "", rango: null, rubro: "Todos", proyecto: "Todos" });
 
   const [sort, setSort] = usePrefState("pref-partidas-sort", { key: null, dir: "asc" }, sanearSort(["mes","anio","concepto","rubro","categoria","proyecto","zona","folio","monto_estimado","updated_at"]));
   const partidasOrdenadasVistaBase = sortRows(partidasFiltradas, sort, {
@@ -11167,6 +11178,18 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
           </div>
         }
       >
+        {limitesPartidas && (
+          <div style={{ marginBottom: 12 }}>
+            <BarraPeriodo>
+              <RangoSlider min={limitesPartidas.min} max={limitesPartidas.max}
+                desde={rangoP ? rangoP[0] : limitesPartidas.min} hasta={rangoP ? rangoP[1] : limitesPartidas.max}
+                etiqueta={etiquetaMesCorta}
+                ayuda="Periodo: arrastra las manijas para elegir desde qué mes y hasta qué mes. Filtra las partidas por su mes y año."
+                onChange={(a, b) => setFiltros((f) => ({ ...f, rango: [a, b] }))}
+                onTodo={() => setFiltros((f) => ({ ...f, rango: null }))} />
+            </BarraPeriodo>
+          </div>
+        )}
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end", marginBottom: 16, paddingBottom: 16, borderBottom: `1px solid ${T.borderSoft}` }}>
           <Field label="Buscar">
             <TextInput
@@ -11175,12 +11198,6 @@ function PartidasTab({ unidad, unidades, partidas, partidasApi, perfilesApi, tra
               placeholder="Concepto, folio, SMI, categoría…"
               style={{ width: 220 }}
             />
-          </Field>
-          <Field label="Mes">
-            <MesMultiSelect mesesDisponibles={mesesDisponiblesFiltro} seleccionados={filtrosMes} onChange={(nuevo) => setFiltros({ ...filtros, mes: nuevo })} />
-          </Field>
-          <Field label="Año">
-            <AnioMultiSelect aniosDisponibles={aniosDisponiblesFiltro} seleccionados={filtrosAnio} onChange={(nuevo) => setFiltros({ ...filtros, anio: nuevo })} />
           </Field>
           <Field label="Proyecto">
             <Select value={filtros.proyecto} onChange={(e) => setFiltros({ ...filtros, proyecto: e.target.value })} style={{ width: 180 }}>
